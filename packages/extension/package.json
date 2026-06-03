@@ -1,0 +1,40 @@
+{
+  "name": "@pi-postbox/extension",
+  "version": "0.1.0",
+  "description": "Pi extension that registers sessions with Pi Postbox and exposes ask_postbox.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "dist/index.d.ts",
+  "files": [
+    "src",
+    "dist",
+    "package.json",
+    "README.md"
+  ],
+  "keywords": [
+    "pi",
+    "extension",
+    "postbox",
+    "ask_postbox"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasomji/pi-postbox.git",
+    "directory": "packages/extension"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@pi-postbox/protocol": "0.1.0",
+    "ws": "^8.21.0"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  }
+}

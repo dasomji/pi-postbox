@@ -1,0 +1,54 @@
+{
+  "name": "@pi-postbox/server",
+  "version": "0.1.0",
+  "description": "Standalone Pi Postbox Fastify server and pi-postbox-server CLI.",
+  "type": "module",
+  "main": "dist/app.js",
+  "types": "dist/app.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/app.d.ts",
+      "import": "./dist/app.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
+    }
+  },
+  "bin": {
+    "pi-postbox-server": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "package.json",
+    "README.md"
+  ],
+  "keywords": [
+    "pi",
+    "postbox",
+    "dashboard",
+    "fastify",
+    "tailscale"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasomji/pi-postbox.git",
+    "directory": "packages/server"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.0.3",
+    "@fastify/websocket": "^11.2.0",
+    "@pi-postbox/protocol": "0.1.0",
+    "better-sqlite3": "^12.10.0",
+    "fastify": "^5.2.1",
+    "zod": "^3.24.1"
+  }
+}

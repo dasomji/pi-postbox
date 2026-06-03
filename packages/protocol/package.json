@@ -1,0 +1,40 @@
+{
+  "name": "@pi-postbox/protocol",
+  "version": "0.1.0",
+  "description": "Shared Zod protocol schemas for Pi Postbox clients, server, and UI.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "package.json"
+  ],
+  "keywords": [
+    "pi",
+    "postbox",
+    "protocol",
+    "zod"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasomji/pi-postbox.git",
+    "directory": "packages/protocol"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}

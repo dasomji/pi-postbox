@@ -1,0 +1,93 @@
+# Pi Postbox protocol overview
+
+All process-boundary payloads are defined in `@pi-postbox/protocol` and validated with Zod. Clients should ignore unknown fields and preserve stable ids where provided. Schemas intentionally allow generous interviewer context, but still enforce finite string, option, icon, HTTP body, and WebSocket frame limits so a single ask cannot grow without bound.
+
+## HTTP endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /healthz` | Health/status check for wrappers, smoke tests, and operators. |
+| `GET /` | Built React UI shell served by `pi-postbox-server`. |
+| `GET /api/state` | Current state snapshot: sessions plus current/terminal ask request snapshots. |
+| `GET /api/state/events` | SSE stream. Sends an initial `state` event, then validated state snapshots after changes. |
+| `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired`. |
+| `POST /api/requests/:requestId/answer` | Browser/user answer action. First pending answer wins. |
+| `POST /api/requests/:requestId/cancel` | Browser/user cancel action. |
+| `POST /api/machines/:machineId/rename` | Persist dashboard-side machine alias. |
+| `POST /api/projects/:projectId/rename` | Persist dashboard-side project alias. |
+| `GET /api/history` | Recent terminal decision history. |
+| `POST /api/history/prune` | Apply configured terminal-history retention. |
+
+## Extension WebSocket
+
+The Pi extension connects outbound to:
+
+```text
+/api/extension/ws
+```
+
+Client messages:
+
+- `session.register` — machine/project/session metadata and generated machine id.
+- `heartbeat` — keeps the session live and can carry semantic state.
+- `session.update` — semantic/title/cwd/branch updates.
+- `session.shutdown` — releases a session and marks it offline.
+- `ask.create` — creates or replays an idempotent pending request by `requestId`.
+- `ask.answer` — reconciles a local terminal fallback answer.
+- `ask.cancel` — reconciles a local terminal fallback cancellation.
+
+Server messages:
+
+- `registered` — registration accepted.
+- `ack` — heartbeat/session update/shutdown accepted.
+- `ask.created` — pending ask card exists.
+- `ask.resolved` — ask reached a terminal `answered`, `cancelled`, `expired`, or `unavailable` result.
+- `error` — validation or transition error.
+
+## Ask lifecycle
+
+1. Pi calls `ask_postbox`.
+2. Extension sends `ask.create` with a stable `requestId`.
+3. Server stores a pending request and broadcasts state over SSE.
+4. Browser or local terminal fallback submits an answer/cancel.
+5. Server stores a terminal result and broadcasts state.
+6. Extension receives `ask.resolved` and returns a concise result to the coding agent.
+
+Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.
+
+## Rich context and result hygiene
+
+Ask requests may include:
+
+- question context, relevance, and decision impact
+- per-option meaning/context
+- codebase/problem context for a future interviewer
+- additional text/code/diagram/link items
+- fork references such as agent session id/path and leaf id
+
+The dashboard APIs expose this context for display/history/interviewer use. The `ask_postbox` tool result intentionally returns only final selected values, user note, concise rationale/status metadata, request id, and resolved timestamp.
+
+## Semantic and presence state
+
+Semantic state is reported by the extension:
+
+- `working`
+- `blocked`
+- `idle`
+- `unknown`
+
+Presence is derived by the server from WebSocket connection and heartbeat timing:
+
+- `live`
+- `stale`
+- `offline`
+
+`ask_postbox` waits explicitly mark semantic state as blocked/waiting. Observed local `ask_user` calls also mark blocked. Herdr-compatible blocked events are best-effort; Postbox does not depend on Herdr.
+
+## Compatibility notes
+
+- Treat `requestId`, `sessionId`, `machineId`, and `projectId` as stable protocol identifiers.
+- Handle unknown fields gracefully.
+- Use `/healthz` to confirm service and protocol version before relying on newer fields.
+- V1 has no app-level authentication; restrict network reachability with Tailscale/lizard-tail or an external auth proxy.
+- State-changing HTTP actions and extension WebSockets reject cross-origin browser requests unless the `Origin` host matches the Postbox service host. Node/Pi extension clients normally omit `Origin` and are accepted if they can reach the service.
