@@ -10,23 +10,25 @@ Pi Postbox has two independently configured processes:
 After building the workspace, run the server CLI with:
 
 ```bash
-node packages/server/dist/cli.js --host 127.0.0.1 --port 3000
+node packages/server/dist/cli.js
 ```
 
 When installed from an npm package, the same binary is exposed as:
 
 ```bash
-pi-postbox-server --host 127.0.0.1 --port 3000
+pi-postbox-server
 ```
+
+The CLI prints the actual listening URL. Port `3000` is a preferred default; if it is already in use, the server chooses another local port and prints that URL instead.
 
 Supported flags and environment variables:
 
 | Flag | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
-| `--host` | `PI_POSTBOX_HOST` | `127.0.0.1` | HTTP listen host. Keep local by default and expose separately with Tailscale/lizard-tail. |
-| `--port` | `PI_POSTBOX_PORT` | `3000` | HTTP listen port. |
+| `--host` | `PI_POSTBOX_HOST` | `127.0.0.1` | HTTP listen host. Keep local by default and expose with Tailscale/lizardtail. |
+| `--port` | `PI_POSTBOX_PORT` | preferred `3000` | Preferred HTTP listen port. If it is already in use, the CLI falls back to another local port and prints the actual URL. |
 | `--ui-dist-dir` | `PI_POSTBOX_UI_DIST_DIR` | packaged `dist/public` beside the server CLI | Built Vite UI assets served by the server. Override this for source-checkout development if needed. |
-| `--database` | `PI_POSTBOX_DATABASE` | `data/pi-postbox.sqlite` from the current working directory | SQLite database path. Parent directories are created automatically. |
+| `--database` | `PI_POSTBOX_DATABASE` | `~/.pi-postbox/postbox.sqlite` | SQLite database path. Parent directories are created automatically. |
 | `--ask-timeout-ms` | `PI_POSTBOX_ASK_TIMEOUT_MS` | 12 hours | Default expiry for pending asks. |
 | `--history-retention-max-age-ms` | `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS` | unset | Optional terminal-history max age. Pending asks are never pruned. |
 | `--history-retention-max-records` | `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS` | unset | Optional maximum number of terminal history records to keep. |
@@ -97,6 +99,7 @@ Useful endpoints for wrappers and manual checks:
 
 ```bash
 npm run build
-PI_POSTBOX_DATABASE=/tmp/pi-postbox.sqlite node packages/server/dist/cli.js --host 127.0.0.1 --port 3000
-curl http://127.0.0.1:3000/healthz
+PI_POSTBOX_DATABASE=/tmp/pi-postbox.sqlite node packages/server/dist/cli.js
+# Use the listening URL printed by the CLI; the port may differ from 3000 if it was busy.
+curl <printed-url>/healthz
 ```

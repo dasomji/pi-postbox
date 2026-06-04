@@ -1,6 +1,6 @@
-# Pi Postbox deployment with Tailscale and lizard-tail
+# Pi Postbox deployment with Tailscale and lizardtail
 
-Pi Postbox v1 is designed as a plain local HTTP service. It does **not** manage Tailscale, lizard-tail, TLS certificates, or user accounts itself.
+Pi Postbox v1 is designed as a plain local HTTP service. It relies on lizardtail/Tailscale or another external wrapper for network exposure, TLS, and access control.
 
 ## Security boundary
 
@@ -9,7 +9,7 @@ V1 intentionally uses a **Tailscale-only** trust boundary with **no app-level au
 Recommended deployment rule:
 
 - Bind `pi-postbox-server` to `127.0.0.1` or a private Tailnet-only interface.
-- Expose it separately with lizard-tail/Tailscale.
+- Expose it separately with lizardtail/Tailscale.
 - Do not bind it to a public internet interface without an external auth/reverse-proxy layer.
 - Access the dashboard through one canonical URL; cross-origin POST/WebSocket attempts are rejected by the server.
 
@@ -20,37 +20,28 @@ From a checkout:
 ```bash
 npm install
 npm run build
-node packages/server/dist/cli.js \
-  --host 127.0.0.1 \
-  --port 3000 \
-  --database ~/.pi-postbox/postbox.sqlite \
-  --ui-dist-dir apps/web/dist
+node packages/server/dist/cli.js
 ```
 
 From an installed server package:
 
 ```bash
-pi-postbox-server \
-  --host 127.0.0.1 \
-  --port 3000 \
-  --database ~/.pi-postbox/postbox.sqlite
+pi-postbox-server
 ```
 
-Open the local UI at <http://127.0.0.1:3000/>.
+The server binds to `127.0.0.1`, prefers port `3000`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port; open the printed URL.
 
-## Expose with lizard-tail/Tailscale
+## Expose with lizardtail/Tailscale
 
-Keep lizard-tail as a wrapper around the local HTTP service. The exact command depends on your lizard-tail setup, but the shape should be:
+Install or link `pi-postbox-server` so it is available on `PATH`, then use the Postbox shortcut:
 
 ```bash
-# terminal 1 or system service
-pi-postbox-server --host 127.0.0.1 --port 3000 --database ~/.pi-postbox/postbox.sqlite
-
-# terminal 2 or wrapper service
-lizard-tail http://127.0.0.1:3000
+lizardtail postbox
 ```
 
-Then point remote Pi extensions at the lizard-tail/Tailscale URL:
+`lizardtail postbox` launches `pi-postbox-server` with local defaults, lets Postbox fall back if its preferred port is busy, detects the actual printed URL, and exposes that exact local port privately through Tailscale Serve. Use `lizardtail --public postbox` only when you intentionally want Tailscale Funnel public internet exposure.
+
+Then point remote Pi extensions at the lizardtail/Tailscale URL:
 
 ```bash
 export PI_POSTBOX_URL="https://your-postbox.tailnet.example"
@@ -87,25 +78,25 @@ The extension connects in the background and does not block Pi startup if the se
 The server package exposes the `pi-postbox-server` binary:
 
 ```bash
-npm exec --workspace @pi-postbox/server -- pi-postbox-server --host 127.0.0.1 --port 3000
+npm exec --workspace @pi-postbox/server -- pi-postbox-server
 ```
 
 After package publication, either of these shapes is expected:
 
 ```bash
-npx @pi-postbox/server --host 127.0.0.1 --port 3000
+npx @pi-postbox/server
 # or, after a global install
-pi-postbox-server --host 127.0.0.1 --port 3000
+pi-postbox-server
 ```
 
 ## Health and monitoring
 
-Use these endpoints for wrappers or manual checks:
+Use the printed local URL for wrappers or manual checks:
 
 ```bash
-curl http://127.0.0.1:3000/healthz
-curl http://127.0.0.1:3000/api/state
-curl http://127.0.0.1:3000/api/history
+curl <printed-url>/healthz
+curl <printed-url>/api/state
+curl <printed-url>/api/history
 ```
 
 `/api/state/events` is an SSE stream for browser clients and can also be used by simple monitors that understand Server-Sent Events.
@@ -123,8 +114,8 @@ The smoke script starts `node packages/server/dist/cli.js` with a temporary SQLi
 
 ## Manual test checklist
 
-1. Start `pi-postbox-server` locally and confirm `/healthz` returns `{ "ok": true }`.
-2. Open the UI from a laptop/phone over the lizard-tail/Tailscale URL.
+1. Start `lizardtail postbox` and confirm Postbox prints a listening URL and `/healthz` returns `{ "ok": true }`.
+2. Open the UI from a laptop/phone over the lizardtail/Tailscale URL.
 3. Start Pi with `PI_POSTBOX_URL` set to the same URL.
 4. Confirm the session card appears with machine/project/branch metadata.
 5. Ask a test question with `ask_postbox` and answer it from the browser.

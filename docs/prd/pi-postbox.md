@@ -4,7 +4,7 @@
 
 When multiple Pi agents are running across repositories, branches, worktrees, and machines, the user needs a lightweight way to notice and answer only the decisions that require human input without streaming every chat transcript into a dashboard.
 
-Existing dashboard-style approaches tend to mirror full agent conversations. That is too noisy for the desired workflow. The user wants a focused “postbox” for agent attention: each Pi session registers its presence, reports useful session metadata, and sends structured decision cards when it needs input. The user can open the web interface from a phone or laptop over Tailscale/lizard-tail, answer the card, and let the blocked Pi session continue.
+Existing dashboard-style approaches tend to mirror full agent conversations. That is too noisy for the desired workflow. The user wants a focused “postbox” for agent attention: each Pi session registers its presence, reports useful session metadata, and sends structured decision cards when it needs input. The user can open the web interface from a phone or laptop over Tailscale/lizardtail, answer the card, and let the blocked Pi session continue.
 
 The long-term vision is richer than a form UI: `ask_postbox` is a handoff to an interviewer. V1 is a simple structured question-answer interface, but the contract should preserve enough context for a future conversational interviewer, including relevance, decision impact, per-answer meaning, and codebase/problem context. Future interviewer conversations should help the user reach decisions without polluting the coding agent’s main context.
 
@@ -51,7 +51,7 @@ V1 does not include native push notifications or a conversational interviewer. I
 25. As a Pi user, I want the extension to reconnect in the background, so that the dashboard recovers automatically after network/server interruptions.
 26. As a Pi user, I want `ask_postbox` requests to be idempotent across reconnects, so that duplicate cards are not created after connection drops.
 27. As a Pi user, I want a local fallback command while a request is pending, so that I can answer/cancel from the terminal if the web UI is unavailable.
-28. As a server operator, I want Postbox to run as a normal local HTTP service, so that lizard-tail can expose it separately over Tailscale.
+28. As a server operator, I want Postbox to run as a normal local HTTP service, so that lizardtail can expose it separately over Tailscale.
 29. As a developer, I want the extension and server packaged through npm/Pi conventions, so that installation across machines is straightforward.
 30. As a developer, I want schemas validated consistently, so that extension, server, and browser clients agree on request and answer shapes.
 
@@ -162,9 +162,9 @@ V1 does not include native push notifications or a conversational interviewer. I
   - V1 may expose server-side event hooks so notifications can be added later.
   - Manual dashboard usage is acceptable for MVP.
 
-- Deployment/lizard-tail:
+- Deployment/lizardtail:
   - Server runs as a normal local HTTP service.
-  - lizard-tail/Tailscale exposure is handled outside the app.
+  - lizardtail/Tailscale exposure is handled outside the app.
   - The app should expose health/status endpoints useful for wrapping and monitoring.
 
 ## Testing Decisions
@@ -196,7 +196,7 @@ V1 does not include native push notifications or a conversational interviewer. I
 - Starting temporary forked Pi sessions from the dashboard.
 - Full pi-ask UI parity such as per-option notes, review tabs, and elaborate flows.
 - Full multi-user accounts or app-level authentication.
-- Server-managed lizard-tail/Tailscale lifecycle.
+- Server-managed lizardtail/Tailscale lifecycle.
 - Automatic codebase crawling or summarization by the extension/server.
 - Docker deployment as the primary v1 distribution.
 

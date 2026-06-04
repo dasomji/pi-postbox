@@ -18,13 +18,13 @@ npm run build
 npm run smoke
 ```
 
-Start the local server:
+Start the local server with defaults:
 
 ```bash
-node packages/server/dist/cli.js --host 127.0.0.1 --port 3000 --database ~/.pi-postbox/postbox.sqlite
+node packages/server/dist/cli.js
 ```
 
-Then open <http://127.0.0.1:3000/>.
+The server binds to `127.0.0.1`, prefers port `3000`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If port `3000` is already in use, it automatically selects another local port; open the printed URL.
 
 ## Workspace commands
 
@@ -63,7 +63,7 @@ pi install npm:@pi-postbox/extension
 Installed server package run shape:
 
 ```bash
-pi-postbox-server --host 127.0.0.1 --port 3000 --database ~/.pi-postbox/postbox.sqlite
+pi-postbox-server
 ```
 
 ## Server configuration
@@ -71,9 +71,9 @@ pi-postbox-server --host 127.0.0.1 --port 3000 --database ~/.pi-postbox/postbox.
 Supported server flags and environment variables:
 
 - `--host` or `PI_POSTBOX_HOST` (default `127.0.0.1`)
-- `--port` or `PI_POSTBOX_PORT` (default `3000`)
+- `--port` or `PI_POSTBOX_PORT` (preferred default `3000`; falls back to another local port if already in use)
 - `--ui-dist-dir` or `PI_POSTBOX_UI_DIST_DIR` (default packaged `dist/public` beside the server CLI)
-- `--database` or `PI_POSTBOX_DATABASE` (default `data/pi-postbox.sqlite`)
+- `--database` or `PI_POSTBOX_DATABASE` (default `~/.pi-postbox/postbox.sqlite`)
 - `--ask-timeout-ms` or `PI_POSTBOX_ASK_TIMEOUT_MS` (default 12 hours)
 - `--history-retention-max-age-ms` or `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS`
 - `--history-retention-max-records` or `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS`
@@ -111,16 +111,17 @@ Icon paths are resolved by the extension and uploaded as small data URLs plus ha
 - `GET /api/history` — recent terminal decision history.
 - `POST /api/history/prune` — apply configured retention.
 
-## Tailscale/lizard-tail deployment
+## Tailscale/lizardtail deployment
 
-Pi Postbox v1 uses a **Tailscale-only** trust boundary with **no app-level authentication**. Anyone who can reach the HTTP service can read cards/history and submit answers. The server still blocks cross-origin browser pivots for state-changing HTTP/WebSocket actions and enforces finite payload/icon limits, but that is CSRF/abuse protection — not user authentication. Bind the server locally and expose it separately with lizard-tail/Tailscale or another authenticated wrapper:
+Pi Postbox v1 uses a **Tailscale-only** trust boundary with **no app-level authentication**. Anyone who can reach the HTTP service can read cards/history and submit answers. The server still blocks cross-origin browser pivots for state-changing HTTP/WebSocket actions and enforces finite payload/icon limits, but that is CSRF/abuse protection — not user authentication.
+
+Use `lizardtail postbox` to launch `pi-postbox-server`, detect the actual local port it prints, and expose that port privately through Tailscale Serve by default:
 
 ```bash
-pi-postbox-server --host 127.0.0.1 --port 3000 --database ~/.pi-postbox/postbox.sqlite
-lizard-tail http://127.0.0.1:3000
+lizardtail postbox
 ```
 
-Then configure Pi sessions with the lizard-tail/Tailscale URL:
+Pass `--public` only when you intentionally want Tailscale Funnel public internet exposure. Then configure Pi sessions with the lizardtail/Tailscale URL:
 
 ```bash
 export PI_POSTBOX_URL="https://your-postbox.tailnet.example"

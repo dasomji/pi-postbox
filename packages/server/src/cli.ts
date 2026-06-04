@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import type { FastifyInstance } from "fastify";
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createPostboxApp } from "./app.js";
 
 export interface CliOptions {
@@ -11,10 +16,18 @@ export interface CliOptions {
   historyRetentionMaxRecords?: number;
 }
 
+export function defaultCliDatabasePath(): string {
+  return join(homedir(), ".pi-postbox", "postbox.sqlite");
+}
+
 export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
   const getFlagValue = (name: string): string | undefined => {
     const index = argv.indexOf(name);
-    return index >= 0 ? argv[index + 1] : undefined;
+    if (index >= 0) return argv[index + 1];
+
+    const prefix = `${name}=`;
+    const equalsArg = argv.find((arg) => arg.startsWith(prefix));
+    return equalsArg?.slice(prefix.length);
   };
 
   const host = getFlagValue("--host") ?? env.PI_POSTBOX_HOST ?? "127.0.0.1";
@@ -59,11 +72,24 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     host,
     port,
     uiDistDir: getFlagValue("--ui-dist-dir") ?? env.PI_POSTBOX_UI_DIST_DIR,
-    databasePath: getFlagValue("--database") ?? env.PI_POSTBOX_DATABASE,
+    databasePath: getFlagValue("--database") ?? env.PI_POSTBOX_DATABASE ?? defaultCliDatabasePath(),
     askTimeoutMs,
     historyRetentionMaxAgeMs,
     historyRetentionMaxRecords
   };
+}
+
+function isAddressInUseError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EADDRINUSE";
+}
+
+export async function listenWithPortFallback(app: FastifyInstance, options: { host: string; port: number }): Promise<string> {
+  try {
+    return await app.listen({ host: options.host, port: options.port });
+  } catch (error) {
+    if (!isAddressInUseError(error)) throw error;
+    return app.listen({ host: options.host, port: 0 });
+  }
 }
 
 export async function main(argv = process.argv.slice(2), env = process.env): Promise<void> {
@@ -84,11 +110,21 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  const address = await app.listen({ host: options.host, port: options.port });
+  const address = await listenWithPortFallback(app, { host: options.host, port: options.port });
   console.log(`pi-postbox-server listening on ${address}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function isCliEntrypoint(moduleUrl: string, argv1: string | undefined): boolean {
+  if (!argv1) return false;
+
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argv1);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

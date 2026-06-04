@@ -89,5 +89,5 @@ Presence is derived by the server from WebSocket connection and heartbeat timing
 - Treat `requestId`, `sessionId`, `machineId`, and `projectId` as stable protocol identifiers.
 - Handle unknown fields gracefully.
 - Use `/healthz` to confirm service and protocol version before relying on newer fields.
-- V1 has no app-level authentication; restrict network reachability with Tailscale/lizard-tail or an external auth proxy.
+- V1 has no app-level authentication; restrict network reachability with Tailscale/lizardtail or an external auth proxy.
 - State-changing HTTP actions and extension WebSockets reject cross-origin browser requests unless the `Origin` host matches the Postbox service host. Node/Pi extension clients normally omit `Origin` and are accepted if they can reach the service.

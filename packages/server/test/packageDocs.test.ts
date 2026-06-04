@@ -48,7 +48,8 @@ describe("release packaging and operator docs", () => {
     expect(docs).toContain("generated machine id");
     expect(docs).toContain("Tailscale-only");
     expect(docs).toContain("no app-level authentication");
-    expect(docs).toContain("lizard-tail");
+    expect(docs).toContain("lizardtail");
+    expect(docs).toContain("lizardtail postbox");
     expect(docs).toContain("/healthz");
     expect(docs).toContain("/api/state/events");
     expect(docs).toContain("npm run smoke");
