@@ -1,3 +1,35 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --color-postbox-canvas: 2 6 23;
+    --color-postbox-surface: 15 23 42;
+    --color-postbox-elevated: 15 23 42;
+    --color-postbox-muted: 30 41 59;
+    --color-postbox-border: 30 41 59;
+    --color-postbox-border-strong: 51 65 85;
+    --color-postbox-text: 248 250 252;
+    --color-postbox-subtle: 203 213 225;
+    --color-postbox-shadow: 2 6 23;
+
+    --color-attention: 103 232 249;
+    --color-attention-foreground: 165 243 252;
+    --color-attention-contrast: 2 6 23;
+    --color-attention-border: 22 78 99;
+
+    --color-history: 216 180 254;
+    --color-history-foreground: 233 213 255;
+    --color-history-border: 88 28 135;
+
+    --color-success: 16 185 129;
+    --color-success-foreground: 110 231 183;
+
+    --color-warning: 245 158 11;
+    --color-warning-foreground: 252 211 77;
+
+    --color-danger: 244 63 94;
+    --color-danger-foreground: 254 205 211;
+  }
+}
