@@ -31,15 +31,35 @@ pi-postbox-server
 
 The server binds to `127.0.0.1`, prefers port `3000`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port; open the printed URL.
 
-## Expose with lizardtail/Tailscale
+## Run in development (live HMR)
 
-Install or link `pi-postbox-server` so it is available on `PATH`, then use the Postbox shortcut:
+For active development of the web UI or server, use the dev orchestrator instead of a built bundle:
 
 ```bash
-lizardtail postbox
+npm run dev
 ```
 
-`lizardtail postbox` launches `pi-postbox-server` with local defaults, lets Postbox fall back if its preferred port is busy, detects the actual printed URL, and exposes that exact local port privately through Tailscale Serve. Use `lizardtail --public postbox` only when you intentionally want Tailscale Funnel public internet exposure.
+`npm run dev` (`scripts/dev.mjs`) runs the full stack: the backend `pi-postbox-server` on the **canonical** port (`PI_POSTBOX_PORT`, else `3000` — the same endpoint the extension targets, so live Pi sessions talk to the dev server) plus the Vite dev server (port `5173`, with HMR). Vite proxies `/api` and `/healthz` to the backend, so the dashboard has live data while you edit source. Both share the same `~/.pi-postbox/postbox.sqlite`, so dev shows the same sessions, pending questions, and history as production.
+
+If a production `pi-postbox-server` already holds the canonical port, the orchestrator offers to stop it: interactively when run from a terminal, or via `--force` / `POSTBOX_DEV_FORCE=1` when run non-interactively (e.g. by an agent). It stops the old server through the loopback-only `POST /admin/shutdown` endpoint, falling back to signalling the listener PID. A non-pi-postbox process on the port is never touched.
+
+To reach the dev server over Tailscale, put lizardtail in front of the **frontend** port:
+
+```bash
+lizardtail --port 5173 npm run dev
+```
+
+`--port 5173` tells lizardtail to expose Vite (which proxies `/api` to the backend), so the whole app works through one Tailscale URL.
+
+## Expose with lizardtail/Tailscale
+
+Install or link `pi-postbox-server` so it is available on `PATH`, then run it behind lizardtail:
+
+```bash
+lizardtail pi-postbox-server
+```
+
+lizardtail is a generic Tailscale Serve wrapper (no Postbox-specific logic). It runs the command, detects the actual port `pi-postbox-server` prints (port `3000` by default, or its fallback if busy), and exposes that exact local port privately through Tailscale Serve. Use `lizardtail --public pi-postbox-server` only when you intentionally want Tailscale Funnel public internet exposure.
 
 Then point remote Pi extensions at the lizardtail/Tailscale URL:
 
@@ -114,7 +134,7 @@ The smoke script starts `node packages/server/dist/cli.js` with a temporary SQLi
 
 ## Manual test checklist
 
-1. Start `lizardtail postbox` and confirm Postbox prints a listening URL and `/healthz` returns `{ "ok": true }`.
+1. Start `lizardtail pi-postbox-server` and confirm Postbox prints a listening URL and `/healthz` returns `{ "ok": true }`.
 2. Open the UI from a laptop/phone over the lizardtail/Tailscale URL.
 3. Start Pi with `PI_POSTBOX_URL` set to the same URL.
 4. Confirm the session card appears with machine/project/branch metadata.

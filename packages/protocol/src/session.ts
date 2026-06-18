@@ -68,8 +68,11 @@ export const SessionUpdatePayloadSchema = z.object({
   semanticState: SemanticStateSchema.optional()
 });
 
+export const SessionShutdownReasonSchema = z.enum(["quit", "reload", "new", "resume", "fork"]);
+
 export const SessionShutdownPayloadSchema = z.object({
-  sessionId: z.string().min(1)
+  sessionId: z.string().min(1),
+  reason: SessionShutdownReasonSchema.optional()
 });
 
 export const SessionSnapshotSchema = z.object({
@@ -113,6 +116,7 @@ export type SessionRegistration = z.infer<typeof SessionRegistrationSchema>;
 export type SessionRegisterPayload = z.infer<typeof SessionRegisterPayloadSchema>;
 export type HeartbeatPayload = z.infer<typeof HeartbeatPayloadSchema>;
 export type SessionUpdatePayload = z.infer<typeof SessionUpdatePayloadSchema>;
+export type SessionShutdownReason = z.infer<typeof SessionShutdownReasonSchema>;
 export type SessionShutdownPayload = z.infer<typeof SessionShutdownPayloadSchema>;
 export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;

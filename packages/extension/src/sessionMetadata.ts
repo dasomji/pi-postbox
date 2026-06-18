@@ -17,10 +17,16 @@ function stableId(value: string): string {
   return `session_${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
 }
 
-export function collectSessionMetadata(pi: PiLikeApi, ctx: SessionLikeContext, branch?: string, worktreePath?: string): SessionRegistration {
+export function collectSessionMetadata(
+  pi: PiLikeApi,
+  ctx: SessionLikeContext,
+  branch?: string,
+  worktreePath?: string,
+  fallbackSessionIdentity?: string
+): SessionRegistration {
   const cwd = ctx.cwd ?? process.cwd();
   const sessionPath = ctx.sessionManager?.getSessionFile?.();
-  const sessionId = sessionPath ? stableId(sessionPath) : stableId(`${cwd}:${process.pid}`);
+  const sessionId = sessionPath ? stableId(sessionPath) : stableId(fallbackSessionIdentity ?? `${cwd}:${process.pid}`);
 
   return {
     sessionId,

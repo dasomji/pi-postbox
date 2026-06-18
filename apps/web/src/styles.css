@@ -3,11 +3,21 @@
 @tailwind utilities;
 
 @layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+  }
+
   :root {
     --color-postbox-canvas: 2 6 23;
     --color-postbox-surface: 15 23 42;
     --color-postbox-elevated: 15 23 42;
-    --color-postbox-muted: 30 41 59;
+    --color-postbox-muted: 148 163 184;
     --color-postbox-border: 30 41 59;
     --color-postbox-border-strong: 51 65 85;
     --color-postbox-text: 248 250 252;

@@ -92,6 +92,24 @@ describe("PostboxClient pending ask resilience", () => {
     client.stop();
   });
 
+  it("does not publish disconnect status or reconnect after being stopped", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const statuses: string[] = [];
+    const client = createClient({ onStatus: (status) => statuses.push(status) });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    expect(statuses).toEqual(["connected"]);
+
+    statuses.length = 0;
+    client.stop();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(statuses).toEqual([]);
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
   it("keeps a pending ask through disconnect, reconnects, and replays the same request id", async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];

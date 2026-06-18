@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const OTHER_OPTION_VALUE = "other";
+
 const SHORT_TEXT_MAX = 2_000;
 const LONG_TEXT_MAX = 128_000;
 const REQUEST_ID_MAX = 200;

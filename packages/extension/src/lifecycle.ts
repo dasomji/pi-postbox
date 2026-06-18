@@ -3,7 +3,7 @@ import { emitHerdrBlocked } from "./herdrInterop.js";
 
 export interface SemanticStateClient {
   updateSemanticState(state: SemanticState): boolean | void;
-  shutdownSession?(): boolean | void;
+  shutdownSession?(reason?: SessionShutdownReason): boolean | void;
 }
 
 export interface SemanticStatePiApi {
@@ -18,11 +18,13 @@ export interface SemanticStateControllerOptions {
   askUserToolNames?: string[];
 }
 
+export type SessionShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
+
 export interface SemanticStateController {
   readonly currentState: SemanticState;
   markWorking(): void;
   scheduleIdle(): void;
-  shutdown(): void;
+  shutdown(options?: { reason?: SessionShutdownReason; releaseSession?: boolean }): void;
   beginAskPostboxWait(label?: string): () => void;
   handleToolCall(event: ToolEventLike): void;
   handleToolResult(event: ToolEventLike): void;
@@ -93,14 +95,16 @@ export function createSemanticStateController(
       idleTimer.unref?.();
     },
 
-    shutdown() {
+    shutdown(options = {}) {
       clearIdleTimer();
       agentActive = false;
       askPostboxWaits = 0;
       localAskUserToolCalls.clear();
       emitHerdrBlocked(pi, false);
       getClient()?.updateSemanticState("idle");
-      getClient()?.shutdownSession?.();
+      if (options.releaseSession ?? true) {
+        getClient()?.shutdownSession?.(options.reason);
+      }
     },
 
     beginAskPostboxWait(label = "Waiting for Postbox answer") {
@@ -142,5 +146,14 @@ export function installSemanticStateHandlers(
   pi.on("agent_end", () => controller.scheduleIdle());
   pi.on("tool_call", (event) => controller.handleToolCall(event as ToolEventLike));
   pi.on("tool_result", (event) => controller.handleToolResult(event as ToolEventLike));
-  pi.on("session_shutdown", () => controller.shutdown());
+  pi.on("session_shutdown", (event) => {
+    const reason = sessionShutdownReasonFromEvent(event);
+    controller.shutdown({ reason, releaseSession: reason !== "reload" });
+  });
+}
+
+function sessionShutdownReasonFromEvent(event: unknown): SessionShutdownReason | undefined {
+  if (!event || typeof event !== "object" || !("reason" in event)) return undefined;
+  const reason = (event as { reason?: unknown }).reason;
+  return reason === "quit" || reason === "reload" || reason === "new" || reason === "resume" || reason === "fork" ? reason : undefined;
 }

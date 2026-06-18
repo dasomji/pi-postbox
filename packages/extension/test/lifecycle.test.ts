@@ -6,14 +6,16 @@ import { executeAskPostbox } from "../src/tools/askPostbox.js";
 class FakeClient implements SemanticStateClient {
   states: SemanticState[] = [];
   shutdowns = 0;
+  shutdownReasons: Array<string | undefined> = [];
 
   updateSemanticState(state: SemanticState): boolean {
     this.states.push(state);
     return true;
   }
 
-  shutdownSession(): boolean {
+  shutdownSession(reason?: string): boolean {
     this.shutdowns += 1;
+    this.shutdownReasons.push(reason);
     return true;
   }
 }
@@ -116,16 +118,30 @@ describe("Pi semantic state lifecycle reporting", () => {
     expect(client.states).toEqual(["working", "blocked", "working"]);
   });
 
+  it("does not send a semantic session shutdown release for reload", () => {
+    const client = new FakeClient();
+    const pi = new FakePi();
+    const controller = createSemanticStateController(() => client, pi);
+    installSemanticStateHandlers(pi, controller);
+
+    pi.emit("session_shutdown", { reason: "reload" });
+
+    expect(client.states.at(-1)).toBe("idle");
+    expect(client.shutdowns).toBe(0);
+    expect(pi.herdrEvents).toEqual([{ eventName: "herdr:blocked", data: { active: false } }]);
+  });
+
   it("sends an explicit shutdown release for the active session", () => {
     const client = new FakeClient();
     const pi = new FakePi();
     const controller = createSemanticStateController(() => client, pi);
     installSemanticStateHandlers(pi, controller);
 
-    pi.emit("session_shutdown");
+    pi.emit("session_shutdown", { reason: "new" });
 
     expect(client.states.at(-1)).toBe("idle");
     expect(client.shutdowns).toBe(1);
+    expect(client.shutdownReasons).toEqual(["new"]);
     expect(pi.herdrEvents).toEqual([{ eventName: "herdr:blocked", data: { active: false } }]);
   });
 });

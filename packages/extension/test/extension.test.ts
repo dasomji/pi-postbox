@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { toExtensionSocketUrl } from "../src/client/PostboxClient.js";
 import { getMachineIdentity } from "../src/machineIdentity.js";
 import { startRegistration } from "../src/index.js";
+import { collectSessionMetadata } from "../src/sessionMetadata.js";
 
 const dirs: string[] = [];
 
@@ -34,6 +35,18 @@ describe("Pi Postbox extension registration", () => {
   it("maps configured HTTP URLs to the extension WebSocket endpoint", () => {
     expect(toExtensionSocketUrl("http://127.0.0.1:3000/")).toBe("ws://127.0.0.1:3000/api/extension/ws");
     expect(toExtensionSocketUrl("https://postbox.example/base")).toBe("wss://postbox.example/api/extension/ws");
+  });
+
+  it("uses a per-session fallback identity when Pi has no session file", () => {
+    const api = { getSessionName: () => "Ephemeral session" };
+    const ctx = { cwd: "/repo" };
+
+    const first = collectSessionMetadata(api, ctx, undefined, undefined, "fallback-one");
+    const firstReconnect = collectSessionMetadata(api, ctx, undefined, undefined, "fallback-one");
+    const replacement = collectSessionMetadata(api, ctx, undefined, undefined, "fallback-two");
+
+    expect(first.sessionId).toBe(firstReconnect.sessionId);
+    expect(replacement.sessionId).not.toBe(first.sessionId);
   });
 
   it("does not block or throw Pi startup when the server is unavailable", async () => {

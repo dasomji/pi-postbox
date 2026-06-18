@@ -2,6 +2,7 @@ import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
+  OTHER_OPTION_VALUE,
   type AskAnswerPayload,
   type AskCancelPayload,
   type AskCreatePayload,
@@ -38,6 +39,7 @@ export interface RequestStoreOptions {
 
 const DEFAULT_ASK_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 const EXPIRED_RATIONALE = "Postbox request expired before an answer was submitted.";
+const SESSION_SHUTDOWN_NOTE = "Originating Pi session shut down.";
 
 export class RequestStore {
   private readonly listeners = new Map<string, Set<ResolutionListener>>();
@@ -196,6 +198,41 @@ export class RequestStore {
     return result;
   }
 
+  cancelPendingForSession(sessionId: string, rationale: string): AskResult[] {
+    this.expireDue();
+    const nowIso = new Date(this.now()).toISOString();
+    const pendingRows = this.db
+      .prepare("SELECT * FROM ask_requests WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC")
+      .all(sessionId) as AskRequestRow[];
+
+    if (pendingRows.length === 0) return [];
+
+    const results: AskResult[] = [];
+    const transaction = this.db.transaction(() => {
+      for (const row of pendingRows) {
+        const changes = this.db
+          .prepare(
+            `UPDATE ask_requests
+             SET status = 'cancelled',
+                 note = COALESCE(note, @note),
+                 rationale = COALESCE(rationale, @rationale),
+                 resolved_at = @resolvedAt,
+                 updated_at = @resolvedAt
+             WHERE request_id = @requestId AND status = 'pending'`
+          )
+          .run({ requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso }).changes;
+
+        if (changes === 1) {
+          results.push({ status: "cancelled", requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso });
+        }
+      }
+    });
+
+    transaction();
+    for (const result of results) this.notify(result.requestId, result);
+    return results;
+  }
+
   expireDue(): AskResult[] {
     const nowIso = new Date(this.now()).toISOString();
     const dueRows = this.db
@@ -254,7 +291,7 @@ export class RequestStore {
       throw new RequestStoreError("invalid_selection", "Single-choice asks require exactly one selected value");
     }
 
-    const allowed = new Set(request.options.map((option) => option.value));
+    const allowed = new Set([...request.options.map((option) => option.value), OTHER_OPTION_VALUE]);
     const invalid = selectedValues.find((value) => !allowed.has(value));
     if (invalid) throw new RequestStoreError("invalid_selection", `Unknown option value: ${invalid}`);
   }

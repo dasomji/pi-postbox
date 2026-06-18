@@ -1,4 +1,4 @@
-import type { AskRequestSnapshot, SessionSnapshot } from "@pi-postbox/protocol";
+import { OTHER_OPTION_VALUE, type AskRequestSnapshot, type SessionSnapshot } from "@pi-postbox/protocol";
 
 export function formatCount(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -17,7 +17,7 @@ export function selectedOptionLabels(request: AskRequestSnapshot): string | unde
   if (result?.status !== "answered") return undefined;
 
   return result.selectedValues
-    .map((value) => request.options.find((option) => option.value === value)?.label ?? value)
+    .map((value) => request.options.find((option) => option.value === value)?.label ?? (value === OTHER_OPTION_VALUE ? "Other" : value))
     .join(", ");
 }
 

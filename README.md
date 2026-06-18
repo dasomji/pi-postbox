@@ -29,6 +29,7 @@ The server binds to `127.0.0.1`, prefers port `3000`, stores data in `~/.pi-post
 ## Workspace commands
 
 ```bash
+npm run dev       # full-stack dev with HMR: backend + Vite UI (see docs/deployment.md)
 npm test          # Vitest integration/behavior tests
 npm run typecheck # TypeScript project references
 npm run build     # build server/protocol/extension and Vite UI
@@ -44,7 +45,7 @@ This repo uses npm workspaces:
 - `@pi-postbox/protocol` — shared Zod schemas and TypeScript types.
 - `@pi-postbox/server` — Fastify server package exposing the `pi-postbox-server` binary.
 - `@pi-postbox/extension` — Pi extension package advertising `pi.extensions` for `ask_postbox`.
-- `@pi-postbox/web` — Vite React Tailwind browser UI.
+- `@pi-postbox/web` — Vite Svelte Tailwind browser UI.
 
 Source-checkout install for Pi extension development:
 
@@ -115,13 +116,13 @@ Icon paths are resolved by the extension and uploaded as small data URLs plus ha
 
 Pi Postbox v1 uses a **Tailscale-only** trust boundary with **no app-level authentication**. Anyone who can reach the HTTP service can read cards/history and submit answers. The server still blocks cross-origin browser pivots for state-changing HTTP/WebSocket actions and enforces finite payload/icon limits, but that is CSRF/abuse protection — not user authentication.
 
-Use `lizardtail postbox` to launch `pi-postbox-server`, detect the actual local port it prints, and expose that port privately through Tailscale Serve by default:
+Run `pi-postbox-server` behind lizardtail (a generic Tailscale Serve wrapper) to detect the actual local port it prints and expose that port privately through Tailscale Serve by default:
 
 ```bash
-lizardtail postbox
+lizardtail pi-postbox-server
 ```
 
-Pass `--public` only when you intentionally want Tailscale Funnel public internet exposure. Then configure Pi sessions with the lizardtail/Tailscale URL:
+Pass `--public` only when you intentionally want Tailscale Funnel public internet exposure. For live development behind Tailscale, expose the Vite frontend instead with `lizardtail --port 5173 npm run dev`. Then configure Pi sessions with the lizardtail/Tailscale URL:
 
 ```bash
 export PI_POSTBOX_URL="https://your-postbox.tailnet.example"

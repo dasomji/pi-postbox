@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { SessionRegisterPayload } from "@pi-postbox/protocol";
 import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
@@ -29,9 +30,18 @@ interface PiLikeContext {
   };
 }
 
+interface SessionUiScope {
+  isActive(): boolean;
+  deactivate(): void;
+  notify(message: string, level?: string): void;
+  setStatus(key: string, value: string): void;
+  setWidget(key: string, value: string[]): void;
+}
+
 let client: PostboxClient | undefined;
 let currentRegistration: SessionRegisterPayload | undefined;
 let semanticStateController: SemanticStateController | undefined;
+let activeUiScope: SessionUiScope | undefined;
 
 export default function postboxExtension(pi: PiLikeApi): void {
   semanticStateController = createSemanticStateController(() => client, pi);
@@ -63,60 +73,97 @@ export default function postboxExtension(pi: PiLikeApi): void {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    void startRegistration(pi, ctx);
+    activeUiScope?.deactivate();
+    activeUiScope = createSessionUiScope(ctx);
+    const fallbackSessionIdentity = randomUUID();
+    void startRegistration(pi, ctx, process.env, activeUiScope, fallbackSessionIdentity);
   });
 
   pi.on("session_shutdown", () => {
+    activeUiScope?.deactivate();
+    activeUiScope = undefined;
     client?.stop();
     client = undefined;
     currentRegistration = undefined;
   });
 }
 
-export async function startRegistration(pi: PiLikeApi, ctx: PiLikeContext, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function startRegistration(
+  pi: PiLikeApi,
+  ctx: PiLikeContext,
+  env: NodeJS.ProcessEnv = process.env,
+  uiScope: SessionUiScope = createSessionUiScope(ctx),
+  fallbackSessionIdentity?: string
+): Promise<void> {
   const config = await readExtensionConfig(env);
+  if (!uiScope.isActive()) return;
   if (!config.serverUrl) {
-    ctx.ui?.setStatus?.("postbox", "Postbox not configured");
+    uiScope.setStatus("postbox", "Postbox not configured");
     return;
   }
 
   try {
-    const registration = await collectRegistrationPayload(pi, ctx, env);
+    const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity);
+    if (!uiScope.isActive()) return;
     currentRegistration = registration;
     client?.stop();
     client = new PostboxClient({
       serverUrl: config.serverUrl,
       registration,
-      onStatus: (status) => ctx.ui?.setStatus?.("postbox", `Postbox ${status}`),
-      onLocalFallbackStatus: (status) => renderLocalFallbackStatus(ctx, status)
+      onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
+      onLocalFallbackStatus: (status) => renderLocalFallbackStatus(uiScope, status)
     });
     client.start();
   } catch (error) {
+    if (!uiScope.isActive()) return;
     const message = error instanceof Error ? error.message : String(error);
-    ctx.ui?.notify?.(`Pi Postbox registration skipped: ${message}`, "warn");
-    ctx.ui?.setStatus?.("postbox", "Postbox registration skipped");
+    uiScope.notify(`Pi Postbox registration skipped: ${message}`, "warn");
+    uiScope.setStatus("postbox", "Postbox registration skipped");
   }
 }
 
 export async function collectRegistrationPayload(
   pi: PiLikeApi,
   ctx: PiLikeContext,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  fallbackSessionIdentity?: string
 ): Promise<SessionRegisterPayload> {
   const cwd = ctx.cwd ?? process.cwd();
-  const machine = await getMachineIdentity(env);
   const project = collectProjectMetadata(cwd);
-  const session = collectSessionMetadata(pi, ctx, project.branch, project.worktreePath);
+  const session = collectSessionMetadata(pi, ctx, project.branch, project.worktreePath, fallbackSessionIdentity);
+  const machine = await getMachineIdentity(env);
   return { machine, project, session };
 }
 
-function renderLocalFallbackStatus(ctx: PiLikeContext, status: LocalFallbackStatus | undefined): void {
+function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
+  let active = true;
+  return {
+    isActive: () => active,
+    deactivate: () => {
+      active = false;
+    },
+    notify(message, level) {
+      if (!active) return;
+      ctx.ui?.notify?.(message, level);
+    },
+    setStatus(key, value) {
+      if (!active) return;
+      ctx.ui?.setStatus?.(key, value);
+    },
+    setWidget(key, value) {
+      if (!active) return;
+      ctx.ui?.setWidget?.(key, value);
+    }
+  };
+}
+
+function renderLocalFallbackStatus(uiScope: SessionUiScope, status: LocalFallbackStatus | undefined): void {
   if (!status) {
-    ctx.ui?.setStatus?.("postbox-ask", "");
-    ctx.ui?.setWidget?.("postbox-ask", []);
+    uiScope.setStatus("postbox-ask", "");
+    uiScope.setWidget("postbox-ask", []);
     return;
   }
-  ctx.ui?.setStatus?.("postbox-ask", `Waiting ${status.requestId}`);
-  ctx.ui?.setWidget?.("postbox-ask", [status.message]);
-  ctx.ui?.notify?.(status.message, "info");
+  uiScope.setStatus("postbox-ask", `Waiting ${status.requestId}`);
+  uiScope.setWidget("postbox-ask", [status.message]);
+  uiScope.notify(status.message, "info");
 }

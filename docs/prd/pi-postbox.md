@@ -81,7 +81,7 @@ V1 does not include native push notifications or a conversational interviewer. I
   - TypeScript workspace.
   - Fastify server.
   - Zod for schema validation.
-  - Vite + React + TypeScript + Tailwind for the web UI.
+  - Vite + Svelte + TypeScript + Tailwind for the web UI.
 
 - Extension configuration:
   - Support environment variable configuration for the server URL.

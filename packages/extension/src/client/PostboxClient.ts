@@ -4,10 +4,12 @@ import {
   type AskCancelPayload,
   type AskCreatePayload,
   type AskOption,
+  OTHER_OPTION_VALUE,
   type AskResult,
   type ExtensionClientMessage,
   type SemanticState,
-  type SessionRegisterPayload
+  type SessionRegisterPayload,
+  type SessionShutdownReason
 } from "@pi-postbox/protocol";
 import WebSocket from "ws";
 
@@ -136,10 +138,10 @@ export class PostboxClient {
     });
   }
 
-  shutdownSession(): boolean {
+  shutdownSession(reason?: SessionShutdownReason): boolean {
     return this.send({
       type: "session.shutdown",
-      payload: { sessionId: this.options.registration.session.sessionId }
+      payload: { sessionId: this.options.registration.session.sessionId, reason }
     });
   }
 
@@ -293,8 +295,9 @@ export class PostboxClient {
     });
 
     socket.on("close", () => {
-      this.options.onStatus?.("disconnected");
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      if (this.stopped) return;
+      this.options.onStatus?.("disconnected");
       this.scheduleReconnect();
     });
   }
@@ -391,7 +394,7 @@ export class PostboxClient {
     if (payload.mode === "single" && selectedValues.length !== 1) {
       throw new LocalFallbackError("invalid_selection", "Single-choice asks require exactly one selected value");
     }
-    const allowed = new Set(payload.options.map((option) => option.value));
+    const allowed = new Set([...payload.options.map((option) => option.value), OTHER_OPTION_VALUE]);
     const invalid = selectedValues.find((value) => !allowed.has(value));
     if (invalid) throw new LocalFallbackError("invalid_selection", `Unknown option value: ${invalid}`);
   }
@@ -412,7 +415,7 @@ export class PostboxClient {
       this.options.onLocalFallbackStatus(undefined);
       return;
     }
-    const values = active.options.map((option) => option.value).join(",");
+    const values = [...active.options.map((option) => option.value), OTHER_OPTION_VALUE].join(",");
     this.options.onLocalFallbackStatus({
       requestId: active.requestId,
       message: `Postbox waiting ${active.requestId}. Local fallback: /postbox-answer ${active.requestId} ${values} [--note ...] or /postbox-cancel ${active.requestId} [--note ...]`

@@ -10,6 +10,7 @@ export {
   AskStatusSchema,
   ForkReferenceSchema,
   HandoffContextSchema,
+  OTHER_OPTION_VALUE,
   RichContextItemSchema
 } from "./ask.js";
 export type {
@@ -51,6 +52,7 @@ export {
   SessionRegisterPayloadSchema,
   SessionRegistrationSchema,
   SessionShutdownPayloadSchema,
+  SessionShutdownReasonSchema,
   SessionSnapshotSchema,
   SessionUpdatePayloadSchema,
   StateSnapshotSchema
@@ -65,6 +67,7 @@ export type {
   SessionRegisterPayload,
   SessionRegistration,
   SessionShutdownPayload,
+  SessionShutdownReason,
   SessionSnapshot,
   SessionUpdatePayload,
   StateSnapshot

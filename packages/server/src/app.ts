@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openPostboxDatabase } from "./db/database.js";
+import { registerAdminRoutes } from "./routes/adminRoutes.js";
 import { registerHistoryRoutes } from "./routes/historyRoutes.js";
 import { registerMetadataRoutes } from "./routes/metadataRoutes.js";
 import { registerRequestRoutes } from "./routes/requestRoutes.js";
@@ -32,6 +33,8 @@ export interface CreatePostboxAppOptions {
   historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
+  // Supplied by the CLI so POST /admin/shutdown (loopback-only) can stop the process.
+  onShutdownRequest?: () => void;
 }
 
 const embeddedShell = `<!doctype html>
@@ -127,6 +130,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   await registerMetadataRoutes(app, sessionStore, broadcaster);
   await registerHistoryRoutes(app, historyService, broadcaster, pruneHistory);
   await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast);
+  await registerAdminRoutes(app, { onShutdownRequest: options.onShutdownRequest });
   await registerExtensionSocket(app, sessionStore, requestStore, broadcaster, expireDueAndBroadcast);
 
   app.get("/healthz", async () => {

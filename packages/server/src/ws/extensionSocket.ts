@@ -13,6 +13,14 @@ function send(socket: WebSocket, message: ExtensionServerMessage): void {
   socket.send(JSON.stringify(message));
 }
 
+function lifecycleShutdownRationale(reason: string | undefined): string {
+  if (reason === "new") return "Originating Pi session was replaced by /new.";
+  if (reason === "resume") return "Originating Pi session was replaced by /resume.";
+  if (reason === "fork") return "Originating Pi session was replaced by /fork.";
+  if (reason === "quit") return "Originating Pi session quit.";
+  return "Originating Pi session was shut down.";
+}
+
 function sendAskError(socket: WebSocket, requestId: string | undefined, fallbackCode: string, error: unknown): void {
   const isRequestError = error instanceof RequestStoreError;
   send(socket, {
@@ -145,8 +153,11 @@ export async function registerExtensionSocket(
         return;
       }
 
-      sessionStore.shutdown(message.payload.sessionId);
-      broadcaster.broadcast();
+      if (message.payload.reason !== "reload") {
+        requestStore.cancelPendingForSession(message.payload.sessionId, lifecycleShutdownRationale(message.payload.reason));
+        sessionStore.shutdown(message.payload.sessionId);
+        broadcaster.broadcast();
+      }
       send(socket, { type: "ack", requestId: message.requestId, payload: { type: "session.shutdown" } });
     });
 

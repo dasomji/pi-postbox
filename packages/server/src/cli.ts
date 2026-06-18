@@ -94,21 +94,30 @@ export async function listenWithPortFallback(app: FastifyInstance, options: { ho
 
 export async function main(argv = process.argv.slice(2), env = process.env): Promise<void> {
   const options = parseCliOptions(argv, env);
+
+  let shuttingDown = false;
+  async function requestShutdown(): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await app.close();
+    } finally {
+      process.exit(0);
+    }
+  }
+
   const app = await createPostboxApp({
     logger: true,
     uiDistDir: options.uiDistDir,
     databasePath: options.databasePath,
     askTimeoutMs: options.askTimeoutMs,
     historyRetentionMaxAgeMs: options.historyRetentionMaxAgeMs,
-    historyRetentionMaxRecords: options.historyRetentionMaxRecords
+    historyRetentionMaxRecords: options.historyRetentionMaxRecords,
+    onShutdownRequest: () => void requestShutdown()
   });
 
-  const shutdown = async () => {
-    await app.close();
-  };
-
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", () => void requestShutdown());
+  process.once("SIGTERM", () => void requestShutdown());
 
   const address = await listenWithPortFallback(app, { host: options.host, port: options.port });
   console.log(`pi-postbox-server listening on ${address}`);
