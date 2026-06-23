@@ -1,6 +1,6 @@
 # Pi Postbox deployment with Tailscale and lizardtail
 
-Pi Postbox v1 is designed as a plain local HTTP service. It relies on lizardtail/Tailscale or another external wrapper for network exposure, TLS, and access control.
+Pi Postbox v1 is a plain local HTTP service with automatic Tailnet-private Tailscale Serve convenience for the common private-dashboard workflow. Tailscale exposure is best-effort and non-clobbering; lizardtail remains a useful external wrapper for custom workflows.
 
 ## Security boundary
 
@@ -9,7 +9,7 @@ V1 intentionally uses a **Tailscale-only** trust boundary with **no app-level au
 Recommended deployment rule:
 
 - Bind `pi-postbox-server` to `127.0.0.1` or a private Tailnet-only interface.
-- Expose it separately with lizardtail/Tailscale.
+- Use the built-in Tailnet-private Tailscale Serve path or expose it separately with lizardtail/Tailscale.
 - Do not bind it to a public internet interface without an external auth/reverse-proxy layer.
 - Access the dashboard through one canonical URL; cross-origin POST/WebSocket attempts are rejected by the server.
 
@@ -29,7 +29,9 @@ From an installed server package:
 pi-postbox-server
 ```
 
-The server binds to `127.0.0.1`, prefers port `3000`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port; open the printed URL.
+The server binds to `127.0.0.1`, prefers port `32187`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port; open the printed URL. Ordinary launches publish the `production` active-local role unless `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` says otherwise.
+
+After binding, startup tries automatic Tailnet-private Tailscale Serve for the actual bound port. It inspects `tailscale serve status --json` first and only mutates when the matching HTTPS port is free or already points at the same Postbox target. Disable this with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`.
 
 ## Run in development (live HMR)
 
@@ -39,32 +41,35 @@ For active development of the web UI or server, use the dev orchestrator instead
 npm run dev
 ```
 
-`npm run dev` (`scripts/dev.mjs`) runs the full stack: the backend `pi-postbox-server` on the **canonical** port (`PI_POSTBOX_PORT`, else `3000` — the same endpoint the extension targets, so live Pi sessions talk to the dev server) plus the Vite dev server (port `5173`, with HMR). Vite proxies `/api` and `/healthz` to the backend, so the dashboard has live data while you edit source. Both share the same `~/.pi-postbox/postbox.sqlite`, so dev shows the same sessions, pending questions, and history as production.
+`npm run dev` (`scripts/dev.mjs`) runs the full stack: the backend `pi-postbox-server` on the **canonical** port (`PI_POSTBOX_PORT`, else `32187` — the same endpoint the extension targets, so live Pi sessions talk to the dev server) plus the Vite dev server (preferred port `5173`, with HMR; if busy, an available UI port is selected and passed to Vite). Vite proxies `/api` and `/healthz` to the backend, so the dashboard has live data while you edit source. Both share the same `~/.pi-postbox/postbox.sqlite`, so dev shows the same sessions, pending questions, and history as production. The dev launcher marks the backend as `--active-local-role dev`; active-local clients prefer dev over production while fresh/healthy and use production fallback when dev goes stale or unhealthy. Dev Tailscale Serve exposes the actual Vite UI port, not the backend API port; disable with `PI_POSTBOX_TAILSCALE=off`.
 
 If a production `pi-postbox-server` already holds the canonical port, the orchestrator offers to stop it: interactively when run from a terminal, or via `--force` / `POSTBOX_DEV_FORCE=1` when run non-interactively (e.g. by an agent). It stops the old server through the loopback-only `POST /admin/shutdown` endpoint, falling back to signalling the listener PID. A non-pi-postbox process on the port is never touched.
 
-To reach the dev server over Tailscale, put lizardtail in front of the **frontend** port:
+## Tailnet-private Tailscale Serve status
+
+Use the status command to inspect active-local metadata, `/healthz`, and Tailscale Serve state without starting another server:
 
 ```bash
-lizardtail --port 5173 npm run dev
+pi-postbox-server status
+pi-postbox-server status --json
 ```
 
-`--port 5173` tells lizardtail to expose Vite (which proxies `/api` to the backend), so the whole app works through one Tailscale URL.
-
-## Expose with lizardtail/Tailscale
-
-Install or link `pi-postbox-server` so it is available on `PATH`, then run it behind lizardtail:
+Human status includes the local URL, role, Tailnet URL when available, conflict/unavailable diagnostics, remediation, and a copy-paste line for remote Pi machines:
 
 ```bash
-lizardtail pi-postbox-server
+export PI_POSTBOX_URL="https://your-postbox.tailnet.example:32187"
 ```
 
-lizardtail is a generic Tailscale Serve wrapper (no Postbox-specific logic). It runs the command, detects the actual port `pi-postbox-server` prints (port `3000` by default, or its fallback if busy), and exposes that exact local port privately through Tailscale Serve. Use `lizardtail --public pi-postbox-server` only when you intentionally want Tailscale Funnel public internet exposure.
+The automatic Serve command shape is `tailscale serve --bg --https <actual-port> http://127.0.0.1:<actual-port>`. If that mapping conflicts with another service, Postbox reports the conflict and leaves the existing Serve config untouched. Permission diagnostics include `sudo tailscale set --operator=$USER` or the printed manual `tailscale serve --bg --https ...` command.
 
-Then point remote Pi extensions at the lizardtail/Tailscale URL:
+## lizardtail/custom exposure
+
+lizardtail is still supported as a generic Tailscale Serve wrapper (no Postbox-specific logic) when you want a custom wrapper lifecycle. Built-in Postbox startup does not require it for the default Tailnet-private case. Use lizardtail public/Funnel modes only when you intentionally want public internet exposure outside Postbox's automatic path.
+
+Point remote Pi extensions at the printed startup/status Tailnet URL:
 
 ```bash
-export PI_POSTBOX_URL="https://your-postbox.tailnet.example"
+export PI_POSTBOX_URL="https://your-postbox.tailnet.example:32187"
 ```
 
 or write the extension config:
@@ -74,6 +79,8 @@ or write the extension config:
   "serverUrl": "https://your-postbox.tailnet.example"
 }
 ```
+
+Tailscale and hosted URLs are explicit non-loopback remote targets. They are authoritative, are not local recovery candidates, and are not live-retargeted to local active-local metadata during remote outages. Active-local recovery is only for missing or loopback configuration.
 
 ## Install the Pi extension
 
@@ -130,12 +137,12 @@ npm run build
 npm run smoke
 ```
 
-The smoke script starts `node packages/server/dist/cli.js` with a temporary SQLite database, connects a fake extension over WebSocket, verifies `/healthz`, opens `/api/state/events`, registers a session, creates an ask, answers it over HTTP, verifies the extension receives the answer, checks `/api/state`, and verifies `/api/history` contains the answered request.
+The smoke script starts `node packages/server/dist/cli.js` with a temporary SQLite database and temporary `PI_POSTBOX_CONFIG_DIR`, connects a fake extension over WebSocket, verifies `/healthz` (including active-local identity when `localTarget` is present), opens `/api/state/events`, registers a session, creates an ask, answers it over HTTP, verifies the extension receives the answer, checks `/api/state`, and verifies `/api/history` contains the answered request.
 
 ## Manual test checklist
 
-1. Start `lizardtail pi-postbox-server` and confirm Postbox prints a listening URL and `/healthz` returns `{ "ok": true }`.
-2. Open the UI from a laptop/phone over the lizardtail/Tailscale URL.
+1. Start `pi-postbox-server` and confirm Postbox prints a listening URL, Tailscale Serve status, and `/healthz` returns `{ "ok": true }`.
+2. Open the UI from a laptop/phone over the Tailnet URL when Tailscale Serve is available.
 3. Start Pi with `PI_POSTBOX_URL` set to the same URL.
 4. Confirm the session card appears with machine/project/branch metadata.
 5. Ask a test question with `ask_postbox` and answer it from the browser.

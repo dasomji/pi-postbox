@@ -75,6 +75,28 @@ function createClient(options: Partial<ConstructorParameters<typeof PostboxClien
   });
 }
 
+function selectedTarget(url: string, role: "dev" | "production" = "dev", instanceId = `${role}-instance`) {
+  return {
+    status: "selected" as const,
+    target: {
+      source: "active-local" as const,
+      url,
+      role,
+      instanceId,
+      activeLocalPollingEnabled: true
+    },
+    diagnostics: []
+  };
+}
+
+function socketUrl(serverUrl: string): string {
+  const url = new URL(serverUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = "/api/extension/ws";
+  url.search = "";
+  return url.toString();
+}
+
 describe("PostboxClient pending ask resilience", () => {
   it("does not create a pending ask when the abort signal is already aborted", async () => {
     FakeSocket.instances = [];
@@ -142,6 +164,83 @@ describe("PostboxClient pending ask resilience", () => {
     };
     secondSocket.serverMessage({ type: "ask.resolved", requestId: "ask-replay", payload: result });
     await expect(askPromise).resolves.toEqual(result);
+    client.stop();
+  });
+
+  it("retargets a connected active-local client when the selected target changes and no work is pinned", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const productionUrl = "http://127.0.0.1:32187/";
+    const devUrl = "http://127.0.0.1:3500/";
+    let currentTarget = selectedTarget(productionUrl, "production", "prod-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const client = createClient({
+      serverUrl: productionUrl,
+      resolveTarget,
+      activeLocalPollMs: 50
+    } as never);
+    client.start();
+    const productionSocket = FakeSocket.instances[0];
+    productionSocket.open();
+
+    currentTarget = selectedTarget(devUrl, "dev", "dev-instance");
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(productionSocket.readyState).toBe(FakeSocket.CLOSED);
+    expect(FakeSocket.instances).toHaveLength(2);
+    const devSocket = FakeSocket.instances[1];
+    expect(devSocket.url).toBe(socketUrl(devUrl));
+
+    devSocket.open();
+    const devRegisters = devSocket.sent.filter((message) => (message as { type?: string }).type === "session.register");
+    expect(devRegisters).toHaveLength(1);
+    expect(devRegisters[0]).toMatchObject({
+      payload: { session: { sessionId: "session-1", semanticState: "blocked" } }
+    });
+    client.stop();
+  });
+
+  it("resolves the active-local target before reconnecting instead of redialing a stale local URL", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const staleUrl = "http://127.0.0.1:32187/";
+    const restartedUrl = "http://127.0.0.1:32188/";
+    let currentTarget = selectedTarget(staleUrl, "production", "old-prod");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const client = createClient({ serverUrl: staleUrl, resolveTarget, reconnectMs: 100 } as never);
+    client.start();
+    const staleSocket = FakeSocket.instances[0];
+    staleSocket.open();
+
+    currentTarget = selectedTarget(restartedUrl, "production", "new-prod");
+    staleSocket.close();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(FakeSocket.instances[1].url).toBe(socketUrl(restartedUrl));
+    client.stop();
+  });
+
+  it("does not poll or retarget explicit remote clients toward fresh local targets", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const remoteUrl = "https://postbox.example/";
+    const resolveTarget = vi.fn(async () => selectedTarget("http://127.0.0.1:3500/", "dev", "dev-instance"));
+    const client = createClient({
+      serverUrl: remoteUrl,
+      resolveTarget,
+      activeLocalPollMs: 25,
+      activeLocalPollingEnabled: false
+    } as never);
+    client.start();
+    const remoteSocket = FakeSocket.instances[0];
+    remoteSocket.open();
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(resolveTarget).not.toHaveBeenCalled();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(remoteSocket.url).toBe(socketUrl(remoteUrl));
     client.stop();
   });
 

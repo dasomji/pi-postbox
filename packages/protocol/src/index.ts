@@ -1,4 +1,27 @@
 export {
+  ACTIVE_LOCAL_METADATA_DIRECTORY,
+  ACTIVE_LOCAL_METADATA_FILENAMES,
+  ACTIVE_LOCAL_METADATA_VERSION,
+  ActiveLocalInstanceIdSchema,
+  ActiveLocalMetadataRecordSchema,
+  ActiveLocalRoleSchema,
+  ActiveLocalTargetIdentitySchema,
+  normalizeActiveLocalMetadataUrl,
+  parseActiveLocalMetadataRecord,
+  selectActiveLocalTarget
+} from "./activeLocal.js";
+export type {
+  ActiveLocalDiagnostic,
+  ActiveLocalMetadataRecord,
+  ActiveLocalRole,
+  ActiveLocalTargetIdentity,
+  NormalizeActiveLocalMetadataUrlResult,
+  ParseActiveLocalMetadataRecordOptions,
+  ParseActiveLocalMetadataRecordResult,
+  SelectActiveLocalTargetOptions,
+  SelectActiveLocalTargetResult
+} from "./activeLocal.js";
+export {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,

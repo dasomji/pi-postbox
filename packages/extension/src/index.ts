@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { SessionRegisterPayload } from "@pi-postbox/protocol";
 import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
-import { readExtensionConfig } from "./config.js";
+import {
+  resolveActiveLocalTarget,
+  type ResolveActiveLocalTargetOptions,
+  type ResolveActiveLocalTargetResult,
+  type ResolvedActiveLocalTarget
+} from "./activeLocalTargetResolver.js";
 import { createSemanticStateController, installSemanticStateHandlers, type SemanticStateController } from "./lifecycle.js";
 import { getMachineIdentity } from "./machineIdentity.js";
 import { collectProjectMetadata } from "./projectMetadata.js";
@@ -38,10 +43,27 @@ interface SessionUiScope {
   setWidget(key: string, value: string[]): void;
 }
 
+export interface StartRegistrationOptions {
+  resolveOptions?: Omit<ResolveActiveLocalTargetOptions, "env">;
+  supervisor?: {
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+  };
+}
+
+interface ActiveLocalSupervisor {
+  stop(): void;
+}
+
+const DEFAULT_SUPERVISOR_INITIAL_DELAY_MS = 1_000;
+const DEFAULT_SUPERVISOR_MAX_DELAY_MS = 30_000;
+
 let client: PostboxClient | undefined;
 let currentRegistration: SessionRegisterPayload | undefined;
 let semanticStateController: SemanticStateController | undefined;
 let activeUiScope: SessionUiScope | undefined;
+let activeLocalSupervisor: ActiveLocalSupervisor | undefined;
+let unavailableRationale = "Pi Postbox is not connected.";
 
 export default function postboxExtension(pi: PiLikeApi): void {
   semanticStateController = createSemanticStateController(() => client, pi);
@@ -61,7 +83,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
         const result = {
           status: "unavailable" as const,
           requestId: params.requestId ?? "unavailable",
-          rationale: "Pi Postbox is not connected.",
+          rationale: unavailableRationale,
           resolvedAt: new Date().toISOString()
         };
         return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
@@ -74,6 +96,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
 
   pi.on("session_start", (_event, ctx) => {
     activeUiScope?.deactivate();
+    stopActiveLocalSupervisor();
     activeUiScope = createSessionUiScope(ctx);
     const fallbackSessionIdentity = randomUUID();
     void startRegistration(pi, ctx, process.env, activeUiScope, fallbackSessionIdentity);
@@ -81,6 +104,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
 
   pi.on("session_shutdown", () => {
     activeUiScope?.deactivate();
+    stopActiveLocalSupervisor();
     activeUiScope = undefined;
     client?.stop();
     client = undefined;
@@ -93,14 +117,32 @@ export async function startRegistration(
   ctx: PiLikeContext,
   env: NodeJS.ProcessEnv = process.env,
   uiScope: SessionUiScope = createSessionUiScope(ctx),
-  fallbackSessionIdentity?: string
+  fallbackSessionIdentity?: string,
+  options: StartRegistrationOptions = {}
 ): Promise<void> {
-  const config = await readExtensionConfig(env);
+  stopActiveLocalSupervisor();
+  const targetResult = await resolveActiveLocalTarget({ ...options.resolveOptions, env });
   if (!uiScope.isActive()) return;
-  if (!config.serverUrl) {
-    uiScope.setStatus("postbox", "Postbox not configured");
+  if (targetResult.status === "unavailable") {
+    unavailableRationale = formatUnavailableRationale(targetResult);
+    uiScope.setStatus("postbox", "Postbox unavailable");
+    startNoClientActiveLocalSupervisor(pi, ctx, env, uiScope, fallbackSessionIdentity, options);
     return;
   }
+
+  await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.target, options);
+}
+
+async function registerResolvedTarget(
+  pi: PiLikeApi,
+  ctx: PiLikeContext,
+  env: NodeJS.ProcessEnv,
+  uiScope: SessionUiScope,
+  fallbackSessionIdentity: string | undefined,
+  target: ResolvedActiveLocalTarget,
+  options: StartRegistrationOptions
+): Promise<void> {
+  unavailableRationale = "Pi Postbox is not connected.";
 
   try {
     const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity);
@@ -108,8 +150,14 @@ export async function startRegistration(
     currentRegistration = registration;
     client?.stop();
     client = new PostboxClient({
-      serverUrl: config.serverUrl,
+      serverUrl: target.url,
       registration,
+      ...(target.activeLocalPollingEnabled
+        ? {
+            resolveTarget: () => resolveActiveLocalTarget({ ...options.resolveOptions, env }),
+            activeLocalPollingEnabled: true
+          }
+        : {}),
       onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
       onLocalFallbackStatus: (status) => renderLocalFallbackStatus(uiScope, status)
     });
@@ -120,6 +168,76 @@ export async function startRegistration(
     uiScope.notify(`Pi Postbox registration skipped: ${message}`, "warn");
     uiScope.setStatus("postbox", "Postbox registration skipped");
   }
+}
+
+function startNoClientActiveLocalSupervisor(
+  pi: PiLikeApi,
+  ctx: PiLikeContext,
+  env: NodeJS.ProcessEnv,
+  uiScope: SessionUiScope,
+  fallbackSessionIdentity: string | undefined,
+  options: StartRegistrationOptions
+): void {
+  if (activeLocalSupervisor || client) return;
+
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let nextDelayMs = options.supervisor?.initialDelayMs ?? DEFAULT_SUPERVISOR_INITIAL_DELAY_MS;
+  const maxDelayMs = options.supervisor?.maxDelayMs ?? DEFAULT_SUPERVISOR_MAX_DELAY_MS;
+
+  const stop = () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (activeLocalSupervisor?.stop === stop) {
+      activeLocalSupervisor = undefined;
+    }
+  };
+
+  const schedule = (delayMs: number) => {
+    timer = setTimeout(() => {
+      void tick();
+    }, delayMs);
+    timer.unref?.();
+  };
+
+  const tick = async () => {
+    if (stopped || !uiScope.isActive() || client) {
+      stop();
+      return;
+    }
+
+    const targetResult = await resolveActiveLocalTarget({ ...options.resolveOptions, env });
+    if (stopped || !uiScope.isActive() || client) {
+      stop();
+      return;
+    }
+
+    if (targetResult.status === "unavailable") {
+      unavailableRationale = formatUnavailableRationale(targetResult);
+      uiScope.setStatus("postbox", "Postbox unavailable");
+      const delayMs = nextDelayMs;
+      nextDelayMs = Math.min(nextDelayMs * 2, maxDelayMs);
+      schedule(delayMs);
+      return;
+    }
+
+    if (!targetResult.target.activeLocalPollingEnabled) {
+      stop();
+      return;
+    }
+
+    stop();
+    await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.target, options);
+  };
+
+  activeLocalSupervisor = { stop };
+  schedule(nextDelayMs);
+}
+
+function stopActiveLocalSupervisor(): void {
+  activeLocalSupervisor?.stop();
+  activeLocalSupervisor = undefined;
 }
 
 export async function collectRegistrationPayload(
@@ -135,12 +253,19 @@ export async function collectRegistrationPayload(
   return { machine, project, session };
 }
 
+function formatUnavailableRationale(result: Extract<ResolveActiveLocalTargetResult, { status: "unavailable" }>): string {
+  const codes = [...new Set(result.diagnostics.map((diagnostic) => diagnostic.code))];
+  if (codes.length === 0) return "Pi Postbox is not connected.";
+  return `Pi Postbox is unavailable after active-local target resolution (${codes.join(", ")}).`;
+}
+
 function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
   let active = true;
   return {
     isActive: () => active,
     deactivate: () => {
       active = false;
+      stopActiveLocalSupervisor();
     },
     notify(message, level) {
       if (!active) return;

@@ -12,6 +12,7 @@ import {
   type SessionShutdownReason
 } from "@pi-postbox/protocol";
 import WebSocket from "ws";
+import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
 
 interface WebSocketLike {
   readyState: number;
@@ -30,6 +31,10 @@ export interface PostboxClientOptions {
   reconnectMaxMs?: number;
   reconnect?: boolean;
   askUnavailableAfterMs?: number;
+  resolveTarget?: () => Promise<ResolveActiveLocalTargetResult>;
+  activeLocalPollingEnabled?: boolean;
+  activeLocalPollMs?: number;
+  targetAffinityTimeoutMs?: number;
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
@@ -66,6 +71,8 @@ interface LocalResolution {
   payload: AskCreatePayload;
   result: AskResult;
   message: ExtensionClientMessage;
+  originServerUrl: string;
+  targetAffinityTimer?: NodeJS.Timeout;
 }
 
 interface PendingAsk {
@@ -74,12 +81,17 @@ interface PendingAsk {
   reject: (error: Error) => void;
   cleanup: () => void;
   sentAtLeastOnce: boolean;
+  createdServerUrl: string;
+  originServerUrl?: string;
   unavailableTimer?: NodeJS.Timeout;
   expiryTimer?: NodeJS.Timeout;
+  targetAffinityTimer?: NodeJS.Timeout;
 }
 
 const DEFAULT_UNAVAILABLE_AFTER_MS = 30_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
+const DEFAULT_ACTIVE_LOCAL_POLL_MS = 5_000;
+const DEFAULT_TARGET_AFFINITY_TIMEOUT_MS = 30_000;
 
 export class PostboxClient {
   private socket: WebSocketLike | undefined;
@@ -96,6 +108,10 @@ export class PostboxClient {
   private readonly pendingAsks = new Map<string, PendingAsk>();
   private readonly localResolutions = new Map<string, LocalResolution>();
   private currentSemanticState: SemanticState;
+  private currentServerUrl: string;
+  private activeLocalPollTimer: NodeJS.Timeout | undefined;
+  private deferredTargetUrl: string | undefined;
+  private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
 
   constructor(private readonly options: PostboxClientOptions) {
     this.heartbeatMs = options.heartbeatMs ?? 15_000;
@@ -106,23 +122,28 @@ export class PostboxClient {
     this.askUnavailableAfterMs = options.askUnavailableAfterMs ?? DEFAULT_UNAVAILABLE_AFTER_MS;
     this.WebSocketImpl = options.WebSocketImpl ?? (WebSocket as unknown as WebSocketConstructor);
     this.currentSemanticState = options.registration.session.semanticState;
+    this.currentServerUrl = options.serverUrl;
   }
 
   start(): void {
     this.stopped = false;
     this.connect();
+    this.startActiveLocalPolling();
   }
 
   stop(): void {
     this.stopped = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.activeLocalPollTimer) clearInterval(this.activeLocalPollTimer);
     for (const [, pending] of this.pendingAsks) {
       pending.cleanup();
       pending.reject(new Error("Postbox client stopped"));
     }
     this.pendingAsks.clear();
-    this.localResolutions.clear();
+    for (const requestId of [...this.localResolutions.keys()]) {
+      this.deleteLocalResolution(requestId);
+    }
     this.publishLocalFallbackStatus();
     this.socket?.close();
   }
@@ -159,7 +180,9 @@ export class PostboxClient {
         signal?.removeEventListener("abort", abort);
         if (pending.unavailableTimer) clearTimeout(pending.unavailableTimer);
         if (pending.expiryTimer) clearTimeout(pending.expiryTimer);
+        if (pending.targetAffinityTimer) clearTimeout(pending.targetAffinityTimer);
         this.publishLocalFallbackStatus();
+        this.tryApplyDeferredTarget();
       };
       const complete = (result: AskResult) => {
         cleanup();
@@ -178,7 +201,8 @@ export class PostboxClient {
           reject(error);
         },
         cleanup,
-        sentAtLeastOnce: false
+        sentAtLeastOnce: false,
+        createdServerUrl: this.currentServerUrl
       };
 
       this.pendingAsks.set(payload.requestId, pending);
@@ -248,7 +272,7 @@ export class PostboxClient {
     if (this.stopped) return;
 
     try {
-      this.socket = new this.WebSocketImpl(toExtensionSocketUrl(this.options.serverUrl));
+      this.socket = new this.WebSocketImpl(toExtensionSocketUrl(this.currentServerUrl));
     } catch (error) {
       this.options.onStatus?.(`connect-error:${messageFrom(error)}`);
       this.scheduleReconnect();
@@ -297,7 +321,9 @@ export class PostboxClient {
     socket.on("close", () => {
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       if (this.stopped) return;
+      if (this.suppressReconnectOnClose.has(socket)) return;
       this.options.onStatus?.("disconnected");
+      this.startTargetAffinityTimersForDisconnectedOrigin();
       this.scheduleReconnect();
     });
   }
@@ -335,9 +361,11 @@ export class PostboxClient {
   }
 
   private sendPendingAsk(pending: PendingAsk): boolean {
+    if (pending.originServerUrl && pending.originServerUrl !== this.currentServerUrl) return false;
     const sent = this.send({ type: "ask.create", requestId: pending.payload.requestId, payload: pending.payload });
     if (sent) {
       pending.sentAtLeastOnce = true;
+      pending.originServerUrl ??= this.currentServerUrl;
       if (pending.unavailableTimer) {
         clearTimeout(pending.unavailableTimer);
         pending.unavailableTimer = undefined;
@@ -369,7 +397,10 @@ export class PostboxClient {
   }
 
   private resolveLocally(pending: PendingAsk, result: AskResult, message: ExtensionClientMessage): void {
-    this.localResolutions.set(pending.payload.requestId, { payload: pending.payload, result, message });
+    const originServerUrl = pending.originServerUrl ?? pending.createdServerUrl;
+    const resolution: LocalResolution = { payload: pending.payload, result, message, originServerUrl };
+    this.localResolutions.set(pending.payload.requestId, resolution);
+    if (!this.isConnected()) this.startLocalResolutionTargetAffinityTimer(pending.payload.requestId, resolution);
     pending.resolve(result);
     this.flushLocalResolutions();
   }
@@ -402,10 +433,12 @@ export class PostboxClient {
   private flushLocalResolutions(): void {
     if (!this.isConnected()) return;
     for (const [requestId, resolution] of [...this.localResolutions]) {
+      if (resolution.originServerUrl !== this.currentServerUrl) continue;
       const createSent = this.send({ type: "ask.create", requestId, payload: resolution.payload });
       const resolutionSent = createSent && this.send(resolution.message);
-      if (resolutionSent) this.localResolutions.delete(requestId);
+      if (resolutionSent) this.deleteLocalResolution(requestId);
     }
+    this.tryApplyDeferredTarget();
   }
 
   private publishLocalFallbackStatus(): void {
@@ -416,9 +449,10 @@ export class PostboxClient {
       return;
     }
     const values = [...active.options.map((option) => option.value), OTHER_OPTION_VALUE].join(",");
+    const deferred = this.deferredTargetUrl ? ` Active-local switch to ${this.deferredTargetUrl} is deferred until pinned Postbox work is resolved.` : "";
     this.options.onLocalFallbackStatus({
       requestId: active.requestId,
-      message: `Postbox waiting ${active.requestId}. Local fallback: /postbox-answer ${active.requestId} ${values} [--note ...] or /postbox-cancel ${active.requestId} [--note ...]`
+      message: `Postbox waiting ${active.requestId}. Local fallback: /postbox-answer ${active.requestId} ${values} [--note ...] or /postbox-cancel ${active.requestId} [--note ...]${deferred}`
     });
   }
 
@@ -431,8 +465,155 @@ export class PostboxClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     const delay = this.nextReconnectMs;
     this.nextReconnectMs = Math.min(this.nextReconnectMs * 2, this.reconnectMaxMs);
-    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      void this.reconnectToResolvedTarget();
+    }, delay);
     this.reconnectTimer.unref?.();
+  }
+
+  private activeLocalPollingEnabled(): boolean {
+    return !!this.options.resolveTarget && this.options.activeLocalPollingEnabled !== false;
+  }
+
+  private startActiveLocalPolling(): void {
+    if (!this.activeLocalPollingEnabled()) return;
+    if (this.activeLocalPollTimer) clearInterval(this.activeLocalPollTimer);
+    const intervalMs = this.options.activeLocalPollMs ?? DEFAULT_ACTIVE_LOCAL_POLL_MS;
+    this.activeLocalPollTimer = setInterval(() => {
+      void this.checkForActiveLocalTargetChange();
+    }, intervalMs);
+    this.activeLocalPollTimer.unref?.();
+  }
+
+  private async reconnectToResolvedTarget(): Promise<void> {
+    if (this.stopped) return;
+    await this.checkForActiveLocalTargetChange({ connectWhenDisconnected: false });
+    if (this.stopped) return;
+    this.connect();
+  }
+
+  private async checkForActiveLocalTargetChange(options: { connectWhenDisconnected?: boolean } = {}): Promise<void> {
+    if (this.stopped || !this.activeLocalPollingEnabled() || !this.options.resolveTarget) return;
+
+    let result: ResolveActiveLocalTargetResult;
+    try {
+      result = await this.options.resolveTarget();
+    } catch (error) {
+      this.options.onStatus?.(`target-resolve-error:${messageFrom(error)}`);
+      return;
+    }
+
+    if (this.stopped || result.status !== "selected") return;
+    const targetUrl = result.target.url;
+    if (targetUrl === this.currentServerUrl && !this.deferredTargetUrl) return;
+
+    if (this.hasPinnedWorkBlocking(targetUrl)) {
+      this.deferTargetSwitch(targetUrl);
+      return;
+    }
+
+    this.deferredTargetUrl = undefined;
+    if (targetUrl === this.currentServerUrl) return;
+    this.retargetNow(targetUrl, options.connectWhenDisconnected ?? true);
+  }
+
+  private deferTargetSwitch(targetUrl: string): void {
+    this.deferredTargetUrl = targetUrl;
+    this.options.onStatus?.(`target-switch-deferred:${targetUrl}`);
+    this.startTargetAffinityTimersForPinnedWork();
+    this.publishLocalFallbackStatus();
+  }
+
+  private tryApplyDeferredTarget(): void {
+    if (this.stopped || !this.deferredTargetUrl || this.hasPinnedWorkBlocking(this.deferredTargetUrl)) return;
+    const targetUrl = this.deferredTargetUrl;
+    this.deferredTargetUrl = undefined;
+    if (targetUrl !== this.currentServerUrl) this.retargetNow(targetUrl, true);
+    this.publishLocalFallbackStatus();
+  }
+
+  private retargetNow(targetUrl: string, connectWhenDisconnected: boolean): void {
+    this.currentServerUrl = targetUrl;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    const socket = this.socket;
+    const shouldConnect = !socket || socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING || connectWhenDisconnected;
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      this.suppressReconnectOnClose.add(socket);
+      socket.close();
+    }
+    if (shouldConnect) this.connect();
+  }
+
+  private hasPinnedWorkBlocking(targetUrl: string): boolean {
+    for (const pending of this.pendingAsks.values()) {
+      if (pending.sentAtLeastOnce && pending.originServerUrl && pending.originServerUrl !== targetUrl) return true;
+    }
+    for (const resolution of this.localResolutions.values()) {
+      if (resolution.originServerUrl !== targetUrl) return true;
+    }
+    return false;
+  }
+
+  private startTargetAffinityTimersForDisconnectedOrigin(): void {
+    for (const pending of this.pendingAsks.values()) {
+      if (pending.sentAtLeastOnce && pending.originServerUrl === this.currentServerUrl) {
+        this.startTargetAffinityTimer(pending);
+      }
+    }
+    for (const [requestId, resolution] of this.localResolutions) {
+      if (resolution.originServerUrl === this.currentServerUrl) {
+        this.startLocalResolutionTargetAffinityTimer(requestId, resolution);
+      }
+    }
+  }
+
+  private startTargetAffinityTimersForPinnedWork(): void {
+    for (const pending of this.pendingAsks.values()) {
+      if (pending.sentAtLeastOnce) this.startTargetAffinityTimer(pending);
+    }
+    for (const [requestId, resolution] of this.localResolutions) {
+      this.startLocalResolutionTargetAffinityTimer(requestId, resolution);
+    }
+  }
+
+  private startTargetAffinityTimer(pending: PendingAsk): void {
+    if (pending.targetAffinityTimer) return;
+    pending.targetAffinityTimer = setTimeout(() => {
+      pending.targetAffinityTimer = undefined;
+      if (!this.pendingAsks.has(pending.payload.requestId)) return;
+      pending.resolve(
+        unavailableResult(
+          pending.payload.requestId,
+          "Pinned Postbox request became undeliverable because its origin target is unavailable."
+        )
+      );
+    }, this.options.targetAffinityTimeoutMs ?? DEFAULT_TARGET_AFFINITY_TIMEOUT_MS);
+    pending.targetAffinityTimer.unref?.();
+  }
+
+  private startLocalResolutionTargetAffinityTimer(requestId: string, resolution: LocalResolution): void {
+    if (resolution.targetAffinityTimer) return;
+    resolution.targetAffinityTimer = setTimeout(() => {
+      resolution.targetAffinityTimer = undefined;
+      if (this.localResolutions.get(requestId) !== resolution) return;
+      this.deleteLocalResolution(requestId);
+      this.options.onStatus?.(
+        `target-affinity-undeliverable:${requestId}:origin ${resolution.originServerUrl} unavailable before local resolution could be delivered`
+      );
+      this.tryApplyDeferredTarget();
+    }, this.options.targetAffinityTimeoutMs ?? DEFAULT_TARGET_AFFINITY_TIMEOUT_MS);
+    resolution.targetAffinityTimer.unref?.();
+  }
+
+  private deleteLocalResolution(requestId: string): void {
+    const resolution = this.localResolutions.get(requestId);
+    if (!resolution) return;
+    if (resolution.targetAffinityTimer) clearTimeout(resolution.targetAffinityTimer);
+    this.localResolutions.delete(requestId);
   }
 }
 

@@ -47,6 +47,14 @@ The plan treats this as an active local target routing problem, not process supe
 - R10. Failed recovery should distinguish stale config, no active local server, unsafe metadata, health mismatch, and deferred switching.
 - R11. Local server/launcher publishes enough metadata to distinguish dev and production.
 - R12. Metadata freshness prevents dead servers from remaining selected.
+- R13. The server CLI preferred default port should be `32187` instead of common web-dev ports like `3000`, while still falling back to a free port if that preferred port is occupied.
+- R14. When Tailscale is installed and usable, Postbox startup should automatically expose the dashboard over Tailnet-private Tailscale Serve and print the resulting Tailnet URL.
+- R15. Tailscale exposure is best-effort: failure to expose must not prevent local Postbox startup, and diagnostics must explain unavailable, unauthenticated, disabled, or conflicting Serve state.
+- R16. Automatic Tailscale exposure must not clobber an existing non-Postbox Tailscale Serve mapping. Conflicts should be reported with a safe remediation command or status hint.
+- R17. Automatic Tailscale exposure must use Tailnet-private Serve only, never Tailscale Funnel/public internet exposure.
+- R18. Production should expose the final bound server port; development should expose the actual Vite UI port because Vite proxies `/api` and `/healthz` to the backend.
+- R19. `pi-postbox-server status` should work even when no server is running by inspecting active-local metadata, health, and Tailscale Serve status, and should print local URL, Tailnet URL when available, and copy-paste `PI_POSTBOX_URL` guidance plus JSON output for tooling.
+- R20. Automatic Tailscale exposure should be enabled by default when possible but explicitly disableable via `--no-tailscale` and `PI_POSTBOX_TAILSCALE=off`, especially for CI and operators who do not want CLI-managed Serve state.
 
 **Origin actors:** A1 (Pi operator), A2 (Pi extension), A3 (Local Postbox server/launcher)
 **Origin flows:** F1 (production starts with no dev), F2 (dev starts while production is running), F3 (dev stops/expires), F4 (intentional remote URL)
@@ -62,11 +70,15 @@ The plan treats this as an active local target routing problem, not process supe
 - In scope: target affinity for sent asks and local fallback resolutions to avoid cross-server duplication in v1.
 - In scope: loopback-only safety checks, fixed role-file metadata, atomic writes, bounded parsing, no symlink following where straightforward, and health identity verification before switching.
 - In scope: status and `ask_postbox` diagnostics for recovery decisions.
-- Out of scope: Tailscale/LAN/remote discovery.
+- In scope: best-effort automatic Tailnet-private Tailscale Serve exposure when Tailscale is installed, logged in, and non-conflicting.
+- In scope: `pi-postbox-server status` reporting local and Tailnet access URLs, including JSON output for scripts.
+- Out of scope: Tailscale/LAN/remote discovery by Pi extensions beyond explicit `PI_POSTBOX_URL` configuration.
 - Out of scope: broad port scanning.
 - Out of scope: killing or supervising competing server processes.
 - Out of scope: changing dev/production database paths. Current server runtimes may share the default SQLite path, but their WebSocket broadcasters and in-memory connections remain independent.
 - Out of scope: silently replacing explicit non-loopback remote URLs.
+- Out of scope: Tailscale Funnel/public internet exposure.
+- Out of scope: pushing Postbox configuration to other machines automatically; remote machines still use explicit `PI_POSTBOX_URL` copied from status/startup output.
 
 ---
 
@@ -89,7 +101,23 @@ The plan treats this as an active local target routing problem, not process supe
 
 ### External References
 
-- External research was skipped. This is an internal Node/TypeScript routing and metadata change with clear local code patterns; no third-party API surface is being introduced.
+- External research was skipped for the original active-local routing scope. Tailscale auto-exposure planning later reviewed the local reference implementation in `/home/dev/Development/lizardtail`.
+
+### Lizardtail Reference Findings
+
+`lizardtail` is a Node CLI wrapper that already solves much of the Tailscale Serve mechanics Postbox needs to embed more narrowly:
+
+- It runs `tailscale serve --bg --https <tailscale-port> http://<host>:<local-port>` for Tailnet-private exposure, and only uses `tailscale funnel` when explicitly passed `--public` / `--funnel`.
+- It reads `tailscale status --json`, trims `Self.DNSName`, and falls back to a Tailscale IPv4 address if DNS is unavailable, then prints `https://<dns-or-ip>:<tailscale-port>`.
+- It inspects `tailscale serve status --json` and `tailscale funnel status --json` to collect already-used Tailnet HTTPS ports from `Web` keys such as `<dns>:8443`.
+- Its reusable default is high explicit Tailscale HTTPS ports from `8443` upward, avoiding root `443`; ports `80` and `443` are blocked by default to avoid replacing ingress routes.
+- It supports explicit Tailnet HTTPS ports via `--tailscale-port` / `--https-port` and separate Vite exposure ports for multi-service dev flows.
+- It checks that the local port accepts connections before exposing, unless disabled.
+- If `tailscale serve` fails for a loopback URL target, it retries the older Tailscale-compatible form with just the port number.
+- It detects Serve permission errors and gives the operator fix: `sudo tailscale set --operator=$USER` plus the manual serve command.
+- It uses fake `tailscale` executables in tests, capturing command logs and stubbing `status --json` / `serve status --json`.
+
+For Postbox, copy the command/status/DNS/permission/testing patterns, but do not copy lizardtail's wrapper lifecycle wholesale: Postbox is the long-lived server, so mappings should be idempotent and persistent until changed by a later Postbox start/status/remediation command, not automatically removed when a child command exits.
 
 ---
 
@@ -99,6 +127,13 @@ The plan treats this as an active local target routing problem, not process supe
 | --- | --- |
 | Store one fixed metadata file per role under the existing Postbox config base | Avoids racy read/modify/write merges between dev and production writers. Fixed filenames also avoid unsafe role-derived paths and avoid adding a new public metadata-directory override in v1. |
 | Default server role is `production`; dev is opt-in via CLI/env | Preserves current CLI behavior and lets `scripts/dev.mjs` mark only source-checkout dev servers as preferred. |
+| Preferred default local port is `32187`, not `3000` | `3000` is heavily used by web development servers. A high uncommon default reduces conflicts, while `--port` / `PI_POSTBOX_PORT` and fallback-to-free-port behavior still preserve operator control and resilience. |
+| Tailscale Serve is automatic but best-effort | Startup should try to expose when Tailscale is installed and usable because Postbox is meant to be opened from other devices. Local startup must still succeed if Tailscale is missing, logged out, disabled, or conflicting. |
+| Automatic exposure uses a dedicated matching HTTPS port | Prefer `https://<machine>.<tailnet>:<actual-port>` rather than taking over root `https://<machine>.<tailnet>/`. This minimizes conflicts and makes the URL match the port Postbox actually selected. |
+| Never clobber non-Postbox Tailscale Serve mappings | Convenience must not destroy another local service's Tailnet exposure. If the target Tailnet port/path is occupied by something else, report a conflict and keep local Postbox running. |
+| Development exposes Vite, production exposes the server | Production's server port serves the app. In development the browser should hit Vite's actual port because it proxies `/api` and `/healthz` to the backend and serves live UI/HMR. |
+| `pi-postbox-server status` is offline-capable | Status should inspect metadata, health, and Tailscale Serve state without requiring the server to already be running, then print local URL, Tailnet URL, conflict/error state, and `PI_POSTBOX_URL` guidance. |
+| Tailscale auto-exposure can be disabled | Auto-expose is the default for convenience, but `--no-tailscale` / `PI_POSTBOX_TAILSCALE=off` lets CI and operators avoid any Tailscale Serve mutation. |
 | Non-loopback server launches do not publish active-local metadata | Servers bound to `0.0.0.0`, LAN, hostname, or remote interfaces may still run, but they must not overwrite local routing records. |
 | Health local target identity is optional in the schema but required for metadata-based selection | Existing health consumers remain compatible; active-local routing still requires exact role, instance id, and normalized backend URL match. |
 | Non-loopback config is strict; loopback config is recoverable after effective env-over-config precedence | This preserves Tailscale/hosted intent while fixing the stale-local-port failure that motivated the feature. If an operator intentionally pins a local fixture through loopback config, active-local metadata can still override it by design; use non-loopback remote config for strict no-local-recovery behavior. |
@@ -125,6 +160,7 @@ The plan treats this as an active local target routing problem, not process supe
 - Exact heartbeat/poll/TTL constants: choose values in code and tune through tests; they should be short enough for local recovery without busy polling.
 - Exact status strings: keep concise and test the important substrings/diagnostic categories rather than freezing every character.
 - Platform-specific filesystem safety behavior: v1 should strictly avoid symlink-following and unsafe derived filenames, create files/directories restrictively when it owns them, and treat deeper owner/mode/hardlink checks as best-effort diagnostics unless the platform exposes a clear unsafe condition. Tests may need platform guards for OS-specific ownership semantics.
+- Exact Tailscale command strategy: lizardtail confirms `tailscale serve --bg --https <tailnet-port> http://127.0.0.1:<local-port>` is the working primary form, with a fallback to target `<local-port>` for older Tailscale behavior. Postbox should adapt this pattern after inspecting `tailscale serve status --json`.
 
 ---
 
@@ -218,7 +254,7 @@ Selection logic, expressed as behavior rather than code:
 
 **Goal:** Make each local Postbox server publish its actual backend URL, role, and instance identity after binding to the final port.
 
-**Requirements:** R1, R2, R3, R4, R11, R12; supports AE1, AE2, AE3
+**Requirements:** R1, R2, R3, R4, R11, R12, R13; supports AE1, AE2, AE3
 
 **Dependencies:** U1
 
@@ -231,6 +267,7 @@ Selection logic, expressed as behavior rather than code:
 - Test: `packages/server/test/app.test.ts`
 
 **Approach:**
+- Change the CLI preferred default port from `3000` to `32187`, while preserving `--port` / `PI_POSTBOX_PORT` overrides and fallback-to-free-port behavior when the preferred port is busy.
 - Extend CLI parsing with a role option/env, defaulting to production. `scripts/dev.mjs` will supply dev in U3.
 - Implement the shared active-local directory convention from U1. Tests should isolate state by setting `PI_POSTBOX_CONFIG_DIR` or `PI_POSTBOX_CONFIG_PATH`; do not add a separate active-local directory override in v1. Constrain writes to fixed role filenames under the derived directory; do not derive file paths from untrusted role strings beyond the validated role enum.
 - Create the active-local directory with restrictive permissions when the server owns it and write files atomically with restrictive file permissions. Do not follow symlinks. Strictly skip symlinked metadata paths; treat hardlink/owner/mode checks as best-effort diagnostics unless the platform exposes a clear unsafe condition.
@@ -402,7 +439,7 @@ Selection logic, expressed as behavior rather than code:
 
 **Goal:** Make the active-local model discoverable and cover the end-to-end behavior that matters to operators.
 
-**Requirements:** R8, R9, R10; supports AE1-AE5
+**Requirements:** R8, R9, R10, R13; supports AE1-AE5
 
 **Dependencies:** U2, U3, U4, U5
 
@@ -416,7 +453,7 @@ Selection logic, expressed as behavior rather than code:
 
 **Approach:**
 - Document active-local metadata as a local-only routing contract: role-scoped files, dev wins while fresh, production fallback, no remote/Tailscale discovery.
-- Document role option/env, the active-local directory convention, path overrides, freshness behavior, loopback definition, and diagnostics categories.
+- Document role option/env, the `32187` preferred default port, the active-local directory convention, path overrides, freshness behavior, loopback definition, and diagnostics categories.
 - Document the local trust model clearly: same-user local metadata and loopback services are trusted for routing convenience; this is not app-level authentication and does not defend against malicious same-user local processes.
 - Document that non-loopback `PI_POSTBOX_URL` remains authoritative, including for live polling/reconnect.
 - Update protocol docs for optional `/healthz` local target identity and note that active-local clients require it for metadata candidates.
@@ -442,6 +479,65 @@ Selection logic, expressed as behavior rather than code:
 
 ---
 
+- [ ] U7. **Auto-expose Postbox over Tailnet-private Tailscale Serve**
+
+**Goal:** Make a running Postbox immediately reachable from other Tailnet devices when Tailscale is available, while preserving safe local startup and avoiding destructive Serve changes.
+
+**Requirements:** R14, R15, R16, R17, R18, R19, R20; supports operator workflow of opening the dashboard from phone/laptop and copying the correct `PI_POSTBOX_URL` to other machines.
+
+**Dependencies:** U2, U3, U6
+
+**Files:**
+- Create: `packages/server/src/tailscaleServe.ts`
+- Modify: `packages/server/src/cli.ts`
+- Modify: `scripts/dev.mjs`
+- Modify: `docs/configuration.md`
+- Modify: `docs/deployment.md`
+- Modify: `README.md`
+- Test: `packages/server/test/tailscaleServe.test.ts`
+- Test: `packages/server/test/cli.test.ts`
+- Test: `packages/server/test/packageDocs.test.ts`
+
+**Approach:**
+- Add a small Tailscale integration layer that shells out to the installed `tailscale` CLI. Keep it isolated and mockable; do not add a long-running Tailscale SDK dependency in v1. Use lizardtail's command-exec shape and fake-CLI test pattern as reference.
+- Add `--no-tailscale` and `PI_POSTBOX_TAILSCALE=off` to disable automatic Tailscale Serve mutation. Status may still report Tailscale availability unless explicitly told not to inspect it.
+- On production startup, after the server has bound and the final local URL/port is known, check whether `tailscale` is installed and usable. If yes, inspect `tailscale serve status --json` before changing anything.
+- Automatically expose production on a dedicated Tailnet HTTPS port matching the actual bound local port, e.g. `https://<machine>.<tailnet>:32187` for `http://127.0.0.1:32187`. If the local server fell back to a different port, expose that actual port instead. Unlike lizardtail's generic default of first free `8443+`, Postbox should prefer the actual local Postbox port because the port is already high/uncommon and makes the URL/config obvious.
+- Never overwrite a non-Postbox Serve mapping. Inspect `tailscale serve status --json` `Web` entries before mutating. If the target Tailnet HTTPS port already proxies to this Postbox instance, treat it as healthy/idempotent. If it proxies elsewhere, report `tailscale-conflict` and leave the mapping untouched.
+- Keep exposure best-effort. Missing CLI, unauthenticated Tailscale, Serve disabled, command failure, or conflict must not fail Postbox startup; startup prints the local URL plus a concise Tailscale diagnostic. Permission-denied diagnostics should mirror lizardtail's actionable hint: run `sudo tailscale set --operator=$USER` once, or run the printed manual `tailscale serve --bg --https ...` command with appropriate privileges.
+- Never enable Tailscale Funnel or public internet exposure automatically. Do not add Funnel support in this plan.
+- Add `pi-postbox-server status` and `pi-postbox-server status --json`. It should work without a running server by inspecting active-local metadata, probing `/healthz` when a candidate exists, and reading Tailscale Serve status. Human output should include local URL, Tailnet URL when available, conflict/error status, and a copy-paste `export PI_POSTBOX_URL=...` line for remote Pi machines. Tailnet URL construction should follow lizardtail: read `tailscale status --json`, prefer `Self.DNSName` with trailing dot removed, and fall back to a Tailscale IPv4 address if needed.
+- Update `scripts/dev.mjs` so development exposure targets the actual Vite UI port, not the backend API port. The dev script should detect or allocate a free UI port if `5173` is busy, pass that to Vite, and expose that actual UI port over Tailscale when non-conflicting. Backend active-local metadata still advertises the backend API URL for Pi extension traffic.
+- Keep remote Pi extension behavior explicit: other machines do not discover this server automatically; users/scripts configure `PI_POSTBOX_URL` from startup/status output.
+
+**Patterns to follow:**
+- Existing CLI parsing and output style in `packages/server/src/cli.ts`.
+- Existing dev orchestrator process management in `scripts/dev.mjs`.
+- Existing docs' Tailscale trust-boundary language in `docs/deployment.md`.
+- Lizardtail implementation in `/home/dev/Development/lizardtail/src/index.ts`, especially `exposeWithTailscaleDetailed`, `getTailscaleDnsName`, `getTailscaleExposureStatus`, port collection from status `Web` keys, permission-error help, and fake-CLI tests.
+- Mock external commands in focused unit tests rather than requiring Tailscale in CI.
+
+**Test scenarios:**
+- Happy path: Tailscale installed/logged in and no Serve conflict -> startup runs `tailscale serve --bg --https <actual-port> http://127.0.0.1:<actual-port>` and prints local + Tailnet URLs.
+- Happy path: existing Serve mapping already points at the same Postbox local URL -> startup is idempotent and prints the Tailnet URL.
+- Happy path: `pi-postbox-server status --json` reports running local URL, Tailnet URL, selected role, and copy-paste remote config when available.
+- Happy path: dev UI port `5173` is busy -> dev picks a free UI port, Vite uses it, and Tailscale exposure targets that actual UI port.
+- Edge case: server falls back from preferred `32187` to another port -> Tailscale exposure uses the fallback port and status prints the fallback Tailnet URL.
+- Edge case: Tailscale CLI missing, logged out, or Serve unavailable -> startup still succeeds locally and status reports a sanitized unavailable reason.
+- Edge case: `tailscale serve` rejects loopback URL target but accepts bare port target -> retry with the bare port form and report success.
+- Edge case: Serve permission denied -> startup still succeeds locally and prints `sudo tailscale set --operator=$USER` guidance plus the manual serve command.
+- Edge case: target Tailnet port already serves a non-Postbox proxy -> startup does not overwrite it; status reports a conflict and a remediation hint.
+- Safety: no command path enables Funnel/public exposure.
+- Opt-out: `--no-tailscale` / `PI_POSTBOX_TAILSCALE=off` skips Serve mutation while local startup and status still work.
+- Regression: explicit remote `PI_POSTBOX_URL` behavior in the extension remains strict and is not replaced by locally detected Tailnet URLs.
+
+**Verification:**
+- Starting Postbox on a Tailscale-enabled machine gives the operator a usable Tailnet URL without running lizardtail manually.
+- Other machines can be configured by copying the printed `PI_POSTBOX_URL` value.
+- Local startup remains reliable when Tailscale is absent or broken.
+
+---
+
 ## System-Wide Impact
 
 ```mermaid
@@ -453,11 +549,18 @@ flowchart TB
   Client[PostboxClient]
   UI[Pi status/widgets]
   Ask[ask_postbox results]
+  Tailscale[Tailscale Serve]
+  Status[pi-postbox-server status]
 
   CLI --> Metadata
   CLI --> Health
+  CLI --> Tailscale
+  CLI --> Status
   Metadata --> Resolver
+  Metadata --> Status
   Health --> Resolver
+  Health --> Status
+  Tailscale --> Status
   Resolver --> Client
   Client --> UI
   Client --> Ask
@@ -466,9 +569,9 @@ flowchart TB
 - **Interaction graph:** Server CLI publishes role metadata and health identity; extension resolver validates metadata path/file safety and probes `/healthz`; `PostboxClient` consumes resolver output for connect/reconnect; Pi status and `ask_postbox` expose selected target or failure diagnostics.
 - **Error propagation:** Metadata parse/validation/safety errors should not crash Pi startup or server startup. They become sanitized resolver diagnostics and, when no usable target exists, unavailable rationales. If no client exists yet and local supervision is eligible, the extension keeps trying until a target appears or the session shuts down.
 - **State lifecycle risks:** Server runtimes have independent WebSocket connections and broadcasters even if they share a SQLite path. Sent asks and local resolutions must keep target affinity until resolved/flushed/expired, but client-owned pin deadlines prevent permanently dead origins from blocking convergence forever.
-- **API surface parity:** HTTP health schema changes must remain backward compatible. CLI/env additions must not break existing no-arg server launches. Explicit remote configuration must be honored equally at startup and during reconnect polling.
+- **API surface parity:** HTTP health schema changes must remain backward compatible. CLI/env additions must not break existing no-arg server launches beyond adding best-effort Tailscale exposure side effects. Explicit remote configuration must be honored equally at startup and during reconnect polling.
 - **Integration coverage:** Unit tests alone are insufficient for target switching; extension resilience tests should prove re-registration on a new fake socket/URL, explicit remote no-hijack during live polling, and no duplicate sent ask replay across targets.
-- **Unchanged invariants:** Session replacement semantics remain unchanged. `/new`, `/resume`, `/fork`, quit, and reload behavior follow `docs/adr/0001-pi-session-replacement-lifecycle.md`; active-local retargeting is only a transport reconnect.
+- **Unchanged invariants:** Session replacement semantics remain unchanged. `/new`, `/resume`, `/fork`, quit, and reload behavior follow `docs/adr/0001-pi-session-replacement-lifecycle.md`; active-local retargeting is only a transport reconnect. Remote Pi machines still use explicit `PI_POSTBOX_URL`; Tailnet URL printing does not become cross-machine discovery.
 
 ---
 
@@ -486,14 +589,18 @@ flowchart TB
 | Metadata writers race | Use fixed role-scoped files, heartbeat ownership checks, and same-instance cleanup checks instead of one shared JSON map. An older same-role writer must not reclaim a file owned by a newer instance. |
 | Diagnostics leak sensitive local details | Redact paths, credentials, env values, queries, command lines, database paths, and raw metadata; expose only category, role, sanitized host/port, and age. |
 | Health probes hang or probe unintended targets | Reject unsafe candidates before probing, limit candidate count, use tight timeouts, disable redirects/proxies, and probe only normalized loopback URLs. |
+| Tailscale auto-exposure overwrites another service | Inspect `tailscale serve status --json` first, require idempotent same-target matching, and never clobber non-Postbox mappings. |
+| Tailscale failure makes local Postbox unreliable | Treat Tailscale as best-effort; missing CLI, logged-out state, Serve errors, or conflicts become diagnostics, not startup failures. |
+| Tailnet URL accidentally becomes public | Never enable Funnel in this plan; docs should state automatic exposure is Tailnet-private Serve only. |
+| Dev exposes the wrong UI | Make dev expose the actual Vite UI port and keep backend active-local metadata separate for Pi extension traffic. |
 
 ---
 
 ## Documentation / Operational Notes
 
 - Update local configuration docs to describe the active-local directory derived from existing config vars, role files, role precedence, freshness, loopback definition, effective env-over-config precedence, and recovery behavior.
-- Update deployment docs to reinforce that lizardtail/Tailscale exposure remains explicit remote configuration, and that cleartext non-loopback HTTP should only be used behind an intentional protected transport such as Tailscale.
-- Add troubleshooting guidance for stale config, no active metadata, unsafe path/metadata, health mismatch, and deferred switching due to pinned asks/resolutions.
+- Update deployment docs to explain automatic Tailnet-private Tailscale Serve exposure, conflict behavior, `pi-postbox-server status`, and copy-paste `PI_POSTBOX_URL` guidance for other machines. lizardtail can remain a manual alternative, but is no longer required when Tailscale Serve auto-exposure succeeds.
+- Add troubleshooting guidance for stale config, no active metadata, unsafe path/metadata, health mismatch, Tailscale unavailable/conflicting, and deferred switching due to pinned asks/resolutions.
 - Ensure any smoke/manual instructions set temp config/active-local directories when running automated tests to avoid touching real operator state.
 - Consider capturing a `docs/solutions/` learning after implementation because this feature defines a durable local routing pattern for Postbox.
 

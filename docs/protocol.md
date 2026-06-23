@@ -6,7 +6,7 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /healthz` | Health/status check for wrappers, smoke tests, and operators. |
+| `GET /healthz` | Health/status check for wrappers, smoke tests, and operators. May include optional `localTarget` identity for active-local routing. |
 | `GET /` | Built Svelte UI shell served by `pi-postbox-server`. |
 | `GET /api/state` | Current state snapshot: sessions plus current/terminal ask request snapshots. |
 | `GET /api/state/events` | SSE stream. Sends an initial `state` event, then validated state snapshots after changes. |
@@ -18,6 +18,12 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `GET /api/history` | Recent terminal decision history. |
 | `POST /api/history/prune` | Apply configured terminal-history retention. |
 | `POST /admin/shutdown` | Gracefully stop the server. Loopback-only: rejected (403) unless the request comes straight from `127.0.0.1`/`::1` with no proxy-forwarding headers, so it is unreachable through Tailscale/lizardtail. Returns `202` then closes the app and exits. Used by `npm run dev` to stop a production server holding the canonical port. |
+
+## Health active-local identity
+
+`/healthz` always reports basic service health and may include optional `localTarget` when the server has published active-local metadata. That identity contains `role`, `instanceId`, and normalized `url`.
+
+Active-local metadata candidates require an exact identity match: the candidate role, instance id, and URL must match `/healthz.localTarget` exactly before the extension trusts the target. Missing or mismatched identity is treated as a health mismatch. This keeps stale or unsafe metadata from redirecting clients to an unrelated loopback server.
 
 ## Extension WebSocket
 
@@ -86,6 +92,14 @@ Presence is derived by the server from WebSocket connection and heartbeat timing
 - `offline`
 
 `ask_postbox` waits explicitly mark semantic state as blocked/waiting. Observed local `ask_user` calls also mark blocked. Herdr-compatible blocked events are best-effort; Postbox does not depend on Herdr.
+
+## Active-local client routing compatibility
+
+Active-local routing has no broad discovery and performs no port scanning. Clients read only `active-local/dev.json` and `active-local/production.json` from the configured Postbox base, prefer dev over production while fresh and healthy, and use production fallback when dev is stale or unhealthy.
+
+Effective env-over-config precedence is preserved. An explicit non-loopback `PI_POSTBOX_URL` or configured Tailscale/hosted URL is authoritative, not local recovery candidates, and disables local live retargeting. Missing or loopback config can use health-verified metadata; a configured loopback fallback is also health-verified.
+
+For active-local sessions, live retargeting may move a running client to a newly selected local target when safe. Sent asks and local fallback resolutions pin their origin until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching.
 
 ## Compatibility notes
 

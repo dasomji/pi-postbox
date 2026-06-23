@@ -1,6 +1,11 @@
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
-import { createHealthResponse, HealthResponseSchema, StateSnapshotSchema } from "@pi-postbox/protocol";
+import {
+  createHealthResponse,
+  HealthResponseSchema,
+  StateSnapshotSchema,
+  type ActiveLocalTargetIdentity
+} from "@pi-postbox/protocol";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -33,8 +38,13 @@ export interface CreatePostboxAppOptions {
   historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
+  localTarget?: () => ActiveLocalTargetIdentity | undefined;
   // Supplied by the CLI so POST /admin/shutdown (loopback-only) can stop the process.
   onShutdownRequest?: () => void;
+}
+
+export interface ActiveLocalTargetAwareApp extends FastifyInstance {
+  setActiveLocalTarget?: (identity: ActiveLocalTargetIdentity | undefined) => void;
 }
 
 const embeddedShell = `<!doctype html>
@@ -67,6 +77,11 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   });
   const startedAtMs = options.startedAtMs ?? Date.now();
   const now = options.now ?? (() => Date.now());
+  let mutableLocalTarget: ActiveLocalTargetIdentity | undefined;
+  const getLocalTarget = options.localTarget ?? (() => mutableLocalTarget);
+  (app as ActiveLocalTargetAwareApp).setActiveLocalTarget = (identity) => {
+    mutableLocalTarget = identity;
+  };
   const db = openPostboxDatabase(options.databasePath ?? defaultDatabasePath());
   const sessionStore = new SessionStore(db, now, {
     staleAfterMs: options.staleAfterMs ?? 30_000,
@@ -137,7 +152,8 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     const response = createHealthResponse({
       startedAtMs,
       nowMs: now(),
-      version: options.version
+      version: options.version,
+      localTarget: getLocalTarget()
     });
 
     return HealthResponseSchema.parse(response);

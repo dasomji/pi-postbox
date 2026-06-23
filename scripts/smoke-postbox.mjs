@@ -44,6 +44,20 @@ async function waitForHealth(baseUrl, timeoutMs = 10_000) {
   throw new Error(`Timed out waiting for /healthz: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
+function normalizedUrl(url) {
+  return new URL(url).toString();
+}
+
+function assertCompatibleLocalTarget(health, expectedBaseUrl) {
+  const { localTarget } = health;
+  if (localTarget === undefined) return;
+
+  assert(localTarget && typeof localTarget === "object", "health localTarget must be an object when present");
+  assert(localTarget.role === "production", `health localTarget role mismatch: ${localTarget.role}`);
+  assert(typeof localTarget.instanceId === "string" && localTarget.instanceId.length > 0, "health localTarget instanceId missing");
+  assert(localTarget.url === normalizedUrl(expectedBaseUrl), `health localTarget url mismatch: ${localTarget.url}`);
+}
+
 function nextMessage(socket, timeoutMs = 3_000) {
   return new Promise((resolvePromise, reject) => {
     const timer = setTimeout(() => {
@@ -148,8 +162,19 @@ async function main() {
     "--port", String(port),
     "--database", databasePath,
     "--ask-timeout-ms", "600000",
-    "--history-retention-max-records", "100"
-  ], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    "--history-retention-max-records", "100",
+    "--no-tailscale"
+  ], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PI_POSTBOX_CONFIG_DIR: tmp,
+      PI_POSTBOX_CONFIG_PATH: join(tmp, "config.json"),
+      PI_POSTBOX_ACTIVE_LOCAL_ROLE: "production",
+      PI_POSTBOX_TAILSCALE: "off"
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
 
   let stderr = "";
   server.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
@@ -160,6 +185,7 @@ async function main() {
   try {
     const health = await waitForHealth(baseUrl);
     assert(health.ok === true && health.service === "pi-postbox", "Unexpected health response");
+    assertCompatibleLocalTarget(health, baseUrl);
 
     const html = await fetch(`${baseUrl}/`).then((response) => response.text());
     assert(html.includes("Pi Postbox") || html.includes("root"), "Server did not serve the web shell");

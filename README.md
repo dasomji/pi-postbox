@@ -24,7 +24,7 @@ Start the local server with defaults:
 node packages/server/dist/cli.js
 ```
 
-The server binds to `127.0.0.1`, prefers port `3000`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If port `3000` is already in use, it automatically selects another local port; open the printed URL.
+The server binds to `127.0.0.1`, prefers port `32187`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If port `32187` is already in use, it automatically selects another local port; open the printed URL.
 
 ## Workspace commands
 
@@ -36,7 +36,7 @@ npm run build     # build server/protocol/extension and Vite UI
 npm run smoke     # packaged-path release smoke test
 ```
 
-The smoke script starts the built CLI with a temporary SQLite database, connects a fake extension, verifies `/healthz`, opens `/api/state/events`, registers a session, creates and answers an ask, verifies `/api/state`, and confirms `/api/history` contains the answered request.
+The smoke script starts the built CLI with a temporary SQLite database and temporary Postbox config directory, connects a fake extension, verifies `/healthz`, opens `/api/state/events`, registers a session, creates and answers an ask, verifies `/api/state`, and confirms `/api/history` contains the answered request.
 
 ## Packages
 
@@ -72,9 +72,10 @@ pi-postbox-server
 Supported server flags and environment variables:
 
 - `--host` or `PI_POSTBOX_HOST` (default `127.0.0.1`)
-- `--port` or `PI_POSTBOX_PORT` (preferred default `3000`; falls back to another local port if already in use)
+- `--port` or `PI_POSTBOX_PORT` (preferred default `32187`; falls back to another local port if already in use)
 - `--ui-dist-dir` or `PI_POSTBOX_UI_DIST_DIR` (default packaged `dist/public` beside the server CLI)
 - `--database` or `PI_POSTBOX_DATABASE` (default `~/.pi-postbox/postbox.sqlite`)
+- `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` (`production` by default; `npm run dev` launches the backend as `dev`)
 - `--ask-timeout-ms` or `PI_POSTBOX_ASK_TIMEOUT_MS` (default 12 hours)
 - `--history-retention-max-age-ms` or `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS`
 - `--history-retention-max-records` or `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS`
@@ -85,11 +86,13 @@ The extension reads `PI_POSTBOX_URL` or `~/.pi-postbox/config.json`:
 
 ```json
 {
-  "serverUrl": "http://127.0.0.1:3000"
+  "serverUrl": "http://127.0.0.1:32187"
 }
 ```
 
 Override config location with `PI_POSTBOX_CONFIG_PATH` or `PI_POSTBOX_CONFIG_DIR`. The extension creates a generated machine id on first startup and persists it in this config file. That generated machine id is stable across sessions; hostname and dashboard aliases provide human-readable names.
+
+For local self-healing, the server publishes active-local metadata under the Postbox config base: `PI_POSTBOX_CONFIG_DIR`, else the dirname of `PI_POSTBOX_CONFIG_PATH`, else `~/.pi-postbox`. Role files are `<base>/active-local/dev.json` and `<base>/active-local/production.json`. The extension uses effective env-over-config precedence: an explicit non-loopback `PI_POSTBOX_URL` or configured Tailscale/hosted `serverUrl` is authoritative and disables local recovery; missing or loopback config may recover through fresh health-verified active-local metadata.
 
 Repo-local project display metadata can be set with `.pi-postbox.json`:
 
@@ -112,21 +115,21 @@ Icon paths are resolved by the extension and uploaded as small data URLs plus ha
 - `GET /api/history` — recent terminal decision history.
 - `POST /api/history/prune` — apply configured retention.
 
-## Tailscale/lizardtail deployment
+## Tailscale Serve deployment
 
 Pi Postbox v1 uses a **Tailscale-only** trust boundary with **no app-level authentication**. Anyone who can reach the HTTP service can read cards/history and submit answers. The server still blocks cross-origin browser pivots for state-changing HTTP/WebSocket actions and enforces finite payload/icon limits, but that is CSRF/abuse protection — not user authentication.
 
-Run `pi-postbox-server` behind lizardtail (a generic Tailscale Serve wrapper) to detect the actual local port it prints and expose that port privately through Tailscale Serve by default:
+`pi-postbox-server` now performs automatic Tailnet-private Tailscale Serve exposure when the `tailscale` CLI is installed, logged in, and non-conflicting. Startup inspects `tailscale serve status --json` first, then uses a command shaped like `tailscale serve --bg --https 32187 http://127.0.0.1:32187` for the actual bound port. The integration is non-clobbering: if another service already owns that HTTPS port, Postbox reports a conflict and leaves the mapping unchanged.
+
+Disable automatic Serve mutation with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`. Check local/Tailnet state without starting a server with:
 
 ```bash
-lizardtail pi-postbox-server
+pi-postbox-server status
+pi-postbox-server status --json
+export PI_POSTBOX_URL="https://your-postbox.tailnet.example:32187"
 ```
 
-Pass `--public` only when you intentionally want Tailscale Funnel public internet exposure. For live development behind Tailscale, expose the Vite frontend instead with `lizardtail --port 5173 npm run dev`. Then configure Pi sessions with the lizardtail/Tailscale URL:
-
-```bash
-export PI_POSTBOX_URL="https://your-postbox.tailnet.example"
-```
+Remote Pi machines remain explicit: copy the `export PI_POSTBOX_URL=` line from startup or status output. lizardtail remains useful as a generic wrapper for custom workflows, including intentional public exposure outside Postbox's automatic path.
 
 See [`docs/configuration.md`](docs/configuration.md), [`docs/deployment.md`](docs/deployment.md), and [`docs/protocol.md`](docs/protocol.md) for operator details, endpoint contracts, and manual testing.
 

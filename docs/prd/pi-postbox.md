@@ -51,9 +51,11 @@ V1 does not include native push notifications or a conversational interviewer. I
 25. As a Pi user, I want the extension to reconnect in the background, so that the dashboard recovers automatically after network/server interruptions.
 26. As a Pi user, I want `ask_postbox` requests to be idempotent across reconnects, so that duplicate cards are not created after connection drops.
 27. As a Pi user, I want a local fallback command while a request is pending, so that I can answer/cancel from the terminal if the web UI is unavailable.
-28. As a server operator, I want Postbox to run as a normal local HTTP service, so that lizardtail can expose it separately over Tailscale.
-29. As a developer, I want the extension and server packaged through npm/Pi conventions, so that installation across machines is straightforward.
-30. As a developer, I want schemas validated consistently, so that extension, server, and browser clients agree on request and answer shapes.
+28. As a server operator, I want Postbox to run as a normal local HTTP service, so that local operation remains reliable and Tailscale exposure can proxy to the actual bound port.
+29. As a server operator with Tailscale installed, I want Postbox startup to automatically expose the dashboard over Tailnet-private Tailscale Serve when safe, so that I can open the printed URL from a phone or laptop without manually wrapping the server.
+30. As a server operator, I want `pi-postbox-server status` to show the local URL, Tailnet URL, and copy-paste `PI_POSTBOX_URL` configuration for other machines, so that I can connect remote Pi sessions to the right Postbox instance.
+31. As a developer, I want the extension and server packaged through npm/Pi conventions, so that installation across machines is straightforward.
+32. As a developer, I want schemas validated consistently, so that extension, server, and browser clients agree on request and answer shapes.
 
 ## Implementation Decisions
 
@@ -162,10 +164,12 @@ V1 does not include native push notifications or a conversational interviewer. I
   - V1 may expose server-side event hooks so notifications can be added later.
   - Manual dashboard usage is acceptable for MVP.
 
-- Deployment/lizardtail:
-  - Server runs as a normal local HTTP service.
-  - lizardtail/Tailscale exposure is handled outside the app.
-  - The app should expose health/status endpoints useful for wrapping and monitoring.
+- Deployment/Tailscale:
+  - Server runs as a normal local HTTP service and binds locally by default.
+  - When Tailscale is installed and usable, startup best-effort exposes the actual dashboard port through Tailnet-private Tailscale Serve and prints the Tailnet URL.
+  - Automatic Tailscale exposure must not clobber existing non-Postbox Serve mappings, must not enable Funnel/public exposure, must not block local startup if Tailscale is unavailable, and must be disableable for CI/operators who do not want CLI-managed Serve state.
+  - lizardtail or manual Tailscale Serve remains an alternative wrapper path.
+  - The app should expose health/status endpoints useful for wrapping and monitoring, and `pi-postbox-server status` should report local/Tailnet access URLs.
 
 ## Testing Decisions
 
@@ -196,7 +200,8 @@ V1 does not include native push notifications or a conversational interviewer. I
 - Starting temporary forked Pi sessions from the dashboard.
 - Full pi-ask UI parity such as per-option notes, review tabs, and elaborate flows.
 - Full multi-user accounts or app-level authentication.
-- Server-managed lizardtail/Tailscale lifecycle.
+- Tailscale Funnel/public internet exposure.
+- Pushing Postbox configuration to other machines automatically.
 - Automatic codebase crawling or summarization by the extension/server.
 - Docker deployment as the primary v1 distribution.
 

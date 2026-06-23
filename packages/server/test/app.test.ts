@@ -1,4 +1,4 @@
-import { HealthResponseSchema } from "@pi-postbox/protocol";
+import { HealthResponseSchema, type ActiveLocalTargetIdentity } from "@pi-postbox/protocol";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,12 +19,34 @@ describe("Pi Postbox server bootstrap", () => {
     const response = await app.inject({ method: "GET", url: "/healthz" });
 
     expect(response.statusCode).toBe(200);
-    expect(HealthResponseSchema.parse(response.json())).toMatchObject({
+    const health = HealthResponseSchema.parse(response.json());
+    expect(health).toMatchObject({
       ok: true,
       service: "pi-postbox",
       protocolVersion: "0.1.0",
       uptimeMs: 2_345
     });
+    expect(health.localTarget).toBeUndefined();
+  });
+
+  it("returns the current active-local identity from health after the CLI sets it", async () => {
+    let localTarget: ActiveLocalTargetIdentity | undefined;
+    const app = await createPostboxApp({
+      databasePath: ":memory:",
+      localTarget: () => localTarget
+    } as Parameters<typeof createPostboxApp>[0] & { localTarget: () => ActiveLocalTargetIdentity | undefined });
+    apps.push(app);
+
+    localTarget = {
+      role: "dev",
+      instanceId: "33333333-3333-4333-8333-333333333333",
+      url: "http://127.0.0.1:32187/"
+    };
+
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.statusCode).toBe(200);
+    expect(HealthResponseSchema.parse(response.json()).localTarget).toEqual(localTarget);
   });
 
   it("serves the built UI shell from a static dist directory", async () => {

@@ -71,6 +71,32 @@ function createClient(options: Partial<ConstructorParameters<typeof PostboxClien
   });
 }
 
+function selectedTarget(url: string, role: "dev" | "production" = "dev", instanceId = `${role}-instance`) {
+  return {
+    status: "selected" as const,
+    target: {
+      source: "active-local" as const,
+      url,
+      role,
+      instanceId,
+      activeLocalPollingEnabled: true
+    },
+    diagnostics: []
+  };
+}
+
+function socketUrl(serverUrl: string): string {
+  const url = new URL(serverUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = "/api/extension/ws";
+  url.search = "";
+  return url.toString();
+}
+
+function messagesOfType(socket: FakeSocket, type: string): unknown[] {
+  return socket.sent.filter((message) => (message as { type?: string }).type === type);
+}
+
 class FakePi {
   commands = new Map<string, { description?: string; handler: (args: string, ctx: FakeCommandContext) => unknown }>();
 
@@ -193,6 +219,215 @@ describe("local Postbox fallback", () => {
         payload: { requestId: "ask-offline", answer: { selectedValues: ["yes"], note: "offline" } }
       })
     ]);
+    client.stop();
+  });
+
+  it("defers active-local switching while a sent ask is unresolved and never duplicates it to the new target", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const productionUrl = "http://127.0.0.1:32187/";
+    const devUrl = "http://127.0.0.1:3500/";
+    let currentTarget = selectedTarget(productionUrl, "production", "prod-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const statuses: string[] = [];
+    const localStatuses: string[] = [];
+    const client = createClient({
+      serverUrl: productionUrl,
+      resolveTarget,
+      activeLocalPollMs: 25,
+      targetAffinityTimeoutMs: 5_000,
+      onStatus: (status) => statuses.push(status),
+      onLocalFallbackStatus: (status) => localStatuses.push(status?.message ?? "cleared")
+    } as never);
+    client.start();
+    const productionSocket = FakeSocket.instances[0];
+    productionSocket.open();
+
+    const wait = client.ask({ ...askPayload, requestId: "ask-pinned" });
+    expect(messagesOfType(productionSocket, "ask.create")).toHaveLength(1);
+
+    currentTarget = selectedTarget(devUrl, "dev", "dev-instance");
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(statuses.some((status) => status.includes("deferred") && status.includes("3500"))).toBe(true);
+    expect(localStatuses.at(-1)).toContain("ask-pinned");
+    expect(messagesOfType(productionSocket, "ask.create")).toHaveLength(1);
+
+    const result: AskResult = {
+      status: "answered",
+      requestId: "ask-pinned",
+      selectedValues: ["yes"],
+      resolvedAt: "2026-06-03T00:00:01.000Z"
+    };
+    productionSocket.serverMessage({ type: "ask.resolved", requestId: "ask-pinned", payload: result });
+    await expect(wait).resolves.toEqual(result);
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(FakeSocket.instances).toHaveLength(2);
+    const devSocket = FakeSocket.instances[1];
+    expect(devSocket.url).toBe(socketUrl(devUrl));
+    devSocket.open();
+    expect(messagesOfType(devSocket, "session.register")).toHaveLength(1);
+    expect(messagesOfType(devSocket, "ask.create")).toHaveLength(0);
+    client.stop();
+  });
+
+  it("lets an unsent queued ask follow a target switch and sends it only to the new target", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const productionUrl = "http://127.0.0.1:32187/";
+    const devUrl = "http://127.0.0.1:3500/";
+    let currentTarget = selectedTarget(productionUrl, "production", "prod-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const client = createClient({ serverUrl: productionUrl, resolveTarget, reconnectMs: 100 } as never);
+    client.start();
+    const productionSocket = FakeSocket.instances[0];
+
+    const wait = client.ask({ ...askPayload, requestId: "ask-unsent" });
+    wait.catch(() => undefined);
+    expect(messagesOfType(productionSocket, "ask.create")).toHaveLength(0);
+
+    currentTarget = selectedTarget(devUrl, "dev", "dev-instance");
+    productionSocket.close();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(FakeSocket.instances).toHaveLength(2);
+    const devSocket = FakeSocket.instances[1];
+    expect(devSocket.url).toBe(socketUrl(devUrl));
+    devSocket.open();
+
+    expect(messagesOfType(productionSocket, "ask.create")).toHaveLength(0);
+    expect(messagesOfType(devSocket, "session.register")).toHaveLength(1);
+    expect(messagesOfType(devSocket, "ask.create")).toHaveLength(1);
+    expect(messagesOfType(devSocket, "ask.create")[0]).toMatchObject({ payload: { requestId: "ask-unsent" } });
+    client.stop();
+  });
+
+  it("pins offline local fallback answers to their origin target before switching away", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const productionUrl = "http://127.0.0.1:32187/";
+    const devUrl = "http://127.0.0.1:3500/";
+    let currentTarget = selectedTarget(productionUrl, "production", "prod-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const statuses: string[] = [];
+    const client = createClient({
+      serverUrl: productionUrl,
+      resolveTarget,
+      activeLocalPollMs: 25,
+      reconnectMs: 100,
+      onStatus: (status) => statuses.push(status)
+    } as never);
+    client.start();
+    const productionSocket = FakeSocket.instances[0];
+    productionSocket.open();
+
+    const wait = client.ask({ ...askPayload, requestId: "ask-local-origin" });
+    productionSocket.close();
+    const result = client.answerPendingAsk({ requestId: "ask-local-origin", selectedValues: ["yes"], note: "origin only" });
+    await expect(wait).resolves.toEqual(result);
+
+    currentTarget = selectedTarget(devUrl, "dev", "dev-instance");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeSocket.instances).toHaveLength(2);
+    const originReconnectSocket = FakeSocket.instances[1];
+    expect(originReconnectSocket.url).toBe(socketUrl(productionUrl));
+    expect(statuses.some((status) => status.includes("deferred") && status.includes("3500"))).toBe(true);
+
+    originReconnectSocket.open();
+    expect(messagesOfType(originReconnectSocket, "ask.create")).toHaveLength(1);
+    expect(messagesOfType(originReconnectSocket, "ask.answer")).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(FakeSocket.instances).toHaveLength(3);
+    expect(FakeSocket.instances[2].url).toBe(socketUrl(devUrl));
+    client.stop();
+  });
+
+  it("releases a permanently dead pinned origin after a client-owned deadline and then may retarget", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const productionUrl = "http://127.0.0.1:32187/";
+    const devUrl = "http://127.0.0.1:3500/";
+    let currentTarget = selectedTarget(productionUrl, "production", "prod-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const client = createClient({
+      serverUrl: productionUrl,
+      resolveTarget,
+      activeLocalPollMs: 25,
+      reconnectMs: 100,
+      targetAffinityTimeoutMs: 250
+    } as never);
+    client.start();
+    const productionSocket = FakeSocket.instances[0];
+    productionSocket.open();
+
+    const wait = client.ask({ ...askPayload, requestId: "ask-dead-origin", expiresAt: undefined });
+    let settled: AskResult | undefined;
+    wait.then((result) => {
+      settled = result;
+    });
+    currentTarget = selectedTarget(devUrl, "dev", "dev-instance");
+    productionSocket.close();
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(settled).toMatchObject({
+      status: "unavailable",
+      requestId: "ask-dead-origin",
+      rationale: expect.stringMatching(/undeliverable|unavailable|dead origin/i)
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeSocket.instances.at(-1)?.url).toBe(socketUrl(devUrl));
+    client.stop();
+  });
+
+  it("releases an undeliverable offline local fallback resolution after the affinity deadline so retargeting can proceed", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const productionUrl = "http://127.0.0.1:32187/";
+    const devUrl = "http://127.0.0.1:3500/";
+    let currentTarget = selectedTarget(productionUrl, "production", "prod-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const statuses: string[] = [];
+    const client = createClient({
+      serverUrl: productionUrl,
+      resolveTarget,
+      activeLocalPollMs: 25,
+      reconnectMs: 100,
+      targetAffinityTimeoutMs: 250,
+      onStatus: (status) => statuses.push(status)
+    } as never);
+    client.start();
+    const productionSocket = FakeSocket.instances[0];
+    productionSocket.open();
+
+    const wait = client.ask({ ...askPayload, requestId: "ask-local-dead-origin" });
+    expect(messagesOfType(productionSocket, "ask.create")).toHaveLength(1);
+    productionSocket.close();
+    const localResult = client.answerPendingAsk({ requestId: "ask-local-dead-origin", selectedValues: ["yes"], note: "answered offline" });
+    await expect(wait).resolves.toEqual(localResult);
+
+    currentTarget = selectedTarget(devUrl, "dev", "dev-instance");
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(FakeSocket.instances[1].url).toBe(socketUrl(productionUrl));
+    expect(messagesOfType(FakeSocket.instances[1], "ask.answer")).toHaveLength(0);
+    expect(statuses.some((status) => status.includes("deferred") && status.includes("3500"))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(statuses.some((status) => status.includes("undeliverable") && status.includes("ask-local-dead-origin"))).toBe(true);
+    expect(FakeSocket.instances.at(-1)?.url).toBe(socketUrl(devUrl));
+    expect(FakeSocket.instances.at(-1)).not.toBe(FakeSocket.instances[1]);
+    const devSocket = FakeSocket.instances.at(-1)!;
+    devSocket.open();
+    expect(messagesOfType(devSocket, "session.register")).toHaveLength(1);
+    expect(messagesOfType(devSocket, "ask.create")).toHaveLength(0);
+    expect(messagesOfType(devSocket, "ask.answer")).toHaveLength(0);
     client.stop();
   });
 });
