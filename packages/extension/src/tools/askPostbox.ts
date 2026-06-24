@@ -8,7 +8,7 @@ import {
   type ForkReference,
   type HandoffContext,
   type RichContextItem
-} from "@pi-postbox/protocol";
+} from "../../../protocol/src/index.js";
 import type { PostboxClient } from "../client/PostboxClient.js";
 
 export interface AskPostboxInput {

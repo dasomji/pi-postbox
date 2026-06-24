@@ -11,7 +11,7 @@ import {
   type ActiveLocalRole,
   type SessionRegisterPayload,
   type SessionShutdownReason
-} from "@pi-postbox/protocol";
+} from "../../../protocol/src/index.js";
 import WebSocket from "ws";
 import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
 import {
