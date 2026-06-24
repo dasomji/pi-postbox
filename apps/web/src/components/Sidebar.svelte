@@ -8,7 +8,7 @@
   const historyActive = $derived(store.selection.kind === "history");
 </script>
 
-<aside class="flex h-full w-80 shrink-0 flex-col border-r border-postbox-border bg-postbox-surface/60">
+<aside class="flex h-full min-h-0 w-full shrink-0 flex-col border-b border-postbox-border bg-postbox-surface/60 md:h-full md:max-w-xs md:border-b-0 md:border-r">
   <header class="border-b border-postbox-border px-4 py-4">
     <div class="flex items-baseline gap-2">
       <p class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground">Pi Postbox</p>
