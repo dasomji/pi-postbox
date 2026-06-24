@@ -1,0 +1,12 @@
+{
+  "packages": [
+    {
+      "source": "git:github.com/dasomji/pi-postbox",
+      "extensions": [],
+      "skills": [],
+      "prompts": [],
+      "themes": []
+    },
+    ".."
+  ]
+}

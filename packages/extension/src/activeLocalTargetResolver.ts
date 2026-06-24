@@ -31,6 +31,7 @@ export interface ResolveActiveLocalTargetOptions {
   ttlMs?: number;
   maxMetadataBytes?: number;
   healthTimeoutMs?: number;
+  skipConfiguredRemote?: boolean;
 }
 
 const ACTIVE_LOCAL_METADATA_VERSION = 1;
@@ -54,16 +55,20 @@ export async function resolveActiveLocalTarget(
   const configuredUrl = config.serverUrl;
   const configuredLoopback = configuredUrl ? normalizeConfiguredLoopbackUrl(configuredUrl) : undefined;
 
-  if (configuredUrl && !configuredLoopback) {
-    return {
-      status: "selected",
-      target: {
-        source: "explicit-remote",
-        url: configuredUrl,
-        activeLocalPollingEnabled: false
-      },
-      diagnostics
-    };
+  if (!options.skipConfiguredRemote && configuredUrl && !configuredLoopback) {
+    const verified = await verifyHealth(configuredUrl, { fetch: options.fetch, timeoutMs: options.healthTimeoutMs });
+    if (verified.ok) {
+      return {
+        status: "selected",
+        target: {
+          source: "explicit-remote",
+          url: configuredUrl,
+          activeLocalPollingEnabled: false
+        },
+        diagnostics
+      };
+    }
+    diagnostics.push({ code: verified.code, source: "explicit-remote" });
   }
 
   const records = await readActiveLocalMetadata(env, options, diagnostics);

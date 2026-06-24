@@ -8,11 +8,20 @@ import {
   type AskResult,
   type ExtensionClientMessage,
   type SemanticState,
+  type ActiveLocalRole,
   type SessionRegisterPayload,
   type SessionShutdownReason
 } from "@pi-postbox/protocol";
 import WebSocket from "ws";
 import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
+import {
+  createUrlStatusSnapshot,
+  enrichStatusSnapshotFromLocalServer,
+  type PostboxConnectionState,
+  type PostboxStatusSnapshot,
+  type PostboxStatusTailscaleInspector
+} from "../status.js";
+import type { PostboxAutostartStatusSnapshot } from "../autostart.js";
 
 interface WebSocketLike {
   readyState: number;
@@ -35,6 +44,9 @@ export interface PostboxClientOptions {
   activeLocalPollingEnabled?: boolean;
   activeLocalPollMs?: number;
   targetAffinityTimeoutMs?: number;
+  targetSource?: string;
+  targetRole?: ActiveLocalRole;
+  inspectTailscale?: PostboxStatusTailscaleInspector;
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
@@ -51,6 +63,7 @@ export interface PendingAskSnapshot {
 
 export interface LocalFallbackStatus {
   requestId: string;
+  serverUrl: string;
   message: string;
 }
 
@@ -109,6 +122,10 @@ export class PostboxClient {
   private readonly localResolutions = new Map<string, LocalResolution>();
   private currentSemanticState: SemanticState;
   private currentServerUrl: string;
+  private connectionState: PostboxConnectionState = "disconnected";
+  private connectionDiagnostics: string[] = ["websocket:disconnected"];
+  private currentTargetSource: string | undefined;
+  private currentTargetRole: ActiveLocalRole | undefined;
   private activeLocalPollTimer: NodeJS.Timeout | undefined;
   private deferredTargetUrl: string | undefined;
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
@@ -123,6 +140,8 @@ export class PostboxClient {
     this.WebSocketImpl = options.WebSocketImpl ?? (WebSocket as unknown as WebSocketConstructor);
     this.currentSemanticState = options.registration.session.semanticState;
     this.currentServerUrl = options.serverUrl;
+    this.currentTargetSource = options.targetSource;
+    this.currentTargetRole = options.targetRole;
   }
 
   start(): void {
@@ -133,6 +152,7 @@ export class PostboxClient {
 
   stop(): void {
     this.stopped = true;
+    this.connectionState = "disconnected";
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.activeLocalPollTimer) clearInterval(this.activeLocalPollTimer);
@@ -226,6 +246,24 @@ export class PostboxClient {
     }));
   }
 
+  async getStatusSnapshot(
+    autostart: PostboxAutostartStatusSnapshot = { enabled: true, startedByThisSession: false }
+  ): Promise<PostboxStatusSnapshot> {
+    const snapshot = createUrlStatusSnapshot({
+      state: this.connectionState,
+      activeUrl: this.currentServerUrl,
+      openQuestionCount: this.pendingAsks.size,
+      autostart,
+      diagnostics: this.connectionState === "connected" ? [] : this.connectionDiagnostics,
+      source: this.currentTargetSource
+    });
+
+    return enrichStatusSnapshotFromLocalServer(snapshot, {
+      role: this.currentTargetRole,
+      inspectTailscale: this.options.inspectTailscale
+    });
+  }
+
   answerPendingAsk(input: LocalAnswerInput): AskResult {
     const pending = this.findPendingAsk(input.requestId);
     this.validateSelectedValues(pending.payload, input.selectedValues);
@@ -274,6 +312,8 @@ export class PostboxClient {
     try {
       this.socket = new this.WebSocketImpl(toExtensionSocketUrl(this.currentServerUrl));
     } catch (error) {
+      this.connectionState = "disconnected";
+      this.recordConnectionDiagnostic(`connect-error:${messageFrom(error)}`);
       this.options.onStatus?.(`connect-error:${messageFrom(error)}`);
       this.scheduleReconnect();
       return;
@@ -281,6 +321,8 @@ export class PostboxClient {
 
     const socket = this.socket;
     socket.on("open", () => {
+      this.connectionState = "connected";
+      this.connectionDiagnostics = [];
       this.options.onStatus?.("connected");
       this.nextReconnectMs = this.reconnectMs;
       this.send({
@@ -315,11 +357,15 @@ export class PostboxClient {
     });
 
     socket.on("error", (error) => {
+      if (!this.isConnected()) this.connectionState = "disconnected";
+      this.recordConnectionDiagnostic(`socket-error:${messageFrom(error)}`);
       this.options.onStatus?.(`socket-error:${messageFrom(error)}`);
     });
 
     socket.on("close", () => {
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      this.connectionState = "disconnected";
+      this.recordConnectionDiagnostic("websocket:disconnected");
       if (this.stopped) return;
       if (this.suppressReconnectOnClose.has(socket)) return;
       this.options.onStatus?.("disconnected");
@@ -452,12 +498,17 @@ export class PostboxClient {
     const deferred = this.deferredTargetUrl ? ` Active-local switch to ${this.deferredTargetUrl} is deferred until pinned Postbox work is resolved.` : "";
     this.options.onLocalFallbackStatus({
       requestId: active.requestId,
-      message: `Postbox waiting ${active.requestId}. Local fallback: /postbox-answer ${active.requestId} ${values} [--note ...] or /postbox-cancel ${active.requestId} [--note ...]${deferred}`
+      serverUrl: this.currentServerUrl,
+      message: `Postbox waiting ${active.requestId}. Open ${this.currentServerUrl} to answer. Local fallback: /postbox-answer ${active.requestId} ${values} [--note ...] or /postbox-cancel ${active.requestId} [--note ...]${deferred}`
     });
   }
 
   private isConnected(): boolean {
     return !!this.socket && this.socket.readyState === WebSocket.OPEN;
+  }
+
+  private recordConnectionDiagnostic(diagnostic: string): void {
+    this.connectionDiagnostics = [...new Set([...this.connectionDiagnostics, diagnostic])].slice(-5);
   }
 
   private scheduleReconnect(): void {
@@ -513,6 +564,8 @@ export class PostboxClient {
     }
 
     this.deferredTargetUrl = undefined;
+    this.currentTargetSource = result.target.source;
+    this.currentTargetRole = result.target.role;
     if (targetUrl === this.currentServerUrl) return;
     this.retargetNow(targetUrl, options.connectWhenDisconnected ?? true);
   }

@@ -1,6 +1,7 @@
 import type { AskCreatePayload, AskResult, ExtensionServerMessage, SessionRegisterPayload } from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PostboxClient } from "../src/client/PostboxClient.js";
+import { formatPostboxStatusSnapshot } from "../src/status.js";
 
 const registration: SessionRegisterPayload = {
   machine: { machineId: "machine-1", hostname: "workstation" },
@@ -15,6 +16,9 @@ const askPayload: AskCreatePayload = {
   question: { prompt: "Reconnect?" },
   options: [{ value: "yes", label: "Yes" }]
 };
+
+const LOCAL_POSTBOX_URL = "http://127.0.0.1:32187/";
+const TAILNET_POSTBOX_URL = "https://postbox.tailnet.example:32187";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -58,6 +62,10 @@ class FakeSocket {
     this.emit("message", JSON.stringify(message));
   }
 
+  fail(error: Error): void {
+    this.emit("error", error);
+  }
+
   private emit(event: string, ...args: unknown[]): void {
     for (const listener of this.listeners.get(event) ?? []) listener(...args);
   }
@@ -98,6 +106,66 @@ function socketUrl(serverUrl: string): string {
 }
 
 describe("PostboxClient pending ask resilience", () => {
+  it("status snapshot enriches a real connected local client with Tailnet URL, remote export, and Tailscale diagnostics", async () => {
+    FakeSocket.instances = [];
+    const inspectTailscale = vi.fn(async () => ({
+      state: "served",
+      httpsPort: 32187,
+      tailnetUrl: TAILNET_POSTBOX_URL,
+      diagnostic: "Tailscale Serve points at this Postbox instance."
+    }));
+    const client = createClient({
+      serverUrl: LOCAL_POSTBOX_URL,
+      targetSource: "active-local",
+      targetRole: "production",
+      inspectTailscale
+    });
+    client.start();
+    FakeSocket.instances[0].open();
+
+    const snapshot = await client.getStatusSnapshot({ enabled: true, startedByThisSession: true });
+
+    expect(inspectTailscale).toHaveBeenCalledWith({ localUrl: LOCAL_POSTBOX_URL, role: "production" });
+    expect(snapshot).toMatchObject({
+      connection: {
+        state: "connected",
+        activeUrl: LOCAL_POSTBOX_URL,
+        localUrl: LOCAL_POSTBOX_URL,
+        tailnetUrl: TAILNET_POSTBOX_URL
+      },
+      remoteConfig: `export PI_POSTBOX_URL=${TAILNET_POSTBOX_URL}`,
+      autostart: { enabled: true, startedByThisSession: true },
+      tailscale: {
+        state: "served",
+        diagnostic: "Tailscale Serve points at this Postbox instance.",
+        httpsPort: 32187
+      }
+    });
+    expect(snapshot.diagnostics).toContain("tailscale:served:Tailscale Serve points at this Postbox instance.");
+    client.stop();
+  });
+
+  it("status snapshot preserves socket error and close diagnostics for a disconnected registered client", async () => {
+    FakeSocket.instances = [];
+    const client = createClient({ reconnect: false });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+
+    socket.fail(new Error("ECONNRESET while reading Postbox websocket"));
+    socket.close();
+    const snapshot = await client.getStatusSnapshot();
+    const formatted = formatPostboxStatusSnapshot(snapshot);
+
+    expect(snapshot.connection.state).toBe("disconnected");
+    expect(snapshot.diagnostics).toEqual(
+      expect.arrayContaining(["socket-error:ECONNRESET while reading Postbox websocket", "websocket:disconnected"])
+    );
+    expect(formatted).toContain("Diagnostics:");
+    expect(formatted).not.toContain("Diagnostics: none");
+    client.stop();
+  });
+
   it("does not create a pending ask when the abort signal is already aborted", async () => {
     FakeSocket.instances = [];
     const client = createClient();

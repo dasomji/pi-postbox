@@ -123,6 +123,7 @@ describe("local Postbox fallback", () => {
     socket.open();
 
     const wait = client.ask(askPayload);
+    expect(statuses.at(-1)).toContain("Open http://postbox.local");
     expect(statuses.at(-1)).toContain("/postbox-answer ask-local");
     expect(client.listPendingAsks()).toEqual([expect.objectContaining({ requestId: "ask-local", prompt: "Choose locally?" })]);
 

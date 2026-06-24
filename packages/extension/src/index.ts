@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { SessionRegisterPayload } from "@pi-postbox/protocol";
 import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
+import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
+import { ensurePostboxServerAutostarted, getPostboxAutostartFailureDiagnostic, postboxAutostartTimeoutMs } from "./autostart.js";
 import {
   resolveActiveLocalTarget,
   type ResolveActiveLocalTargetOptions,
@@ -13,6 +15,7 @@ import { getMachineIdentity } from "./machineIdentity.js";
 import { collectProjectMetadata } from "./projectMetadata.js";
 import { collectSessionMetadata } from "./sessionMetadata.js";
 import { askPostboxParameters, executeAskPostbox, formatAskResult, type AskPostboxInput } from "./tools/askPostbox.js";
+import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./status.js";
 
 interface PiLikeApi {
   on(event: string, handler: (event: unknown, ctx: PiLikeContext) => unknown): void;
@@ -55,20 +58,47 @@ interface ActiveLocalSupervisor {
   stop(): void;
 }
 
+interface ActiveSessionRegistrationContext {
+  pi: PiLikeApi;
+  ctx: PiLikeContext;
+  uiScope: SessionUiScope;
+  fallbackSessionIdentity: string;
+  options: StartRegistrationOptions;
+}
+
 const DEFAULT_SUPERVISOR_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_SUPERVISOR_MAX_DELAY_MS = 30_000;
+const AUTOSTART_RECOVERY_METADATA_TTL_MS = 24 * 60 * 60 * 1_000;
 
 let client: PostboxClient | undefined;
 let currentRegistration: SessionRegisterPayload | undefined;
 let semanticStateController: SemanticStateController | undefined;
 let activeUiScope: SessionUiScope | undefined;
 let activeLocalSupervisor: ActiveLocalSupervisor | undefined;
+let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
 let unavailableRationale = "Pi Postbox is not connected.";
+const registrationWaiters = new Set<() => void>();
 
 export default function postboxExtension(pi: PiLikeApi): void {
   semanticStateController = createSemanticStateController(() => client, pi);
   installSemanticStateHandlers(pi, semanticStateController);
-  registerPostboxFallbackCommands(pi, () => client);
+  registerPostboxFallbackCommands(pi, () => client, () => collectExtensionPostboxStatusSnapshot(process.env));
+  registerOpenPostboxCommand(pi, {
+    ensureReady: () => ensureRegistrationForMutatingCaller(process.env),
+    getStatusSnapshot: () => collectExtensionPostboxStatusSnapshot(process.env)
+  });
+  pi.registerTool?.({
+    name: "postbox_status",
+    label: "Postbox Status",
+    description: "Return privacy-preserving Pi Postbox connectivity, operator, and open-question count status.",
+    annotations: { readOnlyHint: true },
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute() {
+      const snapshot = await collectExtensionPostboxStatusSnapshot(process.env);
+      return { content: [{ type: "text", text: formatPostboxStatusSnapshot(snapshot) }], details: snapshot };
+    }
+  });
+
   pi.registerTool?.({
     name: "ask_postbox",
     label: "Ask Postbox",
@@ -79,6 +109,10 @@ export default function postboxExtension(pi: PiLikeApi): void {
     ],
     parameters: askPostboxParameters,
     async execute(_toolCallId: string, params: AskPostboxInput, signal?: AbortSignal) {
+      if (!client || !currentRegistration) {
+        await ensureRegistrationForMutatingCaller(process.env, signal);
+      }
+
       if (!client || !currentRegistration) {
         const result = {
           status: "unavailable" as const,
@@ -99,17 +133,25 @@ export default function postboxExtension(pi: PiLikeApi): void {
     stopActiveLocalSupervisor();
     activeUiScope = createSessionUiScope(ctx);
     const fallbackSessionIdentity = randomUUID();
-    void startRegistration(pi, ctx, process.env, activeUiScope, fallbackSessionIdentity);
+    const options: StartRegistrationOptions = {};
+    activeSessionRegistrationContext = { pi, ctx, uiScope: activeUiScope, fallbackSessionIdentity, options };
+    void startRegistration(pi, ctx, process.env, activeUiScope, fallbackSessionIdentity, options);
   });
 
   pi.on("session_shutdown", () => {
     activeUiScope?.deactivate();
     stopActiveLocalSupervisor();
     activeUiScope = undefined;
+    activeSessionRegistrationContext = undefined;
     client?.stop();
     client = undefined;
     currentRegistration = undefined;
+    notifyRegistrationWaiters();
   });
+}
+
+async function collectExtensionPostboxStatusSnapshot(env: NodeJS.ProcessEnv) {
+  return collectPostboxStatusSnapshot({ client, env, unavailableRationale });
 }
 
 export async function startRegistration(
@@ -151,17 +193,22 @@ async function registerResolvedTarget(
     client?.stop();
     client = new PostboxClient({
       serverUrl: target.url,
+      targetSource: target.source,
+      targetRole: target.role,
       registration,
       ...(target.activeLocalPollingEnabled
         ? {
-            resolveTarget: () => resolveActiveLocalTarget({ ...options.resolveOptions, env }),
+            resolveTarget: createSessionStickyActiveLocalResolver(env, options, target),
             activeLocalPollingEnabled: true
           }
         : {}),
       onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
-      onLocalFallbackStatus: (status) => renderLocalFallbackStatus(uiScope, status)
+      onLocalFallbackStatus: (status) => {
+        void renderLocalFallbackStatus(uiScope, status);
+      }
     });
     client.start();
+    notifyRegistrationWaiters();
   } catch (error) {
     if (!uiScope.isActive()) return;
     const message = error instanceof Error ? error.message : String(error);
@@ -207,7 +254,11 @@ function startNoClientActiveLocalSupervisor(
       return;
     }
 
-    const targetResult = await resolveActiveLocalTarget({ ...options.resolveOptions, env });
+    const targetResult = await resolveActiveLocalTarget({
+      ...options.resolveOptions,
+      ttlMs: options.resolveOptions?.ttlMs ?? AUTOSTART_RECOVERY_METADATA_TTL_MS,
+      env
+    });
     if (stopped || !uiScope.isActive() || client) {
       stop();
       return;
@@ -222,11 +273,6 @@ function startNoClientActiveLocalSupervisor(
       return;
     }
 
-    if (!targetResult.target.activeLocalPollingEnabled) {
-      stop();
-      return;
-    }
-
     stop();
     await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.target, options);
   };
@@ -238,6 +284,171 @@ function startNoClientActiveLocalSupervisor(
 function stopActiveLocalSupervisor(): void {
   activeLocalSupervisor?.stop();
   activeLocalSupervisor = undefined;
+}
+
+function createSessionStickyActiveLocalResolver(
+  env: NodeJS.ProcessEnv,
+  options: StartRegistrationOptions,
+  originalTarget: ResolvedActiveLocalTarget
+): () => Promise<ResolveActiveLocalTargetResult> {
+  return async () => {
+    const result = await resolveActiveLocalTarget({ ...options.resolveOptions, env, skipConfiguredRemote: true });
+    if (result.status !== "selected") return result;
+    if (isSameSessionStickyLocalTarget(originalTarget, result.target)) return result;
+
+    return {
+      status: "unavailable",
+      diagnostics: [
+        ...result.diagnostics,
+        {
+          code: "session-sticky-target-mismatch",
+          source: result.target.source,
+          role: result.target.role
+        }
+      ]
+    };
+  };
+}
+
+function isSameSessionStickyLocalTarget(original: ResolvedActiveLocalTarget, next: ResolvedActiveLocalTarget): boolean {
+  if (next.source !== original.source || next.url !== original.url) return false;
+  if (original.source === "active-local") {
+    return next.role === original.role && next.instanceId === original.instanceId;
+  }
+  return true;
+}
+
+async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promise<boolean> {
+  const context = activeSessionRegistrationContext;
+  if (!context || !context.uiScope.isActive()) return false;
+
+  const targetResult = await resolveActiveLocalTarget({ ...context.options.resolveOptions, env });
+  if (!context.uiScope.isActive()) return false;
+  if (client && (await isCurrentClientConnected())) return true;
+  if (client) {
+    if (clientHasPendingAsks(client)) return true;
+    client.stop();
+    client = undefined;
+    currentRegistration = undefined;
+  }
+
+  if (targetResult.status === "unavailable") {
+    unavailableRationale = formatUnavailableRationale(targetResult);
+    context.uiScope.setStatus("postbox", "Postbox unavailable");
+    return false;
+  }
+
+  stopActiveLocalSupervisor();
+  await registerResolvedTarget(
+    context.pi,
+    context.ctx,
+    env,
+    context.uiScope,
+    context.fallbackSessionIdentity,
+    targetResult.target,
+    context.options
+  );
+  return true;
+}
+
+async function ensureRegistrationForMutatingCaller(env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
+  const targetWasAvailable = await retryRegistrationForMutatingCaller(env);
+  if (client && currentRegistration && (await isCurrentClientConnected())) return;
+  if (targetWasAvailable && client && currentRegistration) return;
+
+  let asyncAutostartFailure: string | undefined;
+  const autostartResult = ensurePostboxServerAutostarted(env, {
+    onFailure: (diagnostic) => {
+      asyncAutostartFailure = diagnostic;
+    }
+  });
+  if (autostartResult.status === "disabled" || autostartResult.status === "failed") {
+    unavailableRationale = `${unavailableRationale} ${autostartResult.diagnostic}`;
+    return;
+  }
+
+  await waitForRegistration(
+    postboxAutostartTimeoutMs(env),
+    env,
+    autostartResult.diagnostic,
+    () => asyncAutostartFailure,
+    signal
+  );
+}
+
+function clientHasPendingAsks(postboxClient: PostboxClient): boolean {
+  return postboxClient.listPendingAsks().length > 0;
+}
+
+async function isCurrentClientConnected(): Promise<boolean> {
+  try {
+    return (await client?.getStatusSnapshot?.())?.connection.state === "connected";
+  } catch {
+    return false;
+  }
+}
+
+function waitForRegistration(
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv,
+  autostartDiagnostic: string,
+  getAsyncAutostartFailure: () => string | undefined,
+  signal?: AbortSignal
+): Promise<void> {
+  if (client && currentRegistration) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(new Error("ask_postbox was aborted"));
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let polling = false;
+
+    const settle = (kind: "resolve" | "reject", error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (pollTimer) clearInterval(pollTimer);
+      registrationWaiters.delete(onRegistered);
+      signal?.removeEventListener("abort", onAbort);
+      if (kind === "reject") reject(error ?? new Error("ask_postbox was aborted"));
+      else resolve();
+    };
+
+    const pollForRegistration = async () => {
+      if (settled || polling || client) return;
+      polling = true;
+      try {
+        await retryRegistrationForMutatingCaller(env);
+        if (client && currentRegistration) settle("resolve");
+      } finally {
+        polling = false;
+      }
+    };
+
+    const onRegistered = () => settle("resolve");
+    const onAbort = () => settle("reject", new Error("ask_postbox was aborted"));
+
+    registrationWaiters.add(onRegistered);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    pollTimer = setInterval(() => {
+      void pollForRegistration();
+    }, 100);
+    pollTimer.unref?.();
+    timeout = setTimeout(() => {
+      const failureDiagnostic = getAsyncAutostartFailure() ?? getPostboxAutostartFailureDiagnostic(env);
+      unavailableRationale = failureDiagnostic
+        ? `Pi Postbox autostart failed before healthy active-local metadata was available. ${failureDiagnostic}`
+        : `Pi Postbox autostart timed out after ${timeoutMs}ms waiting for healthy active-local metadata. ${autostartDiagnostic}`;
+      settle("resolve");
+    }, timeoutMs);
+    timeout.unref?.();
+    void pollForRegistration();
+  });
+}
+
+function notifyRegistrationWaiters(): void {
+  for (const waiter of [...registrationWaiters]) waiter();
 }
 
 export async function collectRegistrationPayload(
@@ -282,13 +493,25 @@ function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
   };
 }
 
-function renderLocalFallbackStatus(uiScope: SessionUiScope, status: LocalFallbackStatus | undefined): void {
+async function renderLocalFallbackStatus(uiScope: SessionUiScope, status: LocalFallbackStatus | undefined): Promise<void> {
   if (!status) {
     uiScope.setStatus("postbox-ask", "");
     uiScope.setWidget("postbox-ask", []);
     return;
   }
-  uiScope.setStatus("postbox-ask", `Waiting ${status.requestId}`);
-  uiScope.setWidget("postbox-ask", [status.message]);
-  uiScope.notify(status.message, "info");
+
+  const displayUrl = await resolveAskDisplayUrl(status);
+  const message = status.message.replace(`Open ${status.serverUrl} to answer.`, `Open ${displayUrl} to answer.`);
+  uiScope.setStatus("postbox-ask", `Postbox ${displayUrl}`);
+  uiScope.setWidget("postbox-ask", [message]);
+  uiScope.notify(message, "info");
+}
+
+async function resolveAskDisplayUrl(status: LocalFallbackStatus): Promise<string> {
+  try {
+    const snapshot = await client?.getStatusSnapshot?.();
+    return snapshot?.connection.tailnetUrl ?? status.serverUrl;
+  } catch {
+    return status.serverUrl;
+  }
 }
