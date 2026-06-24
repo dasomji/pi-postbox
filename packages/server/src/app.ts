@@ -14,11 +14,14 @@ import { openPostboxDatabase } from "./db/database.js";
 import { registerAdminRoutes } from "./routes/adminRoutes.js";
 import { registerHistoryRoutes } from "./routes/historyRoutes.js";
 import { registerMetadataRoutes } from "./routes/metadataRoutes.js";
+import { registerPushRoutes } from "./routes/pushRoutes.js";
 import { registerRequestRoutes } from "./routes/requestRoutes.js";
 import { registerSseRoutes } from "./routes/sseRoutes.js";
 import { registerStateRoutes } from "./routes/stateRoutes.js";
 import { StateBroadcaster } from "./services/broadcaster.js";
 import { HistoryService } from "./services/historyService.js";
+import { PushNotifier, type PushSender } from "./services/pushNotifier.js";
+import { PushStore } from "./services/pushStore.js";
 import { RequestStore } from "./services/requestStore.js";
 import { SessionStore } from "./services/sessionStore.js";
 import { registerExtensionSocket } from "./ws/extensionSocket.js";
@@ -38,6 +41,9 @@ export interface CreatePostboxAppOptions {
   historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
+  vapidPublicKey?: string;
+  vapidPrivateKey?: string;
+  pushSender?: PushSender;
   localTarget?: () => ActiveLocalTargetIdentity | undefined;
   // Supplied by the CLI so POST /admin/shutdown (loopback-only) can stop the process.
   onShutdownRequest?: () => void;
@@ -88,6 +94,11 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     offlineAfterMs: options.offlineAfterMs ?? 120_000
   });
   const requestStore = new RequestStore(db, now, { askTimeoutMs: options.askTimeoutMs });
+  const pushStore = new PushStore(db, now, {
+    publicKey: options.vapidPublicKey,
+    privateKey: options.vapidPrivateKey
+  });
+  const pushNotifier = new PushNotifier(pushStore, sessionStore, options.pushSender);
   const historyService = new HistoryService(db, requestStore, now, {
     maxAgeMs: options.historyRetentionMaxAgeMs,
     maxRecords: options.historyRetentionMaxRecords
@@ -144,9 +155,10 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   await registerSseRoutes(app, broadcaster);
   await registerMetadataRoutes(app, sessionStore, broadcaster);
   await registerHistoryRoutes(app, historyService, broadcaster, pruneHistory);
+  await registerPushRoutes(app, pushStore);
   await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast);
   await registerAdminRoutes(app, { onShutdownRequest: options.onShutdownRequest });
-  await registerExtensionSocket(app, sessionStore, requestStore, broadcaster, expireDueAndBroadcast);
+  await registerExtensionSocket(app, sessionStore, requestStore, broadcaster, expireDueAndBroadcast, pushNotifier);
 
   app.get("/healthz", async () => {
     const response = createHealthResponse({

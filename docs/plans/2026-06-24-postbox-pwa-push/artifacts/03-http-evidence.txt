@@ -1,0 +1,74 @@
+# Unit 03 HTTP product evidence
+
+## Server startup log
+{"level":30,"time":1782313670638,"pid":501826,"hostname":"Coolify","msg":"Server listening at http://127.0.0.1:33287"}
+pi-postbox-server listening on http://127.0.0.1:33287
+Tailscale Serve: disabled by --no-tailscale or PI_POSTBOX_TAILSCALE=off
+{"level":30,"time":1782313670671,"pid":501826,"hostname":"Coolify","reqId":"req-1","req":{"method":"GET","url":"/healthz","host":"127.0.0.1:33287","remoteAddress":"127.0.0.1","remotePort":33252},"msg":"incoming request"}
+{"level":30,"time":1782313670678,"pid":501826,"hostname":"Coolify","reqId":"req-1","res":{"statusCode":200},"responseTime":5.878962516784668,"msg":"request completed"}
+
+## GET / (manifest/theme metadata excerpts)
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Pi Postbox</title>
+
+## GET /manifest.webmanifest
+{
+  "name": "Pi Postbox",
+  "short_name": "Postbox",
+  "description": "Remote human decision handoffs for Pi sessions.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/icons/postbox-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/postbox-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
+
+## GET /sw.js (handler excerpts)
+self.addEventListener("install", () => {
+  self.skipWaiting();
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+self.addEventListener("fetch", (event) => {
+  event.respondWith(fetch(event.request));
+self.addEventListener("push", (event) => {
+    self.registration.showNotification(payload.title, {
+self.addEventListener("notificationclick", (event) => {
+  const windows = await clients.matchAll({ type: "window", includeUncontrolled: true });
+  return clients.openWindow(APP_URL);
+
+## Icon headers
+HTTP/1.1 200 OK
+accept-ranges: bytes
+cache-control: public, max-age=0
+last-modified: Wed, 24 Jun 2026 15:07:20 GMT
+etag: W/"601-19efa2be22c"
+content-type: image/png
+content-length: 1537
+Date: Wed, 24 Jun 2026 15:07:50 GMT
+Connection: keep-alive
+Keep-Alive: timeout=72
+HTTP/1.1 200 OK
+accept-ranges: bytes
+cache-control: public, max-age=0
+last-modified: Wed, 24 Jun 2026 15:07:20 GMT
+etag: W/"1155-19efa2be22b"
+content-type: image/png
+content-length: 4437
+Date: Wed, 24 Jun 2026 15:07:50 GMT
+Connection: keep-alive
+Keep-Alive: timeout=72

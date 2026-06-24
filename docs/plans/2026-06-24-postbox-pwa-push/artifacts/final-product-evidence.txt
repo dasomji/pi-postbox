@@ -1,0 +1,17 @@
+baseUrl=http://127.0.0.1:43857
+pushConfig={"available":true,"publicKey":"BFinalVerifyConfiguredPublicKey","source":"configured"}
+manifestStatus=200 display=standalone icons=192x192,512x512
+serviceWorkerStatus=200 hasPush=true hasNotificationClick=true
+saveSubscriptionStatus=204
+invalidEndpointStatus=400 invalidEndpointBody={"error":"invalid_push_subscription","message":"[\n  {\n    \"code\": \"custom\",\n    \"message\": \"Expected an https Web Push endpoint with a public host\",\n    \"path\": [\n      \"endpoint\"\n    ]\n  }\n]"}
+registerReply={"type":"registered","requestId":"register-final","payload":{"sessionId":"session-final","presence":"live"}}
+askReply={"type":"ask.created","requestId":"wire-final-ask","payload":{"requestId":"ask-final","status":"pending"}}
+firstSendCount=1
+firstPushPayload={"title":"New Postbox question","body":"Final Project · Final Session needs your input.","data":{"type":"ask.created","requestId":"ask-final","sessionId":"session-final","projectId":"project-final","projectName":"Final Project","sessionTitle":"Final Session"}}
+promptLeak=false
+duplicateAskReply={"type":"ask.created","requestId":"wire-final-ask","payload":{"requestId":"ask-final","status":"pending"}}
+sendCountAfterDuplicate=1
+deleteSubscriptionStatus=204
+generatedVapidSource=generated
+generatedVapidPublicKeyStable=true
+generatedVapidMessage=present

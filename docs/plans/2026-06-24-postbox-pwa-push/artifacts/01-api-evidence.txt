@@ -1,0 +1,12 @@
+GET /api/push/config first restart status: 200
+first config: {"available":true,"publicKey":"<redacted>","source":"generated","message":"Generated local VAPID keys are persisted in this Postbox database; configure stable production keys before depending on long-lived browser subscriptions.","publicKeyLength":87}
+GET /api/push/config second restart status: 200
+second config same public key: true
+GET /api/push/config configured status/body: 200 {"available":true,"publicKey":"BConfiguredStableVapidPublicKey","source":"configured"}
+POST /api/push/subscriptions first/second statuses: 204 204
+push_subscriptions count after duplicate upsert: 1
+DELETE /api/push/subscriptions status: 204
+push_subscriptions count after delete: 0
+POST malformed /api/push/subscriptions status/body: 400 {"error":"invalid_push_subscription","message":"[\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"undefined\",\n    \"path\": [\n      \"keys\",\n      \"auth\"\n    ],\n    \"message\": \"Required\"\n  }\n]"}
+no sendNotification/setVapidDetails calls in Unit 01 source/test paths
+GET /api/push/config env-configured status/body: 200 {"available":true,"publicKey":"BEnvConfiguredVapidPublicKey","source":"configured"}

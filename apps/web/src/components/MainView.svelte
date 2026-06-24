@@ -4,6 +4,7 @@
   import { store } from "../lib/store.svelte";
   import EmptyMain from "./EmptyMain.svelte";
   import HistoryView from "./HistoryView.svelte";
+  import OpenQuestionsQueue from "./OpenQuestionsQueue.svelte";
   import QuestionDetail from "./QuestionDetail.svelte";
   import SessionDetail from "./SessionDetail.svelte";
 
@@ -33,6 +34,6 @@
   {:else if selection.kind === "history"}
     <HistoryView />
   {:else}
-    <EmptyMain title="Pi Postbox" message="Select an agent or a question from the sidebar to get started." />
+    <OpenQuestionsQueue />
   {/if}
 </main>

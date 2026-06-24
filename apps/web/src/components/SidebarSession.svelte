@@ -4,11 +4,21 @@
   import { store } from "../lib/store.svelte";
   import StatusDot from "./StatusDot.svelte";
 
-  let { session }: { session: SessionSnapshot } = $props();
+  let { session, onNavigate }: { session: SessionSnapshot; onNavigate?: () => void } = $props();
 
   const questions = $derived(store.openQuestionsFor(session.sessionId));
   const dot = $derived(sessionDot(session, questions.length > 0));
   const selected = $derived(store.selection.kind === "session" && store.selection.sessionId === session.sessionId);
+
+  function selectSession(): void {
+    store.selectSession(session.sessionId);
+    onNavigate?.();
+  }
+
+  function selectRequest(requestId: string): void {
+    store.selectRequest(requestId);
+    onNavigate?.();
+  }
 </script>
 
 <li>
@@ -16,7 +26,7 @@
     class="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition hover:bg-white/5 {selected
       ? 'bg-white/10'
       : ''}"
-    onclick={() => store.selectSession(session.sessionId)}
+    onclick={selectSession}
     title={dotLabel[dot]}
   >
     <StatusDot color={dot} />
@@ -35,7 +45,7 @@
             class="block w-full truncate rounded-md px-2 py-1 text-left text-xs transition hover:bg-white/5 hover:text-postbox-text {active
               ? 'bg-attention/10 text-attention-foreground'
               : 'text-postbox-subtle'}"
-            onclick={() => store.selectRequest(question.requestId)}
+            onclick={() => selectRequest(question.requestId)}
             title={question.question.prompt}
           >
             {question.question.prompt}

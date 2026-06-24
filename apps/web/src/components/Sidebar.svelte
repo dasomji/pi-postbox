@@ -1,11 +1,20 @@
 <script lang="ts">
   import { store } from "../lib/store.svelte";
   import ConnectionBadge from "./ConnectionBadge.svelte";
+  import NotificationSubscriptionControl from "./NotificationSubscriptionControl.svelte";
   import ProjectIcon from "./ProjectIcon.svelte";
+  import PwaInstallButton from "./PwaInstallButton.svelte";
   import SidebarSession from "./SidebarSession.svelte";
+
+  let { onNavigate }: { onNavigate?: () => void } = $props();
 
   const projects = $derived(store.projects);
   const historyActive = $derived(store.selection.kind === "history");
+
+  function showHistory(): void {
+    store.showHistory();
+    onNavigate?.();
+  }
 </script>
 
 <aside class="flex h-full min-h-0 w-full shrink-0 flex-col border-b border-postbox-border bg-postbox-surface/60 md:h-full md:max-w-xs md:border-b-0 md:border-r">
@@ -39,7 +48,7 @@
           </div>
           <ul class="space-y-0.5">
             {#each project.sessions as session (session.sessionId)}
-              <SidebarSession {session} />
+              <SidebarSession {session} {onNavigate} />
             {/each}
           </ul>
         </section>
@@ -47,12 +56,14 @@
     {/if}
   </div>
 
-  <footer class="border-t border-postbox-border px-2 py-2">
+  <footer class="space-y-2 border-t border-postbox-border px-2 py-2">
+    <PwaInstallButton />
+    <NotificationSubscriptionControl />
     <button
       class="w-full rounded-lg px-3 py-2 text-left text-sm text-postbox-subtle transition hover:bg-white/5 {historyActive
         ? 'bg-white/10 text-postbox-text'
         : ''}"
-      onclick={() => store.showHistory()}
+      onclick={showHistory}
     >
       Decision history
     </button>

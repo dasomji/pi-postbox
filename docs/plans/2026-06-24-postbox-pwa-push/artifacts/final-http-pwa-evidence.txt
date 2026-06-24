@@ -1,0 +1,44 @@
+# Final HTTP/PWA asset evidence
+base=http://127.0.0.1:42371
+
+## /healthz
+{
+  "ok": true,
+  "service": "pi-postbox",
+  "version": "0.1.0"
+}
+
+## /manifest.webmanifest
+{
+  "name": "Pi Postbox",
+  "short_name": "Postbox",
+  "start_url": "/",
+  "display": "standalone",
+  "icons": [
+    {
+      "src": "/icons/postbox-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/postbox-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+
+## /sw.js contains handlers
+{
+  "hasInstall": true,
+  "hasPush": true,
+  "hasNotificationClick": true
+}
+
+## /api/push/config
+{
+  "available": true,
+  "source": "generated",
+  "hasPublicKey": true,
+  "message": "Generated local VAPID keys are persisted in this Postbox database; configure stable production keys before depending on long-lived browser subscriptions."
+}

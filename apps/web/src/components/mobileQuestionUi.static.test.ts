@@ -49,6 +49,25 @@ describe("Unit 02 mobile-first question UI static contract", () => {
     });
   });
 
+  it("closes mobile navigation after selecting a sidebar destination", () => {
+    const appSource = readSource("App.svelte");
+    const sidebarSource = readSource("components/Sidebar.svelte");
+    const sidebarSessionSource = readSource("components/SidebarSession.svelte");
+    const mobileNavigationBlock = appSource.slice(appSource.indexOf("{#if mobileNavigationOpen}"));
+
+    expect({
+      mobileSidebarReceivesCloseCallback: /<Sidebar\s+onNavigate=\{closeMobileNavigation\}\s*\/>/.test(mobileNavigationBlock),
+      sidebarAcceptsNavigateCallback: /onNavigate\??:\s*\(\)\s*=>\s*void/.test(sidebarSource),
+      sessionSelectionInvokesNavigate: /store\.selectSession\(session\.sessionId\)[\s\S]*onNavigate\?\.\(\)/.test(sidebarSessionSource),
+      questionSelectionInvokesNavigate: /store\.selectRequest\(requestId\)[\s\S]*onNavigate\?\.\(\)/.test(sidebarSessionSource)
+    }).toEqual({
+      mobileSidebarReceivesCloseCallback: true,
+      sidebarAcceptsNavigateCallback: true,
+      sessionSelectionInvokesNavigate: true,
+      questionSelectionInvokesNavigate: true
+    });
+  });
+
   it("keeps desktop and tablet-wide layouts on a persistent sidebar beside the main view", () => {
     const appSource = readSource("App.svelte");
     const sidebarSource = readSource("components/Sidebar.svelte");

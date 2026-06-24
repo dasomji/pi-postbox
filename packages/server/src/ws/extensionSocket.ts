@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
 import type { StateBroadcaster } from "../services/broadcaster.js";
+import type { PushNotifier } from "../services/pushNotifier.js";
 import { RequestStoreError, type RequestStore } from "../services/requestStore.js";
 import type { SessionStore } from "../services/sessionStore.js";
 
@@ -38,7 +39,8 @@ export async function registerExtensionSocket(
   sessionStore: SessionStore,
   requestStore: RequestStore,
   broadcaster: StateBroadcaster,
-  expireDue: () => unknown = () => undefined
+  expireDue: () => unknown = () => undefined,
+  pushNotifier?: PushNotifier
 ): Promise<void> {
   app.get("/api/extension/ws", { websocket: true }, (socket, request) => {
     const origin = request.headers.origin;
@@ -106,6 +108,7 @@ export async function registerExtensionSocket(
       if (message.type === "ask.create") {
         try {
           expireDue();
+          const alreadyExisted = requestStore.get(message.payload.requestId) !== undefined;
           const snapshot = requestStore.create(message.payload);
           broadcaster.broadcast();
           if (snapshot.result) {
@@ -117,6 +120,11 @@ export async function registerExtensionSocket(
             requestId: message.requestId,
             payload: { requestId: snapshot.requestId, status: "pending" }
           });
+          if (!alreadyExisted) {
+            void pushNotifier?.notifyNewPendingAsk(snapshot).catch((error: unknown) => {
+              app.log.warn({ error, requestId: snapshot.requestId }, "failed to send new ask push notification");
+            });
+          }
           const unsubscribe = requestStore.onResolved(snapshot.requestId, (result) => {
             if (socket.readyState === 1) {
               send(socket, { type: "ask.resolved", requestId: snapshot.requestId, payload: result });

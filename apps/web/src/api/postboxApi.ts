@@ -1,9 +1,12 @@
 import {
   HealthResponseSchema,
   HistoryResponseSchema,
+  PushConfigResponseSchema,
   StateSnapshotSchema,
   type HealthResponse,
   type HistoryResponse,
+  type PushConfigResponse,
+  type PushSubscriptionPayload,
   type StateSnapshot
 } from "@pi-postbox/protocol";
 
@@ -23,6 +26,32 @@ export async function fetchHistory(): Promise<HistoryResponse> {
   const response = await fetch("/api/history");
   if (!response.ok) throw new Error(`History failed with ${response.status}`);
   return HistoryResponseSchema.parse(await response.json());
+}
+
+export async function fetchPushConfig(): Promise<PushConfigResponse> {
+  const response = await fetch("/api/push/config");
+  if (!response.ok) throw new Error(`Push config failed with ${response.status}`);
+  return PushConfigResponseSchema.parse(await response.json());
+}
+
+export async function savePushSubscription(subscription: PushSubscriptionPayload): Promise<void> {
+  const response = await fetch("/api/push/subscriptions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(subscription)
+  });
+
+  if (!response.ok) throw new Error(`Push subscription save failed with ${response.status}`);
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  const response = await fetch("/api/push/subscriptions", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint })
+  });
+
+  if (!response.ok) throw new Error(`Push subscription delete failed with ${response.status}`);
 }
 
 export async function postJson(path: string, payload: unknown): Promise<void> {
