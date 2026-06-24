@@ -21,7 +21,7 @@ afterEach(async () => {
 });
 
 describe("active-local extension target resolver", () => {
-  it("keeps an explicit non-loopback PI_POSTBOX_URL authoritative and disables active-local recovery", async () => {
+  it("selects a healthy explicit non-loopback PI_POSTBOX_URL after verifying remote health", async () => {
     const env = await tempConfigEnv({ PI_POSTBOX_URL: "https://postbox.tailnet.example:32187" });
     await writeMetadata(env, {
       role: "dev",
@@ -30,6 +30,7 @@ describe("active-local extension target resolver", () => {
       updatedAt: new Date(NOW_MS).toISOString()
     });
     const health = healthFetch({
+      "https://postbox.tailnet.example:32187/healthz": createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS }),
       "http://127.0.0.1:3500/healthz": healthResponse({ role: "dev", instanceId: DEV_INSTANCE_ID, url: "http://127.0.0.1:3500/" })
     });
 
@@ -43,7 +44,52 @@ describe("active-local extension target resolver", () => {
         activeLocalPollingEnabled: false
       }
     });
-    expect(health.fetch).not.toHaveBeenCalled();
+    expect(health.fetch).toHaveBeenCalledTimes(1);
+    expect(health.fetch).toHaveBeenCalledWith(new URL("https://postbox.tailnet.example:32187/healthz"), expect.any(Object));
+  });
+
+  it("falls back to fresh healthy active-local metadata when configured serverUrl remote health fails", async () => {
+    const env = await tempConfigEnv();
+    await writeConfig(env, { serverUrl: "https://postbox.tailnet.example:32187" });
+    await writeMetadata(env, {
+      role: "dev",
+      instanceId: DEV_INSTANCE_ID,
+      url: "http://127.0.0.1:3500/",
+      updatedAt: new Date(NOW_MS).toISOString()
+    });
+    const health = healthFetch({
+      "https://postbox.tailnet.example:32187/healthz": new Error("remote unavailable"),
+      "http://127.0.0.1:3500/healthz": healthResponse({ role: "dev", instanceId: DEV_INSTANCE_ID, url: "http://127.0.0.1:3500/" })
+    });
+
+    const result = await resolveActiveLocalTarget({ env, fetch: health.fetch, nowMs: NOW_MS, ttlMs: TTL_MS });
+
+    expect(result).toMatchObject({
+      status: "selected",
+      target: {
+        source: "active-local",
+        role: "dev",
+        instanceId: DEV_INSTANCE_ID,
+        url: "http://127.0.0.1:3500/",
+        activeLocalPollingEnabled: true
+      }
+    });
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "health-unreachable", source: "explicit-remote" }));
+    expect(health.fetch).toHaveBeenCalledWith(new URL("https://postbox.tailnet.example:32187/healthz"), expect.any(Object));
+    expect(health.fetch).toHaveBeenCalledWith(new URL("http://127.0.0.1:3500/healthz"), expect.any(Object));
+  });
+
+  it("reports an explicit remote health failure instead of selecting an unreachable PI_POSTBOX_URL", async () => {
+    const env = await tempConfigEnv({ PI_POSTBOX_URL: "https://postbox.tailnet.example:32187" });
+    const health = healthFetch({
+      "https://postbox.tailnet.example:32187/healthz": new Error("remote unavailable")
+    });
+
+    const result = await resolveActiveLocalTarget({ env, fetch: health.fetch, nowMs: NOW_MS, ttlMs: TTL_MS });
+
+    expect(result).toMatchObject({ status: "unavailable" });
+    expect(result).not.toMatchObject({ target: { source: "explicit-remote" } });
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "health-unreachable", source: "explicit-remote" }));
   });
 
   it("does not treat DNS hostnames beginning with 127 as recoverable loopback configuration", async () => {
@@ -55,6 +101,7 @@ describe("active-local extension target resolver", () => {
       updatedAt: new Date(NOW_MS).toISOString()
     });
     const health = healthFetch({
+      "http://127.evil.example:32187/healthz": createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS }),
       "http://127.0.0.1:3500/healthz": healthResponse({ role: "dev", instanceId: DEV_INSTANCE_ID, url: "http://127.0.0.1:3500/" })
     });
 
@@ -68,7 +115,8 @@ describe("active-local extension target resolver", () => {
         activeLocalPollingEnabled: false
       }
     });
-    expect(health.fetch).not.toHaveBeenCalled();
+    expect(health.fetch).toHaveBeenCalledTimes(1);
+    expect(health.fetch).toHaveBeenCalledWith(new URL("http://127.evil.example:32187/healthz"), expect.any(Object));
   });
 
   it("selects fresh healthy dev metadata over fresh healthy production when no URL is configured", async () => {
@@ -261,14 +309,18 @@ function healthResponse(localTarget: ActiveLocalTargetIdentity) {
   return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget });
 }
 
-function healthFetch(responses: Record<string, unknown>) {
+function healthFetch(responses: Record<string, unknown | Error>) {
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     expect(init?.redirect).toBe("manual");
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     if (!(url in responses)) {
       throw new Error(`Unexpected health probe ${url}`);
     }
-    return new Response(JSON.stringify(responses[url]), {
+    const response = responses[url];
+    if (response instanceof Error) {
+      throw response;
+    }
+    return new Response(JSON.stringify(response), {
       status: 200,
       headers: { "content-type": "application/json" }
     });

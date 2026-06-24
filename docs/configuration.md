@@ -13,11 +13,14 @@ After building the workspace, run the server CLI with:
 node packages/server/dist/cli.js
 ```
 
-When installed from an npm package, the same binary is exposed as:
+When installed from the public npm package for manual shell use, install the global CLI first and then run the binary:
 
 ```bash
+npm install -g @wienerberliner/pi-postbox
 pi-postbox-server
 ```
+
+This global install is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs the Pi resources and bundled package-local autostart support but does not put `pi-postbox-server` on your shell `PATH`.
 
 The CLI prints the actual listening URL. Port `32187` is the preferred default; if it is already in use, the server chooses another local port and prints that URL instead.
 
@@ -82,7 +85,11 @@ Active-local routing is local-only self-healing for stale or missing loopback co
 
 Config base convention: `PI_POSTBOX_CONFIG_DIR`, else the dirname of `PI_POSTBOX_CONFIG_PATH`, else `~/.pi-postbox`. Active-local role files live at `<base>/active-local/dev.json` and `<base>/active-local/production.json`; these path conventions are commonly referenced as `active-local/dev.json` and `active-local/production.json`.
 
-Selection uses the effective env-over-config URL first. An explicit non-loopback `PI_POSTBOX_URL` or configured `serverUrl` such as a Tailscale or hosted URL is authoritative, disables active-local polling/live retargeting, and is not a local recovery candidate. A missing URL or loopback URL may recover through fresh, healthy active-local metadata. The extension prefers dev over production while the `dev` target is fresh and healthy, uses production fallback when dev is stale or unhealthy, and may use a configured-loopback fallback only after health verification.
+Selection uses the effective env-over-config URL first. A configured `PI_POSTBOX_URL` or `serverUrl` such as a Tailscale or hosted URL is a preferred Postbox server: the extension health-checks it first, and when healthy it is authoritative for that registration. If the preferred server is unreachable or unavailable, the extension may fall back to fresh, healthy active-local metadata or package-local autostart. Remote URLs themselves are not local recovery candidates; active-local metadata and package-local autostart are the recovery candidates. A missing URL or loopback URL may also recover through fresh, healthy active-local metadata. The extension prefers dev over production while the `dev` target is fresh and healthy, uses production fallback when dev is stale or unhealthy, and may use a configured-loopback fallback only after health verification.
+
+After a Pi Session registers with a fallback/autostarted server, that session is sticky: it remains attached to the fallback until `/reload` or restart instead of migrating mid-session if the preferred server later comes back.
+
+Package-local autostart is enabled by default for mutating Postbox actions that need a server (`ask_postbox` and the user-only `/postbox` dashboard command). Set `PI_POSTBOX_AUTOSTART=off` to opt out. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to control how long the extension waits for the started server; the default wait is 10 seconds (`10000` ms).
 
 Operational diagnostics are sanitized categories such as `missing`/no active local server, `stale`, `unhealthy`, `unsafe` or malformed metadata, symlink/oversized metadata, `health mismatch`, explicit remote selection, configured-loopback fallback, and `deferred switching` while pinned work drains.
 
@@ -102,7 +109,7 @@ Repos can include a `.pi-postbox.json` file to improve display metadata:
 
 The icon path is resolved by the extension on the Pi machine, converted into a small data URL/hash, and uploaded during registration. The server never assumes it can read files from the Pi machine filesystem.
 
-## Local fallback commands
+## Local fallback commands and browser command
 
 While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
 
@@ -111,6 +118,10 @@ While `ask_postbox` is pending, the extension shows compact command hints. Opera
 /postbox-answer [requestId] value[,value2] [--note text] [--rationale text]
 /postbox-cancel [requestId] [--note text] [--rationale text]
 ```
+
+`/postbox-status` reports connectivity, active/local URL, Tailnet URL/export line when available, open-question count, autostart state, and diagnostics. It is privacy-preserving: status includes counts only and never pending question contents, option labels, answers, notes, or history. The read-only `postbox_status` tool returns equivalent structured fields for agents.
+
+Use `/postbox` to open the active dashboard in the user's browser. `/postbox` may use the same recovery/autostart path as `ask_postbox` when disconnected, but it remains a user-only manual browser-opening command; no LLM tool or agent side effect can open the browser.
 
 ## Health and status endpoints
 

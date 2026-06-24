@@ -52,20 +52,31 @@ Source-checkout install for Pi extension development:
 ```bash
 npm install
 npm run build
-pi install /absolute/path/to/pi-postbox
+pi install /full/location/to/pi-postbox
 ```
 
-Published extension package install shape:
+Install the published Pi package resources:
 
 ```bash
-pi install npm:@pi-postbox/extension
+pi install npm:@wienerberliner/pi-postbox
 ```
 
-Installed server package run shape:
+`pi install npm:@wienerberliner/pi-postbox` installs the Pi resources/extension resources plus bundled package-local autostart support. It does not modify your shell environment or provide global binaries.
+
+From this source checkout, run the server binary through npm so the workspace-local `node_modules/.bin` is used:
 
 ```bash
+npm exec --workspace @pi-postbox/server -- pi-postbox-server
+```
+
+Install the optional shell CLI separately for manual shell command usage:
+
+```bash
+npm install -g @wienerberliner/pi-postbox
 pi-postbox-server
 ```
+
+`npm install -g @wienerberliner/pi-postbox` is only needed when you want `pi-postbox-server` on your shell `PATH`; it is distinct from `pi install`.
 
 ## Server configuration
 
@@ -92,7 +103,9 @@ The extension reads `PI_POSTBOX_URL` or `~/.pi-postbox/config.json`:
 
 Override config location with `PI_POSTBOX_CONFIG_PATH` or `PI_POSTBOX_CONFIG_DIR`. The extension creates a generated machine id on first startup and persists it in this config file. That generated machine id is stable across sessions; hostname and dashboard aliases provide human-readable names.
 
-For local self-healing, the server publishes active-local metadata under the Postbox config base: `PI_POSTBOX_CONFIG_DIR`, else the dirname of `PI_POSTBOX_CONFIG_PATH`, else `~/.pi-postbox`. Role files are `<base>/active-local/dev.json` and `<base>/active-local/production.json`. The extension uses effective env-over-config precedence: an explicit non-loopback `PI_POSTBOX_URL` or configured Tailscale/hosted `serverUrl` is authoritative and disables local recovery; missing or loopback config may recover through fresh health-verified active-local metadata.
+For local self-healing, the server publishes active-local metadata under the Postbox config base: `PI_POSTBOX_CONFIG_DIR`, else the dirname of `PI_POSTBOX_CONFIG_PATH`, else `~/.pi-postbox`. Role files are `<base>/active-local/dev.json` and `<base>/active-local/production.json`. The extension uses effective env-over-config precedence: a configured `PI_POSTBOX_URL` or `serverUrl` is a preferred Postbox server that is tried first. If that preferred server is unreachable or unavailable, the extension may fall back to fresh health-verified active-local metadata or package-local autostart. Once the Pi Session registers with a fallback/autostarted server, the session remains attached to that server until `/reload` or restart rather than switching mid-session.
+
+Package-local autostart is enabled by default for `ask_postbox` and the user-only `/postbox` dashboard command. Set `PI_POSTBOX_AUTOSTART=off` to disable spawning a bundled server. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the recovery wait; the default is 10 seconds (`10000` ms).
 
 Repo-local project display metadata can be set with `.pi-postbox.json`:
 
@@ -133,7 +146,7 @@ Remote Pi machines remain explicit: copy the `export PI_POSTBOX_URL=` line from 
 
 See [`docs/configuration.md`](docs/configuration.md), [`docs/deployment.md`](docs/deployment.md), and [`docs/protocol.md`](docs/protocol.md) for operator details, endpoint contracts, and manual testing.
 
-## Local fallback commands
+## Local fallback commands and status
 
 While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
 
@@ -142,3 +155,9 @@ While `ask_postbox` is pending, the extension shows compact command hints. Opera
 /postbox-answer [requestId] value[,value2] [--note text] [--rationale text]
 /postbox-cancel [requestId] [--note text] [--rationale text]
 ```
+
+`/postbox-status` reports privacy-preserving operator status: connectivity, active local URL when known, Tailnet URL/export guidance when available, open-question count, autostart state, and diagnostics. It does not dump pending question contents, options, answers, notes, or history. The read-only `postbox_status` tool exposes the same structured status for agents without leaking question text.
+
+Use the exact user command `/postbox` to open the active Postbox dashboard in your browser. `/postbox` is a user-only/manual browser-opening command; browser opening is not exposed to LLM tools or agent tool side effects.
+
+Terminology note: an explicit non-loopback URL is a configured URL whose host is not localhost/loopback, typically a Tailnet or hosted Postbox URL.

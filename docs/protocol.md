@@ -62,6 +62,12 @@ Server messages:
 
 Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.
 
+## Status and browser command boundaries
+
+The `/postbox-status` user command and read-only `postbox_status` tool expose privacy-preserving operational status: connection state, active/local URL when known, Tailnet/export guidance when available, open-question count, autostart state, and diagnostics. They do not expose pending question contents, options, answers, notes, or history.
+
+The `/postbox` user command opens the active dashboard in the user's browser, using recovery/autostart if needed. Browser-opening is user-only/manual behavior and is not exposed through an LLM tool or agent side effect.
+
 ## Rich context and result hygiene
 
 Ask requests may include:
@@ -97,9 +103,11 @@ Presence is derived by the server from WebSocket connection and heartbeat timing
 
 Active-local routing has no broad discovery and performs no port scanning. Clients read only `active-local/dev.json` and `active-local/production.json` from the configured Postbox base, prefer dev over production while fresh and healthy, and use production fallback when dev is stale or unhealthy.
 
-Effective env-over-config precedence is preserved. An explicit non-loopback `PI_POSTBOX_URL` or configured Tailscale/hosted URL is authoritative, not local recovery candidates, and disables local live retargeting. Missing or loopback config can use health-verified metadata; a configured loopback fallback is also health-verified.
+Effective env-over-config precedence is preserved. A configured `PI_POSTBOX_URL` or configured Tailscale/hosted URL is a preferred Postbox server. The client verifies preferred-server health first; when healthy, the preferred target is authoritative for that registration. If the preferred server is unreachable or unavailable, clients may use local fallback through health-verified active-local metadata or package-local autostart. Remote URLs themselves are not local recovery candidates; metadata and autostart are the recovery paths. Missing or loopback config can use health-verified metadata; a configured loopback fallback is also health-verified.
 
-For active-local sessions, live retargeting may move a running client to a newly selected local target when safe. Sent asks and local fallback resolutions pin their origin until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching.
+For active-local sessions, live retargeting may move a running client to a newly selected local target when safe. Sent asks and local fallback resolutions pin their origin until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching. A session that has registered with a fallback/autostarted server is sticky and remains attached until `/reload` or restart rather than polling back to a recovered preferred server mid-session.
+
+Package-local autostart is a client recovery behavior for `ask_postbox` and the user-only `/postbox` command. It can be disabled with `PI_POSTBOX_AUTOSTART=off`; `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` sets the wait time and defaults to 10 seconds (`10000` ms).
 
 ## Compatibility notes
 

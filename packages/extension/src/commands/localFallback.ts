@@ -1,5 +1,6 @@
 import { formatAskResult } from "../tools/askPostbox.js";
 import type { LocalAnswerInput, LocalCancelInput, PendingAskSnapshot, PostboxClient } from "../client/PostboxClient.js";
+import { formatPostboxStatusSnapshot, type PostboxStatusSnapshot } from "../status.js";
 
 export interface CommandPiApi {
   registerCommand?: (name: string, options: { description?: string; handler: (args: string, ctx: CommandContext) => unknown }) => void;
@@ -11,7 +12,11 @@ export interface CommandContext {
 
 export type LocalFallbackClient = Pick<PostboxClient, "listPendingAsks" | "answerPendingAsk" | "cancelPendingAsk">;
 
-export function registerPostboxFallbackCommands(pi: CommandPiApi, getClient: () => LocalFallbackClient | undefined): void {
+export function registerPostboxFallbackCommands(
+  pi: CommandPiApi,
+  getClient: () => LocalFallbackClient | undefined,
+  getStatusSnapshot?: () => PostboxStatusSnapshot | Promise<PostboxStatusSnapshot>
+): void {
   pi.registerCommand?.("postbox-answer", {
     description: "Answer the active pending Postbox request locally. Usage: /postbox-answer [requestId] value[,value2] [--note text] [--rationale text]",
     handler: async (args, ctx) => {
@@ -43,11 +48,10 @@ export function registerPostboxFallbackCommands(pi: CommandPiApi, getClient: () 
   });
 
   pi.registerCommand?.("postbox-status", {
-    description: "Show the active pending Postbox request and local fallback command hints.",
+    description: "Show privacy-preserving Pi Postbox connectivity and operator status.",
     handler: async (_args, ctx) => {
-      const pending = getClient()?.listPendingAsks() ?? [];
-      if (pending.length === 0) return notify(ctx, "No pending Postbox asks.", "info");
-      notify(ctx, pending.map(formatPendingStatus).join("\n"), "info");
+      if (!getStatusSnapshot) return notify(ctx, "Pi Postbox status is unavailable.", "warn");
+      notify(ctx, formatPostboxStatusSnapshot(await getStatusSnapshot()), "info");
     }
   });
 }
@@ -124,11 +128,6 @@ function parseFlaggedArgs(args: string): { positionals: string; flags: { note?: 
   flush();
 
   return { positionals: positional.join(" "), flags };
-}
-
-function formatPendingStatus(ask: PendingAskSnapshot): string {
-  const values = ask.options.map((option) => option.value).join(",");
-  return `Postbox waiting ${ask.requestId}: ${ask.prompt}\nAnswer: /postbox-answer ${ask.requestId} ${values} [--note ...]\nCancel: /postbox-cancel ${ask.requestId} [--note ...]`;
 }
 
 function notify(ctx: CommandContext, message: string, level: string): void {

@@ -23,11 +23,14 @@ npm run build
 node packages/server/dist/cli.js
 ```
 
-From an installed server package:
+For manual shell use from the public package, install the global CLI first:
 
 ```bash
+npm install -g @wienerberliner/pi-postbox
 pi-postbox-server
 ```
+
+This is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs Pi resources and bundled package-local autostart support but does not add `pi-postbox-server` to `PATH`.
 
 The server binds to `127.0.0.1`, prefers port `32187`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port; open the printed URL. Ordinary launches publish the `production` active-local role unless `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` says otherwise.
 
@@ -80,9 +83,9 @@ or write the extension config:
 }
 ```
 
-Tailscale and hosted URLs are explicit non-loopback remote targets. They are authoritative, are not local recovery candidates, and are not live-retargeted to local active-local metadata during remote outages. Active-local recovery is only for missing or loopback configuration.
+Tailscale and hosted URLs are preferred Postbox servers. The extension checks the preferred server first; when it is healthy, it is authoritative for that registration and active-local polling is unnecessary. If the preferred server is unreachable or unavailable, the extension may use local fallback through fresh active-local metadata or package-local autostart. Remote URLs themselves are not local recovery candidates. Once a Pi Session registers with a local fallback/autostarted server, the session stays attached to that server until `/reload` or restart instead of switching mid-session.
 
-## Install the Pi extension
+## Install the Pi package
 
 For source-checkout development:
 
@@ -92,29 +95,32 @@ npm run build
 pi install /absolute/path/to/pi-postbox
 ```
 
-The workspace root advertises the extension through its `pi.extensions` metadata. The extension package also advertises itself, so published package installs can use:
+The workspace root advertises the extension through its `pi.extensions` metadata. Published package installs use the single public package:
 
 ```bash
-pi install npm:@pi-postbox/extension
+pi install npm:@wienerberliner/pi-postbox
 ```
 
-The extension connects in the background and does not block Pi startup if the server is down.
+`pi install npm:@wienerberliner/pi-postbox` installs the Pi resources/extension resources plus bundled package-local autostart support. The extension connects in the background and does not block Pi startup if the preferred server is down; `ask_postbox` and `/postbox` can autostart the bundled server when needed.
 
-## Install/run the server package
+Autostart is enabled by default. Set `PI_POSTBOX_AUTOSTART=off` to opt out, or set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the wait for a started server; the default timeout is 10 seconds (`10000` ms).
 
-The server package exposes the `pi-postbox-server` binary:
+## Install/run the manual shell CLI
+
+From this source checkout, the server package exposes the `pi-postbox-server` binary through npm workspaces:
 
 ```bash
 npm exec --workspace @pi-postbox/server -- pi-postbox-server
 ```
 
-After package publication, either of these shapes is expected:
+For manual shell command usage after package publication, install the same public package globally:
 
 ```bash
-npx @pi-postbox/server
-# or, after a global install
+npm install -g @wienerberliner/pi-postbox
 pi-postbox-server
 ```
+
+The global npm install is only for shell `PATH` access; it is not required for Pi-installed bundled autostart.
 
 ## Health and monitoring
 
@@ -149,3 +155,5 @@ The smoke script starts `node packages/server/dist/cli.js` with a temporary SQLi
 6. Confirm the Pi tool result includes only the final selected values/note/rationale.
 7. Confirm the decision appears in recent history.
 8. Test `/postbox-status` and `/postbox-answer` from the terminal as a fallback.
+9. Test the read-only `postbox_status` tool and confirm it reports status/open-question count without pending question contents.
+10. Run `/postbox` as a user command and confirm it opens the dashboard/browser. `/postbox` is user-only/manual browser-opening behavior and is not exposed as an LLM tool or agent side effect.
