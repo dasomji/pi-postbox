@@ -55,7 +55,10 @@ class PostboxStore {
 
   projects = $derived.by<ProjectGroup[]>(() => {
     const groups = new Map<string, ProjectGroup>();
+    const snapshotTimestamp = this.timestamp;
     for (const session of this.sessions) {
+      if (!isSidebarSessionVisible(session, snapshotTimestamp)) continue;
+
       const group = groups.get(session.projectId);
       if (group) group.sessions.push(session);
       else
@@ -187,6 +190,19 @@ class PostboxStore {
       if (fallbackTimer) clearInterval(fallbackTimer);
     };
   }
+}
+
+const SIDEBAR_RECENT_OFFLINE_WINDOW_MS = 5 * 60 * 1000;
+
+function isSidebarSessionVisible(session: SessionSnapshot, snapshotTimestamp: string | undefined): boolean {
+  if (session.presence !== "offline") return true;
+  if (!snapshotTimestamp || !session.disconnectedAt) return false;
+
+  const snapshotTime = Date.parse(snapshotTimestamp);
+  const disconnectedTime = Date.parse(session.disconnectedAt);
+  if (!Number.isFinite(snapshotTime) || !Number.isFinite(disconnectedTime)) return false;
+
+  return snapshotTime - disconnectedTime < SIDEBAR_RECENT_OFFLINE_WINDOW_MS;
 }
 
 function messageOf(error: unknown, fallback: string): string {
