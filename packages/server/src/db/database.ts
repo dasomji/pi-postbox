@@ -87,6 +87,25 @@ function runMigrations(db: SqliteDatabase): void {
 
     CREATE INDEX IF NOT EXISTS idx_ask_requests_status_created
       ON ask_requests(status, created_at);
+
+    CREATE TABLE IF NOT EXISTS push_vapid_keys (
+      id TEXT PRIMARY KEY CHECK (id = 'default'),
+      public_key TEXT NOT NULL,
+      private_key TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('configured', 'generated')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint TEXT PRIMARY KEY,
+      expiration_time INTEGER,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      subscription_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   ensureColumn(db, "projects", "display_name", "TEXT");

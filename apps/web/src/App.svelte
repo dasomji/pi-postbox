@@ -62,7 +62,7 @@
         onclick={closeMobileNavigation}
       ></button>
       <div id="mobile-sidebar" class="relative h-full w-[min(22rem,85vw)] shadow-postbox-panel">
-        <Sidebar />
+        <Sidebar onNavigate={closeMobileNavigation} />
         <button
           type="button"
           class="absolute right-3 top-3 rounded-full px-3 py-2 text-postbox-muted transition hover:text-postbox-text"

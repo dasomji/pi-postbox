@@ -66,6 +66,13 @@ export {
 } from "./history.js";
 export type { HistoryPruneResponse, HistoryRecord, HistoryResponse, HistoryRetention, HistorySessionMetadata } from "./history.js";
 export {
+  PushConfigResponseSchema,
+  PushConfigSourceSchema,
+  PushSubscriptionDeletePayloadSchema,
+  PushSubscriptionPayloadSchema
+} from "./push.js";
+export type { PushConfigResponse, PushConfigSource, PushSubscriptionDeletePayload, PushSubscriptionPayload } from "./push.js";
+export {
   HeartbeatPayloadSchema,
   MachineRegistrationSchema,
   PresenceStateSchema,
