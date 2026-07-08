@@ -22,14 +22,14 @@ pi-postbox-server
 
 This global install is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs the Pi resources and bundled package-local autostart support but does not put `pi-postbox-server` on your shell `PATH`.
 
-The CLI prints the actual listening URL. Port `32187` is the preferred default; if it is already in use, the server chooses another local port and prints that URL instead.
+The CLI prints the actual listening URL. Port `32187` is the canonical default; if it is already in use, the server chooses another local port and prints an explicit warning that the local/Tailnet bookmark URL is non-canonical. Free `32187`, or set `--port` / `PI_POSTBOX_PORT` to a stable available port, when you need a bookmarkable URL.
 
 Supported flags and environment variables:
 
 | Flag | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `--host` | `PI_POSTBOX_HOST` | `127.0.0.1` | HTTP listen host. Keep local by default and expose with Tailscale/lizardtail. |
-| `--port` | `PI_POSTBOX_PORT` | preferred `32187` | Preferred HTTP listen port. If it is already in use, the CLI falls back to another local port and prints the actual URL. |
+| `--port` | `PI_POSTBOX_PORT` | canonical `32187` | Preferred HTTP listen port. If it is already in use, the CLI falls back to another local port and warns that the actual local/Tailnet URL is non-canonical. |
 | `--active-local-role` | `PI_POSTBOX_ACTIVE_LOCAL_ROLE` | `production` | Role written to active-local metadata. Ordinary server launches are `production`; `npm run dev` starts the backend with the `dev` role. |
 | `--no-tailscale` | `PI_POSTBOX_TAILSCALE=off` | automatic Tailnet-private Serve enabled | Disable Tailscale Serve mutation for this run while keeping local startup. |
 | `--ui-dist-dir` | `PI_POSTBOX_UI_DIST_DIR` | packaged `dist/public` beside the server CLI | Built Vite UI assets served by the server. Override this for source-checkout development if needed. |

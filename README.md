@@ -24,7 +24,7 @@ Start the local server with defaults:
 node packages/server/dist/cli.js
 ```
 
-The server binds to `127.0.0.1`, prefers port `32187`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If port `32187` is already in use, it automatically selects another local port; open the printed URL.
+The server binds to `127.0.0.1`, treats port `32187` as the canonical default, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If port `32187` is already in use, it automatically selects another local port and prints an explicit warning that the local/Tailnet bookmark URL is non-canonical; free `32187` or set `--port` / `PI_POSTBOX_PORT` to a stable available port if you need a bookmarkable URL.
 
 ## Workspace commands
 

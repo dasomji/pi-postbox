@@ -13,7 +13,13 @@ import { pathToFileURL } from "node:url";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPostboxApp } from "../src/app.js";
-import { collectPostboxServerStatus, isCliEntrypoint, listenWithPortFallback, parseCliOptions } from "../src/cli.js";
+import {
+  describePostboxPortSelection,
+  collectPostboxServerStatus,
+  isCliEntrypoint,
+  listenWithPortFallback,
+  parseCliOptions
+} from "../src/cli.js";
 
 const apps: Array<{ close: () => Promise<void> }> = [];
 const servers: Server[] = [];
@@ -243,7 +249,7 @@ describe("pi-postbox-server CLI", () => {
     await expect(listenWithPortFallback(app, { host: "203.0.113.1", port: 3000 })).rejects.toBe(failure);
   });
 
-  it("falls back to another local port when the preferred port is already in use", async () => {
+  it("falls back to another local port when the preferred port is already in use and describes the non-canonical URL", async () => {
     const preferredPort = await occupyLocalPort();
     const app = await createPostboxApp({ databasePath: ":memory:" });
     apps.push(app);
@@ -253,6 +259,13 @@ describe("pi-postbox-server CLI", () => {
 
     expect(address).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(Number(actualPort)).not.toBe(preferredPort);
+    expect(describePostboxPortSelection(preferredPort, address)).toContain(
+      `Preferred Postbox port ${preferredPort} is in use; using fallback port ${actualPort}`
+    );
+    expect(describePostboxPortSelection(44_444, "http://127.0.0.1:44444")).toContain(
+      "Postbox is using non-default port 44444"
+    );
+    expect(describePostboxPortSelection(32_187, "http://127.0.0.1:32187")).toBeUndefined();
 
     const response = await fetch(`${address}/healthz`);
     expect(response.status).toBe(200);

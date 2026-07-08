@@ -32,7 +32,7 @@ pi-postbox-server
 
 This is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs Pi resources and bundled package-local autostart support but does not add `pi-postbox-server` to `PATH`.
 
-The server binds to `127.0.0.1`, prefers port `32187`, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port; open the printed URL. Ordinary launches publish the `production` active-local role unless `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` says otherwise.
+The server binds to `127.0.0.1`, treats port `32187` as the canonical default, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port and prints an explicit warning that the local/Tailnet bookmark URL is non-canonical; free `32187` or set `--port` / `PI_POSTBOX_PORT` to a stable available port if you need a bookmarkable URL. Ordinary launches publish the `production` active-local role unless `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` says otherwise.
 
 After binding, startup tries automatic Tailnet-private Tailscale Serve for the actual bound port. It inspects `tailscale serve status --json` first and only mutates when the matching HTTPS port is free or already points at the same Postbox target. Disable this with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`.
 
