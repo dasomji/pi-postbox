@@ -32,6 +32,8 @@ import {
   type PostboxTailscaleStatus
 } from "./tailscaleServe.js";
 
+export const DEFAULT_POSTBOX_PORT = 32_187;
+
 export interface CliOptions {
   command: "serve" | "status";
   statusJson: boolean;
@@ -66,7 +68,7 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
   };
 
   const host = getFlagValue("--host") ?? env.PI_POSTBOX_HOST ?? "127.0.0.1";
-  const portText = getFlagValue("--port") ?? env.PI_POSTBOX_PORT ?? "32187";
+  const portText = getFlagValue("--port") ?? env.PI_POSTBOX_PORT ?? String(DEFAULT_POSTBOX_PORT);
   const port = Number.parseInt(portText, 10);
 
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
@@ -126,6 +128,30 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
 
 function isAddressInUseError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EADDRINUSE";
+}
+
+function portFromListenAddress(listenAddress: string): number | undefined {
+  try {
+    const port = Number(new URL(listenAddress).port);
+    return Number.isInteger(port) && port > 0 ? port : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function describePostboxPortSelection(requestedPort: number, listenAddress: string): string | undefined {
+  const actualPort = portFromListenAddress(listenAddress);
+  if (!actualPort) return undefined;
+
+  if (actualPort !== requestedPort) {
+    return `Preferred Postbox port ${requestedPort} is in use; using fallback port ${actualPort}. This changes the local and Tailnet bookmark URLs. Free port ${requestedPort}, or set --port/PI_POSTBOX_PORT to a stable available port, to keep Postbox on a canonical URL.`;
+  }
+
+  if (actualPort !== DEFAULT_POSTBOX_PORT) {
+    return `Postbox is using non-default port ${actualPort}; the canonical default is ${DEFAULT_POSTBOX_PORT}. Bookmark the printed URL for this configuration.`;
+  }
+
+  return undefined;
 }
 
 function activeLocalPublicationUrl(listenAddress: string, requestedHost: string): string {
@@ -424,6 +450,8 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
     warn: (message) => console.warn(message)
   });
   console.log(`pi-postbox-server listening on ${address}`);
+  const portNotice = describePostboxPortSelection(options.port, address);
+  if (portNotice) console.warn(portNotice);
 
   if (options.tailscaleEnabled) {
     const tailscale = await exposePostboxWithTailscale({ localUrl: `${address}/`, role: options.activeLocalRole });
