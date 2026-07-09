@@ -16,6 +16,13 @@
     questions: QuestionQueueItem[];
   }
 
+  /** When projectId is set, the queue shows only that project's questions. */
+  let { projectId: projectFilter }: { projectId?: string } = $props();
+
+  const filteredProject = $derived(
+    projectFilter ? store.projects.find((project) => project.projectId === projectFilter) : undefined
+  );
+
   const groups = $derived.by<QuestionProjectGroup[]>(() => {
     const sessionsById = new Map(store.sessions.map((session) => [session.sessionId, session]));
     const grouped = new Map<string, QuestionProjectGroup>();
@@ -23,6 +30,7 @@
     for (const request of store.pendingRequests) {
       const session = sessionsById.get(request.sessionId);
       const projectId = session?.projectId ?? request.sessionId;
+      if (projectFilter && projectId !== projectFilter) continue;
       const group = grouped.get(projectId);
       const item = { request, session };
 
@@ -43,7 +51,10 @@
     return list;
   });
 
-  const questionCount = $derived(store.pendingRequests.length);
+  const questionCount = $derived(groups.reduce((count, group) => count + group.questions.length, 0));
+  const heading = $derived(
+    projectFilter ? (filteredProject?.projectName ?? groups[0]?.projectName ?? "Project") : "Questions waiting for you"
+  );
 
   function formatCreatedAt(value: string): string {
     const date = new Date(value);
@@ -54,12 +65,16 @@
 
 <div class="mx-auto flex min-h-full w-full max-w-5xl flex-col px-4 py-6 sm:px-6 lg:px-8">
   <header class="border-b border-postbox-border pb-5">
-    <p class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground">Open queue</p>
+    <p class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground">
+      {projectFilter ? "Project queue" : "Open queue"}
+    </p>
     <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <h1 class="text-3xl font-semibold tracking-tight text-postbox-text">Questions waiting for you</h1>
+        <h1 class="text-3xl font-semibold tracking-tight text-postbox-text">{heading}</h1>
         <p class="mt-2 max-w-2xl text-sm leading-6 text-postbox-subtle">
-          All pending Postbox decisions, grouped by project so you can clear the highest-context work first.
+          {projectFilter
+            ? "Pending Postbox decisions for this project, oldest first."
+            : "All pending Postbox decisions, grouped by project so you can clear the highest-context work first."}
         </p>
       </div>
       <div class="rounded-full border border-attention-border bg-attention/10 px-3 py-1 text-sm font-semibold text-attention-foreground">
@@ -71,21 +86,27 @@
   {#if groups.length === 0}
     <div class="flex flex-1 flex-col items-center justify-center py-20 text-center">
       <h2 class="text-2xl font-semibold text-postbox-text">No open questions</h2>
-      <p class="mt-2 max-w-md text-postbox-subtle">When an agent needs a decision, it will appear here grouped by project.</p>
+      <p class="mt-2 max-w-md text-postbox-subtle">
+        {projectFilter
+          ? "When an agent in this project needs a decision, it will appear here."
+          : "When an agent needs a decision, it will appear here grouped by project."}
+      </p>
     </div>
   {:else}
     <div class="mt-6 space-y-6">
       {#each groups as group (group.projectId)}
         <section class="rounded-2xl border border-postbox-border bg-postbox-surface/45 p-3 shadow-postbox-panel sm:p-4">
-          <div class="flex items-center gap-3 border-b border-postbox-border pb-3">
-            <ProjectIcon name={group.projectName} icon={group.projectIcon} size="md" />
-            <div class="min-w-0 flex-1">
-              <h2 class="truncate text-base font-semibold text-postbox-text">{group.projectName}</h2>
-              <p class="text-xs text-postbox-muted">{group.questions.length} open question{group.questions.length === 1 ? "" : "s"}</p>
+          {#if !projectFilter}
+            <div class="flex items-center gap-3 border-b border-postbox-border pb-3">
+              <ProjectIcon name={group.projectName} icon={group.projectIcon} size="md" />
+              <div class="min-w-0 flex-1">
+                <h2 class="truncate text-base font-semibold text-postbox-text">{group.projectName}</h2>
+                <p class="text-xs text-postbox-muted">{group.questions.length} open question{group.questions.length === 1 ? "" : "s"}</p>
+              </div>
             </div>
-          </div>
+          {/if}
 
-          <ul class="mt-3 divide-y divide-postbox-border/70">
+          <ul class="divide-y divide-postbox-border/70 {projectFilter ? '' : 'mt-3'}">
             {#each group.questions as item (item.request.requestId)}
               {@const active = store.selection.kind === "request" && store.selection.requestId === item.request.requestId}
               <li>

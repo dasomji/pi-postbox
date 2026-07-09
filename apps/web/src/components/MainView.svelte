@@ -31,6 +31,8 @@
     {:else}
       <EmptyMain title="Session ended" message="This Pi session is no longer registered." />
     {/if}
+  {:else if selection.kind === "project"}
+    <OpenQuestionsQueue projectId={selection.projectId} />
   {:else if selection.kind === "history"}
     <HistoryView />
   {:else}
