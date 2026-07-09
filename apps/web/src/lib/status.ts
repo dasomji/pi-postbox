@@ -18,10 +18,10 @@ export function sessionDot(session: SessionSnapshot, hasOpenQuestion: boolean): 
 }
 
 export const dotClass: Record<DotColor, string> = {
-  green: "bg-emerald-400",
-  red: "bg-rose-500",
-  blue: "bg-blue-500",
-  gray: "bg-slate-500"
+  green: "bg-emerald-600",
+  red: "bg-rose-600",
+  blue: "bg-blue-600",
+  gray: "bg-slate-400"
 };
 
 export const dotLabel: Record<DotColor, string> = {

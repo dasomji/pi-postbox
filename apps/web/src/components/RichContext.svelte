@@ -46,7 +46,7 @@
                 </p>
                 {#if item.title}<p class="mt-1 font-medium text-postbox-text">{item.title}</p>{/if}
                 {#if item.kind === "code"}
-                  <pre class="mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/40 p-3 text-xs text-postbox-subtle"><code
+                  <pre class="mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg border border-postbox-border bg-postbox-text/5 p-3 text-xs text-postbox-subtle"><code
                     >{item.content}</code
                   ></pre>
                 {:else}

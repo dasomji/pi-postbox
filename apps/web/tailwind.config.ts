@@ -4,6 +4,9 @@ export default {
   content: ["./index.html", "./src/**/*.{svelte,ts}"],
   theme: {
     extend: {
+      fontFamily: {
+        display: ["Iowan Old Style", "Palatino Linotype", "Palatino", "Georgia", "Times New Roman", "serif"]
+      },
       colors: {
         postbox: {
           canvas: "rgb(var(--color-postbox-canvas) / <alpha-value>)",
@@ -40,8 +43,9 @@ export default {
         }
       },
       boxShadow: {
-        "postbox-panel": "0 25px 50px -12px rgb(var(--color-postbox-shadow) / 0.5)",
-        "postbox-section": "0 20px 30px -18px rgb(var(--color-postbox-shadow) / 0.3)"
+        "postbox-panel": "0 14px 30px -12px rgb(var(--color-postbox-shadow) / 0.35)",
+        "postbox-section": "0 10px 20px -14px rgb(var(--color-postbox-shadow) / 0.25)",
+        "postbox-paper": "0 1px 2px rgb(var(--color-postbox-shadow) / 0.12), 0 8px 22px -14px rgb(var(--color-postbox-shadow) / 0.4)"
       }
     }
   },

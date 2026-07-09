@@ -34,7 +34,16 @@ export default defineConfig({
     allowedHosts,
     proxy: {
       "/healthz": backend,
-      "/api": { target: backend, changeOrigin: true }
+      "/api": {
+        target: backend,
+        changeOrigin: true,
+        // The backend rejects state-changing requests whose Origin does not match
+        // its Host. changeOrigin rewrites Host but not Origin, so strip Origin for
+        // the proxied dev requests; no-Origin requests pass the backend's check.
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq) => proxyReq.removeHeader("origin"));
+        }
+      }
     }
   }
 });

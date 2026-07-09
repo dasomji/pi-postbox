@@ -3,8 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="theme-color" content="#f5eede" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Preload so the delivered-stamp animation never pops in with a half-loaded image. -->
+    <link rel="preload" as="image" href="/stamp-delivered.png" />
     <title>Pi Postbox</title>
   </head>
   <body class="bg-postbox-canvas text-postbox-text">
