@@ -34,8 +34,8 @@
 <section class="mb-3">
   <div class="flex items-center gap-1">
     <button
-      class="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-white/5 {projectSelected
-        ? 'bg-white/10'
+      class="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-postbox-text/5 {projectSelected
+        ? 'bg-postbox-text/10'
         : ''}"
       onclick={selectProject}
       title="Show open questions for {project.projectName}"
@@ -50,7 +50,7 @@
         {@const dot = sessionDot(session, store.openQuestionsFor(session.sessionId).length > 0)}
         {@const active = store.selection.kind === "session" && store.selection.sessionId === session.sessionId}
         <button
-          class="rounded-full p-1 transition hover:bg-white/10 {active ? 'bg-white/10 ring-1 ring-attention-border' : ''}"
+          class="rounded-full p-1 transition hover:bg-postbox-text/10 {active ? 'bg-postbox-text/10 ring-1 ring-attention-border' : ''}"
           title="{branchLabel(session)} — {dotLabel[dot]}"
           aria-label="{branchLabel(session)} — {dotLabel[dot]}"
           onclick={() => selectSession(session.sessionId)}
@@ -67,7 +67,7 @@
         {@const active = store.selection.kind === "request" && store.selection.requestId === question.requestId}
         <li>
           <button
-            class="block w-full truncate rounded-md px-2 py-1 text-left text-xs transition hover:bg-white/5 hover:text-postbox-text {active
+            class="block w-full truncate rounded-md px-2 py-1 text-left text-xs transition hover:bg-postbox-text/5 hover:text-postbox-text {active
               ? 'bg-attention/10 text-attention-foreground'
               : 'text-postbox-subtle'}"
             onclick={() => selectRequest(question.requestId)}

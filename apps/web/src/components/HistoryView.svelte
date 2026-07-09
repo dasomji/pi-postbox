@@ -11,7 +11,7 @@
 <section class="mx-auto max-w-3xl px-6 py-8">
   <div class="flex items-center justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-semibold text-postbox-text">Decision history</h1>
+      <h1 class="font-display text-2xl font-semibold text-postbox-text">Decision history</h1>
       <p class="mt-1 text-sm text-postbox-muted">
         {#if history.status === "loading"}
           Loading history…

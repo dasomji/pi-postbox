@@ -5,8 +5,8 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#0f172a",
+  "background_color": "#f5eede",
+  "theme_color": "#f5eede",
   "icons": [
     {
       "src": "/icons/postbox-icon-192.png",

@@ -41,7 +41,7 @@
     </button>
     <button
       type="button"
-      class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground transition hover:text-postbox-text"
+      class="font-display text-base font-bold tracking-wide text-attention transition hover:text-postbox-text"
       title="Show all open questions"
       onclick={() => store.clearSelection()}
     >
@@ -63,7 +63,7 @@
       use:modalFocus={mobileNavigationOpener}
     >
       <button
-        class="absolute inset-0 cursor-default bg-black/60 backdrop-blur-sm"
+        class="absolute inset-0 cursor-default bg-black/30 backdrop-blur-sm"
         aria-label="Close navigation"
         tabindex="-1"
         onclick={closeMobileNavigation}

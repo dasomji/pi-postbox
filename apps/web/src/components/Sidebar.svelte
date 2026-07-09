@@ -21,19 +21,16 @@
   }
 </script>
 
-<aside class="flex h-full min-h-0 w-full shrink-0 flex-col border-b border-postbox-border bg-postbox-surface/60 md:h-full md:max-w-xs md:border-b-0 md:border-r">
+<aside class="flex h-full min-h-0 w-full shrink-0 flex-col border-b border-postbox-border bg-postbox-surface md:h-full md:max-w-xs md:border-b-0 md:border-r">
   <header class="border-b border-postbox-border px-4 py-4">
-    <div class="flex items-baseline gap-2">
+    <div class="flex items-center gap-2">
       <button
-        class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground transition hover:text-postbox-text"
+        class="font-display text-lg font-bold tracking-wide text-attention transition hover:text-postbox-text"
         title="Show all open questions"
         onclick={showQueue}
       >
         Pi Postbox
       </button>
-      <span class="rounded-full bg-attention/15 px-1.5 py-0.5 text-[10px] font-medium text-attention-foreground">v{__APP_VERSION__}</span>
-    </div>
-    <div class="mt-2">
       <ConnectionBadge />
     </div>
   </header>
@@ -56,14 +53,22 @@
 
   <footer class="space-y-2 border-t border-postbox-border px-2 py-2">
     <PwaInstallButton />
-    <NotificationSubscriptionControl />
-    <button
-      class="w-full rounded-lg px-3 py-2 text-left text-sm text-postbox-subtle transition hover:bg-white/5 {historyActive
-        ? 'bg-white/10 text-postbox-text'
-        : ''}"
-      onclick={showHistory}
-    >
-      Decision history
-    </button>
+    <!-- Airmail envelope holding notification settings and the decision history shortcut. -->
+    <div class="airmail-border rounded-sm shadow-postbox-section">
+      <div class="px-3 py-2">
+        <NotificationSubscriptionControl />
+        <div class="my-2 border-t border-dashed border-postbox-border-strong" aria-hidden="true"></div>
+        <button
+          class="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left text-sm text-postbox-subtle transition hover:bg-postbox-text/5 hover:text-postbox-text {historyActive
+            ? 'bg-postbox-text/10 text-postbox-text'
+            : ''}"
+          onclick={showHistory}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4 shrink-0" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+          Decision history
+        </button>
+      </div>
+    </div>
+    <p class="px-3 pb-1 text-[10px] text-postbox-muted">v{__APP_VERSION__}</p>
   </footer>
 </aside>

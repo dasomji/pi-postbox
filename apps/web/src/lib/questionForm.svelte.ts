@@ -39,13 +39,27 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
     selected = selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value];
   }
 
+  // After resolving, land where the next decision is: the project's queue while it
+  // still has open questions, otherwise the main page (global queue).
+  function routeAfterResolve(): void {
+    const session = store.sessions.find((candidate) => candidate.sessionId === request.sessionId);
+    const projectId = session?.projectId;
+    const projectHasOpenQuestions =
+      projectId !== undefined &&
+      store.sessions.some(
+        (candidate) => candidate.projectId === projectId && store.openQuestionsFor(candidate.sessionId).length > 0
+      );
+    if (projectId !== undefined && projectHasOpenQuestions) store.selectProject(projectId);
+    else store.clearSelection();
+  }
+
   async function resolveVia(action: () => Promise<void>, fallback: string): Promise<void> {
     busy = true;
     error = undefined;
     try {
       await action();
       await store.refresh();
-      store.selectSession(request.sessionId);
+      routeAfterResolve();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : fallback;
     } finally {
@@ -65,14 +79,16 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
       done = `Mock submit · ${labelFor(selected)}${note.trim() ? ` · note: "${note.trim()}"` : ""}`;
       return;
     }
-    void resolveVia(
-      () =>
-        postJson(`/api/requests/${encodeURIComponent(request.requestId)}/answer`, {
-          selectedValues: selected,
-          note: note.trim() || undefined
-        }),
-      "Unable to submit answer"
-    );
+    void resolveVia(async () => {
+      // Local submits resolve in milliseconds; hold the view long enough for the
+      // delivered-stamp animation to land before routing away.
+      const minimumStampTime = new Promise((resolve) => setTimeout(resolve, 900));
+      await postJson(`/api/requests/${encodeURIComponent(request.requestId)}/answer`, {
+        selectedValues: selected,
+        note: note.trim() || undefined
+      });
+      await minimumStampTime;
+    }, "Unable to submit answer");
   }
 
   function cancel(): void {

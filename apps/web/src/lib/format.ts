@@ -12,6 +12,20 @@ export function formatTime(timestamp: string): string {
   return new Date(timestamp).toLocaleTimeString();
 }
 
+/** "just now", "5 min ago", "3 h ago", "2 days ago" — for question age at a glance. */
+export function formatTimeAgo(timestamp: string, now: Date = new Date()): string {
+  const then = new Date(timestamp).getTime();
+  if (Number.isNaN(then)) return "unknown";
+  const seconds = Math.max(0, Math.floor((now.getTime() - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return `${formatCount(days, "day")} ago`;
+}
+
 export function selectedOptionLabels(request: AskRequestSnapshot): string | undefined {
   const result = request.result;
   if (result?.status !== "answered") return undefined;

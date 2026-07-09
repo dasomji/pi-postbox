@@ -23,7 +23,7 @@ export function presenceTone(presence: SessionSnapshot["presence"]): BadgeTone {
 
 export function badgeToneClass(tone: BadgeTone): string {
   const tones: Record<BadgeTone, string> = {
-    neutral: "bg-white/10 text-postbox-subtle ring-postbox-border-strong",
+    neutral: "bg-postbox-text/5 text-postbox-subtle ring-postbox-border-strong",
     attention: "bg-attention/10 text-attention-foreground ring-attention/30",
     history: "bg-history/10 text-history-foreground ring-history/30",
     success: "bg-success/10 text-success-foreground ring-success/30",

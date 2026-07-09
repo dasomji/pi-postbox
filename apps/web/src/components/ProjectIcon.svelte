@@ -10,7 +10,7 @@
   <img class="{box} shrink-0 rounded-md border border-postbox-border bg-postbox-elevated object-contain p-0.5" src={icon.dataUrl} alt="" />
 {:else}
   <div
-    class="{box} flex shrink-0 items-center justify-center rounded-md border border-postbox-border bg-attention/10 font-bold text-attention-foreground"
+    class="{box} stamp-edge flex shrink-0 items-center justify-center rounded-sm border border-postbox-border-strong bg-postbox-elevated font-display font-bold text-attention-foreground"
   >
     {(name || "?").slice(0, 2).toUpperCase()}
   </div>

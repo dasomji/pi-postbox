@@ -91,18 +91,18 @@ describe("Unit 02 mobile-first question UI static contract", () => {
     });
   });
 
-  it("keeps the question project/branch footer sticky instead of absolutely positioned", () => {
+  it("surfaces the question project/branch in the top meta row instead of a footer", () => {
     const source = readSource("components/QuestionLayoutSpotlight.svelte");
-    const footerClass = source.match(/<footer class="([^"]+)"/)?.[1] ?? "";
+    const beforeQuestion = source.slice(0, source.indexOf("letter-paper"));
 
     expect({
-      isSticky: /\bsticky\b/.test(footerClass),
-      pinsToBottom: /\bbottom-0\b/.test(footerClass),
-      notAbsolute: !/\babsolute\b/.test(footerClass)
+      showsProjectAboveQuestion: /Project:/.test(beforeQuestion) && /\{projectLabel\}/.test(beforeQuestion),
+      showsBranchAboveQuestion: /Branch:/.test(beforeQuestion) && /\{branch\}/.test(beforeQuestion),
+      hasNoFooter: !/<footer\b/.test(source)
     }).toEqual({
-      isSticky: true,
-      pinsToBottom: true,
-      notAbsolute: true
+      showsProjectAboveQuestion: true,
+      showsBranchAboveQuestion: true,
+      hasNoFooter: true
     });
   });
 
