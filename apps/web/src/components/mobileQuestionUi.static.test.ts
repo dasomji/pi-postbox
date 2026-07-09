@@ -52,17 +52,19 @@ describe("Unit 02 mobile-first question UI static contract", () => {
   it("closes mobile navigation after selecting a sidebar destination", () => {
     const appSource = readSource("App.svelte");
     const sidebarSource = readSource("components/Sidebar.svelte");
-    const sidebarSessionSource = readSource("components/SidebarSession.svelte");
+    const sidebarProjectSource = readSource("components/SidebarProject.svelte");
     const mobileNavigationBlock = appSource.slice(appSource.indexOf("{#if mobileNavigationOpen}"));
 
     expect({
       mobileSidebarReceivesCloseCallback: /<Sidebar\s+onNavigate=\{closeMobileNavigation\}\s*\/>/.test(mobileNavigationBlock),
       sidebarAcceptsNavigateCallback: /onNavigate\??:\s*\(\)\s*=>\s*void/.test(sidebarSource),
-      sessionSelectionInvokesNavigate: /store\.selectSession\(session\.sessionId\)[\s\S]*onNavigate\?\.\(\)/.test(sidebarSessionSource),
-      questionSelectionInvokesNavigate: /store\.selectRequest\(requestId\)[\s\S]*onNavigate\?\.\(\)/.test(sidebarSessionSource)
+      projectSelectionInvokesNavigate: /store\.selectProject\(project\.projectId\)[\s\S]*onNavigate\?\.\(\)/.test(sidebarProjectSource),
+      sessionSelectionInvokesNavigate: /store\.selectSession\(sessionId\)[\s\S]*onNavigate\?\.\(\)/.test(sidebarProjectSource),
+      questionSelectionInvokesNavigate: /store\.selectRequest\(requestId\)[\s\S]*onNavigate\?\.\(\)/.test(sidebarProjectSource)
     }).toEqual({
       mobileSidebarReceivesCloseCallback: true,
       sidebarAcceptsNavigateCallback: true,
+      projectSelectionInvokesNavigate: true,
       sessionSelectionInvokesNavigate: true,
       questionSelectionInvokesNavigate: true
     });

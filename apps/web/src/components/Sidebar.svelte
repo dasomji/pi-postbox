@@ -2,9 +2,8 @@
   import { store } from "../lib/store.svelte";
   import ConnectionBadge from "./ConnectionBadge.svelte";
   import NotificationSubscriptionControl from "./NotificationSubscriptionControl.svelte";
-  import ProjectIcon from "./ProjectIcon.svelte";
   import PwaInstallButton from "./PwaInstallButton.svelte";
-  import SidebarSession from "./SidebarSession.svelte";
+  import SidebarProject from "./SidebarProject.svelte";
 
   let { onNavigate }: { onNavigate?: () => void } = $props();
 
@@ -15,12 +14,23 @@
     store.showHistory();
     onNavigate?.();
   }
+
+  function showQueue(): void {
+    store.clearSelection();
+    onNavigate?.();
+  }
 </script>
 
 <aside class="flex h-full min-h-0 w-full shrink-0 flex-col border-b border-postbox-border bg-postbox-surface/60 md:h-full md:max-w-xs md:border-b-0 md:border-r">
   <header class="border-b border-postbox-border px-4 py-4">
     <div class="flex items-baseline gap-2">
-      <p class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground">Pi Postbox</p>
+      <button
+        class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground transition hover:text-postbox-text"
+        title="Show all open questions"
+        onclick={showQueue}
+      >
+        Pi Postbox
+      </button>
       <span class="rounded-full bg-attention/15 px-1.5 py-0.5 text-[10px] font-medium text-attention-foreground">v{__APP_VERSION__}</span>
     </div>
     <div class="mt-2">
@@ -39,19 +49,7 @@
       </p>
     {:else}
       {#each projects as project (project.projectId)}
-        <section class="mb-4">
-          <div class="flex items-center gap-2 px-3 pb-1.5">
-            <ProjectIcon name={project.projectName} icon={project.projectIcon} size="sm" />
-            <h2 class="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-postbox-muted">
-              {project.projectName}
-            </h2>
-          </div>
-          <ul class="space-y-0.5">
-            {#each project.sessions as session (session.sessionId)}
-              <SidebarSession {session} {onNavigate} />
-            {/each}
-          </ul>
-        </section>
+        <SidebarProject {project} {onNavigate} />
       {/each}
     {/if}
   </div>

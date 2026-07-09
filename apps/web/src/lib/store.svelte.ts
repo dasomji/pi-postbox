@@ -13,6 +13,7 @@ export type Selection =
   | { kind: "none" }
   | { kind: "session"; sessionId: string }
   | { kind: "request"; requestId: string }
+  | { kind: "project"; projectId: string }
   | { kind: "history" };
 
 export type ConnectionState =
@@ -105,6 +106,10 @@ class PostboxStore {
 
   selectRequest(requestId: string): void {
     this.selection = { kind: "request", requestId };
+  }
+
+  selectProject(projectId: string): void {
+    this.selection = { kind: "project", projectId };
   }
 
   showHistory(): void {

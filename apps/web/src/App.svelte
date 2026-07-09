@@ -39,7 +39,14 @@
     >
       ☰
     </button>
-    <span class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground">Pi Postbox</span>
+    <button
+      type="button"
+      class="text-xs font-semibold uppercase tracking-[0.3em] text-attention-foreground transition hover:text-postbox-text"
+      title="Show all open questions"
+      onclick={() => store.clearSelection()}
+    >
+      Pi Postbox
+    </button>
   </div>
 
   <div class="hidden md:flex md:h-full md:w-80 md:shrink-0">
