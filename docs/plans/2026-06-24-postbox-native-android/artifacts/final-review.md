@@ -1,0 +1,27 @@
+## Findings
+
+1. **Severity:** Medium  
+   **Location:** `apps/android/app/src/main/java/dev/pi/postbox/question/QuestionWorkflowViewModel.kt:141`  
+   **Requirement/pattern violated:** Unit 04 native question workflow correctness; state-changing answer/cancel actions should be idempotent from the ViewModel boundary while an operation is already in flight.  
+   **Issue:** `submitAnswer()` explicitly rejects re-entry while `visible.isSubmitting` is true (`QuestionWorkflowViewModel.kt:105-111`), but `cancelQuestion()` only checks that the question has a cancel action (`QuestionWorkflowViewModel.kt:141-145`). Because `availableActions` is not cleared when `isSubmitting` is set, a rapid second cancel call can send a second `cancelRequest` for the same request before the first completes. The Compose button is disabled from `actionsEnabled` after recomposition (`QuestionWorkflowScreen.kt:282`, `QuestionWorkflowScreen.kt:359-361`), but the ViewModel public action itself remains re-entrant; this can turn a successful cancel into a duplicate mutation / 409 already-resolved path. Existing in-flight regression coverage only covers duplicate answer submission (`QuestionWorkflowViewModelTest.kt:86-119`) and grep found no cancel in-flight/double-submit test.  
+   **Required fix:** Add the same `visible.isSubmitting` guard to `cancelQuestion()` (and preferably prevent option toggles while submitting for the same boundary consistency), then add a suspended-cancel regression test proving a second cancel call does not send another POST while the first is in flight.
+
+## Claude reviewer
+
+- Result: Unavailable/error. Nested Claude was attempted once with a proper stdin packet and tools disabled, but it timed out after 120 seconds with exit code 124 and no review output. Per the one-attempt nested-review protocol, it was not rerun.
+
+## Validation notes
+
+- Commands run, if any:
+  - `ls` / `find` / `read` inspections of `README.md`, `package.json`, `CONTEXT.md`, `docs/protocol.md`, `docs/plans/2026-06-24-postbox-native-android/index.md`, all unit dossiers, and artifacts `00-preflight.md` through `05-verify-2.md` — reviewed requirements, prior findings/repairs, and final verification evidence.
+  - `find apps/android -path '*/build' -prune -o -path '*/.gradle' -prune -o -type f -print | sort` — enumerated intentional Android source/test/doc files excluding generated Gradle/build outputs.
+  - `grep -RIn --exclude-dir=build --exclude-dir=.gradle --exclude-dir=.kotlin -E 'Firebase|FCM|WorkManager|startForeground|ForegroundService|Service|WebSocket|active-local|autostart|package-local|postbox_status|admin/shutdown|/api/extension|Origin|http://|cleartext|POST_NOTIFICATIONS|notify\(|NotificationManager|PendingIntent|LifecycleEventObserver|ON_START|ON_STOP' apps/android docs/plans/2026-06-24-postbox-native-android/index.md docs/plans/2026-06-24-postbox-native-android/units/*.md README.md package.json` — checked notification/lifecycle/network/scope signals; no foreground-service/FCM/background-sync/autostart/WebSocket overreach found.
+  - `export ANDROID_HOME="$HOME/Android/Sdk"; export ANDROID_SDK_ROOT="$ANDROID_HOME"; export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"; cd apps/android && ./gradlew testDebugUnitTest --tests 'dev.pi.postbox.notification.*' --tests 'dev.pi.postbox.question.QuestionWorkflowViewModelTest'` — passed; targeted notification/question workflow JVM tests green.
+  - `export ANDROID_HOME="$HOME/Android/Sdk"; export ANDROID_SDK_ROOT="$ANDROID_HOME"; export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"; cd apps/android && ./gradlew test assembleDebug lintDebug` — passed; Android JVM/build/lint gate green.
+  - `npx vitest run apps/androidScaffold.test.ts apps/androidDeveloperInstallDocs.test.ts` — passed; scaffold/package-safety and developer install documentation tests green.
+  - `npm pack --dry-run --ignore-scripts --json | node ...` — passed; package dry-run reported `androidEntries=0` and top-level packed entries `README.md,node_modules,package.json,packages`.
+  - `git status --short --untracked-files=all; git diff --cached --stat; git diff --stat` — inspected full untracked file list and confirmed no staged files/tracked diff before this artifact write.
+  - Parallel read-only subagent lenses for lifecycle/notifications, protocol/security, and package/docs were attempted with a 120s bound; all three timed out and returned no findings.
+  - Nested Claude command: `timeout 120s bash -lc '{ ...review packet from requirements/artifacts/source/tests... } | claude -p --tools "" --no-session-persistence'` — timed out with exit code 124 and no output.
+- Scope checked: native Android scaffold, onboarding/health/network policy, protocol DTO/client/SSE stream, question workflow UI/ViewModel, active-app local notifications/tap handling, developer install docs, package tarball safety, plan/artifact handoff quality, and generated-file/staged-file state.
+- Residual risks: no physical Android device or reliable emulator was available, so installed APK UX, notification tray rendering, runtime permission dialog behavior, and actual PendingIntent tap delivery remain source/JVM/build verified rather than device-smoke verified; Android and plan files are untracked, so tracked `git diff` is not useful for base-vs-branch review.
