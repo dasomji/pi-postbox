@@ -35,6 +35,8 @@ export interface CreatePostboxAppOptions {
   databasePath?: string;
   staleAfterMs?: number;
   offlineAfterMs?: number;
+  sessionHideOfflineAfterMs?: number;
+  sessionRetentionMs?: number;
   askTimeoutMs?: number;
   expirySweepMs?: number;
   historyRetentionMaxAgeMs?: number;
@@ -89,10 +91,18 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     mutableLocalTarget = identity;
   };
   const db = openPostboxDatabase(options.databasePath ?? defaultDatabasePath());
-  const sessionStore = new SessionStore(db, now, {
-    staleAfterMs: options.staleAfterMs ?? 30_000,
-    offlineAfterMs: options.offlineAfterMs ?? 120_000
-  });
+  let sessionStore: SessionStore;
+  try {
+    sessionStore = new SessionStore(db, now, {
+      staleAfterMs: options.staleAfterMs ?? 30_000,
+      offlineAfterMs: options.offlineAfterMs ?? 120_000,
+      hideOfflineAfterMs: options.sessionHideOfflineAfterMs,
+      retentionMs: options.sessionRetentionMs
+    });
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   const requestStore = new RequestStore(db, now, { askTimeoutMs: options.askTimeoutMs });
   const pushStore = new PushStore(db, now, {
     publicKey: options.vapidPublicKey,
@@ -115,7 +125,10 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   };
   const getSnapshot = () => {
     requestStore.expireDue();
+    // History pruning first: it deletes old terminal requests, which is what
+    // frees their sessions for the retention purge below.
     pruneHistory();
+    sessionStore.pruneOfflineSessions();
     return StateSnapshotSchema.parse({
       ...sessionStore.snapshot(),
       requests: requestStore.list()

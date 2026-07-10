@@ -88,6 +88,15 @@ function runMigrations(db: SqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_ask_requests_status_created
       ON ask_requests(status, created_at);
 
+    CREATE INDEX IF NOT EXISTS idx_ask_requests_session_status
+      ON ask_requests(session_id, status);
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_machine
+      ON sessions(machine_id);
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_project
+      ON sessions(project_id);
+
     CREATE TABLE IF NOT EXISTS push_vapid_keys (
       id TEXT PRIMARY KEY CHECK (id = 'default'),
       public_key TEXT NOT NULL,
