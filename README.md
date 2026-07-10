@@ -90,6 +90,8 @@ Supported server flags and environment variables:
 - `--ask-timeout-ms` or `PI_POSTBOX_ASK_TIMEOUT_MS` (default 12 hours)
 - `--history-retention-max-age-ms` or `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS`
 - `--history-retention-max-records` or `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS`
+- `--session-hide-offline-after-ms` or `PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS` (default 24 hours; offline sessions older than this leave state snapshots)
+- `--session-retention-ms` or `PI_POSTBOX_SESSION_RETENTION_MS` (default 30 days; offline sessions older than this are deleted unless ask requests still reference them)
 
 ## Extension configuration
 

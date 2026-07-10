@@ -7,15 +7,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -48,6 +53,9 @@ import dev.pi.postbox.protocol.OkHttpPostboxProtocolClient
 import dev.pi.postbox.protocol.OkHttpPostboxStateStream
 import dev.pi.postbox.question.QuestionWorkflowScreen
 import dev.pi.postbox.question.QuestionWorkflowViewModel
+import dev.pi.postbox.ui.theme.PostalColors
+import dev.pi.postbox.ui.theme.PostboxTheme
+import dev.pi.postbox.ui.theme.postalStripes
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -115,7 +123,7 @@ private fun PostboxApp(
     onOpenQuestionRequestConsumed: () -> Unit,
     onRequestNotificationPermissionIfNeeded: () -> Unit
 ) {
-    MaterialTheme {
+    PostboxTheme {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
@@ -153,45 +161,72 @@ private fun ServerOnboardingScreen(
     val coroutineScope = rememberCoroutineScope()
     val verifying = state is ServerOnboardingState.Verifying
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.Start,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "Connect to Pi Postbox",
-            style = MaterialTheme.typography.headlineMedium
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "Enter the explicit HTTPS Tailnet URL for your Postbox server.",
-            style = MaterialTheme.typography.bodyLarge
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        OutlinedTextField(
-            modifier = Modifier.fillMaxWidth(),
-            value = serverUrl,
-            onValueChange = onServerUrlChanged,
-            label = { Text("Server URL") },
-            placeholder = { Text("https://postbox.tailnet.example:32187") },
-            singleLine = true,
-            isError = state is ServerOnboardingState.InvalidUrl ||
-                state is ServerOnboardingState.Unreachable ||
-                state is ServerOnboardingState.NonPostboxServer ||
-                state is ServerOnboardingState.InvalidHealthResponse,
-            supportingText = { OnboardingSupportingText(state) }
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Button(
-            enabled = !verifying,
-            onClick = {
-                coroutineScope.launch { onVerify() }
-            }
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.Center
         ) {
-            Text(if (verifying) "Checking…" else "Verify server")
+            Text(
+                text = "Connect to Pi Postbox",
+                style = MaterialTheme.typography.headlineMedium,
+                color = PostalColors.text
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Enter the explicit HTTPS Tailnet URL for your Postbox server.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = PostalColors.subtle
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = serverUrl,
+                onValueChange = onServerUrlChanged,
+                label = { Text("Server URL") },
+                placeholder = { Text("https://postbox.tailnet.example:32187") },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = PostalColors.attentionBorder,
+                    unfocusedBorderColor = PostalColors.border,
+                    focusedContainerColor = PostalColors.elevated,
+                    unfocusedContainerColor = PostalColors.elevated,
+                    cursorColor = PostalColors.attention,
+                    focusedLabelColor = PostalColors.subtle,
+                    unfocusedLabelColor = PostalColors.muted,
+                    focusedTextColor = PostalColors.text,
+                    unfocusedTextColor = PostalColors.text
+                ),
+                isError = state is ServerOnboardingState.InvalidUrl ||
+                    state is ServerOnboardingState.Unreachable ||
+                    state is ServerOnboardingState.NonPostboxServer ||
+                    state is ServerOnboardingState.InvalidHealthResponse,
+                supportingText = { OnboardingSupportingText(state) }
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                enabled = !verifying,
+                onClick = {
+                    coroutineScope.launch { onVerify() }
+                }
+            ) {
+                Text(if (verifying) "Checking…" else "Verify server")
+            }
         }
+
+        // Airmail envelope edge along the bottom, matching the question screen.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .height(3.dp)
+                .alpha(0.7f)
+                .postalStripes()
+        )
     }
 }
 
@@ -281,10 +316,14 @@ private fun ConnectedQuestionWorkflow(
 
     QuestionWorkflowScreen(
         state = workflowViewModel.state,
+        onShowQueue = workflowViewModel::showQueue,
+        onSelectProject = workflowViewModel::selectProject,
+        onSelectSession = workflowViewModel::selectSession,
         onSelectQuestion = workflowViewModel::selectQuestion,
         onToggleOption = workflowViewModel::toggleOption,
         onSubmitAnswer = workflowViewModel::submitAnswer,
         onCancelQuestion = workflowViewModel::cancelQuestion,
+        onDismissQuestion = workflowViewModel::dismissQuestion,
         onEditServerUrl = onEditServerUrl
     )
 }
@@ -292,8 +331,8 @@ private fun ConnectedQuestionWorkflow(
 @Preview(showBackground = true)
 @Composable
 private fun ServerOnboardingPreview() {
-    MaterialTheme {
-        Surface {
+    PostboxTheme {
+        Surface(color = MaterialTheme.colorScheme.background) {
             ServerOnboardingScreen(
                 serverUrl = "",
                 state = ServerOnboardingState.Editing(),

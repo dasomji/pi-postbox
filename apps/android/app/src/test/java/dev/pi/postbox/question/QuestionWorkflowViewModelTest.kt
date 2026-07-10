@@ -7,11 +7,14 @@ import dev.pi.postbox.protocol.AskAnswerPayload
 import dev.pi.postbox.protocol.AskCancelPayload
 import dev.pi.postbox.protocol.AskStatus
 import dev.pi.postbox.protocol.HealthResponse
+import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.protocol.PostboxProtocolClient
+import dev.pi.postbox.protocol.PresenceState
 import dev.pi.postbox.protocol.PostboxRequestAlreadyResolvedException
 import dev.pi.postbox.protocol.PostboxStateStream
 import dev.pi.postbox.protocol.PostboxStateStreamStatus
 import dev.pi.postbox.protocol.StateSnapshot
+import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -52,6 +55,130 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
+    fun sidebarDestinationsSelectQueueProjectSessionAndQuestion() = runTest {
+        val viewModel = startedViewModel(RecordingPostboxProtocolClient(questionWorkflowState()))
+
+        assertEquals(QuestionNavigationSelection.Question("ask-single"), viewModel.state.navigationSelection)
+
+        viewModel.showQueue()
+        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+
+        viewModel.selectProject("session-live-project")
+        assertEquals(
+            QuestionNavigationSelection.Project("session-live-project"),
+            viewModel.state.navigationSelection
+        )
+
+        viewModel.selectSession("session-live")
+        assertEquals(QuestionNavigationSelection.Session("session-live"), viewModel.state.navigationSelection)
+
+        viewModel.selectQuestion("ask-multi")
+        assertEquals(QuestionNavigationSelection.Question("ask-multi"), viewModel.state.navigationSelection)
+        assertEquals("ask-multi", viewModel.state.visibleQuestion?.requestId)
+    }
+
+    @Test
+    fun projectSessionAndQuestionSelectionsSurviveLiveSnapshotUpdates() = runTest {
+        val stream = FakePostboxStateStream()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            stream = stream
+        )
+
+        viewModel.selectProject("session-live-project")
+        stream.emit(PostboxStateStreamStatus.Connected(questionWorkflowState()))
+        advanceUntilIdle()
+        assertEquals(
+            QuestionNavigationSelection.Project("session-live-project"),
+            viewModel.state.navigationSelection
+        )
+
+        viewModel.selectSession("session-live")
+        stream.emit(PostboxStateStreamStatus.Connected(questionWorkflowState()))
+        advanceUntilIdle()
+        assertEquals(QuestionNavigationSelection.Session("session-live"), viewModel.state.navigationSelection)
+
+        viewModel.selectQuestion("ask-multi")
+        stream.emit(PostboxStateStreamStatus.Connected(questionWorkflowState()))
+        advanceUntilIdle()
+        assertEquals(QuestionNavigationSelection.Question("ask-multi"), viewModel.state.navigationSelection)
+        assertEquals("ask-multi", viewModel.state.visibleQuestion?.requestId)
+    }
+
+    @Test
+    fun hiddenProjectAndSessionDestinationsFallBackToQueue() = runTest {
+        val freshState = questionWorkflowState()
+        val staleState = freshState.copy(
+            sessions = freshState.sessions.map { session ->
+                if (session.sessionId == "session-live") {
+                    session.copy(
+                        presence = PresenceState.OFFLINE,
+                        disconnectedAt = "2026-06-25T11:50:00.000Z"
+                    )
+                } else {
+                    session
+                }
+            }
+        )
+
+        val sessionStream = FakePostboxStateStream()
+        val sessionViewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(freshState),
+            stream = sessionStream
+        )
+        sessionViewModel.selectSession("session-live")
+        sessionStream.emit(PostboxStateStreamStatus.Connected(staleState))
+        advanceUntilIdle()
+        assertEquals(QuestionNavigationSelection.Queue, sessionViewModel.state.navigationSelection)
+
+        val projectStream = FakePostboxStateStream()
+        val projectViewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(freshState),
+            stream = projectStream
+        )
+        projectViewModel.selectProject("session-live-project")
+        projectStream.emit(PostboxStateStreamStatus.Connected(staleState))
+        advanceUntilIdle()
+        assertEquals(QuestionNavigationSelection.Queue, projectViewModel.state.navigationSelection)
+    }
+
+    @Test
+    fun dismissingFromQueueProjectOrSessionPreservesCurrentDestination() = runTest {
+        val destinations = listOf<Pair<(QuestionWorkflowViewModel) -> Unit, QuestionNavigationSelection>>(
+            QuestionWorkflowViewModel::showQueue to QuestionNavigationSelection.Queue,
+            ({ viewModel: QuestionWorkflowViewModel ->
+                viewModel.selectProject("session-live-project")
+            }) to QuestionNavigationSelection.Project("session-live-project"),
+            ({ viewModel: QuestionWorkflowViewModel ->
+                viewModel.selectSession("session-live")
+            }) to QuestionNavigationSelection.Session("session-live")
+        )
+
+        destinations.forEach { (selectDestination, expectedSelection) ->
+            val client = RecordingPostboxProtocolClient(questionWorkflowState())
+            client.afterCancel = {
+                client.currentState = questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(
+                            status = AskStatus.CANCELLED,
+                            resolvedAt = "2026-06-25T12:03:00.000Z"
+                        ),
+                        multiPendingQuestion()
+                    )
+                )
+            }
+            val viewModel = startedViewModel(client)
+
+            selectDestination(viewModel)
+            viewModel.dismissQuestion("ask-single")
+            advanceUntilIdle()
+
+            assertEquals(expectedSelection, viewModel.state.navigationSelection)
+            assertEquals(listOf("ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
+        }
+    }
+
+    @Test
     fun singleSelectAnswerIsDisabledUntilExactlyOneOptionIsSelectedThenSubmitsAndRefreshes() = runTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
         client.afterAnswer = {
@@ -73,14 +200,11 @@ class QuestionWorkflowViewModelTest {
         assertEquals(listOf("loopback"), viewModel.state.visibleQuestion?.selectedValues)
         assertTrue(viewModel.state.visibleQuestion?.canSubmit ?: false)
 
-        viewModel.submitAnswer(
-            note = "Use emulator for this prototype.",
-            rationale = "The device smoke is deferred until hardware is available."
-        )
+        viewModel.submitAnswer(note = "Use emulator for this prototype.")
         advanceUntilIdle()
 
         assertEquals(
-            listOf(RecordedAnswer("ask-single", listOf("loopback"), "Use emulator for this prototype.", "The device smoke is deferred until hardware is available.")),
+            listOf(RecordedAnswer("ask-single", listOf("loopback"), "Use emulator for this prototype.")),
             client.answers
         )
         assertEquals(2, client.fetchStateCalls)
@@ -156,14 +280,11 @@ class QuestionWorkflowViewModelTest {
         val viewModel = startedViewModel(client)
 
         viewModel.selectQuestion("ask-multi")
-        viewModel.cancelQuestion(
-            note = "No longer needed.",
-            rationale = "The server already chose a default path."
-        )
+        viewModel.cancelQuestion(note = "No longer needed.")
         advanceUntilIdle()
 
         assertEquals(
-            listOf(RecordedCancel("ask-multi", "No longer needed.", "The server already chose a default path.")),
+            listOf(RecordedCancel("ask-multi", "No longer needed.")),
             client.cancellations
         )
         assertEquals(2, client.fetchStateCalls)
@@ -197,6 +318,137 @@ class QuestionWorkflowViewModelTest {
         advanceUntilIdle()
 
         assertEquals(1, client.cancellations.size)
+    }
+
+    @Test
+    fun syntheticOtherSelectionSubmitsOtherValueWithNote() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.afterAnswer = {
+            client.currentState = questionWorkflowState(
+                requests = listOf(answeredSingleQuestion(), multiPendingQuestion())
+            )
+        }
+        val viewModel = startedViewModel(client)
+
+        viewModel.selectQuestion("ask-single")
+        viewModel.toggleOption(OTHER_OPTION_VALUE)
+        assertEquals(listOf(OTHER_OPTION_VALUE), viewModel.state.visibleQuestion?.selectedValues)
+        assertTrue(viewModel.state.visibleQuestion?.canSubmit ?: false)
+
+        viewModel.submitAnswer(note = "None of the listed answers fit.")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RecordedAnswer("ask-single", listOf(OTHER_OPTION_VALUE), "None of the listed answers fit.")),
+            client.answers
+        )
+    }
+
+    @Test
+    fun dismissQuestionCancelsByIdWithoutChangingVisibleQuestion() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.afterCancel = {
+            client.currentState = questionWorkflowState(
+                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+            )
+        }
+        val viewModel = startedViewModel(client)
+
+        viewModel.selectQuestion("ask-single")
+        viewModel.dismissQuestion("ask-multi")
+        advanceUntilIdle()
+
+        assertEquals(listOf("ask-multi"), client.cancellations.map { it.requestId })
+        assertTrue(client.cancellations.single().note?.contains("Dismissed manually") == true)
+        assertEquals(2, client.fetchStateCalls)
+        assertEquals(listOf("ask-single"), viewModel.state.pendingQuestions.map { it.requestId })
+        assertEquals("ask-single", viewModel.state.visibleQuestion?.requestId)
+        assertNull(viewModel.state.dismissingRequestId)
+        assertNull(viewModel.state.dismissError)
+    }
+
+    @Test
+    fun dismissingTheVisibleQuestionMovesToTheNextPendingQuestion() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.afterCancel = {
+            client.currentState = questionWorkflowState(
+                requests = listOf(
+                    singlePendingQuestion(status = AskStatus.CANCELLED, resolvedAt = "2026-06-25T12:03:00.000Z"),
+                    multiPendingQuestion()
+                )
+            )
+        }
+        val viewModel = startedViewModel(client)
+
+        viewModel.selectQuestion("ask-single")
+        viewModel.dismissQuestion("ask-single")
+        advanceUntilIdle()
+
+        assertEquals(listOf("ask-single"), client.cancellations.map { it.requestId })
+        assertEquals(listOf("ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
+        assertEquals("ask-multi", viewModel.state.visibleQuestion?.requestId)
+    }
+
+    @Test
+    fun dismissIsIgnoredWhileAnotherDismissIsInFlight() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        val cancelMayComplete = CompletableDeferred<Unit>()
+        client.beforeCancelCompletes = { cancelMayComplete.await() }
+        client.afterCancel = {
+            client.currentState = questionWorkflowState(
+                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+            )
+        }
+        val viewModel = startedViewModel(client)
+
+        viewModel.dismissQuestion("ask-multi")
+        assertEquals("ask-multi", viewModel.state.dismissingRequestId)
+
+        viewModel.dismissQuestion("ask-single")
+
+        assertEquals("second dismiss while one is in flight must not post another cancel", 1, client.cancellations.size)
+
+        cancelMayComplete.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(1, client.cancellations.size)
+    }
+
+    @Test
+    fun dismissFailureSurfacesDismissErrorAndKeepsQueue() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.cancelFailure = IOException("network down")
+        val viewModel = startedViewModel(client)
+
+        viewModel.dismissQuestion("ask-multi")
+        advanceUntilIdle()
+
+        assertEquals("network down", viewModel.state.dismissError)
+        assertNull(viewModel.state.dismissingRequestId)
+        assertEquals(listOf("ask-single", "ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
+        assertEquals("dismiss failure must not refetch state", 1, client.fetchStateCalls)
+    }
+
+    @Test
+    fun alreadyResolvedDismissRefreshesQueueWithoutSurfacingAnError() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.cancelError = PostboxRequestAlreadyResolvedException(
+            requestId = "ask-multi",
+            serverCode = "request_already_resolved"
+        )
+        client.afterCancel = {
+            client.currentState = questionWorkflowState(
+                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+            )
+        }
+        val viewModel = startedViewModel(client)
+
+        viewModel.dismissQuestion("ask-multi")
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.dismissError)
+        assertEquals(2, client.fetchStateCalls)
+        assertEquals(listOf("ask-single"), viewModel.state.pendingQuestions.map { it.requestId })
     }
 
     @Test
@@ -483,14 +735,12 @@ class QuestionWorkflowViewModelTest {
 private data class RecordedAnswer(
     val requestId: String,
     val selectedValues: List<String>,
-    val note: String?,
-    val rationale: String?
+    val note: String?
 )
 
 private data class RecordedCancel(
     val requestId: String,
-    val note: String?,
-    val rationale: String?
+    val note: String?
 )
 
 private class RecordingPostboxProtocolClient(
@@ -506,6 +756,7 @@ private class RecordingPostboxProtocolClient(
     var afterCancel: (() -> Unit)? = null
     var answerError: PostboxRequestAlreadyResolvedException? = null
     var cancelError: PostboxRequestAlreadyResolvedException? = null
+    var cancelFailure: IOException? = null
 
     override suspend fun fetchHealth(): HealthResponse = healthResponse()
 
@@ -516,15 +767,16 @@ private class RecordingPostboxProtocolClient(
     }
 
     override suspend fun answerRequest(requestId: String, payload: AskAnswerPayload) {
-        answers += RecordedAnswer(requestId, payload.selectedValues, payload.note, payload.rationale)
+        answers += RecordedAnswer(requestId, payload.selectedValues, payload.note)
         beforeAnswerCompletes?.invoke()
         afterAnswer?.invoke()
         answerError?.let { throw it }
     }
 
     override suspend fun cancelRequest(requestId: String, payload: AskCancelPayload) {
-        cancellations += RecordedCancel(requestId, payload.note, payload.rationale)
+        cancellations += RecordedCancel(requestId, payload.note)
         beforeCancelCompletes?.invoke()
+        cancelFailure?.let { throw it }
         afterCancel?.invoke()
         cancelError?.let { throw it }
     }

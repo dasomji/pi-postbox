@@ -37,6 +37,8 @@ Supported flags and environment variables:
 | `--ask-timeout-ms` | `PI_POSTBOX_ASK_TIMEOUT_MS` | 12 hours | Default expiry for pending asks. |
 | `--history-retention-max-age-ms` | `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS` | unset | Optional terminal-history max age. Pending asks are never pruned. |
 | `--history-retention-max-records` | `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS` | unset | Optional maximum number of terminal history records to keep. |
+| `--session-hide-offline-after-ms` | `PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS` | 24 hours | Offline sessions older than this are omitted from state snapshots. A session with a pending question stays visible regardless. |
+| `--session-retention-ms` | `PI_POSTBOX_SESSION_RETENTION_MS` | 30 days | Offline sessions older than this are deleted, unless ask requests (pending or history) still reference them. Machines and projects left without sessions are swept too. |
 
 ## Automatic Tailnet-private Tailscale Serve
 

@@ -9,8 +9,16 @@ import type {
 } from "@pi-postbox/protocol";
 import type { SqliteDatabase } from "../db/database.js";
 
-interface SessionRow {
+interface SessionPresenceRow {
   session_id: string;
+  last_heartbeat_at: string | null;
+  connected_at: string | null;
+  disconnected_at: string | null;
+  shutdown_at: string | null;
+  updated_at: string;
+}
+
+interface SessionRow extends SessionPresenceRow {
   machine_id: string;
   hostname: string;
   display_name: string | null;
@@ -31,11 +39,7 @@ interface SessionRow {
   branch: string | null;
   worktree_path: string | null;
   semantic_state: SemanticState;
-  last_heartbeat_at: string | null;
-  connected_at: string | null;
-  disconnected_at: string | null;
-  shutdown_at: string | null;
-  updated_at: string;
+  has_pending_question: number;
 }
 
 export interface PresenceOptions {
@@ -43,15 +47,57 @@ export interface PresenceOptions {
   offlineAfterMs: number;
 }
 
+export interface SessionStoreOptions extends PresenceOptions {
+  /** Offline sessions older than this are omitted from state snapshots. */
+  hideOfflineAfterMs?: number;
+  /** Offline sessions older than this are deleted, unless ask requests still reference them. */
+  retentionMs?: number;
+}
+
+const DEFAULT_HIDE_OFFLINE_AFTER_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+// When a session went offline: explicit disconnect/shutdown timestamp, or the
+// last sign of life for sessions orphaned by a server restart.
+const OFFLINE_SINCE_SQL =
+  "COALESCE(sessions.disconnected_at, sessions.shutdown_at, sessions.last_heartbeat_at, sessions.updated_at)";
+
+function validatedDurationMs(value: number, optionName: string, nowMs: number): number {
+  const cutoffMs = nowMs - value;
+  if (
+    !Number.isSafeInteger(value) ||
+    value <= 0 ||
+    !Number.isFinite(cutoffMs) ||
+    Number.isNaN(new Date(cutoffMs).getTime())
+  ) {
+    throw new RangeError(`${optionName} must be a positive safe integer within the supported date range`);
+  }
+  return value;
+}
+
 export class SessionStore {
   private readonly activeConnections = new Map<string, string>();
+  private readonly hideOfflineAfterMs: number;
+  private readonly retentionMs: number;
   private closed = false;
 
   constructor(
     private readonly db: SqliteDatabase,
     private readonly now: () => number,
-    private readonly presenceOptions: PresenceOptions
-  ) {}
+    private readonly presenceOptions: SessionStoreOptions
+  ) {
+    const nowMs = now();
+    this.hideOfflineAfterMs = validatedDurationMs(
+      presenceOptions.hideOfflineAfterMs ?? DEFAULT_HIDE_OFFLINE_AFTER_MS,
+      "hideOfflineAfterMs",
+      nowMs
+    );
+    this.retentionMs = validatedDurationMs(
+      presenceOptions.retentionMs ?? DEFAULT_SESSION_RETENTION_MS,
+      "retentionMs",
+      nowMs
+    );
+  }
 
   close(): void {
     this.closed = true;
@@ -263,6 +309,8 @@ export class SessionStore {
 
   snapshot(): StateSnapshot {
     if (this.closed) return { sessions: [], requests: [], timestamp: new Date(this.now()).toISOString() };
+    const nowMs = this.now();
+    const visibleCutoffMs = nowMs - this.hideOfflineAfterMs;
     const rows = this.db
       .prepare(
         `SELECT
@@ -291,7 +339,11 @@ export class SessionStore {
           sessions.connected_at,
           sessions.disconnected_at,
           sessions.shutdown_at,
-          sessions.updated_at
+          sessions.updated_at,
+          EXISTS (
+            SELECT 1 FROM ask_requests
+            WHERE ask_requests.session_id = sessions.session_id AND ask_requests.status = 'pending'
+          ) AS has_pending_question
         FROM sessions
         JOIN machines ON machines.machine_id = sessions.machine_id
         JOIN projects ON projects.project_id = sessions.project_id
@@ -299,8 +351,66 @@ export class SessionStore {
       )
       .all() as SessionRow[];
 
-    const sessions = rows.map((row) => this.toSnapshot(row));
-    return { sessions, requests: [], timestamp: new Date(this.now()).toISOString() };
+    // Derive presence before applying age-based visibility. This prevents a
+    // short hide window from hiding live or stale sessions whose heartbeat is
+    // older than the configured window.
+    const sessions = rows
+      .map((row) => ({ row, snapshot: this.toSnapshot(row) }))
+      .filter(({ row, snapshot }) =>
+        snapshot.presence !== "offline" ||
+        row.has_pending_question === 1 ||
+        this.offlineSinceMs(row) >= visibleCutoffMs
+      )
+      .map(({ snapshot }) => snapshot);
+    return { sessions, requests: [], timestamp: new Date(nowMs).toISOString() };
+  }
+
+  /**
+   * Deletes sessions that have been offline for longer than the retention
+   * window. Sessions still referenced by any ask request (pending or kept as
+   * history) are preserved; they become eligible once history pruning removes
+   * those requests. Machines and projects left without sessions are swept too.
+   */
+  pruneOfflineSessions(): number {
+    if (this.closed) return 0;
+    const cutoffIso = new Date(this.now() - this.retentionMs).toISOString();
+    const candidates = this.db
+      .prepare(
+        `SELECT session_id, last_heartbeat_at, connected_at, disconnected_at, shutdown_at, updated_at
+         FROM sessions
+         WHERE ${OFFLINE_SINCE_SQL} < @cutoffIso
+           AND NOT EXISTS (
+             SELECT 1 FROM ask_requests WHERE ask_requests.session_id = sessions.session_id
+           )`
+      )
+      .all({ cutoffIso }) as SessionPresenceRow[];
+    const sessionIds = candidates
+      .filter((row) => this.derivePresence(row) === "offline")
+      .map((row) => row.session_id);
+    if (sessionIds.length === 0) return 0;
+
+    const deleteSession = this.db.prepare("DELETE FROM sessions WHERE session_id = @sessionId");
+    let pruned = 0;
+    const transaction = this.db.transaction(() => {
+      for (const sessionId of sessionIds) {
+        pruned += deleteSession.run({ sessionId }).changes;
+        this.activeConnections.delete(sessionId);
+      }
+      this.db
+        .prepare(
+          `DELETE FROM machines
+           WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.machine_id = machines.machine_id)`
+        )
+        .run();
+      this.db
+        .prepare(
+          `DELETE FROM projects
+           WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.project_id = projects.project_id)`
+        )
+        .run();
+    });
+    transaction();
+    return pruned;
   }
 
   private toSnapshot(row: SessionRow): SessionSnapshot {
@@ -338,7 +448,13 @@ export class SessionStore {
     };
   }
 
-  private derivePresence(row: SessionRow): PresenceState {
+  private offlineSinceMs(row: SessionPresenceRow): number {
+    return Date.parse(
+      row.disconnected_at ?? row.shutdown_at ?? row.last_heartbeat_at ?? row.updated_at
+    );
+  }
+
+  private derivePresence(row: SessionPresenceRow): PresenceState {
     if (row.shutdown_at || row.disconnected_at || !this.activeConnections.has(row.session_id)) {
       return "offline";
     }

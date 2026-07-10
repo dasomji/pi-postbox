@@ -1,6 +1,10 @@
 <resources>
+    <!-- Postal light theme: cream paper canvas with dark navy ink (see PostboxTheme.kt). -->
     <style name="Theme.Postbox" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
+        <item name="android:windowBackground">@color/postbox_canvas</item>
+        <item name="android:statusBarColor">@color/postbox_canvas</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

@@ -46,10 +46,27 @@ export interface CliOptions {
   askTimeoutMs?: number;
   historyRetentionMaxAgeMs?: number;
   historyRetentionMaxRecords?: number;
+  sessionHideOfflineAfterMs?: number;
+  sessionRetentionMs?: number;
 }
 
 export function defaultCliDatabasePath(): string {
   return join(homedir(), ".pi-postbox", "postbox.sqlite");
+}
+
+function parsePositiveDurationMs(value: string, label: string): number {
+  if (!/^\d+$/.test(value)) throw new Error(`Invalid ${label}: ${value}`);
+  const parsed = Number(value);
+  const cutoffMs = Date.now() - parsed;
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed <= 0 ||
+    !Number.isFinite(cutoffMs) ||
+    Number.isNaN(new Date(cutoffMs).getTime())
+  ) {
+    throw new Error(`Invalid ${label}: ${value}`);
+  }
+  return parsed;
 }
 
 export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
@@ -111,6 +128,17 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     historyRetentionMaxRecords = parsed;
   }
 
+  const sessionHideOfflineAfterText =
+    getFlagValue("--session-hide-offline-after-ms") ?? env.PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS;
+  const sessionHideOfflineAfterMs = sessionHideOfflineAfterText === undefined
+    ? undefined
+    : parsePositiveDurationMs(sessionHideOfflineAfterText, "session hide-offline-after");
+
+  const sessionRetentionText = getFlagValue("--session-retention-ms") ?? env.PI_POSTBOX_SESSION_RETENTION_MS;
+  const sessionRetentionMs = sessionRetentionText === undefined
+    ? undefined
+    : parsePositiveDurationMs(sessionRetentionText, "session retention");
+
   return {
     command,
     statusJson,
@@ -122,7 +150,9 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     activeLocalRole: activeLocalRole.data,
     askTimeoutMs,
     historyRetentionMaxAgeMs,
-    historyRetentionMaxRecords
+    historyRetentionMaxRecords,
+    sessionHideOfflineAfterMs,
+    sessionRetentionMs
   };
 }
 
@@ -436,6 +466,8 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
     askTimeoutMs: options.askTimeoutMs,
     historyRetentionMaxAgeMs: options.historyRetentionMaxAgeMs,
     historyRetentionMaxRecords: options.historyRetentionMaxRecords,
+    sessionHideOfflineAfterMs: options.sessionHideOfflineAfterMs,
+    sessionRetentionMs: options.sessionRetentionMs,
     onShutdownRequest: () => void requestShutdown()
   });
 

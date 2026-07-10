@@ -200,7 +200,9 @@ describe("pi-postbox-server CLI", () => {
           "--ui-dist-dir=/tmp/ui",
           "--ask-timeout-ms=5000",
           "--history-retention-max-age-ms=6000",
-          "--history-retention-max-records=7"
+          "--history-retention-max-records=7",
+          "--session-hide-offline-after-ms=8000",
+          "--session-retention-ms=9000"
         ],
         {}
       )
@@ -212,8 +214,44 @@ describe("pi-postbox-server CLI", () => {
       uiDistDir: "/tmp/ui",
       askTimeoutMs: 5000,
       historyRetentionMaxAgeMs: 6000,
-      historyRetentionMaxRecords: 7
+      historyRetentionMaxRecords: 7,
+      sessionHideOfflineAfterMs: 8000,
+      sessionRetentionMs: 9000
     });
+  });
+
+  it("parses session cleanup durations from the environment with flag precedence", () => {
+    expect(
+      parseCliOptions(
+        ["--session-hide-offline-after-ms=1000", "--session-retention-ms", "2000"],
+        {
+          PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS: "3000",
+          PI_POSTBOX_SESSION_RETENTION_MS: "4000"
+        }
+      )
+    ).toMatchObject({ sessionHideOfflineAfterMs: 1000, sessionRetentionMs: 2000 });
+
+    expect(
+      parseCliOptions([], {
+        PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS: "3000",
+        PI_POSTBOX_SESSION_RETENTION_MS: "4000"
+      })
+    ).toMatchObject({ sessionHideOfflineAfterMs: 3000, sessionRetentionMs: 4000 });
+  });
+
+  it("rejects malformed or unsafe session cleanup durations", () => {
+    for (const value of ["0", "30d", "1000.5", String(Number.MAX_SAFE_INTEGER)]) {
+      expect(() => parseCliOptions(["--session-hide-offline-after-ms", value], {})).toThrow(
+        new RegExp(`Invalid session hide-offline-after: ${value.replace(".", "\\.")}`)
+      );
+      expect(() => parseCliOptions(["--session-retention-ms", value], {})).toThrow(
+        new RegExp(`Invalid session retention: ${value.replace(".", "\\.")}`)
+      );
+    }
+
+    expect(() =>
+      parseCliOptions([], { PI_POSTBOX_SESSION_RETENTION_MS: "30d" })
+    ).toThrow(/Invalid session retention: 30d/);
   });
 
   it("validates active-local role defaults, env, flag override, and invalid values", () => {
