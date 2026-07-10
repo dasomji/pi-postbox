@@ -1,0 +1,4 @@
+<resources>
+    <!-- Mirrors the web dashboard's postbox canvas color (apps/web/src/styles.css). -->
+    <color name="postbox_canvas">#F5EEDE</color>
+</resources>

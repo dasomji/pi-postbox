@@ -68,10 +68,34 @@ class QuestionWorkflowViewModel(
         selectQuestion(requestId)
     }
 
+    fun showQueue() {
+        state = state.copy(
+            navigationSelection = QuestionNavigationSelection.Queue,
+            terminalMessage = null
+        )
+    }
+
+    fun selectProject(projectId: String) {
+        if (state.sessions.none { it.projectId == projectId }) return
+        state = state.copy(
+            navigationSelection = QuestionNavigationSelection.Project(projectId),
+            terminalMessage = null
+        )
+    }
+
+    fun selectSession(sessionId: String) {
+        if (state.sessions.none { it.sessionId == sessionId }) return
+        state = state.copy(
+            navigationSelection = QuestionNavigationSelection.Session(sessionId),
+            terminalMessage = null
+        )
+    }
+
     fun selectQuestion(requestId: String) {
         val snapshot = latestSnapshot ?: return
         val request = snapshot.requests.firstOrNull { it.requestId == requestId } ?: return
         state = state.copy(
+            navigationSelection = QuestionNavigationSelection.Question(requestId),
             visibleQuestion = request.toUiQuestion(
                 previous = if (state.visibleQuestion?.requestId == requestId) state.visibleQuestion else null
             ),
@@ -102,7 +126,7 @@ class QuestionWorkflowViewModel(
         )
     }
 
-    fun submitAnswer(note: String? = null, rationale: String? = null) {
+    fun submitAnswer(note: String? = null) {
         val visible = state.visibleQuestion ?: return
         if (visible.isSubmitting || !visible.canSubmit) return
 
@@ -115,8 +139,7 @@ class QuestionWorkflowViewModel(
                     requestId = visible.requestId,
                     payload = AskAnswerPayload(
                         selectedValues = visible.selectedValues,
-                        note = note,
-                        rationale = rationale
+                        note = note
                     )
                 )
                 refreshState(previousVisible = visible, preferFirstPending = true)
@@ -138,7 +161,38 @@ class QuestionWorkflowViewModel(
         }
     }
 
-    fun cancelQuestion(note: String? = null, rationale: String? = null) {
+    /**
+     * Manual escape hatch for stuck questions, e.g. when the agent abandoned an
+     * ask without telling the server. Cancels the request server-side without
+     * requiring it to be the visible question first.
+     */
+    fun dismissQuestion(requestId: String) {
+        if (state.dismissingRequestId != null) return
+        state = state.copy(dismissingRequestId = requestId, dismissError = null)
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                protocolClient.cancelRequest(
+                    requestId = requestId,
+                    payload = AskCancelPayload(note = "Dismissed manually from the Postbox app queue.")
+                )
+                refreshState(
+                    preferFirstPending = state.navigationSelection ==
+                        QuestionNavigationSelection.Question(requestId)
+                )
+            } catch (exception: PostboxRequestAlreadyResolvedException) {
+                // Someone else resolved it in the meantime; the refreshed queue is answer enough.
+                refreshState()
+            } catch (exception: IOException) {
+                state = state.copy(dismissError = exception.message ?: "Unable to dismiss question.")
+            } catch (exception: RuntimeException) {
+                state = state.copy(dismissError = exception.message ?: "Unable to dismiss question.")
+            } finally {
+                state = state.copy(dismissingRequestId = null)
+            }
+        }
+    }
+
+    fun cancelQuestion(note: String? = null) {
         val visible = state.visibleQuestion ?: return
         if (visible.isSubmitting || !visible.availableActions.contains(QuestionAction.CANCEL)) return
 
@@ -147,7 +201,7 @@ class QuestionWorkflowViewModel(
             try {
                 protocolClient.cancelRequest(
                     requestId = visible.requestId,
-                    payload = AskCancelPayload(note = note, rationale = rationale)
+                    payload = AskCancelPayload(note = note)
                 )
                 refreshState(
                     previousVisible = visible,
@@ -283,12 +337,19 @@ class QuestionWorkflowViewModel(
         val pendingQuestions = pendingRequests.map { it.toListItem() }
         val requestedVisibleId = forceVisibleRequestId
             ?: notificationOpenRequestId
-            ?: if (preferFirstPending) null else previousVisible?.requestId
+            ?: if (preferFirstPending) {
+                null
+            } else {
+                (state.navigationSelection as? QuestionNavigationSelection.Question)?.requestId
+                    ?: previousVisible?.requestId
+            }
         val visibleRequest = requestedVisibleId?.let { requestId ->
             snapshot.requests.firstOrNull { it.requestId == requestId }
         } ?: pendingRequests.firstOrNull()
 
-        if (notificationOpenRequestId != null && visibleRequest?.requestId == notificationOpenRequestId) {
+        val notificationRequestWasOpened = notificationOpenRequestId != null &&
+            visibleRequest?.requestId == notificationOpenRequestId
+        if (notificationRequestWasOpened) {
             notificationOpenRequestId = null
         }
 
@@ -296,14 +357,44 @@ class QuestionWorkflowViewModel(
             previous = previousVisible?.takeIf { it.requestId == visibleRequest.requestId },
             forcedTerminalState = forcedTerminalState
         )
+        val sessions = snapshot.sessions.map { it.toUiState() }
+        val navigableSessions = visibleSidebarSessions(sessions, snapshot.timestamp)
+        val currentNavigationSelection = state.navigationSelection
+        val navigationSelection = when {
+            preferFirstPending || forceVisibleRequestId != null || notificationRequestWasOpened -> {
+                visibleRequest?.let { QuestionNavigationSelection.Question(it.requestId) }
+                    ?: QuestionNavigationSelection.Queue
+            }
+            currentNavigationSelection == null -> {
+                visibleRequest?.let { QuestionNavigationSelection.Question(it.requestId) }
+                    ?: QuestionNavigationSelection.Queue
+            }
+            currentNavigationSelection is QuestionNavigationSelection.Question -> {
+                visibleRequest?.let { QuestionNavigationSelection.Question(it.requestId) }
+                    ?: QuestionNavigationSelection.Queue
+            }
+            currentNavigationSelection is QuestionNavigationSelection.Project -> {
+                currentNavigationSelection.takeIf { selection ->
+                    navigableSessions.any { it.projectId == selection.projectId }
+                } ?: QuestionNavigationSelection.Queue
+            }
+            currentNavigationSelection is QuestionNavigationSelection.Session -> {
+                currentNavigationSelection.takeIf { selection ->
+                    navigableSessions.any { it.sessionId == selection.sessionId }
+                } ?: QuestionNavigationSelection.Queue
+            }
+            else -> QuestionNavigationSelection.Queue
+        }
 
         state = state.copy(
             isLoading = false,
             connectionState = connectionState,
             connectionMessage = connectionMessage,
-            sessions = snapshot.sessions.map { it.toUiState() },
+            sessions = sessions,
+            snapshotTimestamp = snapshot.timestamp,
             pendingQuestions = pendingQuestions,
             visibleQuestion = visibleQuestion,
+            navigationSelection = navigationSelection,
             terminalMessage = terminalMessage,
             errorMessage = null
         )
@@ -336,12 +427,23 @@ data class QuestionWorkflowState(
     val connectionState: QuestionConnectionState = QuestionConnectionState.CONNECTING,
     val connectionMessage: String? = null,
     val sessions: List<QuestionSessionUiState> = emptyList(),
+    val snapshotTimestamp: String? = null,
     val pendingQuestions: List<QuestionListItemUiState> = emptyList(),
     val visibleQuestion: QuestionDetailUiState? = null,
+    val navigationSelection: QuestionNavigationSelection? = null,
     val terminalMessage: QuestionTerminalMessage? = null,
     val errorMessage: String? = null,
-    val notificationStatusMessage: String? = null
+    val notificationStatusMessage: String? = null,
+    val dismissingRequestId: String? = null,
+    val dismissError: String? = null
 )
+
+sealed interface QuestionNavigationSelection {
+    data object Queue : QuestionNavigationSelection
+    data class Project(val projectId: String) : QuestionNavigationSelection
+    data class Session(val sessionId: String) : QuestionNavigationSelection
+    data class Question(val requestId: String) : QuestionNavigationSelection
+}
 
 enum class QuestionConnectionState {
     CONNECTING,
@@ -370,11 +472,13 @@ enum class QuestionMode {
 data class QuestionSessionUiState(
     val sessionId: String,
     val title: String?,
+    val projectId: String,
     val projectName: String,
     val machineName: String,
     val semanticState: String,
     val presence: String,
-    val branch: String?
+    val branch: String?,
+    val disconnectedAt: String? = null
 )
 
 data class QuestionListItemUiState(
@@ -423,7 +527,9 @@ private fun SessionSnapshot.toUiState(): QuestionSessionUiState = QuestionSessio
     machineName = machineName,
     semanticState = semanticState.name.lowercase(),
     presence = presence.name.lowercase(),
-    branch = branch
+    branch = branch,
+    disconnectedAt = disconnectedAt,
+    projectId = projectId
 )
 
 private fun AskRequestSnapshot.toListItem(): QuestionListItemUiState = QuestionListItemUiState(

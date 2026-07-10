@@ -38,7 +38,7 @@ class PostboxProtocolClientTest {
     }
 
     @Test
-    fun answerRequestPostsSelectedValuesAndOptionalNoteAndRationale() = runTest {
+    fun answerRequestPostsSelectedValuesAndOptionalNote() = runTest {
         server.enqueue(jsonResponse("""{"result":{"status":"answered"}}"""))
         val client = OkHttpPostboxProtocolClient(baseUrl = server.url("/").toString())
 
@@ -46,8 +46,7 @@ class PostboxProtocolClientTest {
             requestId = "ask/slash and space",
             payload = AskAnswerPayload(
                 selectedValues = listOf("kotlinx", "manual"),
-                note = "Ship the native client first.",
-                rationale = "It matches the existing protocol schemas."
+                note = "Ship the native client first."
             )
         )
 
@@ -59,19 +58,17 @@ class PostboxProtocolClientTest {
         val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
         assertEquals(JsonArray(listOf(JsonPrimitive("kotlinx"), JsonPrimitive("manual"))), body["selectedValues"])
         assertEquals("Ship the native client first.", body["note"]?.jsonPrimitive?.content)
-        assertEquals("It matches the existing protocol schemas.", body["rationale"]?.jsonPrimitive?.content)
     }
 
     @Test
-    fun cancelRequestPostsOptionalNoteAndRationale() = runTest {
+    fun cancelRequestPostsOptionalNote() = runTest {
         server.enqueue(jsonResponse("""{"result":{"status":"cancelled"}}"""))
         val client = OkHttpPostboxProtocolClient(baseUrl = server.url("/").toString())
 
         client.cancelRequest(
             requestId = "ask-cancel-1",
             payload = AskCancelPayload(
-                note = "Pause until design review finishes.",
-                rationale = "The answer would be speculative right now."
+                note = "Pause until design review finishes."
             )
         )
 
@@ -82,7 +79,6 @@ class PostboxProtocolClientTest {
 
         val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
         assertEquals("Pause until design review finishes.", body["note"]?.jsonPrimitive?.content)
-        assertEquals("The answer would be speculative right now.", body["rationale"]?.jsonPrimitive?.content)
     }
 
     @Test

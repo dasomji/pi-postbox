@@ -68,7 +68,6 @@ class PostboxProtocolDtoTest {
         assertEquals("ask-answered-1", result.requestId)
         assertEquals(listOf("kotlinx", "manual"), result.selectedValues)
         assertEquals("Ship the native client first.", result.note)
-        assertEquals("It matches the shared protocol.", result.rationale)
         assertEquals("2026-06-25T12:05:00.000Z", result.resolvedAt)
     }
 
@@ -95,7 +94,6 @@ class PostboxProtocolDtoTest {
         val result = request.result ?: error("Expected unavailable result")
         assertEquals(AskResultStatus.UNAVAILABLE, result.status)
         assertEquals("ask-unavailable-1", result.requestId)
-        assertEquals("Pi Postbox became unavailable before the request could be delivered.", result.rationale)
         assertEquals("2026-06-25T12:06:00.000Z", result.resolvedAt)
     }
 }

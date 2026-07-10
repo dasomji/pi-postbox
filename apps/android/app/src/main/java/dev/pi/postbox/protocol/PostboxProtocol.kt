@@ -5,6 +5,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 
+/**
+ * Synthetic answer value the server accepts alongside a question's own options,
+ * mirroring OTHER_OPTION_VALUE in the web protocol package.
+ */
+const val OTHER_OPTION_VALUE = "other"
+
 object PostboxProtocolJson {
     val json: Json = Json {
         ignoreUnknownKeys = true
@@ -157,14 +163,12 @@ data class ForkReference(
 @Serializable
 data class AskAnswerPayload(
     val selectedValues: List<String>,
-    val note: String? = null,
-    val rationale: String? = null
+    val note: String? = null
 )
 
 @Serializable
 data class AskCancelPayload(
-    val note: String? = null,
-    val rationale: String? = null
+    val note: String? = null
 )
 
 @Serializable
@@ -173,7 +177,6 @@ data class AskResult(
     val requestId: String? = null,
     val selectedValues: List<String>? = null,
     val note: String? = null,
-    val rationale: String? = null,
     val resolvedAt: String? = null
 )
 

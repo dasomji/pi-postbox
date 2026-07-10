@@ -127,7 +127,6 @@ internal fun answeredSingleQuestion(): AskRequestSnapshot = singlePendingQuestio
         requestId = "ask-single",
         selectedValues = listOf("loopback"),
         note = "Use emulator for this prototype.",
-        rationale = "The device smoke is deferred until hardware is available.",
         resolvedAt = "2026-06-25T12:02:00.000Z"
     )
 )
@@ -139,7 +138,6 @@ internal fun cancelledMultiQuestion(): AskRequestSnapshot = multiPendingQuestion
         status = AskResultStatus.CANCELLED,
         requestId = "ask-multi",
         note = "No longer needed.",
-        rationale = "The server already chose a default path.",
         resolvedAt = "2026-06-25T12:03:00.000Z"
     )
 )
