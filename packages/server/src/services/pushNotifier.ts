@@ -1,6 +1,7 @@
 import type { AskRequestSnapshot, PushSubscriptionPayload, SessionSnapshot } from "@pi-postbox/protocol";
 import type { RequestOptions as WebPushRequestOptions } from "web-push";
 import webPush from "web-push";
+import { isUnregisteredFcmError, type FcmSender } from "./fcmSender.js";
 import type { PushStore } from "./pushStore.js";
 import type { SessionStore } from "./sessionStore.js";
 
@@ -12,16 +13,22 @@ export class PushNotifier {
   constructor(
     private readonly pushStore: PushStore,
     private readonly sessionStore: SessionStore,
-    private readonly pushSender: PushSender = webPush
+    private readonly pushSender: PushSender = webPush,
+    private readonly fcmSender?: FcmSender
   ) {}
 
   async notifyNewPendingAsk(request: AskRequestSnapshot): Promise<void> {
     if (request.status !== "pending") return;
 
+    const payload = this.buildNewAskPayload(request, this.findSession(request.sessionId));
+    await Promise.all([this.notifyWebPushSubscriptions(payload), this.notifyFcmTokens(payload)]);
+  }
+
+  private async notifyWebPushSubscriptions(payload: NewAskPushPayload): Promise<void> {
     const subscriptions = this.pushStore.listSubscriptions();
     if (subscriptions.length === 0) return;
 
-    const payload = JSON.stringify(this.buildNewAskPayload(request, this.findSession(request.sessionId)));
+    const serializedPayload = JSON.stringify(payload);
     const sendOptions: WebPushRequestOptions = {
       vapidDetails: this.pushStore.getVapidDetails()
     };
@@ -29,10 +36,34 @@ export class PushNotifier {
     await Promise.all(
       subscriptions.map(async (subscription) => {
         try {
-          await this.pushSender.sendNotification(subscription, payload, sendOptions);
+          await this.pushSender.sendNotification(subscription, serializedPayload, sendOptions);
         } catch (error) {
           if (isGonePushError(error)) {
             this.pushStore.deleteSubscription(subscription.endpoint);
+            return;
+          }
+          throw error;
+        }
+      })
+    );
+  }
+
+  private async notifyFcmTokens(payload: NewAskPushPayload): Promise<void> {
+    if (!this.fcmSender) return;
+
+    const tokens = this.pushStore.listFcmTokens();
+    if (tokens.length === 0) return;
+
+    const data = buildFcmData(payload);
+    const fcmSender = this.fcmSender;
+
+    await Promise.all(
+      tokens.map(async ({ token }) => {
+        try {
+          await fcmSender.send(token, { data });
+        } catch (error) {
+          if (isUnregisteredFcmError(error)) {
+            this.pushStore.deleteFcmToken(token);
             return;
           }
           throw error;
@@ -76,6 +107,21 @@ interface NewAskPushPayload {
     projectName?: string;
     sessionTitle?: string;
   };
+}
+
+// FCM data messages only carry string values; the Android app rebuilds the notification from these keys.
+function buildFcmData(payload: NewAskPushPayload): Record<string, string> {
+  const data: Record<string, string> = {
+    type: payload.data.type,
+    requestId: payload.data.requestId,
+    sessionId: payload.data.sessionId,
+    title: payload.title,
+    body: payload.body
+  };
+  if (payload.data.projectId) data.projectId = payload.data.projectId;
+  if (payload.data.projectName) data.projectName = payload.data.projectName;
+  if (payload.data.sessionTitle) data.sessionTitle = payload.data.sessionTitle;
+  return data;
 }
 
 function isGonePushError(error: unknown): boolean {

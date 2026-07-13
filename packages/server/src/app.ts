@@ -19,6 +19,7 @@ import { registerRequestRoutes } from "./routes/requestRoutes.js";
 import { registerSseRoutes } from "./routes/sseRoutes.js";
 import { registerStateRoutes } from "./routes/stateRoutes.js";
 import { StateBroadcaster } from "./services/broadcaster.js";
+import { createFcmSenderFromServiceAccountPath, type FcmSender } from "./services/fcmSender.js";
 import { HistoryService } from "./services/historyService.js";
 import { PushNotifier, type PushSender } from "./services/pushNotifier.js";
 import { PushStore } from "./services/pushStore.js";
@@ -46,6 +47,8 @@ export interface CreatePostboxAppOptions {
   vapidPublicKey?: string;
   vapidPrivateKey?: string;
   pushSender?: PushSender;
+  fcmSender?: FcmSender;
+  fcmServiceAccountPath?: string;
   localTarget?: () => ActiveLocalTargetIdentity | undefined;
   // Supplied by the CLI so POST /admin/shutdown (loopback-only) can stop the process.
   onShutdownRequest?: () => void;
@@ -108,7 +111,10 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     publicKey: options.vapidPublicKey,
     privateKey: options.vapidPrivateKey
   });
-  const pushNotifier = new PushNotifier(pushStore, sessionStore, options.pushSender);
+  const fcmSender =
+    options.fcmSender ??
+    createFcmSenderFromServiceAccountPath(options.fcmServiceAccountPath ?? process.env.PI_POSTBOX_FCM_SERVICE_ACCOUNT);
+  const pushNotifier = new PushNotifier(pushStore, sessionStore, options.pushSender, fcmSender);
   const historyService = new HistoryService(db, requestStore, now, {
     maxAgeMs: options.historyRetentionMaxAgeMs,
     maxRecords: options.historyRetentionMaxRecords

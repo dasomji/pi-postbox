@@ -51,6 +51,7 @@ import dev.pi.postbox.onboarding.ServerUrlWarning
 import dev.pi.postbox.onboarding.SharedPreferencesVerifiedServerUrlStore
 import dev.pi.postbox.protocol.OkHttpPostboxProtocolClient
 import dev.pi.postbox.protocol.OkHttpPostboxStateStream
+import dev.pi.postbox.push.PostboxFcmTokenRegistration
 import dev.pi.postbox.question.QuestionWorkflowScreen
 import dev.pi.postbox.question.QuestionWorkflowViewModel
 import dev.pi.postbox.ui.theme.PostalColors
@@ -306,6 +307,9 @@ private fun ConnectedQuestionWorkflow(
     }
     LaunchedEffect(workflowViewModel, notificationPermissionState) {
         workflowViewModel.updateNotificationPermissionState(notificationPermissionState)
+    }
+    LaunchedEffect(state.baseUrl) {
+        PostboxFcmTokenRegistration.registerIfAvailable(appContext, state.baseUrl)
     }
     LaunchedEffect(workflowViewModel, openQuestionRequestId) {
         openQuestionRequestId?.let { requestId ->

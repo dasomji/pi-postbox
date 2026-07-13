@@ -1,4 +1,9 @@
-import { PushSubscriptionPayloadSchema, type PushConfigResponse, type PushSubscriptionPayload } from "@pi-postbox/protocol";
+import {
+  PushSubscriptionPayloadSchema,
+  type FcmTokenPayload,
+  type PushConfigResponse,
+  type PushSubscriptionPayload
+} from "@pi-postbox/protocol";
 import webPush from "web-push";
 import type { SqliteDatabase } from "../db/database.js";
 
@@ -10,6 +15,11 @@ interface VapidKeyRow {
 
 interface PushSubscriptionRow {
   subscription_json: string;
+}
+
+interface FcmTokenRow {
+  token: string;
+  platform: string;
 }
 
 export interface PushStoreOptions {
@@ -84,6 +94,30 @@ export class PushStore {
       const subscription = PushSubscriptionPayloadSchema.safeParse(JSON.parse(row.subscription_json));
       return subscription.success ? [subscription.data] : [];
     });
+  }
+
+  upsertFcmToken(payload: FcmTokenPayload): void {
+    const nowIso = new Date(this.now()).toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO push_fcm_tokens (token, platform, created_at, updated_at)
+         VALUES (@token, @platform, @nowIso, @nowIso)
+         ON CONFLICT(token) DO UPDATE SET
+           platform = excluded.platform,
+           updated_at = excluded.updated_at`
+      )
+      .run({ token: payload.token, platform: payload.platform, nowIso });
+  }
+
+  deleteFcmToken(token: string): void {
+    this.db.prepare("DELETE FROM push_fcm_tokens WHERE token = ?").run(token);
+  }
+
+  listFcmTokens(): FcmTokenPayload[] {
+    const rows = this.db
+      .prepare("SELECT token, platform FROM push_fcm_tokens ORDER BY created_at ASC, token ASC")
+      .all() as FcmTokenRow[];
+    return rows.flatMap((row) => (row.platform === "android" ? [{ token: row.token, platform: "android" as const }] : []));
   }
 
   getVapidDetails(): PushVapidDetails {

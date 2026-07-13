@@ -39,6 +39,7 @@ Supported flags and environment variables:
 | `--history-retention-max-records` | `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS` | unset | Optional maximum number of terminal history records to keep. |
 | `--session-hide-offline-after-ms` | `PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS` | 24 hours | Offline sessions older than this are omitted from state snapshots. A session with a pending question stays visible regardless. |
 | `--session-retention-ms` | `PI_POSTBOX_SESSION_RETENTION_MS` | 30 days | Offline sessions older than this are deleted, unless ask requests (pending or history) still reference them. Machines and projects left without sessions are swept too. |
+| `--fcm-service-account` | `PI_POSTBOX_FCM_SERVICE_ACCOUNT` | `~/.pi-postbox/fcm-service-account.json` when that file exists, else unset | Path to a Firebase service-account JSON file. When set, new pending questions are also pushed to Android devices registered via `POST /api/push/fcm-tokens`. See [Android push notifications (FCM)](#android-push-notifications-fcm). |
 
 ## Automatic Tailnet-private Tailscale Serve
 
@@ -124,6 +125,16 @@ While `ask_postbox` is pending, the extension shows compact command hints. Opera
 `/postbox-status` reports connectivity, active/local URL, Tailnet URL/export line when available, open-question count, autostart state, and diagnostics. It is privacy-preserving: status includes counts only and never pending question contents, option labels, answers, notes, or history. The read-only `postbox_status` tool returns equivalent structured fields for agents.
 
 Use `/postbox` to open the active dashboard in the user's browser. `/postbox` may use the same recovery/autostart path as `ask_postbox` when disconnected, but it remains a user-only manual browser-opening command; no LLM tool or agent side effect can open the browser.
+
+## Android push notifications (FCM)
+
+Browser Web Push works out of the box (VAPID keys are generated and persisted automatically). Pushing to the native Android app while it is closed additionally requires Firebase Cloud Messaging:
+
+1. Create a Firebase project and add an Android app with package name `dev.pi.postbox` (see `apps/android/README.md` for the client-side setup).
+2. In Firebase project settings → Service accounts, generate a service-account key and save the JSON file as `~/.pi-postbox/fcm-service-account.json` (or your `PI_POSTBOX_CONFIG_DIR` equivalent) — the server picks it up there automatically, including autostarted servers.
+3. Alternatively, point at a different location with `--fcm-service-account /path/to/key.json` or `PI_POSTBOX_FCM_SERVICE_ACCOUNT=...`.
+
+The Android app registers its device token via `POST /api/push/fcm-tokens` after verifying the server URL. On each newly created pending ask, the server sends a high-priority, data-only FCM message (no question prompt text — the same privacy rule as browser Web Push) to every registered token. Tokens that FCM reports as unregistered are pruned automatically. Without the flag, FCM fanout is skipped and browser Web Push continues to work unchanged.
 
 ## Health and status endpoints
 
