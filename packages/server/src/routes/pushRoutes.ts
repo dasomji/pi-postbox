@@ -1,4 +1,6 @@
 import {
+  FcmTokenDeletePayloadSchema,
+  FcmTokenPayloadSchema,
   PushConfigResponseSchema,
   PushSubscriptionDeletePayloadSchema,
   PushSubscriptionPayloadSchema
@@ -24,6 +26,22 @@ export async function registerPushRoutes(app: FastifyInstance, pushStore: PushSt
     if (!body.success) return reply.code(400).send({ error: "invalid_push_subscription", message: body.error.message });
 
     pushStore.deleteSubscription(body.data.endpoint);
+    return reply.code(204).send();
+  });
+
+  app.post("/api/push/fcm-tokens", async (request, reply) => {
+    const body = FcmTokenPayloadSchema.safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_fcm_token", message: body.error.message });
+
+    pushStore.upsertFcmToken(body.data);
+    return reply.code(204).send();
+  });
+
+  app.delete("/api/push/fcm-tokens", async (request, reply) => {
+    const body = FcmTokenDeletePayloadSchema.safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_fcm_token", message: body.error.message });
+
+    pushStore.deleteFcmToken(body.data.token);
     return reply.code(204).send();
   });
 }

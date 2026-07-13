@@ -157,6 +157,26 @@ describe("pi-postbox-server CLI", () => {
     });
   });
 
+  it("resolves the FCM service-account path from flag, environment, or the config-directory default file", async () => {
+    expect(parseCliOptions(["--fcm-service-account", "/etc/fcm.json"], {})).toMatchObject({
+      fcmServiceAccountPath: "/etc/fcm.json"
+    });
+
+    expect(parseCliOptions([], { PI_POSTBOX_FCM_SERVICE_ACCOUNT: "/env/fcm.json" })).toMatchObject({
+      fcmServiceAccountPath: "/env/fcm.json"
+    });
+
+    const configDir = await makeConfigDir();
+    expect(parseCliOptions([], { PI_POSTBOX_CONFIG_DIR: configDir })).toMatchObject({
+      fcmServiceAccountPath: undefined
+    });
+
+    await writeFile(join(configDir, "fcm-service-account.json"), "{}");
+    expect(parseCliOptions([], { PI_POSTBOX_CONFIG_DIR: configDir })).toMatchObject({
+      fcmServiceAccountPath: join(configDir, "fcm-service-account.json")
+    });
+  });
+
   it("parses offline status commands with stable human and JSON modes instead of starting the server", () => {
     expect(parseCliOptions(["status"], {})).toMatchObject({
       command: "status",

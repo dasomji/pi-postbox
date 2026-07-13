@@ -127,7 +127,20 @@ export const PushSubscriptionDeletePayloadSchema = z.object({
   endpoint: PushEndpointUrlSchema
 });
 
+const FcmTokenSchema = z.string().min(1).max(4096);
+
+export const FcmTokenPayloadSchema = z.object({
+  token: FcmTokenSchema,
+  platform: z.literal("android").default("android")
+});
+
+export const FcmTokenDeletePayloadSchema = z.object({
+  token: FcmTokenSchema
+});
+
 export type PushConfigSource = z.infer<typeof PushConfigSourceSchema>;
 export type PushConfigResponse = z.infer<typeof PushConfigResponseSchema>;
 export type PushSubscriptionPayload = z.infer<typeof PushSubscriptionPayloadSchema>;
 export type PushSubscriptionDeletePayload = z.infer<typeof PushSubscriptionDeletePayloadSchema>;
+export type FcmTokenPayload = z.infer<typeof FcmTokenPayloadSchema>;
+export type FcmTokenDeletePayload = z.infer<typeof FcmTokenDeletePayloadSchema>;

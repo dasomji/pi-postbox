@@ -11,7 +11,7 @@ import {
   type ActiveLocalTargetIdentity
 } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -48,6 +48,7 @@ export interface CliOptions {
   historyRetentionMaxRecords?: number;
   sessionHideOfflineAfterMs?: number;
   sessionRetentionMs?: number;
+  fcmServiceAccountPath?: string;
 }
 
 export function defaultCliDatabasePath(): string {
@@ -152,7 +153,9 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     historyRetentionMaxAgeMs,
     historyRetentionMaxRecords,
     sessionHideOfflineAfterMs,
-    sessionRetentionMs
+    sessionRetentionMs,
+    fcmServiceAccountPath:
+      getFlagValue("--fcm-service-account") ?? env.PI_POSTBOX_FCM_SERVICE_ACCOUNT ?? defaultFcmServiceAccountPath(env)
   };
 }
 
@@ -391,6 +394,13 @@ async function readStatusMetadataRecords(
   return records;
 }
 
+// Autostarted servers inherit an arbitrary parent environment, so FCM must also be configurable by
+// dropping the service-account file into the config directory rather than only via flag/env.
+function defaultFcmServiceAccountPath(env: NodeJS.ProcessEnv): string | undefined {
+  const candidate = join(configBaseDir(env), "fcm-service-account.json");
+  return existsSync(candidate) ? candidate : undefined;
+}
+
 function configBaseDir(env: NodeJS.ProcessEnv): string {
   if (env.PI_POSTBOX_CONFIG_DIR) return env.PI_POSTBOX_CONFIG_DIR;
   if (env.PI_POSTBOX_CONFIG_PATH) return dirname(env.PI_POSTBOX_CONFIG_PATH);
@@ -468,6 +478,7 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
     historyRetentionMaxRecords: options.historyRetentionMaxRecords,
     sessionHideOfflineAfterMs: options.sessionHideOfflineAfterMs,
     sessionRetentionMs: options.sessionRetentionMs,
+    fcmServiceAccountPath: options.fcmServiceAccountPath,
     onShutdownRequest: () => void requestShutdown()
   });
 

@@ -115,6 +115,13 @@ function runMigrations(db: SqliteDatabase): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS push_fcm_tokens (
+      token TEXT PRIMARY KEY,
+      platform TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   ensureColumn(db, "projects", "display_name", "TEXT");

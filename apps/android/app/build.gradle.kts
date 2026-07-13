@@ -40,12 +40,14 @@ kotlin {
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.05.01"))
+    implementation(platform("com.google.firebase:firebase-bom:33.13.0"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
+    implementation("com.google.firebase:firebase-messaging")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
@@ -55,4 +57,10 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+}
+
+// google-services.json is a per-developer Firebase artifact and is not committed; only wire up
+// Firebase config processing when it is present so the project still builds without it.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
