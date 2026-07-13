@@ -6,3 +6,4 @@ dist/
 tmp/
 data/
 .gstack/
+.pi-subagents/
