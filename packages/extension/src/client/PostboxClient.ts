@@ -209,6 +209,7 @@ export class PostboxClient {
         resolve(result);
       };
       const abort = () => {
+        this.cancelAskOnAbort(pending);
         cleanup();
         reject(new Error("ask_postbox was aborted"));
       };
@@ -443,12 +444,39 @@ export class PostboxClient {
   }
 
   private resolveLocally(pending: PendingAsk, result: AskResult, message: ExtensionClientMessage): void {
+    this.enqueueLocalResolution(pending, result, message);
+    pending.resolve(result);
+    this.flushLocalResolutions();
+  }
+
+  /**
+   * The agent abandoned this ask (the tool call was aborted), so cancel it server-side too;
+   * otherwise the question lingers as pending in every Postbox inbox until it expires. Skipped
+   * when the ask never reached a server, because there is nothing to cancel there.
+   */
+  private cancelAskOnAbort(pending: PendingAsk): void {
+    if (!pending.sentAtLeastOnce) return;
+    const requestId = pending.payload.requestId;
+    const cancel: AskCancelPayload = { note: "The agent stopped waiting for this question." };
+    const result: AskResult = {
+      status: "cancelled",
+      requestId,
+      note: cancel.note,
+      resolvedAt: new Date().toISOString()
+    };
+    this.enqueueLocalResolution(pending, result, {
+      type: "ask.cancel",
+      requestId,
+      payload: { requestId, cancel }
+    });
+    this.flushLocalResolutions();
+  }
+
+  private enqueueLocalResolution(pending: PendingAsk, result: AskResult, message: ExtensionClientMessage): void {
     const originServerUrl = pending.originServerUrl ?? pending.createdServerUrl;
     const resolution: LocalResolution = { payload: pending.payload, result, message, originServerUrl };
     this.localResolutions.set(pending.payload.requestId, resolution);
     if (!this.isConnected()) this.startLocalResolutionTargetAffinityTimer(pending.payload.requestId, resolution);
-    pending.resolve(result);
-    this.flushLocalResolutions();
   }
 
   private findPendingAsk(requestId?: string): PendingAsk {

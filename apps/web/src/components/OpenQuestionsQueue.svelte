@@ -110,13 +110,18 @@
   {/if}
 
   {#if groups.length === 0}
-    <div class="flex flex-1 flex-col items-center justify-center py-20 text-center">
-      <h2 class="font-display text-2xl font-semibold text-postbox-text">No open questions</h2>
-      <p class="mt-2 max-w-md text-postbox-subtle">
-        {projectFilter
-          ? "When an agent in this project needs a decision, it will appear here."
-          : "When an agent needs a decision, it will appear here grouped by project."}
-      </p>
+    <div class="flex flex-1 flex-col items-center justify-center py-20 text-center" aria-live="polite">
+      {#if store.syncing}
+        <h2 class="font-display text-2xl font-semibold text-postbox-text">Checking for questions…</h2>
+        <p class="mt-2 max-w-md text-postbox-subtle">Syncing with your Postbox server.</p>
+      {:else}
+        <h2 class="font-display text-2xl font-semibold text-postbox-text">No open questions</h2>
+        <p class="mt-2 max-w-md text-postbox-subtle">
+          {projectFilter
+            ? "When an agent in this project needs a decision, it will appear here."
+            : "When an agent needs a decision, it will appear here grouped by project."}
+        </p>
+      {/if}
     </div>
   {:else}
     <div class="mt-6 space-y-6">

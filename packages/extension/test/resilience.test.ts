@@ -182,6 +182,55 @@ describe("PostboxClient pending ask resilience", () => {
     client.stop();
   });
 
+  it("cancels the server-side ask when the agent aborts a sent ask_postbox call", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const controller = new AbortController();
+
+    const askPromise = client.ask({ ...askPayload, requestId: "ask-abort-cancel" }, controller.signal);
+    expect(socket.sent).toEqual([
+      expect.objectContaining({ type: "session.register" }),
+      expect.objectContaining({ type: "ask.create", payload: expect.objectContaining({ requestId: "ask-abort-cancel" }) })
+    ]);
+
+    controller.abort();
+    await expect(askPromise).rejects.toThrow("aborted");
+
+    expect(socket.sent.slice(2)).toEqual([
+      expect.objectContaining({ type: "ask.create", payload: expect.objectContaining({ requestId: "ask-abort-cancel" }) }),
+      expect.objectContaining({
+        type: "ask.cancel",
+        payload: expect.objectContaining({
+          requestId: "ask-abort-cancel",
+          cancel: expect.objectContaining({ note: expect.stringContaining("stopped waiting") })
+        })
+      })
+    ]);
+    expect(client.listPendingAsks()).toEqual([]);
+    client.stop();
+  });
+
+  it("does not send a cancel for an aborted ask that never reached a server", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0];
+    const controller = new AbortController();
+
+    const askPromise = client.ask({ ...askPayload, requestId: "ask-abort-unsent" }, controller.signal);
+    controller.abort();
+    await expect(askPromise).rejects.toThrow("aborted");
+
+    socket.open();
+
+    expect(socket.sent).toEqual([expect.objectContaining({ type: "session.register" })]);
+    expect(client.listPendingAsks()).toEqual([]);
+    client.stop();
+  });
+
   it("does not publish disconnect status or reconnect after being stopped", async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];

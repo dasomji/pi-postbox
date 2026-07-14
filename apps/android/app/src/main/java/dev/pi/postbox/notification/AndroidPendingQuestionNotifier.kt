@@ -68,6 +68,10 @@ class AndroidPendingQuestionNotifier(
         }
     }
 
+    fun cancel(requestId: String) {
+        notificationManager.cancel(requestId.hashCode())
+    }
+
     private fun ensureChannel() {
         val existing = notificationManager.getNotificationChannel(CHANNEL_ID)
         if (existing != null) return

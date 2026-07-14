@@ -23,7 +23,17 @@ fun pendingQuestionNotificationFromPushData(
     )
 }
 
+/**
+ * Extracts the requestId of a resolved (answered, cancelled, or expired) question from a server
+ * dismissal push so any still-visible notification for it can be cancelled.
+ */
+fun resolvedQuestionRequestIdFromPushData(data: Map<String, String>): String? {
+    if (data[KEY_TYPE] != TYPE_ASK_RESOLVED) return null
+    return data[KEY_REQUEST_ID]?.takeIf { it.isNotBlank() }
+}
+
 const val TYPE_ASK_CREATED: String = "ask.created"
+const val TYPE_ASK_RESOLVED: String = "ask.resolved"
 private const val KEY_TYPE = "type"
 private const val KEY_REQUEST_ID = "requestId"
 private const val KEY_TITLE = "title"

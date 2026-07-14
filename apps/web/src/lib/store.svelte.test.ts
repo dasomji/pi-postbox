@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionSnapshot, StateSnapshot } from "@pi-postbox/protocol";
+import type { AskRequestSnapshot, SessionSnapshot, StateSnapshot } from "@pi-postbox/protocol";
 import { store } from "./store.svelte";
 
 const SNAPSHOT_TIME = "2026-06-24T12:00:00.000Z";
@@ -145,5 +145,79 @@ describe("store sidebar project groups", () => {
     store.snapshot = { status: "ready", data: snapshot };
 
     expect(store.projects).toEqual([]);
+  });
+});
+
+describe("store deselection of questions resolved on another device", () => {
+  const liveSession = session({
+    sessionId: "session-remote",
+    projectId: "remote-project",
+    projectName: "Remote Project",
+    presence: "live",
+    semanticState: "blocked"
+  });
+
+  function askRequest(requestId: string, status: AskRequestSnapshot["status"]): AskRequestSnapshot {
+    return {
+      requestId,
+      sessionId: "session-remote",
+      mode: "single",
+      question: { prompt: `Prompt for ${requestId}` },
+      options: [{ value: "yes", label: "Yes" }],
+      status,
+      createdAt: SNAPSHOT_TIME
+    };
+  }
+
+  function remoteSnapshot(requests: AskRequestSnapshot[]): StateSnapshot {
+    return { timestamp: SNAPSHOT_TIME, sessions: [liveSession], requests };
+  }
+
+  it("clears the selection when the open question resolves remotely and its project has no other open questions", () => {
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending")]));
+    store.selectRequest("ask-remote");
+
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "answered")]));
+
+    expect(store.selection).toEqual({ kind: "none" });
+  });
+
+  it("routes to the project queue when the project still has other open questions", () => {
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending"), askRequest("ask-other", "pending")]));
+    store.selectRequest("ask-remote");
+
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "cancelled"), askRequest("ask-other", "pending")]));
+
+    expect(store.selection).toEqual({ kind: "project", projectId: "remote-project" });
+  });
+
+  it("keeps the selection while this tab is resolving the question locally", () => {
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending")]));
+    store.selectRequest("ask-remote");
+    store.beginLocalResolve("ask-remote");
+
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "answered")]));
+
+    expect(store.selection).toEqual({ kind: "request", requestId: "ask-remote" });
+    store.endLocalResolve("ask-remote");
+  });
+
+  it("leaves non-request selections untouched when questions resolve", () => {
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending")]));
+    store.selectSession("session-remote");
+
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "answered")]));
+
+    expect(store.selection).toEqual({ kind: "session", sessionId: "session-remote" });
+  });
+});
+
+describe("store sync freshness", () => {
+  it("clears the syncing flag once a snapshot is applied", () => {
+    store.syncing = true;
+
+    store.applyStateSnapshot({ timestamp: SNAPSHOT_TIME, sessions: [], requests: [] });
+
+    expect(store.syncing).toBe(false);
   });
 });

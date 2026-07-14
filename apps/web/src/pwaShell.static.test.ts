@@ -134,6 +134,8 @@ describe("Unit 03 PWA shell and service worker installability", () => {
         (/fetch\s*\(\s*(?:event\.)?request/.test(serviceWorker ?? "") || !/respondWith\s*\(/.test(serviceWorker ?? "")),
       hasPushHandler: serviceWorkerHasListener(serviceWorker, "push"),
       pushShowsNotification: /showNotification\s*\(/.test(serviceWorker ?? ""),
+      pushDismissesResolvedQuestionNotifications:
+        /ask\.resolved/.test(serviceWorker ?? "") && /getNotifications\s*\(\s*\{\s*tag/.test(serviceWorker ?? ""),
       hasNotificationClickHandler: serviceWorkerHasListener(serviceWorker, "notificationclick"),
       notificationClickClosesNotification: /notification\.close\s*\(/.test(serviceWorker ?? ""),
       notificationClickOpensOrFocusesApp: /clients\.matchAll\s*\(|clients\.openWindow\s*\(/.test(serviceWorker ?? "")
@@ -146,6 +148,7 @@ describe("Unit 03 PWA shell and service worker installability", () => {
       fetchHandlerIsSafePassthrough: true,
       hasPushHandler: true,
       pushShowsNotification: true,
+      pushDismissesResolvedQuestionNotifications: true,
       hasNotificationClickHandler: true,
       notificationClickClosesNotification: true,
       notificationClickOpensOrFocusesApp: true

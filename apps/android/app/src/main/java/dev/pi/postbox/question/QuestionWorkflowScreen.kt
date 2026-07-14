@@ -220,6 +220,7 @@ fun QuestionWorkflowScreen(
                                 subtitle = "All pending Postbox decisions, oldest first.",
                                 questions = state.pendingQuestions,
                                 dismissEnabled = state.dismissingRequestId == null,
+                                isSyncing = state.isSyncing,
                                 onSelectQuestion = onSelectQuestion,
                                 onDismissQuestion = onDismissQuestion,
                                 modifier = Modifier.weight(1f)
@@ -233,6 +234,7 @@ fun QuestionWorkflowScreen(
                                     subtitle = "Pending Postbox decisions for this project, oldest first.",
                                     questions = state.pendingQuestions.filter { it.sessionId in sessionIds },
                                     dismissEnabled = state.dismissingRequestId == null,
+                                    isSyncing = state.isSyncing,
                                     onSelectQuestion = onSelectQuestion,
                                     onDismissQuestion = onDismissQuestion,
                                     modifier = Modifier.weight(1f)
@@ -258,7 +260,7 @@ fun QuestionWorkflowScreen(
                             }
                             is QuestionNavigationSelection.Question, null -> {
                                 if (visibleQuestion == null) {
-                                    EmptyQuestionsCard()
+                                    EmptyQuestionsCard(isSyncing = state.isSyncing)
                                 } else {
                                     val session = state.sessions.firstOrNull { it.sessionId == visibleQuestion.sessionId }
                                     val listItem = state.pendingQuestions.firstOrNull { it.requestId == visibleQuestion.requestId }
@@ -917,7 +919,8 @@ private fun QuestionQueueView(
     dismissEnabled: Boolean,
     onSelectQuestion: (String) -> Unit,
     onDismissQuestion: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isSyncing: Boolean = false
 ) {
     Column(
         modifier = modifier
@@ -950,7 +953,7 @@ private fun QuestionQueueView(
         }
 
         if (questions.isEmpty()) {
-            EmptyQuestionsCard()
+            EmptyQuestionsCard(isSyncing = isSyncing)
         } else {
             questions.forEach { question ->
                 QuestionListItem(
@@ -1528,7 +1531,7 @@ private fun LabeledBlock(title: String, body: String) {
 }
 
 @Composable
-private fun EmptyQuestionsCard() {
+private fun EmptyQuestionsCard(isSyncing: Boolean = false) {
     PostalPanel {
         Column(
             modifier = Modifier
@@ -1537,12 +1540,16 @@ private fun EmptyQuestionsCard() {
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
-                text = "All caught up",
+                text = if (isSyncing) "Checking for questions…" else "All caught up",
                 style = MaterialTheme.typography.titleMedium,
                 color = PostalColors.text
             )
             Text(
-                text = "When an agent needs a decision, it will appear here.",
+                text = if (isSyncing) {
+                    "Syncing with your Postbox server."
+                } else {
+                    "When an agent needs a decision, it will appear here."
+                },
                 fontSize = 14.sp,
                 color = PostalColors.subtle
             )

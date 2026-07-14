@@ -15,6 +15,11 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   const payload = readPushPayload(event.data);
 
+  if (payload.data.type === "ask.resolved") {
+    event.waitUntil(closeNotificationsForTag(payload.tag));
+    return;
+  }
+
   event.waitUntil(
     self.registration.showNotification(payload.title, {
       body: payload.body,
@@ -66,6 +71,11 @@ function fallbackPayload() {
     data: {},
     tag: "postbox-question"
   };
+}
+
+async function closeNotificationsForTag(tag) {
+  const notifications = await self.registration.getNotifications({ tag });
+  for (const notification of notifications) notification.close();
 }
 
 async function openOrFocusPostbox() {

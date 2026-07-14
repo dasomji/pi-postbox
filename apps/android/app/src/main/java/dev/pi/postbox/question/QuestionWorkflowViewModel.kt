@@ -17,6 +17,7 @@ import dev.pi.postbox.protocol.PostboxStateStream
 import dev.pi.postbox.protocol.PostboxStateStreamStatus
 import dev.pi.postbox.protocol.SessionSnapshot
 import dev.pi.postbox.protocol.StateSnapshot
+import dev.pi.postbox.push.PrefetchedStateSnapshotCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -31,7 +32,8 @@ class QuestionWorkflowViewModel(
     private val coroutineScope: CoroutineScope,
     initialNotificationPermissionState: NotificationPermissionState = NotificationPermissionState.Unknown,
     private val pendingQuestionNotificationTracker: PendingQuestionNotificationTracker? = null,
-    private val onPendingQuestionNotifications: (List<PendingQuestionNotification>) -> Unit = {}
+    private val onPendingQuestionNotifications: (List<PendingQuestionNotification>) -> Unit = {},
+    private val prefetchedSnapshotProvider: (String) -> StateSnapshot? = { PrefetchedStateSnapshotCache.freshSnapshotFor(it) }
 ) {
     var state: QuestionWorkflowState by mutableStateOf(
         QuestionWorkflowState(
@@ -51,6 +53,13 @@ class QuestionWorkflowViewModel(
         if (started) return
         started = true
         observationActive = true
+        state = state.copy(isSyncing = true)
+
+        // A push handler may have fetched fresh state moments ago; render it immediately so an
+        // open-from-notification never shows the previous visit's stale queue while syncing.
+        prefetchedSnapshotProvider(state.baseUrl)?.let { prefetched ->
+            applySnapshot(snapshot = prefetched, previousVisible = state.visibleQuestion)
+        }
 
         streamJob = coroutineScope.launch(context = Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
             stateStream.states.collect { status -> handleStreamStatus(status) }
@@ -64,6 +73,11 @@ class QuestionWorkflowViewModel(
     }
 
     fun openQuestionFromNotification(requestId: String) {
+        val knownRequest = latestSnapshot?.requests?.firstOrNull { it.requestId == requestId }
+        if (knownRequest != null && knownRequest.status != AskStatus.PENDING) {
+            showQueue()
+            return
+        }
         notificationOpenRequestId = requestId
         selectQuestion(requestId)
     }
@@ -261,6 +275,7 @@ class QuestionWorkflowViewModel(
         } catch (exception: IOException) {
             state = state.copy(
                 isLoading = false,
+                isSyncing = false,
                 connectionState = QuestionConnectionState.ERROR,
                 connectionMessage = exception.message,
                 errorMessage = exception.message ?: "Unable to load questions."
@@ -268,6 +283,7 @@ class QuestionWorkflowViewModel(
         } catch (exception: RuntimeException) {
             state = state.copy(
                 isLoading = false,
+                isSyncing = false,
                 connectionState = QuestionConnectionState.ERROR,
                 connectionMessage = exception.message,
                 errorMessage = exception.message ?: "Unable to load questions."
@@ -335,9 +351,33 @@ class QuestionWorkflowViewModel(
         latestSnapshot = snapshot
         val pendingRequests = snapshot.requests.filter { it.status == AskStatus.PENDING }
         val pendingQuestions = pendingRequests.map { it.toListItem() }
+        // A notification tap for a question that resolved in the meantime should land on the
+        // queue instead of reopening the answered/cancelled question.
+        val staleNotificationOpen = notificationOpenRequestId?.let { requestId ->
+            snapshot.requests.any { it.requestId == requestId && it.status != AskStatus.PENDING }
+        } ?: false
+        if (staleNotificationOpen) {
+            notificationOpenRequestId = null
+        }
+        // A question that resolves while it is open on this device (answered, cancelled, or
+        // expired elsewhere) disappears back to the queue instead of lingering as a dead form.
+        // Local submits and cancels never take this path: they arrive with a forced terminal
+        // state, preferFirstPending, or an isSubmitting previous question.
+        val previousVisibleRequest = previousVisible?.let { visible ->
+            snapshot.requests.firstOrNull { it.requestId == visible.requestId }
+        }
+        val remotelyResolvedVisible = forceVisibleRequestId == null &&
+            forcedTerminalState == null &&
+            !preferFirstPending &&
+            previousVisible != null &&
+            previousVisible.terminalState == null &&
+            !previousVisible.isSubmitting &&
+            (state.navigationSelection as? QuestionNavigationSelection.Question)?.requestId == previousVisible.requestId &&
+            previousVisibleRequest != null &&
+            previousVisibleRequest.status != AskStatus.PENDING
         val requestedVisibleId = forceVisibleRequestId
             ?: notificationOpenRequestId
-            ?: if (preferFirstPending) {
+            ?: if (preferFirstPending || remotelyResolvedVisible) {
                 null
             } else {
                 (state.navigationSelection as? QuestionNavigationSelection.Question)?.requestId
@@ -361,6 +401,8 @@ class QuestionWorkflowViewModel(
         val navigableSessions = visibleSidebarSessions(sessions, snapshot.timestamp)
         val currentNavigationSelection = state.navigationSelection
         val navigationSelection = when {
+            remotelyResolvedVisible -> QuestionNavigationSelection.Queue
+            staleNotificationOpen && forceVisibleRequestId == null -> QuestionNavigationSelection.Queue
             preferFirstPending || forceVisibleRequestId != null || notificationRequestWasOpened -> {
                 visibleRequest?.let { QuestionNavigationSelection.Question(it.requestId) }
                     ?: QuestionNavigationSelection.Queue
@@ -385,9 +427,23 @@ class QuestionWorkflowViewModel(
             }
             else -> QuestionNavigationSelection.Queue
         }
+        val effectiveTerminalMessage = if (remotelyResolvedVisible && previousVisibleRequest != null) {
+            QuestionTerminalMessage(
+                requestId = previousVisibleRequest.requestId,
+                message = when (previousVisibleRequest.status) {
+                    AskStatus.ANSWERED -> "This question was answered on another device."
+                    AskStatus.CANCELLED -> "This question was cancelled by the agent or another device."
+                    AskStatus.EXPIRED -> "This question expired before it was answered."
+                    else -> "This question was resolved elsewhere."
+                }
+            )
+        } else {
+            terminalMessage
+        }
 
         state = state.copy(
             isLoading = false,
+            isSyncing = false,
             connectionState = connectionState,
             connectionMessage = connectionMessage,
             sessions = sessions,
@@ -395,7 +451,7 @@ class QuestionWorkflowViewModel(
             pendingQuestions = pendingQuestions,
             visibleQuestion = visibleQuestion,
             navigationSelection = navigationSelection,
-            terminalMessage = terminalMessage,
+            terminalMessage = effectiveTerminalMessage,
             errorMessage = null
         )
 
@@ -424,6 +480,8 @@ class QuestionWorkflowViewModel(
 data class QuestionWorkflowState(
     val baseUrl: String,
     val isLoading: Boolean = true,
+    /** True from (re)start until a state snapshot arrives; empty views show "checking" instead of "all caught up". */
+    val isSyncing: Boolean = true,
     val connectionState: QuestionConnectionState = QuestionConnectionState.CONNECTING,
     val connectionMessage: String? = null,
     val sessions: List<QuestionSessionUiState> = emptyList(),

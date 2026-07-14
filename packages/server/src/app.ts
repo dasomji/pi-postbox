@@ -115,6 +115,11 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     options.fcmSender ??
     createFcmSenderFromServiceAccountPath(options.fcmServiceAccountPath ?? process.env.PI_POSTBOX_FCM_SERVICE_ACCOUNT);
   const pushNotifier = new PushNotifier(pushStore, sessionStore, options.pushSender, fcmSender);
+  requestStore.onAnyResolved((result) => {
+    void pushNotifier.notifyAskResolved(result).catch((error: unknown) => {
+      app.log.warn({ error, requestId: result.requestId }, "failed to send ask resolved push dismissal");
+    });
+  });
   const historyService = new HistoryService(db, requestStore, now, {
     maxAgeMs: options.historyRetentionMaxAgeMs,
     maxRecords: options.historyRetentionMaxRecords
