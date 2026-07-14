@@ -43,6 +43,7 @@ const SESSION_SHUTDOWN_NOTE = "Originating Pi session shut down.";
 
 export class RequestStore {
   private readonly listeners = new Map<string, Set<ResolutionListener>>();
+  private readonly globalResolutionListeners = new Set<ResolutionListener>();
   private closed = false;
   private readonly askTimeoutMs: number;
 
@@ -57,6 +58,7 @@ export class RequestStore {
   close(): void {
     this.closed = true;
     this.listeners.clear();
+    this.globalResolutionListeners.clear();
   }
 
   create(payload: AskCreatePayload): AskRequestSnapshot {
@@ -266,6 +268,13 @@ export class RequestStore {
     return results;
   }
 
+  onAnyResolved(listener: ResolutionListener): () => void {
+    this.globalResolutionListeners.add(listener);
+    return () => {
+      this.globalResolutionListeners.delete(listener);
+    };
+  }
+
   onResolved(requestId: string, listener: ResolutionListener): () => void {
     let listeners = this.listeners.get(requestId);
     if (!listeners) {
@@ -354,6 +363,7 @@ export class RequestStore {
   }
 
   private notify(requestId: string, result: AskResult): void {
+    for (const listener of [...this.globalResolutionListeners]) listener(result);
     const listeners = this.listeners.get(requestId);
     if (!listeners) return;
     for (const listener of [...listeners]) listener(result);

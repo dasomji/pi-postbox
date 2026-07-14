@@ -12,8 +12,23 @@ import dev.pi.postbox.onboarding.SharedPreferencesVerifiedServerUrlStore
  */
 class PostboxFirebaseMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
-        val notification = pendingQuestionNotificationFromPushData(message.data) ?: return
-        AndroidPendingQuestionNotifier(applicationContext).post(notification)
+        val resolvedRequestId = resolvedQuestionRequestIdFromPushData(message.data)
+        val notification = if (resolvedRequestId == null) pendingQuestionNotificationFromPushData(message.data) else null
+        if (resolvedRequestId == null && notification == null) return
+
+        // Fetch the fresh state now, in the push execution window, so an app open in the next
+        // couple of minutes renders the current queue immediately instead of stale data.
+        SharedPreferencesVerifiedServerUrlStore(applicationContext).loadVerifiedServerUrl()?.let { baseUrl ->
+            PostboxStatePrefetch.prefetch(baseUrl)
+        }
+
+        if (resolvedRequestId != null) {
+            AndroidPendingQuestionNotifier(applicationContext).cancel(resolvedRequestId)
+            return
+        }
+        if (notification != null) {
+            AndroidPendingQuestionNotifier(applicationContext).post(notification)
+        }
     }
 
     override fun onNewToken(token: String) {

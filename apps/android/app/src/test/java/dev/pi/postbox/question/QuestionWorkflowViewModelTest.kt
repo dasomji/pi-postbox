@@ -19,6 +19,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -671,6 +672,177 @@ class QuestionWorkflowViewModelTest {
 
         assertEquals("ask-from-notification", viewModel.state.visibleQuestion?.requestId)
         assertEquals("Open this tapped question", viewModel.state.visibleQuestion?.prompt)
+    }
+
+    @Test
+    fun prefetchedSnapshotRendersImmediatelyWhileTheFirstFetchIsStillInFlight() = runTest {
+        val fetchGate = CompletableDeferred<Unit>()
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.beforeFetchCompletes = { fetchGate.await() }
+        val viewModel = QuestionWorkflowViewModel(
+            baseUrl = VERIFIED_BASE_URL,
+            protocolClient = client,
+            stateStream = FakePostboxStateStream(),
+            coroutineScope = backgroundScope,
+            prefetchedSnapshotProvider = { baseUrl ->
+                if (baseUrl == VERIFIED_BASE_URL) {
+                    questionWorkflowState(
+                        requests = listOf(singlePendingQuestion(requestId = "ask-prefetched", prompt = "Prefetched question"))
+                    )
+                } else {
+                    null
+                }
+            }
+        )
+
+        viewModel.start()
+
+        assertEquals(listOf("ask-prefetched"), viewModel.state.pendingQuestions.map { it.requestId })
+        assertFalse(viewModel.state.isSyncing)
+        assertFalse(viewModel.state.isLoading)
+
+        fetchGate.complete(Unit)
+        runCurrent()
+
+        assertEquals(listOf("ask-single", "ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
+    }
+
+    @Test
+    fun syncingFlagCoversTheWindowBetweenStartAndTheFirstSnapshot() = runTest {
+        val fetchGate = CompletableDeferred<Unit>()
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.beforeFetchCompletes = { fetchGate.await() }
+        val viewModel = QuestionWorkflowViewModel(
+            baseUrl = VERIFIED_BASE_URL,
+            protocolClient = client,
+            stateStream = FakePostboxStateStream(),
+            coroutineScope = backgroundScope
+        )
+
+        viewModel.start()
+        assertTrue(viewModel.state.isSyncing)
+
+        fetchGate.complete(Unit)
+        runCurrent()
+        assertFalse(viewModel.state.isSyncing)
+    }
+
+    @Test
+    fun questionResolvedOnAnotherDeviceWhileOpenDisappearsToQueueWithMessage() = runTest {
+        val stream = FakePostboxStateStream()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            stream = stream
+        )
+        viewModel.selectQuestion("ask-single")
+        assertEquals(QuestionNavigationSelection.Question("ask-single"), viewModel.state.navigationSelection)
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(requestId = "ask-single", status = AskStatus.ANSWERED),
+                        multiPendingQuestion()
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+        assertEquals("ask-single", viewModel.state.terminalMessage?.requestId)
+        assertTrue(viewModel.state.terminalMessage?.message?.contains("another device") == true)
+    }
+
+    @Test
+    fun questionCancelledElsewhereWhileOnQueueDoesNotHijackNavigation() = runTest {
+        val stream = FakePostboxStateStream()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            stream = stream
+        )
+        viewModel.selectSession("session-live")
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(requestId = "ask-single", status = AskStatus.CANCELLED),
+                        multiPendingQuestion()
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(QuestionNavigationSelection.Session("session-live"), viewModel.state.navigationSelection)
+        assertNull(viewModel.state.terminalMessage)
+    }
+
+    @Test
+    fun notificationTapForAlreadyResolvedQuestionShowsQueue() = runTest {
+        val viewModel = startedViewModel(
+            RecordingPostboxProtocolClient(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(requestId = "ask-open"),
+                        singlePendingQuestion(requestId = "ask-answered", status = AskStatus.ANSWERED)
+                    )
+                )
+            )
+        )
+
+        viewModel.openQuestionFromNotification("ask-answered")
+
+        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+    }
+
+    @Test
+    fun notificationTapWhoseQuestionArrivesResolvedShowsQueue() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState(requests = emptyList()))
+        val stream = FakePostboxStateStream()
+        val viewModel = QuestionWorkflowViewModel(
+            baseUrl = VERIFIED_BASE_URL,
+            protocolClient = client,
+            stateStream = stream,
+            coroutineScope = backgroundScope
+        )
+
+        viewModel.start()
+        advanceUntilIdle()
+        viewModel.openQuestionFromNotification("ask-from-notification")
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(requestId = "ask-first"),
+                        singlePendingQuestion(requestId = "ask-from-notification", status = AskStatus.ANSWERED)
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(requestId = "ask-first"),
+                        singlePendingQuestion(requestId = "ask-from-notification", status = AskStatus.ANSWERED)
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "a consumed stale notification tap must not re-trigger queue navigation on later snapshots",
+            QuestionNavigationSelection.Queue,
+            viewModel.state.navigationSelection
+        )
     }
 
     @Test

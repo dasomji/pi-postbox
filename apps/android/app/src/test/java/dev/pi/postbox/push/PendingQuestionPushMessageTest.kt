@@ -55,4 +55,19 @@ class PendingQuestionPushMessageTest {
         assertNull(pendingQuestionNotificationFromPushData(mapOf("type" to "ask.created")))
         assertNull(pendingQuestionNotificationFromPushData(mapOf("type" to "ask.created", "requestId" to "  ")))
     }
+
+    @Test
+    fun `maps ask resolved data payload to the requestId to dismiss`() {
+        assertEquals(
+            "ask-4",
+            resolvedQuestionRequestIdFromPushData(mapOf("type" to "ask.resolved", "requestId" to "ask-4"))
+        )
+    }
+
+    @Test
+    fun `resolved mapping ignores other message types and blank requestIds`() {
+        assertNull(resolvedQuestionRequestIdFromPushData(mapOf("type" to "ask.created", "requestId" to "ask-5")))
+        assertNull(resolvedQuestionRequestIdFromPushData(mapOf("type" to "ask.resolved")))
+        assertNull(resolvedQuestionRequestIdFromPushData(mapOf("type" to "ask.resolved", "requestId" to "  ")))
+    }
 }

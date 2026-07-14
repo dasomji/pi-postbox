@@ -317,6 +317,28 @@ describe("new pending ask push notifications", () => {
     }
   });
 
+  it("sends a data-only ask.resolved dismissal payload when a pending ask is answered", async () => {
+    const sendNotification = vi.fn(async () => undefined);
+    const app = await createAppWithPushSender({ sendNotification });
+    await saveSubscription(app, validBrowserSubscription());
+    const socket = await connectAndRegister(app);
+
+    await createAsk(socket, "ask-resolve-1", "Answering this ask should dismiss its notification.");
+    await waitForExpect(() => expect(sendNotification).toHaveBeenCalledTimes(1));
+
+    const answered = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-resolve-1/answer",
+      payload: { selectedValues: ["yes"] }
+    });
+    expect(answered.statusCode).toBe(200);
+
+    await waitForExpect(() => expect(sendNotification).toHaveBeenCalledTimes(2));
+    expect(parseNotificationPayload(sendNotification, 1)).toEqual({
+      data: { type: "ask.resolved", requestId: "ask-resolve-1" }
+    });
+  });
+
   it("prunes subscriptions that return 404/410 push-service failures before later notification fanout", async () => {
     const activeSubscription = validBrowserSubscription("https://fcm.googleapis.com/fcm/send/active-endpoint-token");
     const goneSubscription = validBrowserSubscription("https://fcm.googleapis.com/fcm/send/gone-endpoint-token");

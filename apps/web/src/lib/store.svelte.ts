@@ -34,10 +34,25 @@ export interface ProjectGroup {
 }
 
 class PostboxStore {
+  /**
+   * Requests this tab is resolving itself. Their snapshot transition to a terminal
+   * status must not auto-deselect, so the local answer flow keeps its delivered-stamp
+   * confirmation and does its own routing afterwards.
+   */
+  private readonly locallyResolvingRequestIds = new Set<string>();
+
   snapshot = $state<Loadable<StateSnapshot>>({ status: "loading" });
   history = $state<Loadable<HistoryResponse>>({ status: "loading" });
   connection = $state<ConnectionState>({ status: "checking" });
   selection = $state<Selection>({ kind: "none" });
+
+  /**
+   * True while the data on screen may be stale: before the first snapshot, and again after the
+   * tab returns from the background until a fresh snapshot lands. Empty views say "checking"
+   * instead of claiming there are no open questions.
+   */
+  syncing = $state(true);
+  private lastSnapshotAtMs = 0;
 
   sessions = $derived(this.snapshot.status === "ready" ? this.snapshot.data.sessions : []);
   requests = $derived(this.snapshot.status === "ready" ? this.snapshot.data.requests : []);
@@ -120,11 +135,51 @@ class PostboxStore {
     this.selection = { kind: "none" };
   }
 
+  beginLocalResolve(requestId: string): void {
+    this.locallyResolvingRequestIds.add(requestId);
+  }
+
+  endLocalResolve(requestId: string): void {
+    this.locallyResolvingRequestIds.delete(requestId);
+  }
+
+  /** Land where the next decision is: the project's queue while it still has open questions, otherwise the main page. */
+  routeAfterRequestResolved(sessionId: string): void {
+    const session = this.sessions.find((candidate) => candidate.sessionId === sessionId);
+    const projectId = session?.projectId;
+    const projectHasOpenQuestions =
+      projectId !== undefined &&
+      this.sessions.some(
+        (candidate) => candidate.projectId === projectId && this.openQuestionsFor(candidate.sessionId).length > 0
+      );
+    if (projectId !== undefined && projectHasOpenQuestions) this.selectProject(projectId);
+    else this.clearSelection();
+  }
+
+  applyStateSnapshot(next: StateSnapshot): void {
+    this.snapshot = { status: "ready", data: next };
+    this.syncing = false;
+    this.lastSnapshotAtMs = Date.now();
+    this.deselectRemotelyResolvedRequest();
+  }
+
+  /** A question answered or cancelled elsewhere disappears from the device that still had it open. */
+  private deselectRemotelyResolvedRequest(): void {
+    const selection = this.selection;
+    if (selection.kind !== "request") return;
+    if (this.locallyResolvingRequestIds.has(selection.requestId)) return;
+
+    const request = this.requests.find((entry) => entry.requestId === selection.requestId);
+    if (!request || request.status === "pending") return;
+    this.routeAfterRequestResolved(request.sessionId);
+  }
+
   async loadSnapshot(): Promise<void> {
     try {
-      this.snapshot = { status: "ready", data: await fetchSnapshot() };
+      this.applyStateSnapshot(await fetchSnapshot());
     } catch (error) {
       this.snapshot = { status: "error", message: messageOf(error, "Unknown state snapshot error") };
+      this.syncing = false;
     }
   }
 
@@ -155,9 +210,12 @@ class PostboxStore {
       });
 
     void this.loadHistory();
+    // Fetch immediately instead of waiting for the SSE stream's first event, so a fresh open
+    // (e.g. from a push notification) renders real data as fast as one round-trip allows.
+    void this.loadSnapshot();
 
     const applySnapshot = (next: StateSnapshot) => {
-      if (!cancelled) this.snapshot = { status: "ready", data: next };
+      if (!cancelled) this.applyStateSnapshot(next);
     };
 
     const load = () => {
@@ -189,15 +247,27 @@ class PostboxStore {
       events.onerror = () => startPollingFallback();
     }
 
+    // Returning from the background: the SSE stream may be dead or throttled, so refetch right
+    // away, and stop claiming "no open questions" if what we show is more than briefly stale.
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || cancelled) return;
+      if (Date.now() - this.lastSnapshotAtMs > STALE_AFTER_RESUME_MS) this.syncing = true;
+      void this.loadSnapshot();
+      void this.loadHistory();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     return () => {
       cancelled = true;
       events?.close();
       if (fallbackTimer) clearInterval(fallbackTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }
 }
 
 const SIDEBAR_RECENT_OFFLINE_WINDOW_MS = 5 * 60 * 1000;
+const STALE_AFTER_RESUME_MS = 10_000;
 
 function isSidebarSessionVisible(session: SessionSnapshot, snapshotTimestamp: string | undefined): boolean {
   if (session.presence !== "offline") return true;

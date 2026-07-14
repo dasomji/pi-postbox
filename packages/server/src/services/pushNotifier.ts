@@ -1,4 +1,4 @@
-import type { AskRequestSnapshot, PushSubscriptionPayload, SessionSnapshot } from "@pi-postbox/protocol";
+import type { AskRequestSnapshot, AskResult, PushSubscriptionPayload, SessionSnapshot } from "@pi-postbox/protocol";
 import type { RequestOptions as WebPushRequestOptions } from "web-push";
 import webPush from "web-push";
 import { isUnregisteredFcmError, type FcmSender } from "./fcmSender.js";
@@ -21,10 +21,21 @@ export class PushNotifier {
     if (request.status !== "pending") return;
 
     const payload = this.buildNewAskPayload(request, this.findSession(request.sessionId));
-    await Promise.all([this.notifyWebPushSubscriptions(payload), this.notifyFcmTokens(payload)]);
+    await Promise.all([this.notifyWebPushSubscriptions(payload), this.notifyFcmTokens(buildFcmData(payload))]);
   }
 
-  private async notifyWebPushSubscriptions(payload: NewAskPushPayload): Promise<void> {
+  /**
+   * Data-only fanout after an ask leaves the pending state (answered, cancelled, or expired) so
+   * clients can dismiss any still-visible notification for it. Never renders a user-facing alert.
+   */
+  async notifyAskResolved(result: AskResult): Promise<void> {
+    const payload: ResolvedAskPushPayload = {
+      data: { type: "ask.resolved", requestId: result.requestId }
+    };
+    await Promise.all([this.notifyWebPushSubscriptions(payload), this.notifyFcmTokens(payload.data)]);
+  }
+
+  private async notifyWebPushSubscriptions(payload: NewAskPushPayload | ResolvedAskPushPayload): Promise<void> {
     const subscriptions = this.pushStore.listSubscriptions();
     if (subscriptions.length === 0) return;
 
@@ -48,13 +59,12 @@ export class PushNotifier {
     );
   }
 
-  private async notifyFcmTokens(payload: NewAskPushPayload): Promise<void> {
+  private async notifyFcmTokens(data: Record<string, string>): Promise<void> {
     if (!this.fcmSender) return;
 
     const tokens = this.pushStore.listFcmTokens();
     if (tokens.length === 0) return;
 
-    const data = buildFcmData(payload);
     const fcmSender = this.fcmSender;
 
     await Promise.all(
@@ -106,6 +116,13 @@ interface NewAskPushPayload {
     projectId?: string;
     projectName?: string;
     sessionTitle?: string;
+  };
+}
+
+interface ResolvedAskPushPayload {
+  data: {
+    type: "ask.resolved";
+    requestId: string;
   };
 }
 

@@ -39,31 +39,19 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
     selected = selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value];
   }
 
-  // After resolving, land where the next decision is: the project's queue while it
-  // still has open questions, otherwise the main page (global queue).
-  function routeAfterResolve(): void {
-    const session = store.sessions.find((candidate) => candidate.sessionId === request.sessionId);
-    const projectId = session?.projectId;
-    const projectHasOpenQuestions =
-      projectId !== undefined &&
-      store.sessions.some(
-        (candidate) => candidate.projectId === projectId && store.openQuestionsFor(candidate.sessionId).length > 0
-      );
-    if (projectId !== undefined && projectHasOpenQuestions) store.selectProject(projectId);
-    else store.clearSelection();
-  }
-
   async function resolveVia(action: () => Promise<void>, fallback: string): Promise<void> {
     busy = true;
     error = undefined;
+    store.beginLocalResolve(request.requestId);
     try {
       await action();
       await store.refresh();
-      routeAfterResolve();
+      store.routeAfterRequestResolved(request.sessionId);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : fallback;
     } finally {
       busy = false;
+      store.endLocalResolve(request.requestId);
     }
   }
 

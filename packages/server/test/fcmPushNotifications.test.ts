@@ -208,6 +208,55 @@ describe("new pending ask FCM notifications", () => {
     expect(attemptedTokens.filter((token) => token === "gone-token")).toHaveLength(1);
   });
 
+  it("sends a data-only ask.resolved dismissal message when a pending ask is answered", async () => {
+    const send = vi.fn(async () => undefined);
+    const app = await createAppWithFcmSender(send);
+    await registerFcmToken(app, "device-token-1");
+    const socket = await connectAndRegister(app);
+
+    await createAsk(socket, "ask-fcm-resolve-1", "Answering this ask should dismiss its notification.");
+    await waitForExpect(() => expect(send).toHaveBeenCalledTimes(1));
+
+    const answered = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-fcm-resolve-1/answer",
+      payload: { selectedValues: ["yes"] }
+    });
+    expect(answered.statusCode).toBe(200);
+
+    await waitForExpect(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls[1]?.[0]).toBe("device-token-1");
+    const message = send.mock.calls[1]?.[1] as FcmDataMessage;
+    expect(message.data).toEqual({ type: "ask.resolved", requestId: "ask-fcm-resolve-1" });
+  });
+
+  it("sends an ask.resolved dismissal message when a pending ask is cancelled by session shutdown", async () => {
+    const send = vi.fn(async () => undefined);
+    const app = await createAppWithFcmSender(send);
+    await registerFcmToken(app, "device-token-1");
+    const socket = await connectAndRegister(app);
+
+    await createAsk(socket, "ask-fcm-shutdown-1", "Session shutdown should dismiss this ask's notification.");
+    await waitForExpect(() => expect(send).toHaveBeenCalledTimes(1));
+
+    const cancelled = nextMessage(socket);
+    socket.send(
+      JSON.stringify({
+        type: "session.shutdown",
+        requestId: "wire-shutdown-1",
+        payload: { sessionId: "session-1", reason: "quit" }
+      })
+    );
+    await expect(cancelled).resolves.toMatchObject({
+      type: "ask.resolved",
+      payload: { requestId: "ask-fcm-shutdown-1", status: "cancelled" }
+    });
+
+    await waitForExpect(() => expect(send).toHaveBeenCalledTimes(2));
+    const message = send.mock.calls[1]?.[1] as FcmDataMessage;
+    expect(message.data).toEqual({ type: "ask.resolved", requestId: "ask-fcm-shutdown-1" });
+  });
+
   it("does not attempt FCM fanout when no FCM sender is configured", async () => {
     const app = await createPostboxApp({
       databasePath: ":memory:",
