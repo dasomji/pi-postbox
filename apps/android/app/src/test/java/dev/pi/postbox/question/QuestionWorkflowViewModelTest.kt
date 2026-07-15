@@ -798,6 +798,60 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
+    fun notificationTapRefreshesBeforeOpeningAQuestionFromAStaleWarmSnapshot() = runTest {
+        val fetchGate = CompletableDeferred<Unit>()
+        val client = RecordingPostboxProtocolClient(
+            questionWorkflowState(requests = listOf(singlePendingQuestion(requestId = "ask-from-notification")))
+        )
+        val viewModel = startedViewModel(client)
+        viewModel.selectQuestion("ask-from-notification")
+        client.currentState = questionWorkflowState(
+            requests = listOf(singlePendingQuestion(requestId = "ask-from-notification", status = AskStatus.ANSWERED))
+        )
+        client.beforeFetchCompletes = { fetchGate.await() }
+
+        viewModel.openQuestionFromNotification("ask-from-notification")
+
+        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+        assertTrue(viewModel.state.isSyncing)
+
+        fetchGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+    }
+
+    @Test
+    fun applyingStateReconcilesAndroidNotificationsAgainstPendingQuestionIds() = runTest {
+        val reconciledPendingIds = mutableListOf<Set<String>>()
+        val stream = FakePostboxStateStream()
+        val viewModel = QuestionWorkflowViewModel(
+            baseUrl = VERIFIED_BASE_URL,
+            protocolClient = RecordingPostboxProtocolClient(questionWorkflowState()),
+            stateStream = stream,
+            coroutineScope = backgroundScope,
+            onPendingRequestIdsObserved = { reconciledPendingIds += it }
+        )
+
+        viewModel.start()
+        advanceUntilIdle()
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(requestId = "ask-still-pending"),
+                        singlePendingQuestion(requestId = "ask-answered", status = AskStatus.ANSWERED)
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(setOf("ask-still-pending"), reconciledPendingIds.last())
+    }
+
+    @Test
     fun notificationTapWhoseQuestionArrivesResolvedShowsQueue() = runTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState(requests = emptyList()))
         val stream = FakePostboxStateStream()

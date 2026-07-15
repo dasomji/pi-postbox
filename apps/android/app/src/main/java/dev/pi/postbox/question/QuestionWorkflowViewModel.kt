@@ -33,6 +33,7 @@ class QuestionWorkflowViewModel(
     initialNotificationPermissionState: NotificationPermissionState = NotificationPermissionState.Unknown,
     private val pendingQuestionNotificationTracker: PendingQuestionNotificationTracker? = null,
     private val onPendingQuestionNotifications: (List<PendingQuestionNotification>) -> Unit = {},
+    private val onPendingRequestIdsObserved: (Set<String>) -> Unit = {},
     private val prefetchedSnapshotProvider: (String) -> StateSnapshot? = { PrefetchedStateSnapshotCache.freshSnapshotFor(it) }
 ) {
     var state: QuestionWorkflowState by mutableStateOf(
@@ -75,11 +76,20 @@ class QuestionWorkflowViewModel(
     fun openQuestionFromNotification(requestId: String) {
         val knownRequest = latestSnapshot?.requests?.firstOrNull { it.requestId == requestId }
         if (knownRequest != null && knownRequest.status != AskStatus.PENDING) {
+            notificationOpenRequestId = null
             showQueue()
             return
         }
+
+        // A warm Activity may still hold the snapshot from before this question was answered.
+        // Never render that cached question on a notification tap: show the queue while an
+        // explicit fetch confirms whether the target is still pending.
         notificationOpenRequestId = requestId
-        selectQuestion(requestId)
+        showQueue()
+        state = state.copy(isSyncing = true)
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            refreshState(previousVisible = null)
+        }
     }
 
     fun showQueue() {
@@ -454,6 +464,10 @@ class QuestionWorkflowViewModel(
             terminalMessage = effectiveTerminalMessage,
             errorMessage = null
         )
+
+        if (observationActive) {
+            runCatching { onPendingRequestIdsObserved(pendingRequests.mapTo(linkedSetOf()) { it.requestId }) }
+        }
 
         val notifications = if (observationActive) {
             pendingQuestionNotificationTracker?.observe(snapshot).orEmpty()

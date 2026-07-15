@@ -138,7 +138,9 @@ describe("Unit 03 PWA shell and service worker installability", () => {
         /ask\.resolved/.test(serviceWorker ?? "") && /getNotifications\s*\(\s*\{\s*tag/.test(serviceWorker ?? ""),
       hasNotificationClickHandler: serviceWorkerHasListener(serviceWorker, "notificationclick"),
       notificationClickClosesNotification: /notification\.close\s*\(/.test(serviceWorker ?? ""),
-      notificationClickOpensOrFocusesApp: /clients\.matchAll\s*\(|clients\.openWindow\s*\(/.test(serviceWorker ?? "")
+      notificationClickOpensOrFocusesApp: /clients\.matchAll\s*\(|clients\.openWindow\s*\(/.test(serviceWorker ?? ""),
+      notificationClickForwardsRequestId:
+        /event\.notification\.data/.test(serviceWorker ?? "") && /postMessage\s*\(/.test(serviceWorker ?? "")
     }).toEqual({
       hasInstallHandler: true,
       installActivatesWaitingWorker: true,
@@ -151,7 +153,8 @@ describe("Unit 03 PWA shell and service worker installability", () => {
       pushDismissesResolvedQuestionNotifications: true,
       hasNotificationClickHandler: true,
       notificationClickClosesNotification: true,
-      notificationClickOpensOrFocusesApp: true
+      notificationClickOpensOrFocusesApp: true,
+      notificationClickForwardsRequestId: true
     });
   });
 

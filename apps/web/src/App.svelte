@@ -22,7 +22,32 @@
     if (event.key === "Escape" && mobileNavigationOpen) mobileNavigationOpen = false;
   }
 
-  onMount(() => store.start());
+  function notificationRequestIdFromMessage(event: MessageEvent): string | undefined {
+    if (event.data?.type !== "postbox.notification.open") return undefined;
+    return typeof event.data.requestId === "string" && event.data.requestId ? event.data.requestId : undefined;
+  }
+
+  onMount(() => {
+    const stopStore = store.start();
+    const onServiceWorkerMessage = (event: MessageEvent) => {
+      const requestId = notificationRequestIdFromMessage(event);
+      if (requestId) void store.openRequestFromNotification(requestId);
+    };
+    navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
+
+    const url = new URL(window.location.href);
+    const requestId = url.searchParams.get("notificationRequestId");
+    if (requestId) {
+      url.searchParams.delete("notificationRequestId");
+      window.history.replaceState(window.history.state, "", url);
+      void store.openRequestFromNotification(requestId);
+    }
+
+    return () => {
+      navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
+      stopStore();
+    };
+  });
 </script>
 
 <svelte:window {onkeydown} />

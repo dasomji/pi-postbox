@@ -284,7 +284,8 @@ private fun ConnectedQuestionWorkflow(
             coroutineScope = coroutineScope,
             initialNotificationPermissionState = notificationPermissionState,
             pendingQuestionNotificationTracker = PendingQuestionNotificationTracker(),
-            onPendingQuestionNotifications = notificationPoster::postAll
+            onPendingQuestionNotifications = notificationPoster::postAll,
+            onPendingRequestIdsObserved = notificationPoster::reconcilePendingRequests
         )
     }
 

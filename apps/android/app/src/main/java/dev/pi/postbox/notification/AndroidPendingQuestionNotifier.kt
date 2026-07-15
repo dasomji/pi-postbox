@@ -72,6 +72,20 @@ class AndroidPendingQuestionNotifier(
         notificationManager.cancel(requestId.hashCode())
     }
 
+    /** Cancel app-owned notifications whose questions are no longer in the pending snapshot. */
+    fun reconcilePendingRequests(pendingRequestIds: Set<String>) {
+        val pendingNotificationIds = pendingRequestIds.mapTo(hashSetOf()) { it.hashCode() }
+        try {
+            notificationManager.activeNotifications
+                .filter { notification ->
+                    notification.notification.channelId == CHANNEL_ID && notification.id !in pendingNotificationIds
+                }
+                .forEach { notification -> notificationManager.cancel(notification.id) }
+        } catch (_: SecurityException) {
+            // Notification access can change while the app is running; reconciliation is best-effort.
+        }
+    }
+
     private fun ensureChannel() {
         val existing = notificationManager.getNotificationChannel(CHANNEL_ID)
         if (existing != null) return

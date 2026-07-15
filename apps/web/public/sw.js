@@ -34,8 +34,9 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const requestId = typeof event.notification.data?.requestId === "string" ? event.notification.data.requestId : undefined;
 
-  event.waitUntil(openOrFocusPostbox());
+  event.waitUntil(openOrFocusPostbox(requestId));
 });
 
 function readPushPayload(data) {
@@ -78,13 +79,17 @@ async function closeNotificationsForTag(tag) {
   for (const notification of notifications) notification.close();
 }
 
-async function openOrFocusPostbox() {
+async function openOrFocusPostbox(requestId) {
   const windows = await clients.matchAll({ type: "window", includeUncontrolled: true });
   const existingWindow = windows.find((client) => new URL(client.url).origin === self.location.origin);
 
   if (existingWindow) {
-    return existingWindow.focus();
+    await existingWindow.focus();
+    if (requestId) existingWindow.postMessage({ type: "postbox.notification.open", requestId });
+    return existingWindow;
   }
 
-  return clients.openWindow(APP_URL);
+  const appUrl = new URL(APP_URL, self.location.origin);
+  if (requestId) appUrl.searchParams.set("notificationRequestId", requestId);
+  return clients.openWindow(appUrl.toString());
 }

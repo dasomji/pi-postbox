@@ -40,6 +40,7 @@ class PostboxStore {
    * confirmation and does its own routing afterwards.
    */
   private readonly locallyResolvingRequestIds = new Set<string>();
+  private notificationNavigationAttempt = 0;
 
   snapshot = $state<Loadable<StateSnapshot>>({ status: "loading" });
   history = $state<Loadable<HistoryResponse>>({ status: "loading" });
@@ -133,6 +134,33 @@ class PostboxStore {
 
   clearSelection(): void {
     this.selection = { kind: "none" };
+  }
+
+  /**
+   * A notification can outlive its question. Hide any previously selected question while a fresh
+   * snapshot is fetched, then open the target only when the server still reports it as pending.
+   */
+  async openRequestFromNotification(
+    requestId: string,
+    fetchCurrentSnapshot: () => Promise<StateSnapshot> = fetchSnapshot
+  ): Promise<void> {
+    const attempt = ++this.notificationNavigationAttempt;
+    this.clearSelection();
+    this.syncing = true;
+
+    try {
+      const next = await fetchCurrentSnapshot();
+      if (attempt !== this.notificationNavigationAttempt) return;
+      this.applyStateSnapshot(next);
+      const request = next.requests.find((candidate) => candidate.requestId === requestId);
+      if (request?.status === "pending") this.selectRequest(requestId);
+      else this.clearSelection();
+    } catch (error) {
+      if (attempt !== this.notificationNavigationAttempt) return;
+      this.snapshot = { status: "error", message: messageOf(error, "Unknown state snapshot error") };
+      this.syncing = false;
+      this.clearSelection();
+    }
   }
 
   beginLocalResolve(requestId: string): void {

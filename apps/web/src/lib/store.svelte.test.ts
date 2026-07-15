@@ -212,6 +212,78 @@ describe("store deselection of questions resolved on another device", () => {
   });
 });
 
+describe("store notification navigation", () => {
+  const liveSession = session({
+    sessionId: "session-notification",
+    projectId: "notification-project",
+    projectName: "Notification Project",
+    presence: "live",
+    semanticState: "blocked"
+  });
+
+  function askRequest(status: AskRequestSnapshot["status"]): AskRequestSnapshot {
+    return {
+      requestId: "ask-notification",
+      sessionId: liveSession.sessionId,
+      mode: "single",
+      question: { prompt: "Still need an answer?" },
+      options: [{ value: "yes", label: "Yes" }],
+      status,
+      createdAt: SNAPSHOT_TIME
+    };
+  }
+
+  it("shows home while checking and opens a tapped question only after a fresh snapshot confirms it is pending", async () => {
+    store.applyStateSnapshot({ timestamp: SNAPSHOT_TIME, sessions: [liveSession], requests: [askRequest("pending")] });
+    store.selectRequest("ask-notification");
+    let releaseFetch!: (snapshot: StateSnapshot) => void;
+    const fetchCurrentSnapshot = () => new Promise<StateSnapshot>((resolve) => (releaseFetch = resolve));
+
+    const navigation = store.openRequestFromNotification("ask-notification", fetchCurrentSnapshot);
+
+    expect(store.selection).toEqual({ kind: "none" });
+    expect(store.syncing).toBe(true);
+
+    releaseFetch({ timestamp: SNAPSHOT_TIME, sessions: [liveSession], requests: [askRequest("pending")] });
+    await navigation;
+
+    expect(store.selection).toEqual({ kind: "request", requestId: "ask-notification" });
+  });
+
+  it("stays on home when a fresh snapshot says the tapped question was already answered", async () => {
+    store.applyStateSnapshot({ timestamp: SNAPSHOT_TIME, sessions: [liveSession], requests: [askRequest("pending")] });
+    store.selectRequest("ask-notification");
+
+    await store.openRequestFromNotification("ask-notification", async () => ({
+      timestamp: SNAPSHOT_TIME,
+      sessions: [liveSession],
+      requests: [askRequest("answered")]
+    }));
+
+    expect(store.selection).toEqual({ kind: "none" });
+  });
+
+  it("keeps the latest tapped notification selected when an older refresh finishes last", async () => {
+    const secondRequest = { ...askRequest("pending"), requestId: "ask-notification-2" };
+    let releaseFirstFetch!: (snapshot: StateSnapshot) => void;
+    const firstNavigation = store.openRequestFromNotification(
+      "ask-notification",
+      () => new Promise<StateSnapshot>((resolve) => (releaseFirstFetch = resolve))
+    );
+    const snapshot = {
+      timestamp: SNAPSHOT_TIME,
+      sessions: [liveSession],
+      requests: [askRequest("pending"), secondRequest]
+    };
+
+    await store.openRequestFromNotification("ask-notification-2", async () => snapshot);
+    releaseFirstFetch(snapshot);
+    await firstNavigation;
+
+    expect(store.selection).toEqual({ kind: "request", requestId: "ask-notification-2" });
+  });
+});
+
 describe("store sync freshness", () => {
   it("clears the syncing flag once a snapshot is applied", () => {
     store.syncing = true;
