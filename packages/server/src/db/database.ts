@@ -70,6 +70,7 @@ function runMigrations(db: SqliteDatabase): void {
       request_id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES sessions(session_id),
       mode TEXT NOT NULL,
+      urgency TEXT NOT NULL DEFAULT 'normal',
       prompt TEXT NOT NULL,
       question_json TEXT,
       options_json TEXT NOT NULL,
@@ -132,6 +133,7 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "projects", "icon_size_bytes", "INTEGER");
 
   ensureColumn(db, "ask_requests", "question_json", "TEXT");
+  ensureColumn(db, "ask_requests", "urgency", "TEXT NOT NULL DEFAULT 'normal'");
   ensureColumn(db, "ask_requests", "context_json", "TEXT");
   ensureColumn(db, "ask_requests", "fork_reference_json", "TEXT");
   ensureColumn(db, "ask_requests", "expires_at", "TEXT");

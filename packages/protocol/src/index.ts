@@ -32,6 +32,8 @@ export {
   AskRequestSnapshotSchema,
   AskResultSchema,
   AskStatusSchema,
+  AskUrgencySchema,
+  compareAskUrgency,
   ForkReferenceSchema,
   HandoffContextSchema,
   OTHER_OPTION_VALUE,
@@ -48,6 +50,7 @@ export type {
   AskRequestSnapshot,
   AskResult,
   AskStatus,
+  AskUrgency,
   ForkReference,
   HandoffContext,
   RichContextItem

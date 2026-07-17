@@ -1,5 +1,8 @@
 import { AskResultSchema, OTHER_OPTION_VALUE, StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPostboxApp } from "../src/app.js";
@@ -64,6 +67,64 @@ function interviewerContext() {
 }
 
 describe("ask_postbox request loop", () => {
+  it("persists urgency across restart and lists pending requests by urgency then age", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-postbox-urgency-db-"));
+    const databasePath = join(dir, "postbox.sqlite");
+
+    try {
+      let now = 1_000;
+      let app = await createPostboxApp({ databasePath, now: () => now, expirySweepMs: 0 });
+      apps.push(app);
+      const socket = await connectAndRegister(app);
+
+      const asks = [
+        { requestId: "normal-old", urgency: "normal", now: 1_000 },
+        { requestId: "high-old", urgency: "high", now: 2_000 },
+        { requestId: "high-new", urgency: "high", now: 3_000 },
+        { requestId: "low-new", urgency: "low", now: 4_000 }
+      ] as const;
+
+      for (const ask of asks) {
+        now = ask.now;
+        const created = nextMessage(socket);
+        socket.send(
+          JSON.stringify({
+            type: "ask.create",
+            requestId: `wire-${ask.requestId}`,
+            payload: {
+              requestId: ask.requestId,
+              sessionId: "session-1",
+              mode: "single",
+              urgency: ask.urgency,
+              question: { prompt: `Resolve ${ask.requestId}?` },
+              options: [{ value: "yes", label: "Yes" }],
+              context: interviewerContext()
+            }
+          } satisfies ExtensionClientMessage)
+        );
+        await expect(created).resolves.toMatchObject({ type: "ask.created", payload: { requestId: ask.requestId } });
+      }
+
+      socket.close();
+      await app.close();
+      apps.pop();
+
+      app = await createPostboxApp({ databasePath, now: () => now, expirySweepMs: 0 });
+      apps.push(app);
+      const pending = (await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json().requests;
+
+      expect(pending.map((request: { requestId: string }) => request.requestId)).toEqual([
+        "high-old",
+        "high-new",
+        "normal-old",
+        "low-new"
+      ]);
+      expect(pending.map((request: { urgency: string }) => request.urgency)).toEqual(["high", "high", "normal", "low"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects direct extension-protocol ask creation without complete interviewer context", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 750 });
     apps.push(app);

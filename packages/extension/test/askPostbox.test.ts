@@ -9,6 +9,22 @@ import {
 } from "../src/tools/askPostbox.js";
 
 describe("ask_postbox tool", () => {
+  it("exposes finite urgency input and defaults omitted urgency to normal", () => {
+    const baseInput = {
+      requestId: "ask-urgent",
+      question: "Which request should be answered first?",
+      context: {
+        codebaseContext: "TypeScript extension that sends structured Postbox asks.",
+        problemContext: "Let the caller place the decision correctly in the attention queue."
+      },
+      options: [{ value: "this-one", label: "This one" }]
+    };
+
+    expect(askPostboxParameters.properties.urgency).toMatchObject({ enum: ["low", "normal", "high"] });
+    expect(createAskPayload({ ...baseInput, urgency: "high" } as AskPostboxInput, "session-1").urgency).toBe("high");
+    expect(createAskPayload(baseInput, "session-1").urgency).toBe("normal");
+  });
+
   it("reports which required interviewer context field is missing or blank", () => {
     const baseInput = {
       requestId: "ask-invalid-context",

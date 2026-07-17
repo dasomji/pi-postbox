@@ -6,6 +6,7 @@ import {
   type AskCreateHandoffContext,
   type AskOption,
   type AskResult,
+  type AskUrgency,
   type ForkReference
 } from "../../../protocol/src/index.js";
 import type { PostboxClient } from "../client/PostboxClient.js";
@@ -16,6 +17,7 @@ export interface AskPostboxInput {
   relevance?: string;
   decisionImpact?: string;
   mode?: "single" | "multi";
+  urgency?: AskUrgency;
   options: AskOption[];
   context: AskCreateHandoffContext;
   forkReference?: ForkReference;
@@ -34,6 +36,11 @@ export const askPostboxParameters = {
     relevance: { type: "string", minLength: 1, description: "Why this question is relevant now." },
     decisionImpact: { type: "string", minLength: 1, description: "What effect this decision will have." },
     mode: { type: "string", enum: ["single", "multi"], description: "Whether one or many options may be selected." },
+    urgency: {
+      type: "string",
+      enum: ["low", "normal", "high"],
+      description: "Attention priority. Higher urgency appears first; defaults to normal."
+    },
     requestId: { type: "string", minLength: 1, description: "Optional stable request id for this ask." },
     timeoutMs: { type: "number", minimum: 1, description: "Optional request expiry timeout in milliseconds." },
     expiresAt: { type: "string", minLength: 1, description: "Optional ISO datetime when this request expires." },
@@ -97,6 +104,7 @@ export function createAskPayload(input: AskPostboxInput, sessionId: string): Ask
     requestId: input.requestId ?? `ask_${randomUUID()}`,
     sessionId,
     mode: input.mode ?? "single",
+    urgency: input.urgency ?? "normal",
     question: {
       prompt: input.question,
       context: input.questionContext,

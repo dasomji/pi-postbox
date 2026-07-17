@@ -187,6 +187,7 @@ describe("question history", () => {
       const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
       const pending = state.requests.find((request) => request.requestId === "legacy-pending");
       expect(pending).toMatchObject({
+        urgency: "normal",
         question: { prompt: "Legacy pending question" },
         forkReference: { leafId: "legacy-leaf" }
       });

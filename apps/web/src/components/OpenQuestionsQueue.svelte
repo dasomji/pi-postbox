@@ -1,21 +1,9 @@
 <script lang="ts">
-  import type { AskRequestSnapshot, SessionSnapshot } from "@pi-postbox/protocol";
   import { postJson } from "../api/postboxApi";
+  import { groupOpenQuestions } from "../lib/openQuestionsQueue";
   import { branchLabel } from "../lib/status";
   import { store } from "../lib/store.svelte";
   import ProjectIcon from "./ProjectIcon.svelte";
-
-  interface QuestionQueueItem {
-    request: AskRequestSnapshot;
-    session?: SessionSnapshot;
-  }
-
-  interface QuestionProjectGroup {
-    projectId: string;
-    projectName: string;
-    projectIcon?: SessionSnapshot["projectIcon"];
-    questions: QuestionQueueItem[];
-  }
 
   /** When projectId is set, the queue shows only that project's questions. */
   let { projectId: projectFilter }: { projectId?: string } = $props();
@@ -24,33 +12,7 @@
     projectFilter ? store.projects.find((project) => project.projectId === projectFilter) : undefined
   );
 
-  const groups = $derived.by<QuestionProjectGroup[]>(() => {
-    const sessionsById = new Map(store.sessions.map((session) => [session.sessionId, session]));
-    const grouped = new Map<string, QuestionProjectGroup>();
-
-    for (const request of store.pendingRequests) {
-      const session = sessionsById.get(request.sessionId);
-      const projectId = session?.projectId ?? request.sessionId;
-      if (projectFilter && projectId !== projectFilter) continue;
-      const group = grouped.get(projectId);
-      const item = { request, session };
-
-      if (group) group.questions.push(item);
-      else
-        grouped.set(projectId, {
-          projectId,
-          projectName: session?.projectName ?? "Unknown project",
-          projectIcon: session?.projectIcon,
-          questions: [item]
-        });
-    }
-
-    const list = [...grouped.values()].sort((a, b) => a.projectName.localeCompare(b.projectName));
-    for (const group of list) {
-      group.questions.sort((a, b) => Date.parse(a.request.createdAt) - Date.parse(b.request.createdAt));
-    }
-    return list;
-  });
+  const groups = $derived(groupOpenQuestions(store.pendingRequests, store.sessions, projectFilter));
 
   const questionCount = $derived(groups.reduce((count, group) => count + group.questions.length, 0));
   const heading = $derived(
@@ -95,8 +57,8 @@
         <h1 class="font-display text-3xl font-semibold tracking-tight text-postbox-text">{heading}</h1>
         <p class="mt-2 max-w-2xl text-sm leading-6 text-postbox-subtle">
           {projectFilter
-            ? "Pending Postbox decisions for this project, oldest first."
-            : "All pending Postbox decisions, grouped by project so you can clear the highest-context work first."}
+            ? "Pending Postbox decisions for this project, highest urgency and oldest first."
+            : "All pending Postbox decisions, grouped by project and ordered by urgency and age."}
         </p>
       </div>
       <div class="rounded-full border border-attention-border bg-attention/10 px-3 py-1 text-sm font-semibold text-attention-foreground">

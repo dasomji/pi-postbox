@@ -6,6 +6,31 @@ import {
 } from "./index.js";
 
 describe("ask_postbox protocol", () => {
+  it("accepts finite urgency levels and defaults legacy asks to normal urgency", () => {
+    const basePayload = {
+      requestId: "ask-urgency",
+      sessionId: "session-1",
+      mode: "single",
+      question: { prompt: "Which request should be answered first?" },
+      options: [{ value: "this-one", label: "This one" }],
+      context: {
+        codebaseContext: "A Postbox inbox with multiple pending decisions.",
+        problemContext: "Order attention cards consistently by urgency and age."
+      }
+    } as const;
+
+    expect(AskCreatePayloadSchema.parse({ ...basePayload, urgency: "high" }).urgency).toBe("high");
+    expect(AskCreatePayloadSchema.parse(basePayload).urgency).toBe("normal");
+    expect(() => AskCreatePayloadSchema.parse({ ...basePayload, urgency: "immediate" })).toThrow();
+
+    const legacySnapshot = StateSnapshotSchema.parse({
+      sessions: [],
+      requests: [{ ...basePayload, status: "pending", createdAt: "2026-06-03T00:00:00.000Z" }],
+      timestamp: "2026-06-03T00:00:01.000Z"
+    });
+    expect(legacySnapshot.requests[0]?.urgency).toBe("normal");
+  });
+
   it("requires non-blank interviewer context for newly created asks", () => {
     const basePayload = {
       requestId: "ask-context-required",

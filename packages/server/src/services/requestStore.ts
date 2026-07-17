@@ -2,13 +2,15 @@ import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
+  compareAskUrgency,
   OTHER_OPTION_VALUE,
   type AskAnswerPayload,
   type AskCancelPayload,
   type AskCreatePayload,
   type AskRequestSnapshot,
   type AskResult,
-  type AskStatus
+  type AskStatus,
+  type AskUrgency
 } from "@pi-postbox/protocol";
 import type { SqliteDatabase } from "../db/database.js";
 
@@ -16,6 +18,7 @@ interface AskRequestRow {
   request_id: string;
   session_id: string;
   mode: "single" | "multi";
+  urgency: AskUrgency;
   prompt: string;
   question_json: string | null;
   options_json: string;
@@ -78,10 +81,10 @@ export class RequestStore {
     this.db
       .prepare(
         `INSERT INTO ask_requests (
-          request_id, session_id, mode, prompt, question_json, options_json, context_json, fork_reference_json, status,
+          request_id, session_id, mode, urgency, prompt, question_json, options_json, context_json, fork_reference_json, status,
           selected_values_json, note, rationale, created_at, expires_at, resolved_at, updated_at
         ) VALUES (
-          @requestId, @sessionId, @mode, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, 'pending',
+          @requestId, @sessionId, @mode, @urgency, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, 'pending',
           NULL, NULL, NULL, @nowIso, @expiresAt, NULL, @nowIso
         )`
       )
@@ -89,6 +92,7 @@ export class RequestStore {
         requestId: parsed.requestId,
         sessionId: parsed.sessionId,
         mode: parsed.mode,
+        urgency: parsed.urgency,
         prompt: parsed.question.prompt,
         questionJson: JSON.stringify(parsed.question),
         optionsJson: JSON.stringify(parsed.options),
@@ -104,11 +108,16 @@ export class RequestStore {
   }
 
   list(filters: { status?: AskStatus } = {}): AskRequestSnapshot[] {
-    const rows = filters.status
-      ? (this.db
-          .prepare("SELECT * FROM ask_requests WHERE status = ? ORDER BY created_at ASC")
-          .all(filters.status) as AskRequestRow[])
-      : (this.db.prepare("SELECT * FROM ask_requests ORDER BY created_at ASC").all() as AskRequestRow[]);
+    const rows =
+      filters.status === "pending"
+        ? (this.db
+            .prepare("SELECT * FROM ask_requests WHERE status = 'pending' ORDER BY created_at ASC")
+            .all() as AskRequestRow[]).sort((a, b) => compareAskUrgency(a.urgency, b.urgency))
+        : filters.status
+          ? (this.db
+              .prepare("SELECT * FROM ask_requests WHERE status = ? ORDER BY created_at ASC")
+              .all(filters.status) as AskRequestRow[])
+          : (this.db.prepare("SELECT * FROM ask_requests ORDER BY created_at ASC").all() as AskRequestRow[]);
     return rows.map((row) => this.toSnapshot(row));
   }
 
@@ -311,6 +320,7 @@ export class RequestStore {
       requestId: row.request_id,
       sessionId: row.session_id,
       mode: row.mode,
+      urgency: row.urgency ?? "normal",
       question: this.parseJson(row.question_json, { prompt: row.prompt }) as AskRequestSnapshot["question"],
       options: JSON.parse(row.options_json) as AskRequestSnapshot["options"],
       context: row.context_json ? (this.parseJson(row.context_json, undefined) as AskRequestSnapshot["context"]) : undefined,

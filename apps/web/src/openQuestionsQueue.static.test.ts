@@ -14,11 +14,16 @@ describe("open questions queue", () => {
     const main = readSource("components/MainView.svelte");
     const queuePath = resolve(srcDir, "components/OpenQuestionsQueue.svelte");
     const queue = existsSync(queuePath) ? readFileSync(queuePath, "utf8") : "";
+    const queueLogic = readSource("lib/openQuestionsQueue.ts");
 
     expect({
       queueComponentExists: existsSync(queuePath),
       mainRendersQueueWhenNothingSelected: /import\s+OpenQuestionsQueue/.test(main) && /<OpenQuestionsQueue\s*\/>/.test(main),
-      groupsByProject: /Map<string, QuestionProjectGroup>/.test(queue) && /projectId/.test(queue) && /projectName/.test(queue),
+      groupsByProject:
+        /groupOpenQuestions/.test(queue) &&
+        /Map<string, QuestionProjectGroup>/.test(queueLogic) &&
+        /projectId/.test(queueLogic) &&
+        /projectName/.test(queueLogic),
       usesPendingRequests: /store\.pendingRequests/.test(queue),
       rendersProjectSections: /{#each groups as group/.test(queue) && /<section/.test(queue),
       selectingQuestionOpensDetail: /onclick=\{\(\)\s*=>\s*store\.selectRequest\(item\.request\.requestId\)\}/.test(queue)
