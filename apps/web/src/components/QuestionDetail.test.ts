@@ -22,7 +22,7 @@ const REQUEST: AskRequestSnapshot = {
   createdAt: "2026-07-17T12:00:00.000Z"
 };
 
-describe("selected question detail", () => {
+describe("selected Postbox Question detail", () => {
   it("shows the description, meaning, and context supplied for an answer option", () => {
     const { body } = render(QuestionDetail, { props: { request: REQUEST, isMock: true } });
 
