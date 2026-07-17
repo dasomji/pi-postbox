@@ -182,6 +182,8 @@
             <span class="min-w-0">
               <span class="block font-display text-base font-semibold text-postbox-text">{option.label}</span>
               {#if option.description}<span class="mt-1 block text-sm text-postbox-muted">{option.description}</span>{/if}
+              {#if option.meaning}<span class="mt-2 block text-sm text-attention-foreground/80">Meaning: {option.meaning}</span>{/if}
+              {#if option.context}<span class="mt-1 block text-sm text-postbox-muted">Context: {option.context}</span>{/if}
             </span>
           </button>
         {/each}
