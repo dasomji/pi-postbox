@@ -70,11 +70,10 @@ The `/postbox` user command opens the active dashboard in the user's browser, us
 
 ## Rich context and result hygiene
 
-Ask requests may include:
+Every new ask request must include a `context` object with non-blank `codebaseContext` and `problemContext`. It may also include:
 
 - question context, relevance, and decision impact
 - per-option meaning/context
-- codebase/problem context for a future interviewer
 - additional text/code/diagram/link items
 - fork references such as agent session id/path and leaf id
 

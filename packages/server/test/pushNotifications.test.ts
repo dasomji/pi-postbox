@@ -81,7 +81,11 @@ function askCreateMessage(requestId: string, prompt: string): ExtensionClientMes
       options: [
         { value: "yes", label: "Yes" },
         { value: "no", label: "No" }
-      ]
+      ],
+      context: {
+        codebaseContext: "Fastify server with browser push notification delivery.",
+        problemContext: "Notify the user about a pending remote decision."
+      }
     }
   };
 }

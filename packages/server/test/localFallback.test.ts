@@ -58,7 +58,11 @@ function askCreate(requestId: string): ExtensionClientMessage {
       sessionId: "session-1",
       mode: "single",
       question: { prompt: "Resolve locally?" },
-      options: [{ value: "yes", label: "Yes" }]
+      options: [{ value: "yes", label: "Yes" }],
+      context: {
+        codebaseContext: "Fastify server and Pi extension local fallback commands.",
+        problemContext: "Resolve a pending decision from the originating terminal."
+      }
     }
   };
 }

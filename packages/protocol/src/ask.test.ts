@@ -1,14 +1,59 @@
 import { describe, expect, it } from "vitest";
-import { AskCreatePayloadSchema, AskResultSchema, StateSnapshotSchema } from "./index.js";
+import {
+  AskCreatePayloadSchema,
+  AskResultSchema,
+  StateSnapshotSchema
+} from "./index.js";
 
 describe("ask_postbox protocol", () => {
+  it("requires non-blank interviewer context for newly created asks", () => {
+    const basePayload = {
+      requestId: "ask-context-required",
+      sessionId: "session-1",
+      mode: "single",
+      question: { prompt: "Choose a framework" },
+      options: [{ value: "fastify", label: "Fastify" }]
+    } as const;
+
+    expect(() => AskCreatePayloadSchema.parse(basePayload)).toThrow();
+    expect(() =>
+      AskCreatePayloadSchema.parse({
+        ...basePayload,
+        context: { codebaseContext: "   ", problemContext: "Choose the server framework for v1." }
+      })
+    ).toThrow();
+    expect(() =>
+      AskCreatePayloadSchema.parse({
+        ...basePayload,
+        context: { codebaseContext: "Fastify service.", problemContext: "\n\t" }
+      })
+    ).toThrow();
+
+    expect(
+      AskCreatePayloadSchema.parse({
+        ...basePayload,
+        context: {
+          codebaseContext: "Fastify service with shared Zod schemas.",
+          problemContext: "Choose the server framework for v1."
+        }
+      }).context
+    ).toEqual({
+      codebaseContext: "Fastify service with shared Zod schemas.",
+      problemContext: "Choose the server framework for v1."
+    });
+  });
+
   it("accepts a single-choice ask payload and rejects empty options", () => {
     const payload = AskCreatePayloadSchema.parse({
       requestId: "ask-1",
       sessionId: "session-1",
       mode: "single",
       question: { prompt: "Choose a framework" },
-      options: [{ value: "fastify", label: "Fastify" }]
+      options: [{ value: "fastify", label: "Fastify" }],
+      context: {
+        codebaseContext: "TypeScript workspace with a shared protocol package.",
+        problemContext: "Choose a framework for the Postbox server."
+      }
     });
 
     expect(payload.options[0]?.value).toBe("fastify");
@@ -18,7 +63,11 @@ describe("ask_postbox protocol", () => {
         sessionId: "session-1",
         mode: "multi",
         question: { prompt: "Choose options" },
-        options: []
+        options: [],
+        context: {
+          codebaseContext: "TypeScript workspace with a shared protocol package.",
+          problemContext: "Choose options for the Postbox server."
+        }
       })
     ).toThrow();
   });
@@ -80,6 +129,7 @@ describe("ask_postbox protocol", () => {
     });
 
     expect(snapshot.requests).toHaveLength(1);
+    expect(snapshot.requests[0]?.context).toBeUndefined();
   });
 
   it("preserves rich interviewer handoff context and fork references in request snapshots", () => {

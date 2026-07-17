@@ -236,7 +236,10 @@ async function main() {
           { value: "yes", label: "Yes", meaning: "The server, SSE, answer, and history path work." },
           { value: "no", label: "No" }
         ],
-        context: { problemContext: "Smoke verifies one remote handoff without full chat transcripts." }
+        context: {
+          codebaseContext: "Packaged Pi Postbox extension, server, protocol, and web assets.",
+          problemContext: "Smoke verifies one remote handoff without full chat transcripts."
+        }
       }
     }));
     assert((await created).type === "ask.created", "Ask was not created");

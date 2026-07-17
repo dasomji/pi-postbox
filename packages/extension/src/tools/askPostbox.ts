@@ -3,11 +3,10 @@ import {
   AskCreatePayloadSchema,
   AskResultSchema,
   type AskCreatePayload,
+  type AskCreateHandoffContext,
   type AskOption,
   type AskResult,
-  type ForkReference,
-  type HandoffContext,
-  type RichContextItem
+  type ForkReference
 } from "../../../protocol/src/index.js";
 import type { PostboxClient } from "../client/PostboxClient.js";
 
@@ -18,10 +17,7 @@ export interface AskPostboxInput {
   decisionImpact?: string;
   mode?: "single" | "multi";
   options: AskOption[];
-  codebaseContext?: string;
-  problemContext?: string;
-  additionalInfo?: RichContextItem[];
-  context?: HandoffContext;
+  context: AskCreateHandoffContext;
   forkReference?: ForkReference;
   requestId?: string;
   timeoutMs?: number;
@@ -31,7 +27,7 @@ export interface AskPostboxInput {
 export const askPostboxParameters = {
   type: "object",
   additionalProperties: false,
-  required: ["question", "options"],
+  required: ["question", "options", "context"],
   properties: {
     question: { type: "string", minLength: 1, description: "Decision question to show in Pi Postbox." },
     questionContext: { type: "string", minLength: 1, description: "Concrete context for why this question is being asked." },
@@ -57,30 +53,16 @@ export const askPostboxParameters = {
         }
       }
     },
-    codebaseContext: { type: "string", minLength: 1, description: "Codebase context for a future interviewer." },
-    problemContext: { type: "string", minLength: 1, description: "Scoped problem context for a future interviewer." },
-    additionalInfo: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["content"],
-        properties: {
-          kind: { type: "string", enum: ["text", "code", "diagram", "link"] },
-          title: { type: "string", minLength: 1 },
-          content: { type: "string", minLength: 1 },
-          language: { type: "string", minLength: 1 }
-        }
-      }
-    },
     context: {
       type: "object",
       additionalProperties: false,
+      required: ["codebaseContext", "problemContext"],
       properties: {
-        codebaseContext: { type: "string", minLength: 1 },
-        problemContext: { type: "string", minLength: 1 },
+        codebaseContext: { type: "string", minLength: 1, description: "Codebase context for a future interviewer." },
+        problemContext: { type: "string", minLength: 1, description: "Scoped problem context for a future interviewer." },
         additionalInfo: {
           type: "array",
+          maxItems: 20,
           items: {
             type: "object",
             additionalProperties: false,
@@ -128,14 +110,19 @@ export function createAskPayload(input: AskPostboxInput, sessionId: string): Ask
   });
 }
 
-function mergeHandoffContext(input: AskPostboxInput): HandoffContext | undefined {
-  const context: HandoffContext = {
-    ...input.context,
-    codebaseContext: input.codebaseContext ?? input.context?.codebaseContext,
-    problemContext: input.problemContext ?? input.context?.problemContext,
-    additionalInfo: input.additionalInfo ?? input.context?.additionalInfo
+function mergeHandoffContext(input: AskPostboxInput): AskCreateHandoffContext {
+  const context = input.context;
+  if (!context || typeof context.codebaseContext !== "string" || context.codebaseContext.trim().length === 0) {
+    throw new Error("ask_postbox requires non-blank codebaseContext");
+  }
+  if (typeof context.problemContext !== "string" || context.problemContext.trim().length === 0) {
+    throw new Error("ask_postbox requires non-blank problemContext");
+  }
+  return {
+    codebaseContext: context.codebaseContext,
+    problemContext: context.problemContext,
+    additionalInfo: context.additionalInfo
   };
-  return context.codebaseContext || context.problemContext || context.additionalInfo?.length ? context : undefined;
 }
 
 export interface AskPostboxWaitLifecycle {

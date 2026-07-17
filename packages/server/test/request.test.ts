@@ -56,7 +56,43 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
+function interviewerContext() {
+  return {
+    codebaseContext: "Fastify server with shared protocol schemas.",
+    problemContext: "Exercise the remote decision request lifecycle."
+  };
+}
+
 describe("ask_postbox request loop", () => {
+  it("rejects direct extension-protocol ask creation without complete interviewer context", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", now: () => 750 });
+    apps.push(app);
+    const socket = await connectAndRegister(app);
+
+    const rejected = nextMessage(socket);
+    socket.send(
+      JSON.stringify({
+        type: "ask.create",
+        requestId: "wire-missing-context",
+        payload: {
+          requestId: "ask-missing-context",
+          sessionId: "session-1",
+          mode: "single",
+          question: { prompt: "Which path?" },
+          options: [{ value: "ship", label: "Ship" }],
+          context: { codebaseContext: "Fastify server.", problemContext: "  " }
+        }
+      })
+    );
+
+    await expect(rejected).resolves.toMatchObject({
+      type: "error",
+      requestId: "wire-missing-context",
+      error: { code: "invalid_message" }
+    });
+    expect((await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json()).toEqual({ requests: [] });
+  });
+
   it("creates a pending single-choice card and resolves the waiting extension caller when answered over HTTP", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 1_000 });
     apps.push(app);
@@ -75,7 +111,8 @@ describe("ask_postbox request loop", () => {
           options: [
             { value: "fastify", label: "Fastify" },
             { value: "hono", label: "Hono" }
-          ]
+          ],
+          context: interviewerContext()
         }
       } satisfies ExtensionClientMessage)
     );
@@ -132,7 +169,8 @@ describe("ask_postbox request loop", () => {
           sessionId: "session-1",
           mode: "single",
           question: { prompt: "Which path should we take?" },
-          options: [{ value: "ship", label: "Ship it" }]
+          options: [{ value: "ship", label: "Ship it" }],
+          context: interviewerContext()
         }
       } satisfies ExtensionClientMessage)
     );
@@ -176,7 +214,8 @@ describe("ask_postbox request loop", () => {
             { value: "branch", label: "Branch" },
             { value: "machine", label: "Machine" },
             { value: "cwd", label: "CWD" }
-          ]
+          ],
+          context: interviewerContext()
         }
       } satisfies ExtensionClientMessage)
     );
@@ -213,7 +252,8 @@ describe("ask_postbox request loop", () => {
           sessionId: "session-1",
           mode: "single",
           question: { prompt: "Continue?" },
-          options: [{ value: "yes", label: "Yes" }]
+          options: [{ value: "yes", label: "Yes" }],
+          context: interviewerContext()
         }
       } satisfies ExtensionClientMessage)
     );
@@ -249,7 +289,8 @@ describe("ask_postbox request loop", () => {
             sessionId: "session-1",
             mode: "single",
             question: { prompt: `Resolve ${requestId}?` },
-            options: [{ value: "yes", label: "Yes" }]
+            options: [{ value: "yes", label: "Yes" }],
+            context: interviewerContext()
           }
         } satisfies ExtensionClientMessage)
       );
@@ -297,7 +338,8 @@ describe("ask_postbox request loop", () => {
           sessionId: "session-1",
           mode: "single",
           question: { prompt: "Survive reload?" },
-          options: [{ value: "yes", label: "Yes" }]
+          options: [{ value: "yes", label: "Yes" }],
+          context: interviewerContext()
         }
       } satisfies ExtensionClientMessage)
     );

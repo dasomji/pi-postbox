@@ -1,4 +1,9 @@
-import { HistoryResponseSchema, StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
+import {
+  HistoryResponseSchema,
+  StateSnapshotSchema,
+  type ExtensionClientMessage
+} from "@pi-postbox/protocol";
+import Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -121,6 +126,85 @@ afterEach(async () => {
 });
 
 describe("question history", () => {
+  it("loads legacy persisted questions without inventing context in state or History", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-postbox-legacy-context-db-"));
+    const databasePath = join(dir, "postbox.sqlite");
+
+    try {
+      let app = await createPostboxApp({ databasePath, now: () => 1_000, expirySweepMs: 0 });
+      apps.push(app);
+      const socket = await connectAndRegister(app);
+      socket.close();
+      await app.close();
+      apps.pop();
+
+      const db = new Database(databasePath);
+      const insertLegacy = db.prepare(
+        `INSERT INTO ask_requests (
+          request_id, session_id, mode, prompt, question_json, options_json, context_json, fork_reference_json, status,
+          selected_values_json, note, rationale, created_at, expires_at, resolved_at, updated_at
+        ) VALUES (
+          @requestId, 'session-history-1', 'single', @prompt, NULL, @optionsJson, NULL, @forkReferenceJson, @status,
+          @selectedValuesJson, NULL, NULL, @createdAt, @expiresAt, @resolvedAt, @updatedAt
+        )`
+      );
+      insertLegacy.run({
+        requestId: "legacy-pending",
+        prompt: "Legacy pending question",
+        optionsJson: JSON.stringify([{ value: "ship", label: "Ship" }]),
+        forkReferenceJson: JSON.stringify({
+          agentSessionPath: "/worktrees/history/.pi/session.jsonl",
+          leafId: "legacy-leaf",
+          cwd: "/worktrees/history"
+        }),
+        status: "pending",
+        selectedValuesJson: null,
+        createdAt: new Date(1_100).toISOString(),
+        expiresAt: new Date(10_000).toISOString(),
+        resolvedAt: null,
+        updatedAt: new Date(1_100).toISOString()
+      });
+      insertLegacy.run({
+        requestId: "legacy-answered",
+        prompt: "Legacy answered question",
+        optionsJson: JSON.stringify([{ value: "ship", label: "Ship" }]),
+        forkReferenceJson: JSON.stringify({
+          agentSessionPath: "/worktrees/history/.pi/session.jsonl",
+          leafId: "legacy-leaf",
+          cwd: "/worktrees/history"
+        }),
+        status: "answered",
+        selectedValuesJson: JSON.stringify(["ship"]),
+        createdAt: new Date(1_200).toISOString(),
+        expiresAt: new Date(10_000).toISOString(),
+        resolvedAt: new Date(1_300).toISOString(),
+        updatedAt: new Date(1_300).toISOString()
+      });
+      db.close();
+
+      app = await createPostboxApp({ databasePath, now: () => 2_000, expirySweepMs: 0 });
+      apps.push(app);
+      const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
+      const pending = state.requests.find((request) => request.requestId === "legacy-pending");
+      expect(pending).toMatchObject({
+        question: { prompt: "Legacy pending question" },
+        forkReference: { leafId: "legacy-leaf" }
+      });
+      expect(pending?.context).toBeUndefined();
+
+      const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
+      const answered = history.history.find((record) => record.request.requestId === "legacy-answered")?.request;
+      expect(answered).toMatchObject({
+        question: { prompt: "Legacy answered question" },
+        result: { status: "answered", selectedValues: ["ship"] },
+        forkReference: { agentSessionPath: "/worktrees/history/.pi/session.jsonl", leafId: "legacy-leaf" }
+      });
+      expect(answered?.context).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns terminal requests with answer, timestamps, session/project/machine metadata, rich context, and persists across restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-postbox-history-db-"));
     const databasePath = join(dir, "postbox.sqlite");

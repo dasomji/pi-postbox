@@ -90,7 +90,11 @@ describe("browser-origin and payload safety", () => {
         sessionId: "session-security",
         mode: "single",
         question: { prompt: "x".repeat(128_001) },
-        options: [{ value: "yes", label: "Yes" }]
+        options: [{ value: "yes", label: "Yes" }],
+        context: {
+          codebaseContext: "Fastify server with finite shared protocol schemas.",
+          problemContext: "Reject an oversized ask payload at the protocol boundary."
+        }
       }
     }));
 

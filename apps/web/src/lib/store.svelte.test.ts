@@ -164,6 +164,10 @@ describe("store deselection of questions resolved on another device", () => {
       mode: "single",
       question: { prompt: `Prompt for ${requestId}` },
       options: [{ value: "yes", label: "Yes" }],
+      context: {
+        codebaseContext: "Svelte dashboard store with multi-device state synchronization.",
+        problemContext: "Keep navigation correct when a remote decision resolves."
+      },
       status,
       createdAt: SNAPSHOT_TIME
     };
@@ -228,6 +232,10 @@ describe("store notification navigation", () => {
       mode: "single",
       question: { prompt: "Still need an answer?" },
       options: [{ value: "yes", label: "Yes" }],
+      context: {
+        codebaseContext: "Svelte dashboard store with notification navigation.",
+        problemContext: "Open a pending decision from a device notification."
+      },
       status,
       createdAt: SNAPSHOT_TIME
     };

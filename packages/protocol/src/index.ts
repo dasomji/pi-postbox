@@ -24,6 +24,7 @@ export type {
 export {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
+  AskCreateHandoffContextSchema,
   AskCreatePayloadSchema,
   AskModeSchema,
   AskOptionSchema,
@@ -39,6 +40,7 @@ export {
 export type {
   AskAnswerPayload,
   AskCancelPayload,
+  AskCreateHandoffContext,
   AskCreatePayload,
   AskMode,
   AskOption,

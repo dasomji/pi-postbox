@@ -163,7 +163,11 @@ describe("browser state SSE reactivity", () => {
           options: [
             { value: "first", label: "First browser" },
             { value: "second", label: "Second browser" }
-          ]
+          ],
+          context: {
+            codebaseContext: "Fastify state broadcaster with browser SSE clients.",
+            problemContext: "Broadcast one pending decision consistently to connected clients."
+          }
         }
       } satisfies ExtensionClientMessage)
     );

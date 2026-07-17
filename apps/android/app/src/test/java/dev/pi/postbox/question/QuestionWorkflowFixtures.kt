@@ -111,7 +111,10 @@ internal fun multiPendingQuestion(
         AskOption(value = "empty", label = "Empty", description = "Show when there are no pending questions."),
         AskOption(value = "disconnected", label = "Disconnected", description = "Keep the visible question on screen.")
     ),
-    context = HandoffContext(problemContext = "Several answers can be true at once."),
+    context = HandoffContext(
+        codebaseContext = "Android question workflow with multi-select answer support.",
+        problemContext = "Several answers can be true at once."
+    ),
     status = status,
     createdAt = "2026-06-25T12:01:00.000Z",
     expiresAt = "2026-06-25T12:45:00.000Z",

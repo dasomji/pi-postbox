@@ -105,7 +105,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     description: "Send a structured decision question to Pi Postbox and wait for the remote answer.",
     promptSnippet: "Ask the user for a remote decision through Pi Postbox.",
     promptGuidelines: [
-      "Use ask_postbox when you need a human decision and can provide concise options. The tool blocks until the Postbox card is answered or cancelled."
+      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext so a future interviewer can explain the decision. The tool blocks until the Postbox card is answered or cancelled."
     ],
     parameters: askPostboxParameters,
     async execute(_toolCallId: string, params: AskPostboxInput, signal?: AbortSignal) {
