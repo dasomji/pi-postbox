@@ -9,6 +9,7 @@ import {
   QuestionChatRuntimeError,
   QuestionChatRuntimeRegistry
 } from "../src/questionChatRuntime.js";
+import { REPOSITORY_EVIDENCE_TOOL_NAMES } from "../src/repositoryEvidenceTools.js";
 
 function createSourceFixture() {
   const root = mkdtempSync(join(tmpdir(), "postbox-chat-runtime-"));
@@ -51,6 +52,13 @@ function fakeCreateSession(selectedModel = { provider: "test-provider", id: "sou
     return { session, extensionsResult: { extensions: [], errors: [], runtime: undefined } } as unknown as CreateAgentSessionResult;
   });
   return { create, lifecycle };
+}
+
+function expectReadOnlyEvidenceTools(options: CreateAgentSessionOptions): void {
+  expect(options.tools).toEqual(REPOSITORY_EVIDENCE_TOOL_NAMES);
+  expect(options.customTools?.map((tool) => tool.name)).toEqual(REPOSITORY_EVIDENCE_TOOL_NAMES);
+  expect(options.excludeTools).toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "bash", "edit", "write"]));
+  expect(options.tools).not.toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "bash", "edit", "write"]));
 }
 
 describe("Pi Question Chat runtime adapter", () => {
@@ -123,6 +131,34 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.send("ask-recover", { clientCommandId: "persisted-command", message: "Explain recovery." });
     expect(observedSequences.length).toBeGreaterThan(0);
     activeManager!.appendMessage({ role: "user", content: "Explain recovery.", timestamp: Date.now() });
+    activeManager!.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "persisted-tool", name: "repository_read", arguments: { path: "src/file.ts" } }],
+      api: "anthropic-messages",
+      provider: "test-provider",
+      model: "source-model",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "toolUse",
+      timestamp: Date.now()
+    });
+    activeManager!.appendMessage({
+      role: "toolResult",
+      toolCallId: "persisted-tool",
+      toolName: "repository_read",
+      content: [{ type: "text", text: "bounded persisted evidence" }],
+      isError: false,
+      timestamp: Date.now()
+    });
+    activeManager!.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "interrupted-tool", name: "repository_find", arguments: { path: "src", query: "unfinished" } }],
+      api: "anthropic-messages",
+      provider: "test-provider",
+      model: "source-model",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "toolUse",
+      timestamp: Date.now()
+    });
 
     await registry.suspendAll();
     expect(sessions[0]!.abort).toHaveBeenCalledOnce();
@@ -147,11 +183,16 @@ describe("Pi Question Chat runtime adapter", () => {
         requestId: "ask-recover",
         forkKind: "exact",
         sequence: expect.any(Number),
-        messages: [expect.objectContaining({ role: "user", text: "Explain recovery." })]
+        messages: [expect.objectContaining({ role: "user", text: "Explain recovery." })],
+        tools: [
+          expect.objectContaining({ id: "persisted-tool", state: "success", details: "bounded persisted evidence" }),
+          expect.objectContaining({ id: "interrupted-tool", state: "stale" })
+        ]
       }
     });
     expect(result.status === "recovered" && result.snapshot.sequence).toBeGreaterThanOrEqual(observedSequences.at(-1)!);
     expect(createSession).toHaveBeenCalledTimes(2);
+    for (const [options] of createSession.mock.calls) expectReadOnlyEvidenceTools(options);
     await reloaded.cleanup("ask-recover");
     expect(existsSync(runtimeDir)).toBe(false);
   });
@@ -297,6 +338,7 @@ describe("Pi Question Chat runtime adapter", () => {
         ]
       }
     };
+    mkdirSync(source.cwd, { recursive: true });
 
     const [first, retry] = await Promise.all([
       registry.activateContext({ requestId: "ask-context", ownerSessionId: "session-owner", source }),
@@ -312,7 +354,7 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(fake.create).toHaveBeenCalledOnce();
     const options = fake.create.mock.calls[0]![0];
     expect(options.model).toBe(recordedModel);
-    expect(options.tools).toEqual([]);
+    expectReadOnlyEvidenceTools(options);
     expect(options.resourceLoader?.getExtensions().extensions).toEqual([]);
     expect(options.resourceLoader?.getSkills().skills).toEqual([]);
     expect(options.resourceLoader?.getAgentsFiles().agentsFiles).toEqual([]);
@@ -402,8 +444,7 @@ describe("Pi Question Chat runtime adapter", () => {
     });
     expect(fake.create).toHaveBeenCalledTimes(1);
     const options = fake.create.mock.calls[0]![0];
-    expect(options.tools).toEqual([]);
-    expect(options.customTools).toBeUndefined();
+    expectReadOnlyEvidenceTools(options);
     expect(options.resourceLoader?.getExtensions().extensions).toEqual([]);
     expect(options.resourceLoader?.getSkills().skills).toEqual([]);
     expect(options.resourceLoader?.getPrompts().prompts).toEqual([]);
@@ -608,6 +649,50 @@ describe("Pi Question Chat runtime adapter", () => {
     );
 
     listener?.({ type: "agent_start" });
+    listener?.({
+      type: "tool_execution_start",
+      toolCallId: "tool-evidence-1",
+      toolName: "repository_grep",
+      args: { path: "src", query: "literal evidence", secretInternal: "must-not-stream" }
+    });
+    listener?.({
+      type: "tool_execution_end",
+      toolCallId: "tool-evidence-1",
+      toolName: "repository_grep",
+      result: {
+        content: [{ type: "text", text: "src/file.ts:2:literal evidence" }],
+        details: { privatePath: "/host/private" }
+      },
+      isError: false
+    });
+    const longToolIdPrefix = "tool-id-prefix-".repeat(16);
+    const longToolIds = [`${longToolIdPrefix}a`, `${longToolIdPrefix}b`];
+    listener?.({
+      type: "tool_execution_start",
+      toolCallId: longToolIds[0],
+      toolName: "repository_read",
+      args: { path: "src/a.ts" }
+    });
+    listener?.({
+      type: "tool_execution_start",
+      toolCallId: longToolIds[1],
+      toolName: "repository_read",
+      args: { path: "src/\u202Eb.ts" }
+    });
+    listener?.({
+      type: "tool_execution_end",
+      toolCallId: longToolIds[0],
+      toolName: "repository_read",
+      result: { content: [{ type: "text", text: `${"d".repeat(9_000)}\u202Ehidden` }] },
+      isError: false
+    });
+    listener?.({ type: "tool_execution_start", toolCallId: "tool-shell", toolName: "bash", args: { command: "cat .env" } });
+    listener?.({
+      type: "tool_execution_start",
+      toolCallId: "tool-restricted-display",
+      toolName: "repository_read",
+      args: { path: "config/token-store.json" }
+    });
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 10 } });
     listener?.({
       type: "message_update",
@@ -663,6 +748,32 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(JSON.stringify(events)).not.toContain("secret");
     expect(JSON.stringify(events)).not.toContain(".env");
     expect(JSON.stringify(events)).not.toContain("must-not-escape");
+    const toolEvents = events.filter((event) => event.type === "tool.started" || event.type === "tool.finished");
+    expect(toolEvents.filter((event) => event.activity.target === "src")).toEqual([
+      expect.objectContaining({ type: "tool.started", activity: expect.objectContaining({ id: "tool-evidence-1", state: "running", target: "src" }) }),
+      expect.objectContaining({ type: "tool.finished", activity: expect.objectContaining({ id: "tool-evidence-1", state: "success", details: "src/file.ts:2:literal evidence" }) })
+    ]);
+    const boundedLongIds = toolEvents
+      .filter((event) => event.activity.tool === "repository_read" && event.activity.id.length === 200)
+      .map((event) => event.activity.id);
+    expect(new Set(boundedLongIds).size).toBe(2);
+    expect(boundedLongIds.every((id) => id.length <= 200)).toBe(true);
+    const boundedResult = toolEvents.find(
+      (event) => event.type === "tool.finished" && event.activity.target === "src/a.ts"
+    );
+    expect(boundedResult?.activity.details).toHaveLength(8_000);
+    expect(boundedResult?.activity.details).toMatch(/… details truncated …$/);
+    expect(JSON.stringify(toolEvents)).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/);
+    expect(toolEvents).toContainEqual(
+      expect.objectContaining({
+        type: "tool.started",
+        activity: expect.objectContaining({ id: "tool-restricted-display", target: "restricted target" })
+      })
+    );
+    expect(JSON.stringify(toolEvents)).not.toContain("token-store.json");
+    expect(JSON.stringify(toolEvents)).not.toContain("must-not-stream");
+    expect(JSON.stringify(toolEvents)).not.toContain("/host/private");
+    expect(JSON.stringify(toolEvents)).not.toContain("cat .env");
     const snapshot = await registry.getSnapshot(requestId);
     expect(snapshot).toMatchObject({ state: "ready", sequence: events.at(-1)?.sequence });
     expect(snapshot.messages.map((message) => message.text)).toEqual([
@@ -671,6 +782,11 @@ describe("Pi Question Chat runtime adapter", () => {
       "Correction while running"
     ]);
     expect(JSON.stringify(snapshot.messages)).not.toContain("selected branch");
+    expect(snapshot.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "tool-evidence-1", tool: "repository_grep", state: "success", target: "src" }),
+      expect.objectContaining({ tool: "repository_read", state: "success", target: "src/a.ts" }),
+      expect.objectContaining({ tool: "repository_read", state: "running", target: "src/b.ts" })
+    ]));
 
     await registry.send(requestId, { clientCommandId: "browser-command-3", message: "Please explain." });
     expect((await registry.getSnapshot(requestId)).messages.filter((message) => message.role === "user" && message.text === "Please explain.")).toHaveLength(2);

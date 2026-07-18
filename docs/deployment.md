@@ -6,6 +6,8 @@ Pi Postbox v1 is a plain local HTTP service with automatic Tailnet-private Tails
 
 V1 intentionally uses a **Tailscale-only** trust boundary with **no app-level authentication**. Anyone who can reach the Postbox HTTP service can see sessions/questions/history and can submit answers, cancel requests, or rename machines/projects. Postbox rejects cross-origin browser state-changing requests and browser-origin extension WebSockets unless the `Origin` host matches the service host; this reduces malicious-page browser pivots but does not authenticate users or devices.
 
+Question Chat adds model spend and scoped read-only repository evidence. Its interviewer receives only bounded custom read/grep/find/list tools rooted at the originating Git worktree (or cwd outside Git), with ignored/secret/out-of-scope paths denied and no shell or mutation tools. Treat Tailnet reachability as permission to trigger that bounded capability as well as to view and resolve Postbox Questions.
+
 Recommended deployment rule:
 
 - Bind `pi-postbox-server` to `127.0.0.1` or a private Tailnet-only interface.

@@ -20,6 +20,7 @@ function snapshot(overrides: Partial<QuestionChatSnapshot> = {}): QuestionChatSn
     model: { id: "anthropic/claude-sonnet-4", source: "originating" },
     sequence: 0,
     messages: [],
+    tools: [],
     ...overrides
   };
 }
@@ -160,6 +161,58 @@ describe("Question Chat first message", () => {
     expect(screen.getByLabelText("Chat messages").textContent).toContain("bad");
     expect(screen.getByLabelText("Chat messages").innerHTML).not.toContain("javascript:");
     expect(screen.getByText("Answering…")).toBeTruthy();
+  });
+
+  it("renders compact expandable tool rows as plain text through running and success states", async () => {
+    let onEvent!: (event: QuestionChatStreamEvent) => void;
+    render(QuestionChatActivation, {
+      props: {
+        requestId: "ask-ui",
+        api: {
+          activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
+          fetchSnapshot: async () => snapshot(),
+          connectEvents: (_requestId: string, listener: (event: QuestionChatStreamEvent) => void) => {
+            onEvent = listener;
+            return noEvents();
+          }
+        }
+      }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await screen.findByRole("heading", { name: "Question Chat" });
+
+    onEvent({
+      requestId: "ask-ui",
+      sequence: 1,
+      type: "tool.started",
+      activity: {
+        id: "tool-ui-1",
+        tool: "repository_read",
+        target: "src/file.ts",
+        state: "running",
+        details: "reading src/file.ts"
+      }
+    });
+    expect(await screen.findByText("Running")).toBeTruthy();
+    expect(screen.getByText("src/file.ts")).toBeTruthy();
+
+    onEvent({
+      requestId: "ask-ui",
+      sequence: 2,
+      type: "tool.finished",
+      activity: {
+        id: "tool-ui-1",
+        tool: "repository_read",
+        target: "src/file.ts",
+        state: "success",
+        details: "<img src=x onerror=alert(1)> bounded evidence"
+      }
+    });
+    expect(await screen.findByText("Success")).toBeTruthy();
+    const activity = screen.getByRole("list", { name: "Repository evidence activity" });
+    expect(activity.querySelector("img")).toBeNull();
+    expect(activity.textContent).toContain("<img src=x onerror=alert(1)> bounded evidence");
+    expect(activity.querySelector("details")).toBeTruthy();
   });
 
   it("steers while active, stops one turn with its partial marker, and remains reusable", async () => {

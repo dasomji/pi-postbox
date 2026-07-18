@@ -10,6 +10,9 @@ export const QUESTION_CHAT_USER_TEXT_MAX = 8_000;
 export const QUESTION_CHAT_ASSISTANT_TEXT_MAX = 32_000;
 export const QUESTION_CHAT_DELTA_MAX = 4_000;
 export const QUESTION_CHAT_MESSAGE_MAX = 100;
+export const QUESTION_CHAT_TOOL_TARGET_MAX = 1_000;
+export const QUESTION_CHAT_TOOL_DETAILS_MAX = 8_000;
+export const QUESTION_CHAT_TOOL_ACTIVITY_MAX = 50;
 
 export const QUESTION_CHAT_STARTERS = [
   {
@@ -100,13 +103,35 @@ export const QuestionChatMessageSchema = z.discriminatedUnion("role", [
   })
 ]);
 
+export const QuestionChatToolNameSchema = z.enum([
+  "repository_read",
+  "repository_grep",
+  "repository_find",
+  "repository_list"
+]);
+
+const QuestionChatToolActivityBaseSchema = z.object({
+  id: z.string().min(1).max(REQUEST_ID_MAX),
+  tool: QuestionChatToolNameSchema,
+  target: z.string().min(1).max(QUESTION_CHAT_TOOL_TARGET_MAX),
+  details: z.string().max(QUESTION_CHAT_TOOL_DETAILS_MAX).optional()
+}).strict();
+
+export const QuestionChatToolActivitySchema = z.discriminatedUnion("state", [
+  QuestionChatToolActivityBaseSchema.extend({ state: z.literal("running") }),
+  QuestionChatToolActivityBaseSchema.extend({ state: z.literal("success") }),
+  QuestionChatToolActivityBaseSchema.extend({ state: z.literal("error") }),
+  QuestionChatToolActivityBaseSchema.extend({ state: z.literal("stale") })
+]);
+
 export const QuestionChatSnapshotSchema = z.object({
   requestId: z.string().min(1).max(REQUEST_ID_MAX),
   state: QuestionChatStateSchema,
   forkKind: z.enum(["exact", "context-only"]),
   model: QuestionChatModelSchema,
   sequence: z.number().int().nonnegative().default(0),
-  messages: z.array(QuestionChatMessageSchema).max(QUESTION_CHAT_MESSAGE_MAX)
+  messages: z.array(QuestionChatMessageSchema).max(QUESTION_CHAT_MESSAGE_MAX),
+  tools: z.array(QuestionChatToolActivitySchema).max(QUESTION_CHAT_TOOL_ACTIVITY_MAX).default([])
 });
 
 export const QuestionChatSendPayloadSchema = z.object({
@@ -138,6 +163,18 @@ export const QuestionChatEventSchema = z.discriminatedUnion("type", [
     messageId: z.string().min(1).max(REQUEST_ID_MAX),
     text: z.string().max(QUESTION_CHAT_ASSISTANT_TEXT_MAX),
     status: z.enum(["final", "stopped", "interrupted"]).default("final")
+  }),
+  QuestionChatEventBaseSchema.extend({
+    type: z.literal("tool.started"),
+    activity: QuestionChatToolActivityBaseSchema.extend({ state: z.literal("running") })
+  }),
+  QuestionChatEventBaseSchema.extend({
+    type: z.literal("tool.finished"),
+    activity: z.discriminatedUnion("state", [
+      QuestionChatToolActivityBaseSchema.extend({ state: z.literal("success") }),
+      QuestionChatToolActivityBaseSchema.extend({ state: z.literal("error") }),
+      QuestionChatToolActivityBaseSchema.extend({ state: z.literal("stale") })
+    ])
   })
 ]);
 
@@ -218,6 +255,8 @@ export type QuestionChatContextActivationPayload = z.infer<typeof QuestionChatCo
 export type QuestionChatModel = z.infer<typeof QuestionChatModelSchema>;
 export type QuestionChatState = z.infer<typeof QuestionChatStateSchema>;
 export type QuestionChatMessage = z.infer<typeof QuestionChatMessageSchema>;
+export type QuestionChatToolName = z.infer<typeof QuestionChatToolNameSchema>;
+export type QuestionChatToolActivity = z.infer<typeof QuestionChatToolActivitySchema>;
 export type QuestionChatSnapshot = z.infer<typeof QuestionChatSnapshotSchema>;
 export type QuestionChatSendPayload = z.infer<typeof QuestionChatSendPayloadSchema>;
 export type QuestionChatSendResponse = z.infer<typeof QuestionChatSendResponseSchema>;

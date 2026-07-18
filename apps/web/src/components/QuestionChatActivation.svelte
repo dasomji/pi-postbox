@@ -2,6 +2,7 @@
   import {
     QUESTION_CHAT_STARTERS,
     type QuestionChatEvent,
+    type QuestionChatToolActivity,
     type QuestionChatSnapshot
   } from "@pi-postbox/protocol";
   import { onDestroy } from "svelte";
@@ -154,6 +155,20 @@
     return "Ready";
   }
 
+  function toolLabel(tool: QuestionChatToolActivity["tool"]): string {
+    if (tool === "repository_read") return "Read";
+    if (tool === "repository_grep") return "Grep";
+    if (tool === "repository_find") return "Find";
+    return "List";
+  }
+
+  function toolStateLabel(state: QuestionChatToolActivity["state"]): string {
+    if (state === "running") return "Running";
+    if (state === "success") return "Success";
+    if (state === "error") return "Error";
+    return "Interrupted";
+  }
+
   onDestroy(() => lifecycle.destroy());
 </script>
 
@@ -205,6 +220,30 @@
           {/each}
         {/if}
       </div>
+      {#if view.snapshot.tools.length > 0}
+        <ul class="mt-3 space-y-2" aria-label="Repository evidence activity">
+          {#each view.snapshot.tools as activity (activity.id)}
+            <li class="rounded-md border border-postbox-border bg-postbox-surface px-3 py-2 text-xs text-postbox-subtle">
+              {#if activity.details}
+                <details>
+                  <summary class="cursor-pointer list-none">
+                    <span class="font-medium">{toolLabel(activity.tool)}</span>
+                    <span class="ml-2 font-mono">{activity.target}</span>
+                    <span class="ml-2 text-postbox-muted">{toolStateLabel(activity.state)}</span>
+                  </summary>
+                  <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-postbox-elevated p-2 font-mono text-[0.7rem]">{activity.details}</pre>
+                </details>
+              {:else}
+                <div>
+                  <span class="font-medium">{toolLabel(activity.tool)}</span>
+                  <span class="ml-2 font-mono">{activity.target}</span>
+                  <span class="ml-2 text-postbox-muted">{toolStateLabel(activity.state)}</span>
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
       {#if view.snapshot.messages.length === 0}
         <div class="mt-3 flex flex-wrap gap-2" aria-label="Chat starters">
           {#each QUESTION_CHAT_STARTERS as starter}

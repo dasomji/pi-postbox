@@ -32,7 +32,8 @@ function snapshot(requestId = REQUEST.requestId): QuestionChatSnapshot {
     forkKind: "exact",
     model: { id: "test/model", source: "originating" },
     sequence: 0,
-    messages: []
+    messages: [],
+    tools: []
   };
 }
 

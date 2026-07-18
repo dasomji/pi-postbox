@@ -134,6 +134,8 @@ Icon paths are resolved by the extension and uploaded as small data URLs plus ha
 
 Pi Postbox v1 uses a **Tailscale-only** trust boundary with **no app-level authentication**. Anyone who can reach the HTTP service can read cards/history and submit answers. The server still blocks cross-origin browser pivots for state-changing HTTP/WebSocket actions and enforces finite payload/icon limits, but that is CSRF/abuse protection — not user authentication.
 
+Question Chat also spends model tokens and can request tightly scoped, read-only evidence from the originating Git worktree (or cwd subtree outside Git). Its custom read/grep/find/list tools deny ignored, secret-like, out-of-scope, and directory-symlink paths and expose no shell or mutation capability. Tailnet access must therefore be limited to people and devices trusted with both Postbox decisions and this bounded repository-read consequence.
+
 `pi-postbox-server` now performs automatic Tailnet-private Tailscale Serve exposure when the `tailscale` CLI is installed, logged in, and non-conflicting. Startup inspects `tailscale serve status --json` first, then uses a command shaped like `tailscale serve --bg --https 32187 http://127.0.0.1:32187` for the actual bound port. The integration is non-clobbering: if another service already owns that HTTPS port, Postbox reports a conflict and leaves the mapping unchanged.
 
 Disable automatic Serve mutation with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`. Check local/Tailnet state without starting a server with:

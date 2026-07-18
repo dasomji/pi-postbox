@@ -8,7 +8,8 @@ const SNAPSHOT: QuestionChatSnapshot = {
   forkKind: "exact",
   model: { id: "test/model", source: "originating" },
   sequence: 0,
-  messages: []
+  messages: [],
+  tools: []
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

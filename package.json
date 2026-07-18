@@ -64,6 +64,7 @@
     "@pi-postbox/protocol": "file:packages/protocol",
     "better-sqlite3": "^12.10.0",
     "fastify": "^5.2.1",
+    "typebox": "^1.1.38",
     "web-push": "^3.6.7",
     "ws": "^8.21.0",
     "zod": "^3.24.1"

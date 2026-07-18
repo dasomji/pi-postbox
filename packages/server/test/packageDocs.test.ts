@@ -83,6 +83,7 @@ describe("release packaging and operator docs", () => {
 
     const bin = root.bin as Record<string, unknown> | undefined;
     expect(packagePath(bin?.["pi-postbox-server"])).toBe("packages/server/dist/cli.js");
+    expect(root.dependencies).toMatchObject({ typebox: expect.any(String) });
   });
 
   it("packs the combined runtime without local Pi/cache/secret files", async () => {
@@ -138,12 +139,18 @@ describe("release packaging and operator docs", () => {
       const packageRoot = join(installPrefix, "lib", "node_modules", "@wienerberliner", "pi-postbox");
       const cliPath = join(packageRoot, "packages", "server", "dist", "cli.js");
       const resolverPath = join(packageRoot, "packages", "server", "dist", "resolve-protocol-from-cli.mjs");
+      const extensionDependencyResolverPath = join(packageRoot, "packages", "extension", "src", "resolve-typebox.mjs");
       await writeFile(
         resolverPath,
         'import { SERVICE_NAME } from "@pi-postbox/protocol";\nconsole.log(SERVICE_NAME);\n'
       );
+      await writeFile(
+        extensionDependencyResolverPath,
+        'import { Type } from "typebox";\nconsole.log(typeof Type.Object);\n'
+      );
 
       const { stdout: protocolStdout } = await execFileAsync(process.execPath, [resolverPath], { timeout: 30_000 });
+      const { stdout: typeboxStdout } = await execFileAsync(process.execPath, [extensionDependencyResolverPath], { timeout: 30_000 });
       const binPath = join(installPrefix, "bin", "pi-postbox-server");
       const { stdout: binTargetStdout } = await execFileAsync(
         process.execPath,
@@ -161,6 +168,7 @@ describe("release packaging and operator docs", () => {
       });
 
       expect(protocolStdout.trim()).toBe("pi-postbox");
+      expect(typeboxStdout.trim()).toBe("function");
       expect(binTargetStdout.trim()).toBe(cliPath);
       expect(JSON.parse(statusStdout) as Record<string, unknown>).toMatchObject({ availability: "unavailable" });
     } finally {

@@ -130,7 +130,8 @@ function readySnapshot(): QuestionChatSnapshot {
     forkKind: "exact",
     model: { id: "anthropic/claude-sonnet-4", source: "originating" },
     sequence: 0,
-    messages: []
+    messages: [],
+    tools: []
   };
 }
 
@@ -806,8 +807,8 @@ describe("Question Chat activation relay", () => {
     });
   });
 
-  it("does not add Chat transcript data to durable request state", async () => {
-    const { app, socket } = await setup();
+  it("relays private tool activity but does not add Chat transcript or tool data to durable state after cleanup", async () => {
+    const { app, socket, databasePath } = await setup();
     const activation = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
     const command = await nextMessage(socket);
     socket.send(JSON.stringify({
@@ -819,14 +820,52 @@ describe("Question Chat activation relay", () => {
         messages: [
           { id: "private-user", role: "user", text: "server-must-not-store-this-user", status: "final" },
           { id: "private-assistant", role: "assistant", text: "server-must-not-store-this-assistant", status: "final" }
-        ]
+        ],
+        tools: [{
+          id: "private-tool",
+          tool: "repository_read",
+          target: "src/private.ts",
+          state: "success",
+          details: "server-must-not-store-this-tool-output"
+        }]
       }
     } satisfies ExtensionClientMessage));
     await activation;
 
+    const eventResponse = await fetch(`http://127.0.0.1:${listenerPort(app)}/api/requests/ask-chat/chat/events`);
+    const events = createSseReader(eventResponse);
+    socket.send(JSON.stringify({
+      type: "chat.event",
+      payload: {
+        requestId: "ask-chat",
+        sequence: 3,
+        type: "tool.started",
+        activity: { id: "private-tool-live", tool: "repository_grep", target: "src", state: "running" }
+      }
+    } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({
+      type: "chat.event",
+      payload: {
+        requestId: "ask-chat",
+        sequence: 4,
+        type: "tool.finished",
+        activity: {
+          id: "private-tool-live",
+          tool: "repository_grep",
+          target: "src",
+          state: "success",
+          details: "server-must-not-store-this-live-tool-output"
+        }
+      }
+    } satisfies ExtensionClientMessage));
+    await expect(events.next()).resolves.toMatchObject({ type: "tool.started", activity: { state: "running" } });
+    await expect(events.next()).resolves.toMatchObject({ type: "tool.finished", activity: { state: "success" } });
+    await events.close();
+
     const state = (await app.inject({ method: "GET", url: "/api/state" })).json();
     expect(state.requests[0]).not.toHaveProperty("chat");
     expect(JSON.stringify(state)).not.toContain("messages");
+    expect(JSON.stringify(state)).not.toContain("server-must-not-store-this-tool-output");
 
     const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
     await expect(nextMessage(socket)).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
@@ -835,6 +874,15 @@ describe("Question Chat activation relay", () => {
     expect(JSON.stringify(history)).not.toContain("server-must-not-store-this");
     expect(JSON.stringify(history)).not.toContain('"messages"');
     expect(JSON.stringify(history)).not.toContain('"chat"');
+    expect(JSON.stringify(history)).not.toContain("server-must-not-store-this-live-tool-output");
+
+    const database = openPostboxDatabase(databasePath);
+    const durableRow = database.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get("ask-chat") as Record<string, unknown>;
+    database.close();
+    expect(Object.keys(durableRow)).not.toContain("chat");
+    expect(Object.keys(durableRow)).not.toContain("messages");
+    expect(Object.keys(durableRow)).not.toContain("tools");
+    expect(JSON.stringify(durableRow)).not.toContain("server-must-not-store-this");
   });
 });
 

@@ -1,6 +1,9 @@
 import {
   QUESTION_CHAT_ASSISTANT_TEXT_MAX,
   QUESTION_CHAT_DELTA_MAX,
+  QUESTION_CHAT_TOOL_ACTIVITY_MAX,
+  QUESTION_CHAT_TOOL_DETAILS_MAX,
+  QUESTION_CHAT_TOOL_TARGET_MAX,
   QuestionChatContextSourceSchema,
   QuestionChatEventSchema,
   QuestionChatSendPayloadSchema,
@@ -15,7 +18,8 @@ import {
   type QuestionChatSource,
   type QuestionChatState,
   type QuestionChatStopPayload,
-  type QuestionChatStopResponse
+  type QuestionChatStopResponse,
+  type QuestionChatToolActivity
 } from "../../protocol/src/index.js";
 import {
   DefaultResourceLoader,
@@ -46,9 +50,15 @@ import {
 } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
+import {
+  REPOSITORY_EVIDENCE_TOOL_NAMES,
+  createRepositoryEvidenceTools,
+  isRepositoryEvidenceRestrictedPath
+} from "./repositoryEvidenceTools.js";
 
 const INTERVIEWER_SYSTEM_PROMPT =
-  "You are the focused interviewer for one pending Postbox Question. Explain the decision without resolving it. Only the human may select, submit, cancel, or otherwise resolve the question.";
+  "You are the focused interviewer for one pending Postbox Question. Explain the decision without resolving it. Only the human may select, submit, cancel, or otherwise resolve the question. Repository evidence is available only through the scoped repository_read, repository_grep, repository_find, and repository_list tools. Never claim shell or mutation capability.";
+const DISABLED_BUILTIN_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 
 export interface QuestionChatActivation {
   requestId: string;
@@ -246,6 +256,7 @@ export class PiQuestionChatRuntimeAdapter {
         appendSystemPrompt: []
       });
       await resourceLoader.reload();
+      const evidence = await createRepositoryEvidenceTools(prepared.cwd);
 
       const modelRuntime = await this.createModelRuntime();
       const explicitModel = resolveRecordedModel(prepared.explicitModelId, modelRuntime);
@@ -257,7 +268,9 @@ export class PiQuestionChatRuntimeAdapter {
         resourceLoader,
         modelRuntime,
         ...(explicitModel ? { model: explicitModel } : {}),
-        tools: []
+        tools: [...REPOSITORY_EVIDENCE_TOOL_NAMES],
+        customTools: evidence.tools,
+        excludeTools: DISABLED_BUILTIN_TOOLS
       });
       session = result.session;
       const selectedModel = session.model;
@@ -288,7 +301,8 @@ export class PiQuestionChatRuntimeAdapter {
           fallbackReason
         },
         sequence: 0,
-        messages: []
+        messages: [],
+        tools: []
       };
       if (!privateSessionPath) throw new QuestionChatRuntimeError("runtime_failure", "Pi did not persist the private Question Chat fork.");
       const manifest: RecoveryManifest = {
@@ -399,6 +413,7 @@ export class PiQuestionChatRuntimeAdapter {
         appendSystemPrompt: []
       });
       await resourceLoader.reload();
+      const evidence = await createRepositoryEvidenceTools(manifest.cwd);
       const modelRuntime = await this.createModelRuntime();
       const explicitModel = resolveRecordedModel(manifest.model.id, modelRuntime);
       const result = await this.createSession({
@@ -409,7 +424,9 @@ export class PiQuestionChatRuntimeAdapter {
         resourceLoader,
         modelRuntime,
         ...(explicitModel ? { model: explicitModel } : {}),
-        tools: []
+        tools: [...REPOSITORY_EVIDENCE_TOOL_NAMES],
+        customTools: evidence.tools,
+        excludeTools: DISABLED_BUILTIN_TOOLS
       });
       session = result.session;
       const selectedModel = session.model;
@@ -425,7 +442,7 @@ export class PiQuestionChatRuntimeAdapter {
       const durableManifest: RecoveryManifest = { ...manifest, privateSessionPath, model };
       this.writeManifest(runtimeDir, durableManifest);
       return new ManagedQuestionChatRuntime(
-        { requestId, state: "ready", forkKind, model, sequence: manifest.sequence, messages: [] },
+        { requestId, state: "ready", forkKind, model, sequence: manifest.sequence, messages: [], tools: [] },
         session,
         sessionManager,
         manifest.chatBoundaryId,
@@ -563,6 +580,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   private promptStarting = false;
   private sdkActive = false;
   private readonly forkOutcomes = new Map<string, "final" | "stopped" | "interrupted">();
+  private readonly liveToolActivities = new Map<string, QuestionChatToolActivity>();
 
   constructor(
     private readonly initialSnapshot: QuestionChatSnapshot,
@@ -584,11 +602,18 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     );
     messages.push(...this.transientMessages.map(({ message }) => message));
     if (this.streamingAssistant) messages.push(this.streamingAssistant);
+    const tools = this.toolActivitiesFromFork();
+    for (const activity of this.liveToolActivities.values()) {
+      const existing = tools.findIndex((candidate) => candidate.id === activity.id);
+      if (existing >= 0) tools[existing] = activity;
+      else tools.push(activity);
+    }
     return {
       ...this.initialSnapshot,
       state: this.state,
       sequence: this.sequence,
-      messages: messages.slice(-100)
+      messages: messages.slice(-100),
+      tools: tools.slice(-QUESTION_CHAT_TOOL_ACTIVITY_MAX)
     };
   }
 
@@ -710,6 +735,31 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   private onSessionEvent(value: unknown): void {
     try {
       if (!isRecord(value) || typeof value.type !== "string") return;
+      if (value.type === "tool_execution_start") {
+        if (!isRepositoryEvidenceTool(value.toolName) || typeof value.toolCallId !== "string") return;
+        const activity: QuestionChatToolActivity = {
+          id: sanitizeToolId(value.toolCallId),
+          tool: value.toolName,
+          target: sanitizeToolTarget(value.args),
+          state: "running",
+          ...sanitizeToolArguments(value.toolName, value.args)
+        };
+        this.liveToolActivities.set(value.toolCallId, activity);
+        this.emit({ type: "tool.started", activity });
+        return;
+      }
+      if (value.type === "tool_execution_end") {
+        if (!isRepositoryEvidenceTool(value.toolName) || typeof value.toolCallId !== "string") return;
+        const started = this.liveToolActivities.get(value.toolCallId);
+        if (!started) return;
+        const details = sanitizeToolResult(value.result);
+        const activity = value.isError === true
+          ? { ...started, state: "error" as const, ...(details ? { details } : {}) }
+          : { ...started, state: "success" as const, ...(details ? { details } : {}) };
+        this.liveToolActivities.set(value.toolCallId, activity);
+        this.emit({ type: "tool.finished", activity });
+        return;
+      }
       if (value.type === "agent_start") {
         if (this.promptStarting) return;
         if (this.state !== "generating" && this.state !== "stopping") this.emit({ type: "lifecycle", state: "generating" });
@@ -875,6 +925,8 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
         const text = visibleUserText(entry.message);
         if (text) messages.push({ id: entry.id, role: "user", text: text.slice(0, 8_000), status: "final" });
       } else if (entry.message.role === "assistant") {
+        const visibleText = visibleAssistantText(entry.message);
+        if (!visibleText) continue;
         const stopReason = "stopReason" in entry.message ? entry.message.stopReason : undefined;
         let nextConversationalRole: "user" | "assistant" | undefined;
         for (let later = index + 1; later < chatEntries.length; later += 1) {
@@ -894,12 +946,44 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
         messages.push({
           id: entry.id,
           role: "assistant",
-          text: visibleAssistantText(entry.message).slice(0, QUESTION_CHAT_ASSISTANT_TEXT_MAX),
+          text: visibleText.slice(0, QUESTION_CHAT_ASSISTANT_TEXT_MAX),
           status
         });
       }
     }
     return messages;
+  }
+
+  private toolActivitiesFromFork(): QuestionChatToolActivity[] {
+    const branch = this.sessionManager.getBranch();
+    const boundaryIndex = this.chatBoundaryId ? branch.findIndex((entry) => entry.id === this.chatBoundaryId) : -1;
+    const activities = new Map<string, QuestionChatToolActivity>();
+    for (const entry of branch.slice(boundaryIndex + 1)) {
+      if (entry.type !== "message") continue;
+      const message = entry.message;
+      if (message.role === "assistant" && Array.isArray(message.content)) {
+        for (const item of message.content) {
+          if (!isRecord(item) || item.type !== "toolCall" || typeof item.id !== "string" || !isRepositoryEvidenceTool(item.name)) continue;
+          activities.set(item.id, {
+            id: sanitizeToolId(item.id),
+            tool: item.name,
+            target: sanitizeToolTarget(item.arguments),
+            state: "stale",
+            ...sanitizeToolArguments(item.name, item.arguments)
+          });
+        }
+      } else if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+        const started = activities.get(message.toolCallId);
+        if (!started || !isRepositoryEvidenceTool(message.toolName)) continue;
+        const details = sanitizeToolResult(message);
+        activities.set(message.toolCallId, {
+          ...started,
+          state: message.isError ? "error" : "success",
+          ...(details ? { details } : {})
+        });
+      }
+    }
+    return [...activities.values()].slice(-QUESTION_CHAT_TOOL_ACTIVITY_MAX);
   }
 
   async terminate(): Promise<void> {
@@ -1154,6 +1238,59 @@ ${JSON.stringify({ mode: source.mode, question: source.question, options: source
 <postbox-handoff-context>
 ${JSON.stringify(source.context, null, 2)}
 </postbox-handoff-context>`;
+}
+
+function isRepositoryEvidenceTool(value: unknown): value is (typeof REPOSITORY_EVIDENCE_TOOL_NAMES)[number] {
+  return typeof value === "string" && (REPOSITORY_EVIDENCE_TOOL_NAMES as readonly string[]).includes(value);
+}
+
+function sanitizeToolId(value: string): string {
+  const sanitized = stripToolControls(value);
+  if (!sanitized) return "repository-tool";
+  if (sanitized.length <= 200) return sanitized;
+  const suffix = createHash("sha256").update(value).digest("hex").slice(0, 16);
+  return `${sanitized.slice(0, 183)}-${suffix}`;
+}
+
+function sanitizeToolTarget(args: unknown): string {
+  if (!isRecord(args) || typeof args.path !== "string") return ".";
+  const path = sanitizeToolText(args.path, QUESTION_CHAT_TOOL_TARGET_MAX);
+  if (
+    !path ||
+    isAbsolute(path) ||
+    isRepositoryEvidenceRestrictedPath(path)
+  ) return "restricted target";
+  return path;
+}
+
+function sanitizeToolArguments(
+  tool: (typeof REPOSITORY_EVIDENCE_TOOL_NAMES)[number],
+  args: unknown
+): { details?: string } {
+  if ((tool !== "repository_grep" && tool !== "repository_find") || !isRecord(args) || typeof args.query !== "string") return {};
+  const query = sanitizeToolText(args.query, 200);
+  return query ? { details: `literal query: ${query}` } : {};
+}
+
+function sanitizeToolResult(result: unknown): string | undefined {
+  if (!isRecord(result) || !Array.isArray(result.content)) return undefined;
+  const text = result.content
+    .filter((item: unknown) => isRecord(item) && item.type === "text" && typeof item.text === "string")
+    .map((item: Record<string, any>) => item.text)
+    .join("\n");
+  const sanitized = stripToolControls(text);
+  if (!sanitized) return undefined;
+  if (sanitized.length <= QUESTION_CHAT_TOOL_DETAILS_MAX) return sanitized;
+  const marker = "… details truncated …";
+  return `${sanitized.slice(0, QUESTION_CHAT_TOOL_DETAILS_MAX - marker.length)}${marker}`;
+}
+
+function sanitizeToolText(value: string, maximum: number): string {
+  return stripToolControls(value).slice(0, maximum);
+}
+
+function stripToolControls(value: string): string {
+  return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g, "");
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

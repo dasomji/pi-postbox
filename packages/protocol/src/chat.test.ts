@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   QUESTION_CHAT_STARTERS,
+  QUESTION_CHAT_TOOL_DETAILS_MAX,
   QuestionChatActivationResponseSchema,
   QuestionChatContextActivationPayloadSchema,
   QuestionChatContextSourceSchema,
@@ -227,6 +228,55 @@ describe("Question Chat first-message protocol", () => {
         ]
       }).messages
     ).toHaveLength(2);
+  });
+
+  it("defines strictly bounded running and terminal repository tool activity", () => {
+    const snapshot = QuestionChatSnapshotSchema.parse({
+      requestId: "ask-31",
+      state: "generating",
+      forkKind: "exact",
+      model: { id: "test/model", source: "originating" },
+      sequence: 4,
+      messages: [],
+      tools: [{
+        id: "tool-1",
+        tool: "repository_grep",
+        target: "src",
+        state: "running",
+        details: "query: literal text"
+      }]
+    });
+    expect(snapshot.tools).toEqual([expect.objectContaining({ id: "tool-1", state: "running" })]);
+    expect(QuestionChatEventSchema.parse({
+      requestId: "ask-31",
+      sequence: 5,
+      type: "tool.finished",
+      activity: {
+        id: "tool-1",
+        tool: "repository_grep",
+        target: "src",
+        state: "success",
+        details: "src/file.ts:2:literal text"
+      }
+    })).toMatchObject({ type: "tool.finished", activity: { state: "success" } });
+    expect(() => QuestionChatEventSchema.parse({
+      requestId: "ask-31",
+      sequence: 6,
+      type: "tool.started",
+      activity: { id: "tool-2", tool: "repository_read", target: "src/file.ts", state: "success" }
+    })).toThrow();
+    expect(() => QuestionChatEventSchema.parse({
+      requestId: "ask-31",
+      sequence: 7,
+      type: "tool.finished",
+      activity: {
+        id: "tool-2",
+        tool: "repository_read",
+        target: "src/file.ts",
+        state: "error",
+        details: "x".repeat(QUESTION_CHAT_TOOL_DETAILS_MAX + 1)
+      }
+    })).toThrow();
   });
 
   it("defines finite correlated snapshot/send commands and normalized reverse events", () => {
