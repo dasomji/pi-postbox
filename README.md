@@ -2,7 +2,7 @@
 
 Pi Postbox is a Pi extension and companion web service for remote human decision handoffs.
 
-Instead of streaming every agent chat into a dashboard, Pi Postbox focuses on attention cards: Pi sessions register their presence, report project/branch/machine metadata, and send structured questions when they need input.
+Instead of streaming full Pi Session transcripts into a dashboard, Pi Postbox focuses on Postbox Questions: Pi Sessions register their presence, report project/branch/machine metadata, and send structured questions when they need input.
 
 The product requirements document is in [`docs/prd/pi-postbox.md`](docs/prd/pi-postbox.md).
 
@@ -36,7 +36,7 @@ npm run build     # build server/protocol/extension and Vite UI
 npm run smoke     # packaged-path release smoke test
 ```
 
-The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration and handoff context, explicit Chat activation without an automatic prompt, context-only fallback, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, and absence of the private transcript/evidence from those durable APIs.
+The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration and handoff context, explicit Question Chat activation without an automatic turn, context-only interviewer fallback, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, and absence of the private transcript/evidence from those durable APIs.
 
 ## Packages
 
@@ -80,15 +80,15 @@ pi-postbox-server
 
 ## Question Chat
 
-For a pending Postbox Question, click **Chat** to activate Question Chat explicitly. Activation creates a private runtime on the originating Pi machine, but it does not start an automatic model prompt, turn, or response. Send a freeform message or choose a starter: **Elaborate**, **Pro–Cons**, or **Teach me**.
+For a pending Postbox Question, click **Question Chat** to activate Question Chat explicitly. Activation creates a private runtime on the originating Pi machine, but it does not start an automatic model turn or response. Send a freeform message or choose a starter: **Elaborate**, **Pro–Cons**, or **Teach me**.
 
-Question Chat normally starts from an exact fork of the source conversation at the question's leaf. If that leaf is unavailable but the request contains the required `codebaseContext` and `problemContext`, the dashboard may offer a clearly labeled, explicit **context-only** fallback; it never silently substitutes that fallback. A `/reload` or process restart aborts the active turn but preserves and recovers the temporary fork when possible.
+Question Chat normally starts from an exact fork of the originating Pi Session at the question's leaf. If that leaf is unavailable but the request contains the required `codebaseContext` and `problemContext`, the dashboard may offer a clearly labeled, explicit **context-only interviewer** fallback; it never silently substitutes that fallback. A `/reload` or process restart aborts the active turn but preserves and recovers the temporary fork through its recovery manifest when possible.
 
 The assistant can use only bounded, read-only repository evidence tools: `repository_read`, `repository_grep`, `repository_find`, and `repository_list`. They are limited to the originating Git worktree, or to the originating cwd subtree outside Git, and expose neither a shell nor file mutation. A proposal made with the answer tool appears as **Suggested in Chat**. It is a server-validated option, not a selected answer; the user must still choose or submit it.
 
-If the extension goes offline, an already-open dashboard retains its rendered messages but disables Chat commands and offers **Retry**; commands are not queued. A fresh dashboard cannot load the private conversation while the extension is offline. **Stop** aborts only the current turn, preserves already-streamed output, and leaves Chat ready for another message.
+If the extension goes offline, an already-open dashboard retains its rendered messages but disables Question Chat commands and offers **Retry**; commands are not queued. A fresh dashboard cannot load the private Question Chat transcript while the extension is offline. **Stop** aborts only the current turn, preserves already-streamed output, and leaves Question Chat ready for another message.
 
-An answered request, a cancelled request, expiry, or Pi Session replacement through `/new`, `/resume`, `/fork`, or quit aborts the runtime and deletes the temporary private transcript. Resolved History retains the chosen answer and any proposed option, including **Suggested in Chat**, but contains no Chat transcript, hidden reasoning, tool arguments, or tool output.
+An answered request, a cancelled request, expiry, or Pi Session replacement through `/new`, `/resume`, `/fork`, or quit aborts the runtime and deletes the temporary private transcript and recovery manifest. Resolved History retains the chosen answer and any proposed option, including **Suggested in Chat**, but contains no Question Chat transcript, hidden reasoning, tool arguments, or tool output.
 
 ## Server configuration
 
@@ -164,7 +164,7 @@ See [`docs/configuration.md`](docs/configuration.md), [`docs/deployment.md`](doc
 
 ## Local fallback commands and status
 
-While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
+While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without starting an automatic model turn:
 
 ```text
 /postbox-status

@@ -4,7 +4,6 @@ import {
   QUESTION_CHAT_TOOL_ACTIVITY_MAX,
   QUESTION_CHAT_TOOL_DETAILS_MAX,
   QUESTION_CHAT_TOOL_TARGET_MAX,
-  QuestionChatContextSourceSchema,
   QuestionChatEventSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatStopPayloadSchema,
@@ -31,25 +30,14 @@ import {
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult
 } from "@earendil-works/pi-coding-agent";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   constants,
   chmodSync,
   copyFileSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  statSync,
-  type Dirent,
-  writeFileSync
+  statSync
 } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
-import { z } from "zod";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   REPOSITORY_EVIDENCE_TOOL_NAMES,
   createRepositoryEvidenceTools,
@@ -60,6 +48,11 @@ import {
   createProposeAnswerTool,
   type ProposeAnswerTransport
 } from "./proposeAnswerTool.js";
+import {
+  FileQuestionChatRecoveryStore,
+  type QuestionChatRecoveryManifest,
+  type QuestionChatRecoveryStore
+} from "./questionChatRecoveryStore.js";
 
 const INTERVIEWER_SYSTEM_PROMPT =
   "You are the focused interviewer for one pending Postbox Question. Explain the decision without resolving it. Only the human may select, submit, cancel, or otherwise resolve the question. Repository evidence is available only through the scoped repository_read, repository_grep, repository_find, and repository_list tools. You may use propose_answer to append one answer option when it would help the human decide; it never selects, submits, cancels, or resolves the Question. Never claim shell or other mutation capability.";
@@ -133,28 +126,8 @@ export interface PiQuestionChatRuntimeAdapterOptions {
   createAgentSession?: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
   createModelRuntime?: () => Promise<ModelRuntime>;
   proposeAnswer?: ProposeAnswerTransport;
+  recoveryStore?: QuestionChatRecoveryStore;
 }
-
-const RecoveryManifestSchema = z.object({
-  version: z.literal(1),
-  requestId: z.string().min(1).max(200),
-  ownerSessionId: z.string().min(1).max(200),
-  forkKind: z.enum(["exact", "context-only"]),
-  cwd: z.string().min(1).max(4_000),
-  privateSessionPath: z.string().min(1).max(4_000),
-  chatBoundaryId: z.string().min(1).max(400).nullable(),
-  sequence: z.number().int().nonnegative(),
-  model: z.object({
-    id: z.string().min(1).max(400),
-    source: z.enum(["originating", "pi-default"]),
-    fallbackReason: z.string().max(2_000).optional()
-  }),
-  contextSource: QuestionChatContextSourceSchema.optional()
-});
-
-type RecoveryManifest = z.infer<typeof RecoveryManifestSchema>;
-const RECOVERY_MANIFEST = "manifest.json";
-const RECOVERY_HASH = /^[a-f0-9]{64}$/;
 
 export class QuestionChatRuntimeError extends Error {
   constructor(
@@ -178,15 +151,17 @@ export class QuestionChatRuntimeError extends Error {
 }
 
 export class PiQuestionChatRuntimeAdapter {
-  private readonly privateRoot: string;
   private readonly agentDir: string;
   private readonly createSession: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
   private readonly createModelRuntime: () => Promise<ModelRuntime>;
   private readonly proposeAnswer: ProposeAnswerTransport;
+  private readonly recoveryStore: QuestionChatRecoveryStore;
 
   constructor(options: PiQuestionChatRuntimeAdapterOptions = {}) {
-    this.privateRoot = resolve(options.privateRoot ?? join(getAgentDir(), "postbox", "question-chats"));
     this.agentDir = resolve(options.agentDir ?? getAgentDir());
+    this.recoveryStore = options.recoveryStore ?? new FileQuestionChatRecoveryStore(
+      options.privateRoot ?? join(getAgentDir(), "postbox", "question-chats")
+    );
     this.createSession = options.createAgentSession ?? createAgentSession;
     this.createModelRuntime =
       options.createModelRuntime ??
@@ -233,8 +208,7 @@ export class PiQuestionChatRuntimeAdapter {
       cwd: input.source.cwd,
       sessionManager: SessionManager.create(input.source.cwd, runtimeDir),
       systemPrompt: contextOnlySystemPrompt(input.source),
-      recordedModelId: input.source.model,
-      explicitModelId: input.source.model
+      recordedModelId: input.source.model
     }));
   }
 
@@ -248,17 +222,13 @@ export class PiQuestionChatRuntimeAdapter {
       sessionManager: SessionManager;
       systemPrompt: string;
       recordedModelId?: string;
-      explicitModelId?: string;
     }
   ): Promise<QuestionChatRuntime> {
-    const runtimeDir = this.runtimeDirectory(requestId);
+    let runtimeDir = "";
     let session: SessionLifecycle | undefined;
 
     try {
-      mkdirSync(this.privateRoot, { recursive: true, mode: 0o700 });
-      this.assertPrivateRoot();
-      mkdirSync(runtimeDir, { recursive: false, mode: 0o700 });
-      this.validateRuntimeDirectory(runtimeDir);
+      runtimeDir = this.recoveryStore.create(requestId);
 
       const prepared = prepare(runtimeDir);
       const settingsManager = SettingsManager.create(prepared.cwd, this.agentDir, { projectTrusted: false });
@@ -279,7 +249,10 @@ export class PiQuestionChatRuntimeAdapter {
       const proposalTool = createProposeAnswerTool(requestId, this.proposeAnswer);
 
       const modelRuntime = await this.createModelRuntime();
-      const explicitModel = resolveRecordedModel(prepared.explicitModelId, modelRuntime);
+      // Both exact forks and context-only interviewers follow the same rule:
+      // prefer the recorded authenticated model, otherwise let Pi select its
+      // configured default.
+      const explicitModel = resolveRecordedModel(prepared.recordedModelId, modelRuntime);
       const result = await this.createSession({
         cwd: prepared.cwd,
         agentDir: this.agentDir,
@@ -300,7 +273,7 @@ export class PiQuestionChatRuntimeAdapter {
 
       const selectedModelId = `${selectedModel.provider}/${selectedModel.id}`;
       const isOriginatingModel = Boolean(
-        prepared.recordedModelId === selectedModelId && (!prepared.explicitModelId || explicitModel)
+        explicitModel && prepared.recordedModelId === selectedModelId
       );
       const fallbackReason = isOriginatingModel
         ? undefined
@@ -310,7 +283,6 @@ export class PiQuestionChatRuntimeAdapter {
             : `No originating model was recorded; using Pi default ${selectedModelId}.`);
 
       const privateSessionPath = prepared.sessionManager.getSessionFile();
-      if (privateSessionPath && existsSync(privateSessionPath)) chmodSync(privateSessionPath, 0o600);
       const snapshot: QuestionChatSnapshot = {
         requestId,
         state: "ready",
@@ -325,7 +297,7 @@ export class PiQuestionChatRuntimeAdapter {
         tools: []
       };
       if (!privateSessionPath) throw new QuestionChatRuntimeError("runtime_failure", "Pi did not persist the private Question Chat fork.");
-      const manifest: RecoveryManifest = {
+      const manifest: QuestionChatRecoveryManifest = {
         version: 1,
         requestId,
         ownerSessionId,
@@ -337,15 +309,14 @@ export class PiQuestionChatRuntimeAdapter {
         model: snapshot.model,
         ...(contextSource ? { contextSource } : {})
       };
-      this.writeManifest(runtimeDir, manifest);
+      this.recoveryStore.write(manifest);
       return new ManagedQuestionChatRuntime(
         snapshot,
         session,
         prepared.sessionManager,
         manifest.chatBoundaryId,
-        runtimeDir,
-        this.privateRoot,
-        (sequence) => this.writeManifest(runtimeDir, { ...manifest, sequence })
+        (sequence) => this.recoveryStore.write({ ...manifest, sequence }),
+        () => this.recoveryStore.remove(requestId)
       );
     } catch (error) {
       if (session) {
@@ -356,7 +327,7 @@ export class PiQuestionChatRuntimeAdapter {
         }
       }
       try {
-        this.removeRuntimeDirectory(runtimeDir);
+        this.recoveryStore.remove(requestId);
       } catch {
         // Never follow an unsafe path while handling the original failure.
       }
@@ -369,41 +340,20 @@ export class PiQuestionChatRuntimeAdapter {
   }
 
   listRecoveryOffers(): QuestionChatRecoveryOffer[] {
-    let entries: Dirent[];
-    try {
-      if (!existsSync(this.privateRoot)) return [];
-      this.assertPrivateRoot();
-      entries = readdirSync(this.privateRoot, { withFileTypes: true });
-    } catch (error) {
-      if (isMissingPathError(error)) return [];
-      throw error;
-    }
-    const offers: QuestionChatRecoveryOffer[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !RECOVERY_HASH.test(entry.name)) continue;
-      const runtimeDir = join(this.privateRoot, entry.name);
-      try {
-        const manifest = this.readManifest(runtimeDir);
-        this.validatePrivateSessionPath(runtimeDir, manifest.privateSessionPath);
-        offers.push({ requestId: manifest.requestId, ownerSessionId: manifest.ownerSessionId, forkKind: manifest.forkKind });
-      } catch {
-        try {
-          this.removeValidatedRuntimeDirectory(runtimeDir);
-        } catch (error) {
-          if (!isMissingPathError(error)) throw error;
-        }
-      }
-    }
-    return offers.sort((left, right) => left.requestId.localeCompare(right.requestId));
+    return this.recoveryStore.list()
+      .map(({ manifest }) => ({
+        requestId: manifest.requestId,
+        ownerSessionId: manifest.ownerSessionId,
+        forkKind: manifest.forkKind
+      }))
+      .sort((left, right) => left.requestId.localeCompare(right.requestId));
   }
 
   async recover(ownerSessionId: string, requestId: string, forkKind: QuestionChatSnapshot["forkKind"]): Promise<QuestionChatRuntime> {
-    const runtimeDir = this.runtimeDirectory(requestId);
-    const manifest = this.readManifest(runtimeDir);
+    const { runtimeDirectory: runtimeDir, privateSessionPath, manifest } = this.recoveryStore.load(requestId);
     if (manifest.ownerSessionId !== ownerSessionId || manifest.forkKind !== forkKind) {
       throw new QuestionChatRuntimeError("runtime_failure", "Question Chat recovery metadata does not match the registered owner and fork kind.");
     }
-    const privateSessionPath = this.validatePrivateSessionPath(runtimeDir, manifest.privateSessionPath);
     let sessionManager: SessionManager;
     try {
       sessionManager = SessionManager.open(privateSessionPath, runtimeDir, manifest.cwd);
@@ -411,7 +361,7 @@ export class PiQuestionChatRuntimeAdapter {
         throw new Error("Question Chat transcript boundary is unavailable.");
       }
     } catch (error) {
-      this.removeValidatedRuntimeDirectory(runtimeDir);
+      this.recoveryStore.remove(requestId);
       throw new QuestionChatRuntimeError(
         "runtime_failure",
         error instanceof Error ? error.message : "Question Chat recovery metadata is structurally invalid."
@@ -460,16 +410,15 @@ export class PiQuestionChatRuntimeAdapter {
             source: "pi-default" as const,
             fallbackReason: result.modelFallbackMessage ?? `Recovered model ${manifest.model.id} is unavailable; using Pi default ${selectedModelId}.`
           };
-      const durableManifest: RecoveryManifest = { ...manifest, privateSessionPath, model };
-      this.writeManifest(runtimeDir, durableManifest);
+      const durableManifest: QuestionChatRecoveryManifest = { ...manifest, privateSessionPath, model };
+      this.recoveryStore.write(durableManifest);
       return new ManagedQuestionChatRuntime(
         { requestId, state: "ready", forkKind, model, sequence: manifest.sequence, messages: [], tools: [] },
         session,
         sessionManager,
         manifest.chatBoundaryId,
-        runtimeDir,
-        this.privateRoot,
-        (sequence) => this.writeManifest(runtimeDir, { ...durableManifest, sequence })
+        (sequence) => this.recoveryStore.write({ ...durableManifest, sequence }),
+        () => this.recoveryStore.remove(requestId)
       );
     } catch (error) {
       if (session) {
@@ -485,13 +434,7 @@ export class PiQuestionChatRuntimeAdapter {
   }
 
   discard(requestId: string): void {
-    const runtimeDir = this.runtimeDirectory(requestId);
-    try {
-      if (!existsSync(runtimeDir)) return;
-      this.removeValidatedRuntimeDirectory(runtimeDir);
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-    }
+    this.recoveryStore.remove(requestId);
   }
 
   private assertSourceFile(sourcePath: string): void {
@@ -502,88 +445,6 @@ export class PiQuestionChatRuntimeAdapter {
     }
   }
 
-  private runtimeDirectory(requestId: string): string {
-    const key = createHash("sha256").update(requestId).digest("hex");
-    return join(this.privateRoot, key);
-  }
-
-  private assertPrivateRoot(): void {
-    const configuredRootStat = lstatSync(this.privateRoot);
-    if (!configuredRootStat.isDirectory() || configuredRootStat.isSymbolicLink()) {
-      throw new Error("Question Chat private root is not a real directory");
-    }
-    const root = realpathSync(this.privateRoot);
-    if (!statSync(root).isDirectory()) throw new Error("Question Chat private root is not a directory");
-    chmodSync(root, 0o700);
-  }
-
-  private readManifest(runtimeDir: string): RecoveryManifest {
-    this.validateRuntimeDirectory(runtimeDir);
-    const manifestPath = join(runtimeDir, RECOVERY_MANIFEST);
-    const manifestStat = lstatSync(manifestPath);
-    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error("Question Chat recovery manifest is not a regular file");
-    const manifest = RecoveryManifestSchema.parse(JSON.parse(readFileSync(manifestPath, "utf8")));
-    if (this.runtimeDirectory(manifest.requestId) !== runtimeDir) throw new Error("Question Chat recovery directory key does not match its request");
-    if (manifest.forkKind === "context-only" && !manifest.contextSource) throw new Error("Context-only Question Chat recovery metadata is incomplete");
-    if (manifest.forkKind === "exact" && manifest.contextSource) throw new Error("Exact Question Chat recovery metadata has the wrong fork kind");
-    if (!isAbsolute(manifest.cwd) || !statSync(realpathSync(manifest.cwd)).isDirectory()) {
-      throw new Error("Question Chat recovery working directory is unavailable");
-    }
-    return manifest;
-  }
-
-  private writeManifest(runtimeDir: string, manifest: RecoveryManifest): void {
-    RecoveryManifestSchema.parse(manifest);
-    this.validateRuntimeDirectory(runtimeDir);
-    const path = join(runtimeDir, RECOVERY_MANIFEST);
-    const temporary = join(runtimeDir, `${RECOVERY_MANIFEST}.next-${randomUUID()}`);
-    writeFileSync(temporary, `${JSON.stringify(manifest)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
-    chmodSync(path, 0o600);
-  }
-
-  private validateRuntimeDirectory(runtimeDir: string): void {
-    this.assertPrivateRoot();
-    if (!RECOVERY_HASH.test(runtimeDir.slice(runtimeDir.lastIndexOf("/") + 1))) throw new Error("Invalid Question Chat recovery directory key");
-    const configuredRuntimeStat = lstatSync(runtimeDir);
-    if (!configuredRuntimeStat.isDirectory() || configuredRuntimeStat.isSymbolicLink()) {
-      throw new Error("Question Chat recovery path is not a private directory");
-    }
-    const runtimeReal = realpathSync(runtimeDir);
-    assertContained(this.privateRoot, runtimeReal);
-    const runtimeStat = lstatSync(runtimeReal);
-    if (!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink()) throw new Error("Question Chat recovery path is not a private directory");
-    chmodSync(runtimeReal, 0o700);
-  }
-
-  private validatePrivateSessionPath(runtimeDir: string, privateSessionPath: string): string {
-    if (!isAbsolute(privateSessionPath)) throw new Error("Question Chat private session path must be absolute");
-    const configuredSessionStat = lstatSync(privateSessionPath);
-    if (!configuredSessionStat.isFile() || configuredSessionStat.isSymbolicLink()) {
-      throw new Error("Question Chat private session is not a regular file");
-    }
-    const sessionReal = realpathSync(privateSessionPath);
-    assertContained(runtimeDir, sessionReal);
-    const sessionStat = lstatSync(sessionReal);
-    if (!sessionStat.isFile() || sessionStat.isSymbolicLink()) throw new Error("Question Chat private session is not a regular file");
-    chmodSync(sessionReal, 0o600);
-    return sessionReal;
-  }
-
-  private removeValidatedRuntimeDirectory(runtimeDir: string): void {
-    this.validateRuntimeDirectory(runtimeDir);
-    rmSync(runtimeDir, { recursive: true, force: true });
-  }
-
-  private removeRuntimeDirectory(runtimeDir: string): void {
-    if (!existsSync(runtimeDir)) return;
-    this.removeValidatedRuntimeDirectory(runtimeDir);
-  }
-}
-
-function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 class ManagedQuestionChatRuntime implements QuestionChatRuntime {
@@ -598,7 +459,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   private awaitingRetry = false;
   private stopRequested = false;
   private stopOutcomeEmitted = false;
-  private promptStarting = false;
+  private turnStarting = false;
   private sdkActive = false;
   private readonly forkOutcomes = new Map<string, "final" | "stopped" | "interrupted">();
   private readonly liveToolActivities = new Map<string, QuestionChatToolActivity>();
@@ -608,9 +469,8 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     private readonly session: SessionLifecycle,
     private readonly sessionManager: SessionManager,
     private readonly chatBoundaryId: string | null,
-    private readonly runtimeDir: string,
-    private readonly privateRoot: string,
-    private readonly persistSequence: (sequence: number) => void
+    private readonly persistSequence: (sequence: number) => void,
+    private readonly deleteRecovery: () => void
   ) {
     this.sequence = initialSnapshot.sequence;
     this.unsubscribeSession = this.session.subscribe?.((event) => this.onSessionEvent(event));
@@ -641,11 +501,11 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   async send(command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
     const input = QuestionChatSendPayloadSchema.parse(command);
     if (this.terminated) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has terminated.");
-    if (this.promptStarting || this.state === "stopping" || this.state === "stopped" || this.state === "interrupted") {
+    if (this.turnStarting || this.state === "stopping" || this.state === "stopped" || this.state === "interrupted") {
       throw new QuestionChatRuntimeError("runtime_busy", "Question Chat is not ready for another message.");
     }
-    if (!this.session.prompt) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat cannot accept prompts.");
-    const mode = this.state === "generating" && (this.sdkActive || Boolean(this.session.isStreaming)) ? "steer" : "prompt";
+    if (!this.session.prompt) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat cannot start a model turn.");
+    const mode = this.state === "generating" && (this.sdkActive || Boolean(this.session.isStreaming)) ? "steer" : "turn";
     if (this.state === "generating" && mode !== "steer") {
       throw new QuestionChatRuntimeError("runtime_busy", "Question Chat is still starting its response.");
     }
@@ -656,22 +516,22 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       text: input.message,
       status: "final"
     };
-    this.promptStarting = true;
-    const prompt = this.startPrompt(input.message, mode === "steer" ? "steer" : undefined);
+    this.turnStarting = true;
+    const turn = this.startTurn(input.message, mode === "steer" ? "steer" : undefined);
     try {
-      await prompt.accepted;
+      await turn.accepted;
     } catch (error) {
-      void prompt.completion.catch(() => undefined);
+      void turn.completion.catch(() => undefined);
       throw error;
     } finally {
-      this.promptStarting = false;
+      this.turnStarting = false;
     }
 
     if (this.terminated) {
-      void prompt.completion.catch(() => undefined);
+      void turn.completion.catch(() => undefined);
       throw new QuestionChatRuntimeError(
         "request_not_pending",
-        "The Postbox Question became terminal before the prompt was accepted."
+        "The Postbox Question became terminal before the Question Chat turn was accepted."
       );
     }
 
@@ -683,10 +543,10 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       type: "message.started",
       message: userMessage
     });
-    if (mode === "prompt") {
+    if (mode === "turn") {
       this.sdkActive = true;
       this.emit({ type: "lifecycle", state: "generating" });
-      void prompt.completion.catch(() => {
+      void turn.completion.catch(() => {
         if (!this.terminated && this.state !== "ready") {
           this.sdkActive = false;
           this.emit({ type: "lifecycle", state: "interrupted" });
@@ -696,7 +556,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     } else {
       // Accepted steering completes with the active run; terminal outcomes are
       // normalized from SDK events rather than changing lifecycle here.
-      void prompt.completion.catch(() => undefined);
+      void turn.completion.catch(() => undefined);
     }
     return { status: "accepted", clientCommandId: input.clientCommandId, mode };
   }
@@ -704,7 +564,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   async stop(command: QuestionChatStopPayload): Promise<QuestionChatStopResponse> {
     const input = QuestionChatStopPayloadSchema.parse(command);
     if (this.terminated) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has terminated.");
-    if (this.promptStarting || this.state === "stopping") {
+    if (this.turnStarting || this.state === "stopping") {
       throw new QuestionChatRuntimeError("runtime_busy", "Question Chat is already starting or stopping a response.");
     }
     if (this.state !== "generating" || (!this.sdkActive && !this.session.isStreaming)) {
@@ -728,7 +588,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     return () => this.listeners.delete(listener);
   }
 
-  private startPrompt(
+  private startTurn(
     text: string,
     streamingBehavior: "steer" | undefined
   ): { accepted: Promise<void>; completion: Promise<void> } {
@@ -747,12 +607,12 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
         if (notified) return;
         notified = true;
         if (success) accept();
-        else reject(new QuestionChatRuntimeError("runtime_failure", "Pi rejected the Question Chat prompt before acceptance."));
+        else reject(new QuestionChatRuntimeError("runtime_failure", "Pi rejected the Question Chat turn before acceptance."));
       }
     });
     void completion.then(
       () => {
-        if (!notified) reject(new QuestionChatRuntimeError("runtime_failure", "Pi completed without reporting prompt acceptance."));
+        if (!notified) reject(new QuestionChatRuntimeError("runtime_failure", "Pi completed without reporting Question Chat turn acceptance."));
       },
       (error) => {
         if (!notified) reject(error);
@@ -794,7 +654,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
         return;
       }
       if (value.type === "agent_start") {
-        if (this.promptStarting) return;
+        if (this.turnStarting) return;
         if (this.state !== "generating" && this.state !== "stopping") this.emit({ type: "lifecycle", state: "generating" });
         return;
       }
@@ -1033,8 +893,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       await this.session.abort();
     } finally {
       this.session.dispose();
-      assertContained(this.privateRoot, this.runtimeDir);
-      rmSync(this.runtimeDir, { recursive: true, force: true });
+      this.deleteRecovery();
     }
   }
 
@@ -1247,7 +1106,7 @@ export class QuestionChatRuntimeRegistry {
     }
     const snapshot = (await entry.runtime).snapshot;
     if (this.runtimes.get(requestId) !== entry) {
-      throw new QuestionChatRuntimeError("request_not_pending", "The Postbox Question became terminal during Chat activation.");
+        throw new QuestionChatRuntimeError("request_not_pending", "The Postbox Question became terminal during Question Chat activation.");
     }
     return snapshot;
   }
@@ -1519,12 +1378,4 @@ function visibleUserText(message: Record<string, any>): string {
 
 function countMatchingMessages(messages: QuestionChatMessage[], candidate: QuestionChatMessage): number {
   return messages.filter((message) => message.role === candidate.role && message.text === candidate.text).length;
-}
-
-
-function assertContained(root: string, candidate: string): void {
-  const relation = relative(resolve(root), resolve(candidate));
-  if (!relation || relation.startsWith("..") || relation.includes("/../")) {
-    throw new Error("Question Chat runtime path escaped its private root");
-  }
 }

@@ -49,11 +49,11 @@
     (!mobile && (chatStarting || recoveryPanelVisible || (presentation.started && presentation.visible))) ||
       (mobile && (chatStarting || recoveryPanelVisible || (presentation.started && presentation.mobileTab === "chat")))
   );
-  const chatButtonLabel = $derived.by<"Chat" | "Open Chat" | undefined>(() => {
+  const chatButtonLabel = $derived.by<"Question Chat" | "Open Question Chat" | undefined>(() => {
     if (chatStarting || recoveryPanelVisible || (mobile && presentation.started) || (!mobile && presentation.started && presentation.visible)) {
       return undefined;
     }
-    return presentation.started ? "Open Chat" : "Chat";
+    return presentation.started ? "Open Question Chat" : "Question Chat";
   });
 
   onMount(() => {
@@ -113,12 +113,12 @@
   function contextUnavailableMessage(error: QuestionChatAvailabilityError): string | undefined {
     if (error.contextFallback?.status !== "unavailable") return undefined;
     if (error.contextFallback.reason === "missing_codebase_context") {
-      return "Context-only Chat is unavailable because this legacy Question has no persisted codebase context.";
+      return "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase context.";
     }
     if (error.contextFallback.reason === "missing_problem_context") {
-      return "Context-only Chat is unavailable because this legacy Question has no persisted problem context.";
+      return "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted problem context.";
     }
-    return "Context-only Chat is unavailable because this legacy Question has no persisted codebase or problem context.";
+    return "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase or problem context.";
   }
 
   function selectTab(tab: QuestionWorkspaceTab): void {
@@ -164,7 +164,7 @@
             type="button"
             class="mt-3 rounded-full border border-warning-border px-3 py-1.5 font-medium text-warning-foreground"
             onclick={() => (confirmingContextChat = true)}
-          >Start context-only Chat</button>
+          >Start context-only interviewer</button>
         {/if}
       </div>
     {/if}
@@ -174,11 +174,11 @@
         role="group"
         aria-labelledby="context-chat-confirmation-title"
       >
-        <h2 id="context-chat-confirmation-title" class="font-display font-semibold text-postbox-text">Start context-only Chat?</h2>
-        <p class="mt-2 text-sm text-postbox-subtle">This starts a fresh private interviewer session from persisted handoff context. It is not the exact source conversation.</p>
+        <h2 id="context-chat-confirmation-title" class="font-display font-semibold text-postbox-text">Start context-only interviewer?</h2>
+        <p class="mt-2 text-sm text-postbox-subtle">This starts a fresh private interviewer session from persisted handoff context. It is not an exact fork of the originating Pi Session.</p>
         <div class="mt-3 flex flex-wrap gap-2">
-          <button type="button" class="rounded-full border border-warning/40 bg-warning/10 px-3 py-1.5 text-sm font-medium text-warning-foreground" onclick={confirmContextChat}>Confirm context-only Chat</button>
-          <button type="button" class="rounded-full border border-postbox-border px-3 py-1.5 text-sm text-postbox-subtle" onclick={() => (confirmingContextChat = false)}>Cancel context-only Chat</button>
+          <button type="button" class="rounded-full border border-warning/40 bg-warning/10 px-3 py-1.5 text-sm font-medium text-warning-foreground" onclick={confirmContextChat}>Confirm context-only interviewer</button>
+          <button type="button" class="rounded-full border border-postbox-border px-3 py-1.5 text-sm text-postbox-subtle" onclick={() => (confirmingContextChat = false)}>Cancel context-only interviewer</button>
         </div>
       </div>
     {/if}
@@ -201,7 +201,7 @@
   >
     {#if !mobile && presentation.started}
       <div class="sticky top-0 z-10 flex justify-end bg-postbox-surface py-2">
-        <button type="button" class="rounded-full border border-postbox-border px-2.5 py-1 text-xs text-postbox-subtle" onclick={() => layoutState.hideQuestionChat(request.requestId)}>Hide Chat</button>
+        <button type="button" class="rounded-full border border-postbox-border px-2.5 py-1 text-xs text-postbox-subtle" onclick={() => layoutState.hideQuestionChat(request.requestId)}>Hide Question Chat</button>
       </div>
     {/if}
     <QuestionChatActivation
@@ -243,7 +243,7 @@
         class="rounded-lg px-4 py-3 text-sm font-medium {presentation.mobileTab === 'chat' ? 'bg-attention/10 text-attention-foreground' : 'text-postbox-muted'}"
         onclick={() => selectTab("chat")}
         onkeydown={onTabKeydown}
-      >Chat</button>
+      >Question Chat</button>
     </div>
   {/if}
 </div>

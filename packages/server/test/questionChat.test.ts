@@ -297,9 +297,9 @@ describe("Question Chat activation relay", () => {
       payload: { requestId: "ask-chat", proposal: { label: "" } }
     } satisfies ExtensionClientMessage));
     await expect(nextMessage(socket, "invalid proposal result")).resolves.toMatchObject({
-      type: "chat.propose-answer.result",
+      type: "error",
       requestId: "proposal-invalid",
-      payload: { requestId: "ask-chat", result: { status: "error", error: { code: "invalid_proposal" } } }
+      error: { code: "invalid_message" }
     });
 
     const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
@@ -548,7 +548,7 @@ describe("Question Chat activation relay", () => {
       requestId: sendCommand.requestId,
       payload: {
         requestId: "ask-chat",
-        response: { status: "accepted", clientCommandId: "context-message-1", mode: "prompt" }
+        response: { status: "accepted", clientCommandId: "context-message-1", mode: "turn" }
       }
     } satisfies ExtensionClientMessage));
     expect((await send).statusCode).toBe(200);
@@ -759,10 +759,10 @@ describe("Question Chat activation relay", () => {
       JSON.stringify({
         type: "chat.send.accepted",
         requestId: sendCommand.requestId,
-        payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-1", mode: "prompt" } }
+        payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-1", mode: "turn" } }
       } satisfies ExtensionClientMessage)
     );
-    expect(await (await sendResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-1", mode: "prompt" });
+    expect(await (await sendResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-1", mode: "turn" });
 
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 5, type: "lifecycle", state: "generating" } } satisfies ExtensionClientMessage));
     await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 5, type: "lifecycle" });
@@ -834,9 +834,9 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: continueCommand.requestId,
-      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-3", mode: "prompt" } }
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-3", mode: "turn" } }
     } satisfies ExtensionClientMessage));
-    expect((await continueResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-3", mode: "prompt" });
+    expect((await continueResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-3", mode: "turn" });
     await events.close();
   });
 
@@ -965,11 +965,11 @@ describe("Question Chat activation relay", () => {
       requestId: command.requestId,
       payload: {
         requestId: "ask-chat",
-        response: { status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" }
+        response: { status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" }
       }
     } satisfies ExtensionClientMessage));
-    expect((await first).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" });
-    expect((await second).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" });
+    expect((await first).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" });
+    expect((await second).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" });
     await noDuplicateRelay;
 
     const noConflictRelay = expectNoMessage(socket);
@@ -1004,7 +1004,7 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: firstCommand.requestId,
-      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "limited-1", mode: "prompt" } }
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "limited-1", mode: "turn" } }
     } satisfies ExtensionClientMessage));
     expect((await first).statusCode).toBe(200);
 
@@ -1043,7 +1043,7 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: secondCommand.requestId,
-      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "other-caller", mode: "prompt" } }
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "other-caller", mode: "turn" } }
     } satisfies ExtensionClientMessage));
     expect((await secondCaller).statusCode).toBe(200);
 
@@ -1059,7 +1059,7 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: resetCommand.requestId,
-      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "limited-after-reset", mode: "prompt" } }
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "limited-after-reset", mode: "turn" } }
     } satisfies ExtensionClientMessage));
     expect((await reset).statusCode).toBe(200);
   });
@@ -1128,7 +1128,7 @@ describe("Question Chat activation relay", () => {
       requestId: firstCommand.requestId,
       payload: {
         requestId: "ask-chat",
-        response: { status: "accepted", clientCommandId: "bounded-1", mode: "prompt" }
+        response: { status: "accepted", clientCommandId: "bounded-1", mode: "turn" }
       }
     } satisfies ExtensionClientMessage));
     expect((await first).statusCode).toBe(200);
@@ -1220,7 +1220,7 @@ describe("Question Chat activation relay", () => {
       requestId: command.requestId,
       payload: {
         requestId: "ask-chat",
-        response: { status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" }
+        response: { status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" }
       }
     } satisfies ExtensionClientMessage));
     socket.send(JSON.stringify({

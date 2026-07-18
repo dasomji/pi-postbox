@@ -506,11 +506,18 @@ describe("Pi Question Chat runtime adapter", () => {
     const before = readFileSync(fixture.sourcePath);
     const beforeMtime = statSync(fixture.sourcePath).mtimeMs;
     const fake = fakeCreateSession();
+    const recordedModel = { provider: "test-provider", id: "source-model" } as any;
+    const modelRuntime = {
+      getModel: vi.fn((provider: string, id: string) =>
+        provider === recordedModel.provider && id === recordedModel.id ? recordedModel : undefined),
+      hasConfiguredAuth: vi.fn(() => true)
+    } as any;
     const privateRoot = join(fixture.root, "private-chats");
     const adapter = new PiQuestionChatRuntimeAdapter({
       privateRoot,
       agentDir: join(fixture.root, "agent"),
-      createAgentSession: fake.create
+      createAgentSession: fake.create,
+      createModelRuntime: vi.fn(async () => modelRuntime)
     });
     const registry = new QuestionChatRuntimeRegistry(adapter);
 
@@ -529,6 +536,7 @@ describe("Pi Question Chat runtime adapter", () => {
     });
     expect(fake.create).toHaveBeenCalledTimes(1);
     const options = fake.create.mock.calls[0]![0];
+    expect(options.model).toBe(recordedModel);
     expectReadOnlyEvidenceTools(options);
     expect(options.resourceLoader?.getExtensions().extensions).toEqual([]);
     expect(options.resourceLoader?.getSkills().skills).toEqual([]);
@@ -554,13 +562,19 @@ describe("Pi Question Chat runtime adapter", () => {
     await expect(registry.cleanup("ask/runtime-safe")).resolves.toBeUndefined();
   });
 
-  it("surfaces a clear Pi-default model fallback", async () => {
+  it("uses Pi's configured default when an exact fork's recorded model is unauthenticated", async () => {
     const fixture = createSourceFixture();
     const fake = fakeCreateSession({ provider: "fallback-provider", id: "default-model" });
+    const recordedModel = { provider: "test-provider", id: "source-model" } as any;
+    const modelRuntime = {
+      getModel: vi.fn(() => recordedModel),
+      hasConfiguredAuth: vi.fn(() => false)
+    } as any;
     const adapter = new PiQuestionChatRuntimeAdapter({
       privateRoot: join(fixture.root, "private-chats"),
       agentDir: join(fixture.root, "agent"),
-      createAgentSession: fake.create
+      createAgentSession: fake.create,
+      createModelRuntime: vi.fn(async () => modelRuntime)
     });
 
     const runtime = await adapter.create({
@@ -573,6 +587,9 @@ describe("Pi Question Chat runtime adapter", () => {
       source: "pi-default",
       fallbackReason: expect.stringContaining("test-provider/source-model")
     });
+    expect(modelRuntime.getModel).toHaveBeenCalledWith("test-provider", "source-model");
+    expect(modelRuntime.hasConfiguredAuth).toHaveBeenCalledWith("test-provider");
+    expect(fake.create.mock.calls[0]![0].model).toBeUndefined();
     await runtime.terminate();
   });
 
@@ -706,7 +723,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await expect(firstSend).resolves.toEqual({
       status: "accepted",
       clientCommandId: "browser-command-1",
-      mode: "prompt"
+      mode: "turn"
     });
     expect(prompt).toHaveBeenCalledWith("Please explain.", expect.objectContaining({
       expandPromptTemplates: false,
@@ -933,8 +950,8 @@ describe("Pi Question Chat runtime adapter", () => {
     let finishSend!: () => void;
     const runtime = {
       snapshot: { requestId: "ask-dedupe", state: "ready", forkKind: "exact", model: { id: "test/model", source: "originating" }, sequence: 0, messages: [] },
-      send: vi.fn((command: { clientCommandId: string }) => new Promise<{ status: "accepted"; clientCommandId: string; mode: "prompt" }>((resolve) => {
-        finishSend = () => resolve({ status: "accepted", clientCommandId: command.clientCommandId, mode: "prompt" });
+      send: vi.fn((command: { clientCommandId: string }) => new Promise<{ status: "accepted"; clientCommandId: string; mode: "turn" }>((resolve) => {
+        finishSend = () => resolve({ status: "accepted", clientCommandId: command.clientCommandId, mode: "turn" });
       })),
       subscribe: vi.fn(() => () => undefined),
       terminate: vi.fn(async () => undefined)
@@ -947,8 +964,8 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(runtime.send).toHaveBeenCalledOnce();
     finishSend();
     await expect(Promise.all([first, retry])).resolves.toEqual([
-      { status: "accepted", clientCommandId: "same", mode: "prompt" },
-      { status: "accepted", clientCommandId: "same", mode: "prompt" }
+      { status: "accepted", clientCommandId: "same", mode: "turn" },
+      { status: "accepted", clientCommandId: "same", mode: "turn" }
     ]);
   });
 
@@ -993,7 +1010,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const send = vi.fn(async (command: { clientCommandId: string }) => ({
       status: "accepted" as const,
       clientCommandId: command.clientCommandId,
-      mode: "prompt" as const
+      mode: "turn" as const
     }));
     const create = vi.fn(async ({ requestId }: { requestId: string }) => ({
       snapshot: {
@@ -1085,9 +1102,9 @@ describe("Pi Question Chat runtime adapter", () => {
     const send = vi.fn((command: { clientCommandId: string }) => new Promise<{
       status: "accepted";
       clientCommandId: string;
-      mode: "prompt";
+      mode: "turn";
     }>((resolve) => {
-      finishes.push(() => resolve({ status: "accepted", clientCommandId: command.clientCommandId, mode: "prompt" }));
+      finishes.push(() => resolve({ status: "accepted", clientCommandId: command.clientCommandId, mode: "turn" }));
     }));
     const runtime = {
       snapshot: {
@@ -1248,7 +1265,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const events: QuestionChatEvent[] = [];
     registry.subscribe(requestId, (event) => events.push(event));
     const send = registry.send(requestId, "session-owner", {
-      clientCommandId: "prompt-terminal",
+      clientCommandId: "turn-terminal",
       message: "This must lose to terminal cleanup"
     });
     await vi.waitFor(() => expect(acceptPrompt).toBeTypeOf("function"));
@@ -1334,7 +1351,7 @@ describe("Pi Question Chat runtime adapter", () => {
     });
     const events: QuestionChatEvent[] = [];
     registry.subscribe(requestId, (event) => events.push(event));
-    await expect(registry.send(requestId, "session-owner", { clientCommandId: "prompt-1", message: "Start" })).resolves.toMatchObject({ mode: "prompt" });
+    await expect(registry.send(requestId, "session-owner", { clientCommandId: "turn-1", message: "Start" })).resolves.toMatchObject({ mode: "turn" });
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 20 } });
     listener?.({
       type: "message_update",
@@ -1383,7 +1400,7 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "lifecycle", state: "stopping" }));
     expect(events).toContainEqual(expect.objectContaining({ type: "lifecycle", state: "stopped" }));
     expect(events).toContainEqual(expect.objectContaining({ type: "message.finished", status: "stopped" }));
-    await expect(registry.send(requestId, "session-owner", { clientCommandId: "prompt-2", message: "Continue" })).resolves.toMatchObject({ mode: "prompt" });
+    await expect(registry.send(requestId, "session-owner", { clientCommandId: "turn-2", message: "Continue" })).resolves.toMatchObject({ mode: "turn" });
     expect(prompt).toHaveBeenLastCalledWith("Continue", expect.objectContaining({
       expandPromptTemplates: false,
       source: "rpc",
@@ -1435,7 +1452,7 @@ describe("Pi Question Chat runtime adapter", () => {
       ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     });
-    await registry.send(requestId, "session-owner", { clientCommandId: "prompt-error", message: "Try" });
+    await registry.send(requestId, "session-owner", { clientCommandId: "turn-error", message: "Try" });
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 30 } });
     listener?.({
       type: "message_update",
@@ -1502,7 +1519,7 @@ describe("Pi Question Chat runtime adapter", () => {
     });
     expect((await registry.getSnapshot(requestId, "session-owner")).messages.filter((message) => message.status === "interrupted")).toHaveLength(1);
     expect(prompt).toHaveBeenCalledTimes(1);
-    await expect(registry.send(requestId, "session-owner", { clientCommandId: "prompt-after-error", message: "Retry manually" })).resolves.toMatchObject({ mode: "prompt" });
+    await expect(registry.send(requestId, "session-owner", { clientCommandId: "turn-after-error", message: "Retry manually" })).resolves.toMatchObject({ mode: "turn" });
     expect(prompt).toHaveBeenCalledTimes(2);
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 32 } });
     listener?.({

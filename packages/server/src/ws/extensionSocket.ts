@@ -206,7 +206,11 @@ export async function registerExtensionSocket(
                       ? "wrong_owner" as const
                       : "missing" as const;
           if (message.payload.result.status !== "deleted") {
-            questionChatRelay?.rejectRecovery(pendingRecovery.requestId, registeredSessionId, cleanupReason);
+            questionChatRelay?.rejectRecovery({
+              requestId: pendingRecovery.requestId,
+              ownerSessionId: registeredSessionId,
+              forkKind: pendingRecovery.forkKind
+            }, cleanupReason);
           } else {
             send(socket, { type: "ack", requestId: message.requestId, payload: { type: "chat.reconciled" } });
           }

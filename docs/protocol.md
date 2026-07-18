@@ -13,10 +13,10 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired`. |
 | `POST /api/requests/:requestId/answer` | Browser/user answer action. First pending answer wins. |
 | `POST /api/requests/:requestId/cancel` | Browser/user cancel action. |
-| `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned exact private Question Chat fork. Source-path/leaf failures disclose typed context-only fallback availability. |
-| `POST /api/requests/:requestId/chat/context` | Explicitly start or reattach to an eligible context-only Chat. Requires JSON `{ "confirmed": true }`; it is never called automatically. |
+| `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned exact fork for Question Chat. Source-path/leaf failures disclose typed context-only interviewer availability. |
+| `POST /api/requests/:requestId/chat/context` | Explicitly start or reattach to an eligible context-only interviewer. Requires JSON `{ "confirmed": true }`; it is never called automatically. |
 | `GET /api/requests/:requestId/chat` | Fetch the current normalized Question Chat snapshot. |
-| `POST /api/requests/:requestId/chat/messages` | Send an idle prompt or steer the active turn, using a stable browser command id. |
+| `POST /api/requests/:requestId/chat/messages` | Start an idle Question Chat turn or steer the active turn, using a stable browser command id. |
 | `POST /api/requests/:requestId/chat/stop` | Abort only the active Question Chat turn, using a stable browser command id. |
 | `GET /api/requests/:requestId/chat/events` | Stream normalized Question Chat lifecycle/message events plus transient online/offline transport state over SSE. |
 | `POST /api/machines/:machineId/rename` | Persist dashboard-side machine alias. |
@@ -27,11 +27,11 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 
 ## Question Chat browser and relay protocol
 
-The browser activates exact Chat with `POST /api/requests/:requestId/chat`, or makes a separate confirmed `POST /api/requests/:requestId/chat/context` request for context-only fallback. Activation and `GET /api/requests/:requestId/chat` return the initial normalized snapshot. The browser then subscribes to `GET /api/requests/:requestId/chat/events` for incremental lifecycle, message, tool, and online/offline transport events. The stream begins with a connection comment; it does not replay a private transcript, so clients resynchronize from a fresh snapshot if a runtime sequence has a gap.
+The browser activates an exact fork with `POST /api/requests/:requestId/chat`, or makes a separate confirmed `POST /api/requests/:requestId/chat/context` request for the context-only interviewer fallback. Activation and `GET /api/requests/:requestId/chat` return the initial normalized snapshot. The browser then subscribes to `GET /api/requests/:requestId/chat/events` for incremental lifecycle, message, tool, and online/offline transport events. The stream begins with a connection comment; it does not replay a private transcript, so clients resynchronize from a fresh snapshot if a runtime sequence has a gap.
 
-Messages use `POST /api/requests/:requestId/chat/messages` with `{ "clientCommandId": "...", "message": "..." }`; Stop uses `POST /api/requests/:requestId/chat/stop` with the same bounded `clientCommandId` shape. The id makes retries idempotent. An accepted send returns `mode: "prompt" | "steer"`; commands are rejected while the extension is offline rather than queued.
+Messages use `POST /api/requests/:requestId/chat/messages` with `{ "clientCommandId": "...", "message": "..." }`; Stop uses `POST /api/requests/:requestId/chat/stop` with the same bounded `clientCommandId` shape. The id makes retries idempotent. An accepted send returns `mode: "turn" | "steer"`; commands are rejected while the extension is offline rather than queued. This is a coordinated pre-release wire rename: server, extension, and browser ship together, and the former mode term is not accepted.
 
-Every correlated server-to-extension request/response command has a relay `requestId`; one-way notifications such as `chat.cleanup` do not require one. The extension response must carry that matching correlation id, and Chat payloads also carry the owning Postbox Question id. The principal command/result pairs are:
+Every correlated server-to-extension request/response command has a relay `requestId`; one-way notifications such as `chat.cleanup` do not require one. The extension response must carry that matching correlation id, and Question Chat payloads also carry the owning Postbox Question id. The principal command/result pairs are:
 
 | Server command | Extension result |
 | --- | --- |
@@ -44,7 +44,7 @@ Every correlated server-to-extension request/response command has a relay `reque
 
 The extension emits sequenced visible `chat.event` frames independently of command acknowledgements. Terminal resolution or authoritative owner reconciliation sends `chat.cleanup`. On reconnect, the extension offers only owner metadata with `chat.recover.offer`; the server answers `chat.reconcile` with a correlated recover/delete disposition. Private snapshots transferred during recovery remain transient.
 
-Public Chat failures use the structured error codes `forbidden_origin`, `rate_limited`, `duplicate_command`, `wrong_owner`, `request_not_pending`, `extension_offline`, and `command_timeout` (along with the source/context/runtime codes defined by `QuestionChatAvailabilityCodeSchema`). HTTP status distinguishes origin, throttling, missing/terminal requests, and unavailable extension/timeout cases; the JSON body remains `{ "status": "unavailable", "error": { "code": "...", "message": "..." } }`, with `retryAfterMs` or `contextFallback` when applicable.
+Public Question Chat failures use the structured error codes `forbidden_origin`, `rate_limited`, `duplicate_command`, `wrong_owner`, `request_not_pending`, `extension_offline`, and `command_timeout` (along with the source/context/runtime codes defined by `QuestionChatAvailabilityCodeSchema`). HTTP status distinguishes origin, throttling, missing/terminal requests, and unavailable extension/timeout cases; the JSON body remains `{ "status": "unavailable", "error": { "code": "...", "message": "..." } }`, with `retryAfterMs` or `contextFallback` when applicable.
 
 Context-only commands are created only from the stored Question, all options, required non-blank `codebaseContext` and `problemContext`, bounded optional handoff details, owning session cwd, and optional recorded model. Browser-supplied interviewer context is ignored. A successful proposed answer is appended as an option with authoritative `provenance: "chat"`; proposal does not select or resolve the Question.
 
@@ -73,21 +73,21 @@ Client messages:
 - `ask.cancel` — reconciles a local terminal fallback cancellation.
 - `chat.ready`, `chat.snapshot`, `chat.send.accepted`, and `chat.stop.accepted` — correlated Question Chat command results.
 - `chat.event` — normalized visible Question Chat lifecycle/message output; private reasoning and tool traffic never cross this boundary.
-- `chat.recover.offer`, `chat.reconciled`, and `chat.recover.complete` — a one-manifest-at-a-time, correlated reconnect protocol. The extension offers private metadata only; a recovered full snapshot is transient and is never stored by the server.
+- `chat.recover.offer`, `chat.reconciled`, and `chat.recover.complete` — a one-recovery-manifest-at-a-time, correlated reconnect protocol. The extension offers private metadata only; a recovered full snapshot is transient and is never stored by the server.
 
 Server messages:
 
 - `registered` — registration accepted.
 - `ack` — heartbeat/session update/shutdown accepted.
-- `ask.created` — pending ask card exists.
+- `ask.created` — pending Postbox Question exists.
 - `ask.resolved` — ask reached a terminal `answered`, `cancelled`, `expired`, or `unavailable` result.
 - `error` — validation or transition error.
-- `chat.activate` — activate or reattach to an exact private fork at the recorded source leaf.
+- `chat.activate` — activate or reattach to an exact fork at the recorded source leaf.
 - `chat.activate-context` — distinctly activate or reattach to a fresh private context-only interviewer from authoritative persisted Question, option, and handoff context. It carries cwd and an optional recorded model, but never a source path, leaf, or transcript.
 - `chat.snapshot`, `chat.send`, `chat.stop`, and `chat.cleanup` — owner-scoped commands shared by exact and context-only private Question Chat runtimes.
 - `chat.reconcile` — the server-authoritative `recover`/`delete` disposition for one offered manifest. Recovery requires the registered socket, pending request owner, request id, and fork kind to agree; missing, terminal, and wrong-owner manifests are deleted.
 
-## Question Chat activation and context-only fallback
+## Question Chat activation and context-only interviewer fallback
 
 Question Chat snapshots identify their runtime with `forkKind: "exact" | "context-only"`. A ready response whose kind does not match the requested activation is rejected. Repeated activation of the same kind reattaches idempotently; an activation of the other kind cannot replace a running runtime.
 
@@ -96,21 +96,21 @@ Exact activation remains the primary path. When it fails with `source_path_missi
 - `{ "status": "available" }` means both persisted `codebaseContext` and `problemContext` are present.
 - `{ "status": "unavailable", "reason": "missing_codebase_context" | "missing_problem_context" | "missing_codebase_and_problem_context" }` gives the precise legacy-data reason.
 
-The server never converts an exact activation into context-only activation. The browser must separately disclose that context-only Chat is a fresh private interviewer based on persisted handoff context, obtain confirmation, and then send `{ "confirmed": true }` to the context endpoint. An explicit ineligible start returns `context_fallback_unavailable` with the typed unavailable reason. The server builds the extension command from the stored authoritative Question, every option, required handoff context, bounded optional `additionalInfo`, session cwd, and `forkReference.model` when present; browser-provided context and source conversation history are not accepted.
+The server never converts exact-fork activation into context-only interviewer activation. The browser must separately disclose that the context-only interviewer is a fresh private runtime based on persisted handoff context, obtain confirmation, and then send `{ "confirmed": true }` to the context endpoint. An explicit ineligible start returns `context_fallback_unavailable` with the typed unavailable reason. The server builds the extension command from the stored authoritative Postbox Question, every option, required handoff context, bounded optional `additionalInfo`, session cwd, and `forkReference.model` when present; browser-provided context and originating Pi Session history are not accepted.
 
 Historical Questions that lack either required context field remain readable and may still use exact activation while their recorded source exists. They cannot use context-only fallback.
 
 ## Question Chat turn lifecycle
 
-Question Chat snapshots and events use `ready`, `generating`, `stopping`, `stopped`, and `interrupted` states. A message sent while `ready` starts an ordinary SDK prompt. A message accepted while `generating` uses Pi's `streamingBehavior: "steer"` path and returns `mode: "steer"`; it is not queued as a follow-up turn.
+Question Chat snapshots and events use `ready`, `generating`, `stopping`, `stopped`, and `interrupted` states. A message sent while `ready` starts an ordinary Question Chat turn and returns `mode: "turn"`. A message accepted while `generating` uses Pi's `streamingBehavior: "steer"` path and returns `mode: "steer"`; it is not queued as a follow-up turn.
 
 Stop aborts the active SDK operation without disposing the private runtime. Visible partial assistant output remains in the transcript with a `stopped` marker, the lifecycle passes through `stopping` and `stopped`, and the runtime returns to `ready`. A retry-exhausted SDK error similarly preserves the last visible partial with an `interrupted` marker before returning to `ready`; retryable attempts are not marked interrupted prematurely. Replayed send and Stop commands are idempotent by their bounded `clientCommandId`.
 
-The private Pi fork remains the only Chat transcript. A versioned `0600` manifest in a hash-keyed `0700` directory records the owning session, fork kind, private session path, transcript boundary, model metadata, and durable sequence high-water mark. `/reload` aborts/disposes the old SDK runtime but preserves this fork; replacement, quit, terminal resolution, invalid metadata, and authoritative reconciliation deletion remove it. Runtime sequence is persisted before an event is emitted so a crash cannot reuse a number.
+The private exact fork or context-only interviewer remains the only Question Chat transcript. A versioned `0600` recovery manifest in a hash-keyed `0700` directory records the owning session, fork kind, private session path, transcript boundary, model metadata, and durable sequence high-water mark. `/reload` aborts/disposes the old SDK runtime but preserves this fork; replacement, quit, terminal resolution, invalid metadata, and authoritative reconciliation deletion remove it. Runtime sequence is persisted before an event is emitted so a crash cannot reuse a number.
 
 Question Chat enables exactly four custom repository-evidence tools: literal, bounded equivalents of read, grep, find, and list. Pi builtin tools, shell, mutation tools, and extension-provided tools are excluded. Each activation and recovery rediscovers the containing Git worktree for the recorded cwd, or uses the cwd subtree outside Git. Paths are schema-validated, normalized, containment-checked component by component, screened for ignored and secret-like names, and opened/traversed with finite byte, match, entry, depth, operation-time, and browser-output limits. Directory symlinks are never traversed. Tool activity is normalized into bounded running/success/error/stale rows; completed rows reconstruct from the private fork after reload, while a crash-interrupted running row becomes stale.
 
-Browser snapshots are extension-backed. A fresh browser sees `extension_offline` when the extension cannot supply one. An already-open browser preserves its rendered snapshot during an outage, marks it offline/stale, disables commands, and requires Retry. Runtime events are monotonic; a gap causes a fresh snapshot resynchronization. Transient transport frames have no runtime sequence and are not transcript data. Expandable tool details render as bounded plain text, never raw HTML. The server never queues Chat commands while the extension is offline and never stores Chat snapshots, messages, or tool activity in SQLite.
+Browser snapshots are extension-backed. A fresh browser sees `extension_offline` when the extension cannot supply one. An already-open browser preserves its rendered snapshot during an outage, marks it offline/stale, disables commands, and requires Retry. Runtime events are monotonic; a gap causes a fresh snapshot resynchronization. Transient transport frames have no runtime sequence and are not transcript data. Expandable tool details render as bounded plain text, never raw HTML. The server never queues Question Chat commands while the extension is offline and never stores Question Chat snapshots, messages, or tool activity in SQLite.
 
 ## Ask lifecycle
 

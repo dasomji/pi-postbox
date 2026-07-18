@@ -61,6 +61,10 @@ function createMarkdownRenderer(): Marked {
   renderer.image = function ({ text }) {
     return escapeHtml(text);
   };
+  renderer.code = ({ text, lang }) => {
+    const languageClass = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+    return `<pre class="max-h-64 overflow-auto whitespace-pre rounded-md bg-postbox-elevated p-3 font-mono text-xs"><code${languageClass}>${escapeHtml(text)}</code></pre>\n`;
+  };
   return new Marked({ async: false, breaks: true, gfm: true, renderer });
 }
 

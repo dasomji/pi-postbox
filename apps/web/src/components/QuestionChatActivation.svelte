@@ -46,7 +46,7 @@
     onShowQuestion?: (optionValue: string) => void;
   } = $props();
 
-  // API dependencies are stable for one keyed Chat component instance.
+  // API dependencies are stable for one keyed Question Chat component instance.
   // svelte-ignore state_referenced_locally
   const chatApi: QuestionChatApi = {
     activate: api.activate ?? activateQuestionChat,
@@ -67,6 +67,13 @@
   let observedActivationRequest = 0;
   let observedContextActivationRequest = 0;
   let observedRecoveryRequest = 0;
+  const canSend = $derived.by(() =>
+    view.kind === "ready" &&
+    view.connection === "online" &&
+    view.snapshot.state !== "stopping" &&
+    !stopping &&
+    !sending
+  );
 
   $effect(() => {
     lifecycle.selectRequest(requestId);
@@ -118,7 +125,7 @@
 
   async function send(text: string): Promise<void> {
     const message = text.trim();
-    if (!message || view.kind !== "ready" || view.connection !== "online" || view.snapshot.state === "stopping" || stopping || sending) return;
+    if (!message || !canSend || view.kind !== "ready") return;
     const clientCommandId = `browser-${Date.now().toString(36)}-${(++commandCounter).toString(36)}`;
     lifecycle.applyEvent({
       requestId,
@@ -178,13 +185,13 @@
 </script>
 
 {#if view.kind === "not-started" && showActivationButton}
-  <button type="button" class="rounded-full border border-history-border bg-history/5 px-3 py-1 font-medium text-history-foreground transition hover:bg-history/10" onclick={() => lifecycle.start()}>Chat</button>
+  <button type="button" class="rounded-full border border-history-border bg-history/5 px-3 py-1 font-medium text-history-foreground transition hover:bg-history/10" onclick={() => lifecycle.start()}>Question Chat</button>
 {:else if view.kind !== "not-started"}
   <section class="mt-5 rounded-lg border border-history-border bg-postbox-elevated p-4 shadow-postbox-section" aria-label="Question Chat">
     {#if view.kind === "starting"}
       <p class="text-sm text-postbox-muted" role="status">Starting Question Chat…</p>
     {:else if view.kind === "unavailable"}
-      <h2 class="font-display text-base font-semibold text-postbox-text">Chat unavailable</h2>
+      <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat unavailable</h2>
       <p class="mt-2 text-sm text-danger-foreground" role="alert">{view.error.message}</p>
       <button type="button" class="mt-3 rounded-full border border-postbox-border px-3 py-1 text-sm text-postbox-subtle" onclick={() => lifecycle.retry()}>Retry</button>
     {:else}
@@ -200,15 +207,15 @@
         </div>
       </div>
       {#if view.snapshot.forkKind === "context-only"}
-        <p class="mt-3 text-xs text-warning-foreground">This fresh private interviewer uses persisted handoff context, not the exact source conversation.</p>
+        <p class="mt-3 text-xs text-warning-foreground">This context-only interviewer uses persisted handoff context, not an exact fork of the originating Pi Session.</p>
       {/if}
       {#if view.connection !== "online"}
         <div class="mt-3 flex items-center justify-between gap-3 rounded-md border border-warning/30 bg-warning/10 p-2 text-sm text-warning-foreground" role="status">
-          <span>{view.connection === "offline" ? "Chat offline · showing saved messages" : "Chat stale · resynchronizing"}</span>
+          <span>{view.connection === "offline" ? "Question Chat offline · showing saved messages" : "Question Chat stale · resynchronizing"}</span>
           <button type="button" class="rounded-full border border-warning/40 px-3 py-1 font-medium" onclick={() => lifecycle.retry()}>Retry</button>
         </div>
       {/if}
-      <div class="mt-4 min-h-16 space-y-3 rounded-md border border-postbox-border p-3" aria-label="Chat messages" aria-live="polite">
+      <div class="mt-4 min-h-16 space-y-3 rounded-md border border-postbox-border p-3" aria-label="Question Chat messages" aria-live="polite">
         {#if view.snapshot.messages.length === 0}
           <p class="text-sm text-postbox-muted">Ask what you need to understand this decision.</p>
         {:else}
@@ -257,7 +264,7 @@
         </ul>
       {/if}
       {#if view.snapshot.messages.length === 0}
-        <div class="mt-3 flex flex-wrap gap-2" aria-label="Chat starters">
+        <div class="mt-3 flex flex-wrap gap-2" aria-label="Question Chat starters">
           {#each QUESTION_CHAT_STARTERS as starter}
             <button type="button" class="rounded-full border border-postbox-border px-3 py-1.5 text-sm text-postbox-subtle hover:border-attention-border disabled:opacity-50" disabled={view.connection !== "online"} onclick={() => send(starter.instruction)}>{starter.label}</button>
           {/each}
@@ -265,8 +272,8 @@
       {/if}
       <form class="mt-3 flex gap-2" onsubmit={(event) => { event.preventDefault(); void send(composer); }}>
         <label class="sr-only" for="question-chat-composer">Message Question Chat</label>
-        <textarea id="question-chat-composer" class="min-h-12 flex-1 resize-y rounded-lg border border-postbox-border bg-postbox-surface p-2 text-sm text-postbox-text" placeholder="Ask about this decision…" bind:value={composer} disabled={view.connection !== "online" || view.snapshot.state === "stopping" || stopping || sending}></textarea>
-        <button type="submit" class="self-end rounded-full bg-attention px-4 py-2 text-sm font-medium text-attention-contrast disabled:opacity-50" disabled={view.connection !== "online" || !composer.trim() || view.snapshot.state === "stopping" || stopping || sending}>Send</button>
+        <textarea id="question-chat-composer" class="min-h-12 flex-1 resize-y rounded-lg border border-postbox-border bg-postbox-surface p-2 text-sm text-postbox-text" placeholder="Ask about this decision…" bind:value={composer} disabled={!canSend}></textarea>
+        <button type="submit" class="self-end rounded-full bg-attention px-4 py-2 text-sm font-medium text-attention-contrast disabled:opacity-50" disabled={!canSend || !composer.trim()}>Send</button>
       </form>
       {#if view.snapshot.state === "generating"}
         <button type="button" class="mt-2 rounded-full border border-danger-border px-3 py-1.5 text-sm text-danger-foreground disabled:opacity-50" disabled={view.connection !== "online" || stopping} onclick={() => void stopActive()}>{stopping ? "Stopping…" : "Stop"}</button>

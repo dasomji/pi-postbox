@@ -203,7 +203,7 @@ describe("extension Question Chat commands", () => {
   });
 
   it("makes terminal cleanup invalidate live ownership, pending commands, proposals, and late results", async () => {
-    let finishSend!: (response: { status: "accepted"; clientCommandId: string; mode: "prompt" }) => void;
+    let finishSend!: (response: { status: "accepted"; clientCommandId: string; mode: "turn" }) => void;
     const snapshot = {
       requestId: "ask-terminal-client",
       state: "ready" as const,
@@ -216,7 +216,7 @@ describe("extension Question Chat commands", () => {
       activate: vi.fn(async () => snapshot),
       activateContext: vi.fn(),
       getSnapshot: vi.fn(async () => snapshot),
-      send: vi.fn(() => new Promise<{ status: "accepted"; clientCommandId: string; mode: "prompt" }>((resolve) => {
+      send: vi.fn(() => new Promise<{ status: "accepted"; clientCommandId: string; mode: "turn" }>((resolve) => {
         finishSend = resolve;
       })),
       stop: vi.fn(),
@@ -272,7 +272,7 @@ describe("extension Question Chat commands", () => {
       error: { code: "request_terminal" }
     });
 
-    finishSend({ status: "accepted", clientCommandId: "browser-terminal", mode: "prompt" });
+    finishSend({ status: "accepted", clientCommandId: "browser-terminal", mode: "turn" });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(socket.sent).not.toContainEqual(expect.objectContaining({
       type: "chat.send.accepted",
@@ -457,7 +457,7 @@ describe("extension Question Chat commands", () => {
       send: vi.fn(async (_requestId: string, _ownerSessionId: string, command: { clientCommandId: string }) => ({
         status: "accepted" as const,
         clientCommandId: command.clientCommandId,
-        mode: "prompt" as const
+        mode: "turn" as const
       })),
       stop: vi.fn(async (_requestId: string, _ownerSessionId: string, command: { clientCommandId: string }) => ({
         status: "accepted" as const,
@@ -578,7 +578,7 @@ describe("extension Question Chat commands", () => {
     expect(socket.sent).toContainEqual({
       type: "chat.send.accepted",
       requestId: "send-1",
-      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-1", mode: "prompt" } }
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-1", mode: "turn" } }
     });
     expect(socket.sent).toContainEqual({
       type: "chat.stop.accepted",

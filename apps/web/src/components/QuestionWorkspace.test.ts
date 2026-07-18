@@ -75,7 +75,7 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false, act
     sendMessage: vi.fn(async (_requestId: string, command: QuestionChatSendPayload) => ({
       status: "accepted" as const,
       clientCommandId: command.clientCommandId,
-      mode: "prompt" as const
+      mode: "turn" as const
     })),
     stop: vi.fn(async (_requestId: string, command: QuestionChatStopPayload) => ({
       status: "accepted" as const,
@@ -142,7 +142,7 @@ describe("responsive Question Chat workspace", () => {
       }
     });
     const action = await screen.findByRole("button", { name: "View in Question" });
-    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Question Chat" }).getAttribute("aria-selected")).toBe("true");
     await fireEvent.click(action);
     expect(screen.getByRole("tab", { name: "Question" }).getAttribute("aria-selected")).toBe("true");
     mobileView.unmount();
@@ -181,7 +181,7 @@ describe("responsive Question Chat workspace", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("extension is offline");
     expect(screen.getByRole("complementary", { name: "Question Chat sidebar" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Question Chat" })).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("heading", { name: "Question Chat" })).toBeTruthy();
     expect(chatApi.activate).not.toHaveBeenCalled();
@@ -210,29 +210,29 @@ describe("responsive Question Chat workspace", () => {
       }
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect((await screen.findByRole("alert")).textContent).toContain("exact source session is unavailable");
     expect(chatApi.activateContext).not.toHaveBeenCalled();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Start context-only Chat" }));
-    const confirmation = await screen.findByRole("group", { name: "Start context-only Chat?" });
+    await fireEvent.click(screen.getByRole("button", { name: "Start context-only interviewer" }));
+    const confirmation = await screen.findByRole("group", { name: "Start context-only interviewer?" });
     expect(confirmation.textContent).toContain("fresh private interviewer session");
     expect(confirmation.textContent).toContain("persisted handoff context");
-    expect(confirmation.textContent).toContain("not the exact source conversation");
+    expect(confirmation.textContent).toContain("not an exact fork of the originating Pi Session");
     expect(chatApi.activateContext).not.toHaveBeenCalled();
     await fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("group", { name: "Start context-only Chat?" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Start context-only interviewer?" })).toBeNull();
     expect(chatApi.activateContext).not.toHaveBeenCalled();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Start context-only Chat" }));
-    await fireEvent.click(screen.getByRole("button", { name: "Cancel context-only Chat" }));
-    expect(screen.queryByRole("group", { name: "Start context-only Chat?" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Start context-only interviewer" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel context-only interviewer" }));
+    expect(screen.queryByRole("group", { name: "Start context-only interviewer?" })).toBeNull();
     expect(chatApi.activateContext).not.toHaveBeenCalled();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Start context-only Chat" }));
-    await fireEvent.click(screen.getByRole("button", { name: "Confirm context-only Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Start context-only interviewer" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Confirm context-only interviewer" }));
     expect(await screen.findByText("Context-only · degraded")).toBeTruthy();
-    expect(screen.getByText(/fresh private interviewer/i)).toBeTruthy();
+    expect(screen.getByText(/context-only interviewer uses persisted handoff context/i)).toBeTruthy();
     expect(chatApi.activateContext).toHaveBeenCalledOnce();
     expect(chatApi.activate).toHaveBeenCalledOnce();
   });
@@ -258,9 +258,9 @@ describe("responsive Question Chat workspace", () => {
       }
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect((await screen.findByRole("alert")).textContent).toContain("persisted problem context");
-    expect(screen.queryByRole("button", { name: "Start context-only Chat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start context-only interviewer" })).toBeNull();
     expect(chatApi.activateContext).not.toHaveBeenCalled();
   });
 
@@ -279,16 +279,16 @@ describe("responsive Question Chat workspace", () => {
 
     expect(screen.getByRole("region", { name: "Question" })).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Question Chat sidebar" })).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
 
     const sidebar = await screen.findByRole("complementary", { name: "Question Chat sidebar" });
     expect(sidebar.className).toContain("w-[clamp(");
     expect(screen.queryByRole("separator")).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Hide Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Hide Question Chat" }));
     expect(screen.queryByRole("complementary", { name: "Question Chat sidebar" })).toBeNull();
     expect(screen.getByRole("region", { name: "Question" })).toBeTruthy();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Open Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Open Question Chat" }));
     expect(await screen.findByRole("complementary", { name: "Question Chat sidebar" })).toBeTruthy();
     expect(chatApi.activate).toHaveBeenCalledOnce();
     expect(chatApi.stop).not.toHaveBeenCalled();
@@ -297,7 +297,7 @@ describe("responsive Question Chat workspace", () => {
 
     media.setMatches(true);
     await waitFor(() => expect(screen.getByRole("tablist", { name: "Question workspace" })).toBeTruthy());
-    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Question Chat" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("reattaches from an authoritative running snapshot with fresh browser presentation state", async () => {
@@ -337,9 +337,9 @@ describe("responsive Question Chat workspace", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("Recovery stream failed");
     expect(chatApi.close).toHaveBeenCalledOnce();
-    await fireEvent.click(screen.getByRole("button", { name: "Hide Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Hide Question Chat" }));
     expect(screen.queryByRole("complementary", { name: "Question Chat sidebar" })).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Open Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Open Question Chat" }));
     expect(await screen.findByRole("complementary", { name: "Question Chat sidebar" })).toBeTruthy();
     expect(chatApi.activate).not.toHaveBeenCalled();
     expect(chatApi.stop).not.toHaveBeenCalled();
@@ -364,7 +364,7 @@ describe("responsive Question Chat workspace", () => {
       }
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect(screen.getByRole("status").textContent).toContain("Starting Question Chat");
     expect(screen.queryByRole("tablist", { name: "Question workspace" })).toBeNull();
     finishActivation();
@@ -388,9 +388,9 @@ describe("responsive Question Chat workspace", () => {
       }
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect(await screen.findByRole("region", { name: "Question" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Chat" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Question Chat" })).toBeTruthy();
     expect(screen.queryByRole("tablist", { name: "Question workspace" })).toBeNull();
   });
 
@@ -403,9 +403,9 @@ describe("responsive Question Chat workspace", () => {
     });
 
     expect(screen.queryByRole("tablist", { name: "Question workspace" })).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect(await screen.findByRole("tablist", { name: "Question workspace" })).toBeTruthy();
-    const chatTab = screen.getByRole("tab", { name: "Chat" });
+    const chatTab = screen.getByRole("tab", { name: "Question Chat" });
     const questionTab = screen.getByRole("tab", { name: "Question" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
     expect(chatTab.getAttribute("tabindex")).toBe("0");
@@ -439,8 +439,8 @@ describe("responsive Question Chat workspace", () => {
       props: { request: secondRequest, isMock: true, layoutState, matchMedia: () => media.query, chatApi: secondChat }
     });
     expect(screen.queryByRole("tablist", { name: "Question workspace" })).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-    expect((await screen.findByRole("tab", { name: "Chat" })).getAttribute("aria-selected")).toBe("true");
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
+    expect((await screen.findByRole("tab", { name: "Question Chat" })).getAttribute("aria-selected")).toBe("true");
     second.unmount();
 
     const restoredChat = chatBoundary(REQUEST.requestId, true);

@@ -208,8 +208,8 @@ export const QuestionChatSendResponseSchema = z.object({
   status: z.literal("accepted"),
   clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX),
   // Optional while older extension peers may still acknowledge without the
-  // prompt/steer distinction. All current producers include it.
-  mode: z.enum(["prompt", "steer"]).optional()
+  // turn/steer distinction. All current producers include it.
+  mode: z.enum(["turn", "steer"]).optional()
 });
 
 export const QuestionChatStopPayloadSchema = z.object({

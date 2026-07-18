@@ -59,6 +59,28 @@ describe("Question Chat activation protocol", () => {
         }
       })
     ).toThrow();
+
+    expect(() =>
+      ExtensionClientMessageSchema.parse({
+        type: "chat.propose-answer",
+        requestId: "proposal-command-oversized",
+        payload: {
+          requestId: "ask-32",
+          proposal: { label: "x".repeat(2_001) }
+        }
+      })
+    ).toThrow();
+
+    expect(() =>
+      ExtensionClientMessageSchema.parse({
+        type: "chat.propose-answer",
+        requestId: "proposal-command-malformed",
+        payload: {
+          requestId: "ask-32",
+          proposal: { label: "Valid label", unexpected: true }
+        }
+      })
+    ).toThrow();
   });
 
   it("models propose_answer as a separate visible Postbox tool with a safe Question action", () => {
@@ -473,7 +495,14 @@ describe("Question Chat first-message protocol", () => {
     ).toMatchObject({ status: "unavailable", error: { code: "runtime_busy" } });
   });
 
-  it("distinguishes ordinary prompts from steering and defines idempotent Stop", () => {
+  it("distinguishes ordinary turns from steering, rejects the pre-release legacy term, and defines idempotent Stop", () => {
+    expect(
+      QuestionChatSendHttpResponseSchema.parse({
+        status: "accepted",
+        clientCommandId: "browser-turn-1",
+        mode: "turn"
+      })
+    ).toMatchObject({ mode: "turn" });
     expect(
       QuestionChatSendHttpResponseSchema.parse({
         status: "accepted",
@@ -481,6 +510,13 @@ describe("Question Chat first-message protocol", () => {
         mode: "steer"
       })
     ).toMatchObject({ mode: "steer" });
+    expect(() =>
+      QuestionChatSendHttpResponseSchema.parse({
+        status: "accepted",
+        clientCommandId: "legacy-mode",
+        mode: "prompt"
+      })
+    ).toThrow();
     expect(
       QuestionChatSendHttpResponseSchema.parse({ status: "accepted", clientCommandId: "legacy-extension" })
     ).toEqual({ status: "accepted", clientCommandId: "legacy-extension" });

@@ -4,6 +4,7 @@ import {
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
   AskResultSchema,
+  ProposeAnswerPayloadSchema,
   ProposeAnswerResultSchema
 } from "./ask.js";
 import {
@@ -96,7 +97,7 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     requestId: WsCorrelationIdSchema,
     payload: z.object({
       requestId: WsCorrelationIdSchema,
-      proposal: z.unknown()
+      proposal: ProposeAnswerPayloadSchema
     }).strict()
   }),
   z.object({

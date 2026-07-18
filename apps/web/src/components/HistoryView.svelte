@@ -33,7 +33,7 @@
     </div>
   {:else if history.status === "ready"}
     <div class="mt-6 rounded-2xl border border-dashed border-history-border bg-postbox-canvas/50 p-8 text-center text-history-foreground opacity-75">
-      No recent history yet. Resolved, cancelled, and expired cards appear here for audit without storing chat transcripts.
+      No recent history yet. Resolved, cancelled, and expired Postbox Questions appear here for audit without storing Question Chat transcripts.
     </div>
   {/if}
 </section>

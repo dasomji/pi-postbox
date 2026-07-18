@@ -37,12 +37,15 @@ export interface QuestionChatRelayOptions {
 }
 
 type PendingKind = "activate-exact" | "activate-context" | "snapshot" | "send" | "stop";
-type ActiveChat = { ownerSessionId: string; forkKind: "exact" | "context-only" };
+export interface QuestionChatIdentity {
+  requestId: string;
+  ownerSessionId: string;
+  forkKind: "exact" | "context-only";
+}
 interface PendingCommand {
   kind: PendingKind;
   connectionId: string;
-  requestId: string;
-  ownerSessionId: string;
+  identity: QuestionChatIdentity;
   resolve(response: unknown): void;
   timer: NodeJS.Timeout;
 }
@@ -74,10 +77,10 @@ const MAX_DEDUPE_CAPACITY = 4_096;
 export class QuestionChatRelay {
   private readonly extensions = new Map<string, BoundExtension>();
   private readonly pending = new Map<string, PendingCommand>();
-  private readonly activeChats = new Map<string, ActiveChat>();
+  private readonly activeChats = new Map<string, QuestionChatIdentity>();
   private readonly reconcilingSessions = new Set<string>();
   private readonly subscribers = new Map<string, Set<(event: QuestionChatStreamEvent) => void>>();
-  private readonly deferredCleanup = new Map<string, { requestId: string; ownerSessionId: string; reason: QuestionChatCleanupReason }>();
+  private readonly deferredCleanup = new Map<string, { identity: QuestionChatIdentity; reason: QuestionChatCleanupReason }>();
   private readonly retainedBrowserCommands = new Map<string, Map<string, RetainedBrowserCommand>>();
   private readonly rateBuckets = new Map<string, number[]>();
   private readonly commandTimeoutMs: number;
@@ -107,8 +110,8 @@ export class QuestionChatRelay {
     this.extensions.set(sessionId, { connectionId, socket });
     this.reconcilingSessions.add(sessionId);
     for (const [requestId, cleanup] of this.deferredCleanup) {
-      if (cleanup.ownerSessionId !== sessionId) continue;
-      this.send(socket, { type: "chat.cleanup", payload: { requestId: cleanup.requestId, reason: cleanup.reason } });
+      if (!this.assertOwner(cleanup.identity, sessionId)) continue;
+      this.send(socket, { type: "chat.cleanup", payload: { requestId: cleanup.identity.requestId, reason: cleanup.reason } });
       this.deferredCleanup.delete(requestId);
       this.activeChats.delete(requestId);
     }
@@ -131,27 +134,29 @@ export class QuestionChatRelay {
   }
 
   isLiveOwner(connectionId: string, ownerSessionId: string, requestId: string): boolean {
-    const extension = this.extensions.get(ownerSessionId);
+    const identity = this.assertOwner(this.activeChats.get(requestId), ownerSessionId);
+    if (!identity) return false;
+    const extension = this.extensions.get(identity.ownerSessionId);
     return extension?.connectionId === connectionId
-      && extension.socket.readyState === 1
-      && this.activeChats.get(requestId)?.ownerSessionId === ownerSessionId;
+      && extension.socket.readyState === 1;
   }
 
   restore(
     connectionId: string,
     ownerSessionId: string,
-    forkKind: ActiveChat["forkKind"],
+    forkKind: QuestionChatIdentity["forkKind"],
     snapshot: QuestionChatSnapshot
   ): boolean {
     const extension = this.extensions.get(ownerSessionId);
     if (!extension || extension.connectionId !== connectionId || snapshot.forkKind !== forkKind) return false;
-    this.activeChats.set(snapshot.requestId, { ownerSessionId, forkKind });
+    this.activeChats.set(snapshot.requestId, { requestId: snapshot.requestId, ownerSessionId, forkKind });
     this.publishTransport(snapshot.requestId, "online");
     return true;
   }
 
   async activate(requestId: string, ownerSessionId: string, source: QuestionChatSource, callerKey?: string): Promise<QuestionChatActivationResponse> {
-    return this.activateKind(requestId, ownerSessionId, "exact", "activate-exact", {
+    const identity: QuestionChatIdentity = { requestId, ownerSessionId, forkKind: "exact" };
+    return this.activateKind(identity, "activate-exact", {
       type: "chat.activate",
       requestId: "",
       payload: { requestId, ownerSessionId, source }
@@ -164,7 +169,8 @@ export class QuestionChatRelay {
     source: QuestionChatContextSource,
     callerKey?: string
   ): Promise<QuestionChatActivationResponse> {
-    return this.activateKind(requestId, ownerSessionId, "context-only", "activate-context", {
+    const identity: QuestionChatIdentity = { requestId, ownerSessionId, forkKind: "context-only" };
+    return this.activateKind(identity, "activate-context", {
       type: "chat.activate-context",
       requestId: "",
       payload: { requestId, ownerSessionId, source }
@@ -172,33 +178,31 @@ export class QuestionChatRelay {
   }
 
   private async activateKind(
-    requestId: string,
-    ownerSessionId: string,
-    forkKind: ActiveChat["forkKind"],
+    identity: QuestionChatIdentity,
     pendingKind: Extract<PendingKind, "activate-exact" | "activate-context">,
     message: ExtensionServerMessage & { requestId: string },
     callerKey?: string
   ): Promise<QuestionChatActivationResponse> {
-    const previousOwnerSessionId = this.activeChats.get(requestId);
+    const previousIdentity = this.activeChats.get(identity.requestId);
     if (
-      previousOwnerSessionId &&
-      (previousOwnerSessionId.ownerSessionId !== ownerSessionId || previousOwnerSessionId.forkKind !== forkKind)
+      previousIdentity &&
+      (!this.assertOwner(previousIdentity, identity.ownerSessionId) || previousIdentity.forkKind !== identity.forkKind)
     ) {
       return {
         status: "unavailable",
-        error: { code: "runtime_busy", message: `A ${previousOwnerSessionId.forkKind} Question Chat is already running.` }
+        error: { code: "runtime_busy", message: `A ${previousIdentity.forkKind} Question Chat is already running.` }
       };
     }
-    const activeAttempt: ActiveChat = { ownerSessionId, forkKind };
-    this.activeChats.set(requestId, activeAttempt);
-    const result = await this.dispatch<QuestionChatSnapshot>(pendingKind, requestId, ownerSessionId, message, callerKey);
+    const activeAttempt = identity;
+    this.activeChats.set(identity.requestId, activeAttempt);
+    const result = await this.dispatch<QuestionChatSnapshot>(pendingKind, identity, message, callerKey);
     if (result.status === "unavailable") {
       // A timeout occurs after a command was sent and the extension may have
       // allocated the fork. Retain cleanup authority for a later terminal
       // transition instead of orphaning that private runtime.
-      if (result.error.code !== "command_timeout" && this.activeChats.get(requestId) === activeAttempt) {
-        if (previousOwnerSessionId) this.activeChats.set(requestId, previousOwnerSessionId);
-        else this.activeChats.delete(requestId);
+      if (result.error.code !== "command_timeout" && this.activeChats.get(identity.requestId) === activeAttempt) {
+        if (previousIdentity) this.activeChats.set(identity.requestId, previousIdentity);
+        else this.activeChats.delete(identity.requestId);
       }
       return { status: "unavailable", error: result.error };
     }
@@ -206,10 +210,11 @@ export class QuestionChatRelay {
   }
 
   snapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatCommandResult<QuestionChatSnapshot>> {
-    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
+    const identity = this.assertOwner(this.activeChats.get(requestId), ownerSessionId);
+    if (!identity) {
       return Promise.resolve(this.inactiveResult(ownerSessionId));
     }
-    return this.dispatch("snapshot", requestId, ownerSessionId, {
+    return this.dispatch("snapshot", identity, {
       type: "chat.snapshot",
       requestId: "",
       payload: { requestId, ownerSessionId }
@@ -222,16 +227,17 @@ export class QuestionChatRelay {
     command: QuestionChatSendPayload,
     callerKey?: string
   ): Promise<QuestionChatCommandResult<QuestionChatSendResponse>> {
-    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
+    const identity = this.assertOwner(this.activeChats.get(requestId), ownerSessionId);
+    if (!identity) {
       return Promise.resolve(this.inactiveResult(ownerSessionId));
     }
     const retained = this.replaySend(requestId, command);
     if (retained) return retained;
     const capacityError = this.commandCapacityError(requestId);
     if (capacityError) return Promise.resolve({ status: "unavailable", error: capacityError });
-    const preflight = this.preflight(requestId, ownerSessionId, callerKey);
+    const preflight = this.preflight(identity, callerKey);
     if (preflight.status === "unavailable") return Promise.resolve(preflight);
-    return this.retainBrowserCommand(requestId, "send", command.clientCommandId, command, () => this.dispatchPrepared("send", requestId, ownerSessionId, {
+    return this.retainBrowserCommand(requestId, "send", command.clientCommandId, command, () => this.dispatchPrepared("send", identity, {
       type: "chat.send",
       requestId: "",
       payload: { requestId, ownerSessionId, command }
@@ -244,16 +250,17 @@ export class QuestionChatRelay {
     command: QuestionChatStopPayload,
     callerKey?: string
   ): Promise<QuestionChatCommandResult<QuestionChatStopResponse>> {
-    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
+    const identity = this.assertOwner(this.activeChats.get(requestId), ownerSessionId);
+    if (!identity) {
       return Promise.resolve(this.inactiveResult(ownerSessionId));
     }
     const retained = this.replayStop(requestId, command);
     if (retained) return retained;
     const capacityError = this.commandCapacityError(requestId);
     if (capacityError) return Promise.resolve({ status: "unavailable", error: capacityError });
-    const preflight = this.preflight(requestId, ownerSessionId, callerKey);
+    const preflight = this.preflight(identity, callerKey);
     if (preflight.status === "unavailable") return Promise.resolve(preflight);
-    return this.retainBrowserCommand(requestId, "stop", command.clientCommandId, command, () => this.dispatchPrepared("stop", requestId, ownerSessionId, {
+    return this.retainBrowserCommand(requestId, "stop", command.clientCommandId, command, () => this.dispatchPrepared("stop", identity, {
       type: "chat.stop",
       requestId: "",
       payload: { requestId, ownerSessionId, command }
@@ -299,7 +306,7 @@ export class QuestionChatRelay {
 
   resolveError(commandId: string, connectionId: string, requestId: string, error: QuestionChatAvailabilityError): void {
     const pending = this.pending.get(commandId);
-    if (!pending || pending.connectionId !== connectionId || pending.requestId !== requestId) return;
+    if (!pending || pending.connectionId !== connectionId || pending.identity.requestId !== requestId) return;
     clearTimeout(pending.timer);
     this.pending.delete(commandId);
     pending.resolve({ status: "unavailable", error });
@@ -332,9 +339,14 @@ export class QuestionChatRelay {
   }
 
   cleanup(requestId: string, ownerSessionId: string, reason: QuestionChatTerminalReason): void {
-    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) return;
+    const identity = this.assertOwner(this.activeChats.get(requestId), ownerSessionId);
+    if (!identity) return;
     for (const [commandId, pending] of this.pending) {
-      if (pending.requestId !== requestId || pending.ownerSessionId !== ownerSessionId) continue;
+      if (
+        pending.identity.requestId !== identity.requestId ||
+        pending.identity.forkKind !== identity.forkKind ||
+        !this.assertOwner(pending.identity, identity.ownerSessionId)
+      ) continue;
       clearTimeout(pending.timer);
       this.pending.delete(commandId);
       pending.resolve(unavailableResult("request_not_pending", "The Question became terminal while Chat was active."));
@@ -342,18 +354,19 @@ export class QuestionChatRelay {
     this.subscribers.delete(requestId);
     const extension = this.extensions.get(ownerSessionId);
     if (!extension || extension.socket.readyState !== 1) {
-      this.deferredCleanup.set(requestId, { requestId, ownerSessionId, reason });
+      this.deferredCleanup.set(requestId, { identity, reason });
       return;
     }
     this.send(extension.socket, { type: "chat.cleanup", payload: { requestId, reason } });
     this.activeChats.delete(requestId);
   }
 
-  rejectRecovery(requestId: string, ownerSessionId: string, reason: QuestionChatCleanupReason): void {
+  rejectRecovery(identity: QuestionChatIdentity, reason: QuestionChatCleanupReason): void {
+    const { requestId, ownerSessionId } = identity;
     this.activeChats.delete(requestId);
     const extension = this.extensions.get(ownerSessionId);
     if (!extension || extension.socket.readyState !== 1) {
-      this.deferredCleanup.set(requestId, { requestId, ownerSessionId, reason });
+      this.deferredCleanup.set(requestId, { identity, reason });
       return;
     }
     this.send(extension.socket, { type: "chat.cleanup", payload: { requestId, reason } });
@@ -376,20 +389,18 @@ export class QuestionChatRelay {
 
   private dispatch<T>(
     kind: PendingKind,
-    requestId: string,
-    ownerSessionId: string,
+    identity: QuestionChatIdentity,
     message: ExtensionServerMessage & { requestId: string },
     callerKey?: string
   ): Promise<QuestionChatCommandResult<T>> {
-    const preflight = this.preflight(requestId, ownerSessionId, callerKey);
+    const preflight = this.preflight(identity, callerKey);
     if (preflight.status === "unavailable") return Promise.resolve(preflight);
-    return this.dispatchPrepared(kind, requestId, ownerSessionId, message, preflight.extension);
+    return this.dispatchPrepared(kind, identity, message, preflight.extension);
   }
 
   private dispatchPrepared<T>(
     kind: PendingKind,
-    requestId: string,
-    ownerSessionId: string,
+    identity: QuestionChatIdentity,
     message: ExtensionServerMessage & { requestId: string },
     extension: BoundExtension
   ): Promise<QuestionChatCommandResult<T>> {
@@ -400,7 +411,7 @@ export class QuestionChatRelay {
         resolve(unavailableResult("command_timeout", "The originating Pi extension did not respond in time."));
       }, this.commandTimeoutMs);
       timer.unref?.();
-      this.pending.set(commandId, { kind, connectionId: extension.connectionId, requestId, ownerSessionId, resolve, timer });
+      this.pending.set(commandId, { kind, connectionId: extension.connectionId, identity, resolve, timer });
     });
     try {
       this.send(extension.socket, { ...message, requestId: commandId });
@@ -416,18 +427,17 @@ export class QuestionChatRelay {
   }
 
   private preflight(
-    requestId: string,
-    ownerSessionId: string,
+    identity: QuestionChatIdentity,
     callerKey?: string
   ): { status: "ok"; extension: BoundExtension } | { status: "unavailable"; error: QuestionChatAvailabilityError } {
-    const authorizationError = this.authorize?.(requestId, ownerSessionId);
+    const authorizationError = this.authorize?.(identity.requestId, identity.ownerSessionId);
     if (authorizationError) return { status: "unavailable", error: authorizationError };
-    const extension = this.extensions.get(ownerSessionId);
+    const extension = this.extensions.get(identity.ownerSessionId);
     if (!extension || extension.socket.readyState !== 1) {
       return unavailableResult("extension_offline", "The originating Pi extension is offline. Retry when it reconnects.");
     }
     if (callerKey) {
-      const rateError = this.consumeRateLimit(callerKey, requestId);
+      const rateError = this.consumeRateLimit(callerKey, identity.requestId);
       if (rateError) return { status: "unavailable", error: rateError };
     }
     return { status: "ok", extension };
@@ -435,8 +445,8 @@ export class QuestionChatRelay {
 
   private resolve(commandId: string, connectionId: string, kind: PendingKind, requestId: string, value: unknown): void {
     const pending = this.pending.get(commandId);
-    if (!pending || pending.connectionId !== connectionId || pending.kind !== kind || pending.requestId !== requestId) return;
-    const authorizationError = this.authorize?.(requestId, pending.ownerSessionId);
+    if (!pending || pending.connectionId !== connectionId || pending.kind !== kind || pending.identity.requestId !== requestId) return;
+    const authorizationError = this.authorize?.(requestId, pending.identity.ownerSessionId);
     clearTimeout(pending.timer);
     this.pending.delete(commandId);
     pending.resolve(authorizationError ? { status: "unavailable", error: authorizationError } : { status: "ok", value });
@@ -568,6 +578,10 @@ export class QuestionChatRelay {
     socket.send(JSON.stringify(message));
   }
 
+  private assertOwner(identity: QuestionChatIdentity | undefined, ownerSessionId: string): QuestionChatIdentity | undefined {
+    return identity?.ownerSessionId === ownerSessionId ? identity : undefined;
+  }
+
   private inactiveResult(ownerSessionId: string): { status: "unavailable"; error: QuestionChatAvailabilityError } {
     const extension = this.extensions.get(ownerSessionId);
     if (!extension || extension.socket.readyState !== 1 || this.reconcilingSessions.has(ownerSessionId)) {
@@ -577,7 +591,9 @@ export class QuestionChatRelay {
   }
 
   private activeRequestIds(ownerSessionId: string): string[] {
-    return [...this.activeChats].filter(([, active]) => active.ownerSessionId === ownerSessionId).map(([requestId]) => requestId);
+    return [...this.activeChats]
+      .filter(([, identity]) => Boolean(this.assertOwner(identity, ownerSessionId)))
+      .map(([requestId]) => requestId);
   }
 
   private publishTransport(requestId: string, state: "offline" | "online"): void {

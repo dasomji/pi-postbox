@@ -34,7 +34,7 @@ describe("Question Chat first message", () => {
     render(QuestionChatActivation, { props: { requestId: "ask-ui", api: { activate, fetchSnapshot, connectEvents: noEvents } } });
 
     expect(activate).not.toHaveBeenCalled();
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
 
     expect(await screen.findByRole("heading", { name: "Question Chat" })).toBeTruthy();
     expect(screen.getByLabelText("Message Question Chat")).toBeTruthy();
@@ -49,7 +49,7 @@ describe("Question Chat first message", () => {
     const sendMessage = vi.fn(async (_requestId: string, command: QuestionChatSendPayload) => ({
       status: "accepted" as const,
       clientCommandId: command.clientCommandId,
-      mode: "prompt" as const
+      mode: "turn" as const
     }));
     render(QuestionChatActivation, {
       props: {
@@ -62,21 +62,21 @@ describe("Question Chat first message", () => {
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     await fireEvent.click(await screen.findByRole("button", { name: "Elaborate" }));
 
     expect(sendMessage).toHaveBeenCalledWith("ask-ui", {
       clientCommandId: expect.stringMatching(/^browser-/),
       message: "Explain the asking agent's language and intent in this question."
     });
-    expect(screen.getByLabelText("Chat messages").textContent).toContain("Explain the asking agent's language and intent");
+    expect(screen.getByLabelText("Question Chat messages").textContent).toContain("Explain the asking agent's language and intent");
   });
 
   it("sends freeform text with a bounded command ID and never interprets the user message as HTML", async () => {
     const sendMessage = vi.fn(async (_requestId: string, command: QuestionChatSendPayload) => ({
       status: "accepted" as const,
       clientCommandId: command.clientCommandId,
-      mode: "prompt" as const
+      mode: "turn" as const
     }));
     render(QuestionChatActivation, {
       props: {
@@ -89,7 +89,7 @@ describe("Question Chat first message", () => {
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     const composer = await screen.findByLabelText("Message Question Chat");
     await fireEvent.input(composer, { target: { value: "<img src=x onerror=alert(1)> my **question**" } });
     await fireEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -97,9 +97,9 @@ describe("Question Chat first message", () => {
     const command = sendMessage.mock.calls[0]![1];
     expect(command.clientCommandId.length).toBeLessThanOrEqual(128);
     expect(command.message).toBe("<img src=x onerror=alert(1)> my **question**");
-    expect(screen.getByLabelText("Chat messages").querySelector("img")).toBeNull();
-    expect(screen.getByLabelText("Chat messages").querySelector("strong")).toBeNull();
-    expect(screen.getByLabelText("Chat messages").textContent).toContain("<img src=x onerror=alert(1)> my **question**");
+    expect(screen.getByLabelText("Question Chat messages").querySelector("img")).toBeNull();
+    expect(screen.getByLabelText("Question Chat messages").querySelector("strong")).toBeNull();
+    expect(screen.getByLabelText("Question Chat messages").textContent).toContain("<img src=x onerror=alert(1)> my **question**");
   });
 
   it("buffers stream events until the extension-backed snapshot arrives, then renders safe bounded Markdown", async () => {
@@ -125,12 +125,12 @@ describe("Question Chat first message", () => {
           sendMessage: async (_requestId: string, command: { clientCommandId: string }) => ({
             status: "accepted" as const,
             clientCommandId: command.clientCommandId,
-            mode: "prompt" as const
+            mode: "turn" as const
           })
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect(fetchSnapshot).not.toHaveBeenCalled();
     finishOpen();
     await waitFor(() => expect(fetchSnapshot).toHaveBeenCalledOnce());
@@ -152,15 +152,46 @@ describe("Question Chat first message", () => {
 
     expect(await screen.findByText("From the fork")).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("heading", { name: "Safe heading" })).toBeTruthy());
-    expect(screen.getByLabelText("Chat messages").querySelector("img")).toBeNull();
-    expect(screen.getByLabelText("Chat messages").querySelectorAll("li")).toHaveLength(2);
-    expect(screen.getByLabelText("Chat messages").querySelector("em")?.textContent).toBe("Emphasis");
-    expect(screen.getByLabelText("Chat messages").querySelector("blockquote")?.textContent).toContain("Useful context");
+    expect(screen.getByLabelText("Question Chat messages").querySelector("img")).toBeNull();
+    expect(screen.getByLabelText("Question Chat messages").querySelectorAll("li")).toHaveLength(2);
+    expect(screen.getByLabelText("Question Chat messages").querySelector("em")?.textContent).toBe("Emphasis");
+    expect(screen.getByLabelText("Question Chat messages").querySelector("blockquote")?.textContent).toContain("Useful context");
     expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe("https://example.com");
     expect(screen.queryByRole("link", { name: "bad" })).toBeNull();
-    expect(screen.getByLabelText("Chat messages").textContent).toContain("bad");
-    expect(screen.getByLabelText("Chat messages").innerHTML).not.toContain("javascript:");
+    expect(screen.getByLabelText("Question Chat messages").textContent).toContain("bad");
+    expect(screen.getByLabelText("Question Chat messages").innerHTML).not.toContain("javascript:");
     expect(screen.getByText("Answering…")).toBeTruthy();
+  });
+
+  it("bounds oversized fenced code blocks in streaming and finalized assistant Markdown", async () => {
+    const tallCode = Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\n");
+    const codeSnapshot = snapshot({
+      messages: [
+        { id: "assistant-final", role: "assistant", text: `\`\`\`ts\n${tallCode}\n\`\`\``, status: "final" },
+        { id: "assistant-streaming", role: "assistant", text: `\`\`\`\n${tallCode}\n\`\`\``, status: "streaming" }
+      ]
+    });
+    render(QuestionChatActivation, {
+      props: {
+        requestId: "ask-ui",
+        api: {
+          activate: async () => ({
+            status: "ready" as const,
+            snapshot: codeSnapshot
+          }),
+          fetchSnapshot: async () => codeSnapshot,
+          connectEvents: noEvents
+        }
+      }
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
+    const codeBlocks = (await screen.findByLabelText("Question Chat messages")).querySelectorAll("pre");
+    expect(codeBlocks).toHaveLength(2);
+    for (const codeBlock of codeBlocks) {
+      expect(codeBlock.classList).toContain("max-h-64");
+      expect(codeBlock.classList).toContain("overflow-auto");
+    }
   });
 
   it("renders compact expandable tool rows as plain text through running and success states", async () => {
@@ -178,7 +209,7 @@ describe("Question Chat first message", () => {
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     await screen.findByRole("heading", { name: "Question Chat" });
 
     onEvent({
@@ -225,7 +256,7 @@ describe("Question Chat first message", () => {
       .fn(async (_requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> => ({
         status: "accepted" as const,
         clientCommandId: command.clientCommandId,
-        mode: "prompt" as const
+        mode: "turn" as const
       }))
       .mockResolvedValueOnce({ status: "accepted", clientCommandId: "steer", mode: "steer" });
     const stop = vi.fn(async (_requestId: string, command: QuestionChatStopPayload) => ({
@@ -247,7 +278,7 @@ describe("Question Chat first message", () => {
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     const composer = await screen.findByLabelText("Message Question Chat");
     expect((composer as HTMLTextAreaElement).disabled).toBe(false);
     expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
@@ -301,7 +332,7 @@ describe("Question Chat first message", () => {
     const probeSnapshot = vi.fn(async () => ({ status: "ready" as const, snapshot: fallback }));
     render(QuestionChatActivation, { props: { requestId: "ask-ui", api: { activate, probeSnapshot, fetchSnapshot: async () => fallback, connectEvents: noEvents } } });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect((await screen.findByRole("alert")).textContent).toContain("originating Pi extension is offline");
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText(/Pi default fallback/)).toBeTruthy();
@@ -335,7 +366,7 @@ describe("Question Chat first message", () => {
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect(await screen.findByText("Keep this rendered")).toBeTruthy();
     onEvent({ requestId: "ask-ui", type: "transport", state: "offline" });
 
@@ -367,7 +398,7 @@ describe("Question Chat first message", () => {
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect(await screen.findByText("Before gap")).toBeTruthy();
     onEvent({ requestId: "ask-ui", sequence: 6, type: "lifecycle", state: "generating" });
     expect(await screen.findByText(/Chat stale/)).toBeTruthy();
@@ -393,7 +424,7 @@ describe("Question Chat first message", () => {
       }
     });
     expect((await screen.findByRole("alert")).textContent).toContain("extension is offline");
-    expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Question Chat" })).toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
@@ -408,7 +439,7 @@ describe("Question Chat first message", () => {
         }
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect(await screen.findByRole("heading", { name: "Question Chat" })).toBeTruthy();
 
     await view.rerender({
@@ -419,7 +450,7 @@ describe("Question Chat first message", () => {
         connectEvents: noEvents
       }
     });
-    expect(await screen.findByRole("button", { name: "Chat" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Question Chat" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Question Chat" })).toBeNull();
   });
 
@@ -431,11 +462,11 @@ describe("Question Chat first message", () => {
     const view = render(QuestionChatActivation, {
       props: { requestId: "ask-one", api: { activate, fetchSnapshot: async (requestId: string) => snapshot({ requestId }), connectEvents: noEvents } }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     await view.rerender({ requestId: "ask-two", api: { activate, fetchSnapshot: async (requestId: string) => snapshot({ requestId }), connectEvents: noEvents } });
     finishActivation({ status: "ready", snapshot: snapshot({ requestId: "ask-one" }) });
 
-    expect(await screen.findByRole("button", { name: "Chat" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Question Chat" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Question Chat" })).toBeNull();
   });
 
@@ -448,7 +479,7 @@ describe("Question Chat first message", () => {
     const view = render(QuestionChatActivation, {
       props: { requestId: "ask-ui", api: { activate, fetchSnapshot: async () => snapshot(), connectEvents } }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     view.unmount();
     finishActivation({ status: "ready", snapshot: snapshot() });
     await new Promise((resolve) => setTimeout(resolve, 0));

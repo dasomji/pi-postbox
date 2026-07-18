@@ -18,7 +18,7 @@
     request: AskRequestSnapshot;
     session?: SessionSnapshot;
     form: QuestionForm;
-    chatButtonLabel?: "Chat" | "Open Chat";
+    chatButtonLabel?: "Question Chat" | "Open Question Chat";
     onChat?: () => void;
   } = $props();
 

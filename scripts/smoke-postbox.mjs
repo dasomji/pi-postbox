@@ -326,7 +326,7 @@ async function main() {
     const requestId = `smoke-ask-${randomUUID()}`;
     const privateAssistantMessageId = `smoke-private-assistant-id-${randomUUID()}`;
     const privateAssistantText = `smoke-private-assistant-text-${randomUUID()}`;
-    const privateUserPromptText = `smoke-private-user-prompt-${randomUUID()}`;
+    const privateUserMessageText = `smoke-private-user-prompt-${randomUUID()}`;
     const privateUserSteerText = `smoke-private-user-steer-${randomUUID()}`;
     const privateUserContinueText = `smoke-private-user-continue-${randomUUID()}`;
     const privateToolCallId = `smoke-private-tool-id-${randomUUID()}`;
@@ -335,7 +335,7 @@ async function main() {
     const privateMarkers = [
       privateAssistantMessageId,
       privateAssistantText,
-      privateUserPromptText,
+      privateUserMessageText,
       privateUserSteerText,
       privateUserContinueText,
       privateToolCallId,
@@ -447,17 +447,17 @@ async function main() {
         messages: []
       }
     };
-    const noAutoPromptBarrierId = `smoke-no-auto-prompt-${randomUUID()}`;
+    const noAutoTurnBarrierId = `smoke-no-auto-turn-${randomUUID()}`;
     const contextActivationResult = await expectNoMessage(
       socket,
       () => socket.send(JSON.stringify(contextReadyMessage)),
       contextActivationResponse,
       () => socket.send(JSON.stringify({
           type: "heartbeat",
-          requestId: noAutoPromptBarrierId,
+          requestId: noAutoTurnBarrierId,
           payload: { sessionId, semanticState: "working" }
         })),
-      (message) => message.type === "ack" && message.requestId === noAutoPromptBarrierId
+      (message) => message.type === "ack" && message.requestId === noAutoTurnBarrierId
     );
     assert(contextActivationResult.status === 200, "Context-only Question Chat did not activate explicitly");
 
@@ -484,17 +484,17 @@ async function main() {
     const sendResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ clientCommandId, message: privateUserPromptText })
+      body: JSON.stringify({ clientCommandId, message: privateUserMessageText })
     });
     const sendCommand = await nextMessage(socket);
-    assert(sendCommand.type === "chat.send" && sendCommand.payload.command.message === privateUserPromptText, "Fake runtime did not receive the first Chat prompt");
+    assert(sendCommand.type === "chat.send" && sendCommand.payload.command.message === privateUserMessageText, "Fake runtime did not receive the first Question Chat message");
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: sendCommand.requestId,
-      payload: { requestId, response: { status: "accepted", clientCommandId, mode: "prompt" } }
+      payload: { requestId, response: { status: "accepted", clientCommandId, mode: "turn" } }
     }));
     const firstSend = await sendResponse;
-    assert(firstSend.status === 200 && (await firstSend.json()).mode === "prompt", "First Chat send was not accepted as an ordinary prompt");
+    assert(firstSend.status === 200 && (await firstSend.json()).mode === "turn", "First Chat send was not accepted as an ordinary turn");
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 1, type: "lifecycle", state: "generating" } }));
     socket.send(JSON.stringify({
       type: "chat.event",
@@ -705,14 +705,14 @@ async function main() {
       body: JSON.stringify({ clientCommandId: continueCommandId, message: privateUserContinueText })
     });
     const continueCommand = await nextMessage(socket);
-    assert(continueCommand.type === "chat.send" && continueCommand.payload.command.clientCommandId === continueCommandId, "Stopped Chat did not accept another prompt");
+    assert(continueCommand.type === "chat.send" && continueCommand.payload.command.clientCommandId === continueCommandId, "Stopped Chat did not accept another turn");
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: continueCommand.requestId,
-      payload: { requestId, response: { status: "accepted", clientCommandId: continueCommandId, mode: "prompt" } }
+      payload: { requestId, response: { status: "accepted", clientCommandId: continueCommandId, mode: "turn" } }
     }));
     const continued = await continueResponse;
-    assert(continued.status === 200 && (await continued.json()).mode === "prompt", "Stopped Chat did not resume with an ordinary prompt");
+    assert(continued.status === 200 && (await continued.json()).mode === "turn", "Stopped Chat did not resume with an ordinary turn");
 
     const terminalMessagesPromise = nextMessages(socket, 2);
     const answerResponse = await fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/answer`, {
@@ -750,7 +750,7 @@ async function main() {
       assert(!historyJson.includes(privateMarker), `History persisted private Chat marker ${privateMarker}`);
     }
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Chat prompt/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, state, and history verified.");
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Question Chat turn/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, state, and history verified.");
   } finally {
     chatSse?.close();
     sse?.close();
