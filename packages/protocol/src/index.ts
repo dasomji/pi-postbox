@@ -75,11 +75,14 @@ export {
   QuestionChatEventSchema,
   QuestionChatMessageSchema,
   QuestionChatModelSchema,
+  QuestionChatSendHttpResponseSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatSendResponseSchema,
+  QuestionChatSnapshotHttpResponseSchema,
   QuestionChatSnapshotSchema,
   QuestionChatStateSchema,
-  QuestionChatSourceSchema
+  QuestionChatSourceSchema,
+  QuestionChatUnavailableResponseSchema
 } from "./chat.js";
 export type {
   QuestionChatActivationResponse,
@@ -88,11 +91,14 @@ export type {
   QuestionChatEvent,
   QuestionChatMessage,
   QuestionChatModel,
+  QuestionChatSendHttpResponse,
   QuestionChatSendPayload,
   QuestionChatSendResponse,
+  QuestionChatSnapshotHttpResponse,
   QuestionChatSnapshot,
   QuestionChatState,
-  QuestionChatSource
+  QuestionChatSource,
+  QuestionChatUnavailableResponse
 } from "./chat.js";
 export {
   HistoryPruneResponseSchema,

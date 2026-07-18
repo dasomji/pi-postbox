@@ -127,15 +127,20 @@ describe("Question Chat first message", () => {
       sequence: 7,
       type: "assistant.text.delta",
       messageId: "assistant-1",
-      text: "<img src=x onerror=alert(1)> **Safe** [bad](javascript:alert(1))"
+      text: "# Safe heading\n\n- First item\n- Second item\n\n*Emphasis*\n\n> Useful context\n\n[Docs](https://example.com) [bad](javascript:alert(1)) ![remote](https://example.com/x.png) <img src=x onerror=alert(1)>"
     });
     finishSnapshot(snapshot({ sequence: 4, messages: [{ id: "fork-user", role: "user", text: "From the fork", status: "final" }] }));
 
     expect(await screen.findByText("From the fork")).toBeTruthy();
-    await waitFor(() => expect(screen.getByLabelText("Chat messages").textContent).toContain("Safe"));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Safe heading" })).toBeTruthy());
     expect(screen.getByLabelText("Chat messages").querySelector("img")).toBeNull();
-    expect(screen.getByLabelText("Chat messages").querySelector("strong")?.textContent).toBe("Safe");
-    expect(screen.getByLabelText("Chat messages").textContent).toContain("javascript:alert(1)");
+    expect(screen.getByLabelText("Chat messages").querySelectorAll("li")).toHaveLength(2);
+    expect(screen.getByLabelText("Chat messages").querySelector("em")?.textContent).toBe("Emphasis");
+    expect(screen.getByLabelText("Chat messages").querySelector("blockquote")?.textContent).toContain("Useful context");
+    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe("https://example.com");
+    expect(screen.queryByRole("link", { name: "bad" })).toBeNull();
+    expect(screen.getByLabelText("Chat messages").textContent).toContain("bad");
+    expect(screen.getByLabelText("Chat messages").innerHTML).not.toContain("javascript:");
     expect(screen.getByText("Answering…")).toBeTruthy();
   });
 

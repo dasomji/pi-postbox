@@ -123,6 +123,21 @@ export const QuestionChatSendResponseSchema = z.object({
   clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX)
 });
 
+export const QuestionChatUnavailableResponseSchema = z.object({
+  status: z.literal("unavailable"),
+  error: QuestionChatAvailabilityErrorSchema
+});
+
+export const QuestionChatSnapshotHttpResponseSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ready"), snapshot: QuestionChatSnapshotSchema }),
+  QuestionChatUnavailableResponseSchema
+]);
+
+export const QuestionChatSendHttpResponseSchema = z.discriminatedUnion("status", [
+  QuestionChatSendResponseSchema,
+  QuestionChatUnavailableResponseSchema
+]);
+
 export const QuestionChatActivationResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("ready"), snapshot: QuestionChatSnapshotSchema }),
   z.object({ status: z.literal("unavailable"), error: QuestionChatAvailabilityErrorSchema })
@@ -137,5 +152,8 @@ export type QuestionChatMessage = z.infer<typeof QuestionChatMessageSchema>;
 export type QuestionChatSnapshot = z.infer<typeof QuestionChatSnapshotSchema>;
 export type QuestionChatSendPayload = z.infer<typeof QuestionChatSendPayloadSchema>;
 export type QuestionChatSendResponse = z.infer<typeof QuestionChatSendResponseSchema>;
+export type QuestionChatUnavailableResponse = z.infer<typeof QuestionChatUnavailableResponseSchema>;
+export type QuestionChatSnapshotHttpResponse = z.infer<typeof QuestionChatSnapshotHttpResponseSchema>;
+export type QuestionChatSendHttpResponse = z.infer<typeof QuestionChatSendHttpResponseSchema>;
 export type QuestionChatEvent = z.infer<typeof QuestionChatEventSchema>;
 export type QuestionChatActivationResponse = z.infer<typeof QuestionChatActivationResponseSchema>;

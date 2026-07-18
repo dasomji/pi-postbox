@@ -3,7 +3,9 @@ import {
   QUESTION_CHAT_STARTERS,
   QuestionChatActivationResponseSchema,
   QuestionChatEventSchema,
+  QuestionChatSendHttpResponseSchema,
   QuestionChatSendPayloadSchema,
+  QuestionChatSnapshotHttpResponseSchema,
   QuestionChatSnapshotSchema,
   QuestionChatSourceSchema
 } from "./chat.js";
@@ -147,5 +149,24 @@ describe("Question Chat first-message protocol", () => {
         payload: { requestId: "ask-26", sequence: 3, type: "thinking.delta", text: "secret" }
       })
     ).toThrow();
+  });
+
+  it("validates browser HTTP snapshot/send success and unavailable envelopes", () => {
+    expect(
+      QuestionChatSnapshotHttpResponseSchema.parse({ status: "ready", snapshot: {
+        requestId: "ask-26",
+        state: "ready",
+        forkKind: "exact",
+        model: { id: "test/model", source: "originating" },
+        sequence: 0,
+        messages: []
+      } })
+    ).toMatchObject({ status: "ready" });
+    expect(
+      QuestionChatSendHttpResponseSchema.parse({
+        status: "unavailable",
+        error: { code: "runtime_busy", message: "Wait for the current answer." }
+      })
+    ).toMatchObject({ status: "unavailable", error: { code: "runtime_busy" } });
   });
 });

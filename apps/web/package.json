@@ -10,7 +10,8 @@
     "typecheck": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@pi-postbox/protocol": "0.1.0"
+    "@pi-postbox/protocol": "0.1.0",
+    "marked": "^18.0.5"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

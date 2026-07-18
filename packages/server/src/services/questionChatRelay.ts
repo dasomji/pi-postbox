@@ -59,6 +59,7 @@ export class QuestionChatRelay {
   }
 
   async activate(requestId: string, ownerSessionId: string, source: QuestionChatSource): Promise<QuestionChatActivationResponse> {
+    const previousOwnerSessionId = this.activeChats.get(requestId);
     this.activeChats.set(requestId, ownerSessionId);
     const result = await this.dispatch<QuestionChatSnapshot>("activate", requestId, ownerSessionId, {
       type: "chat.activate",
@@ -69,7 +70,10 @@ export class QuestionChatRelay {
       // A timeout occurs after a command was sent and the extension may have
       // allocated the fork. Retain cleanup authority for a later terminal
       // transition instead of orphaning that private runtime.
-      if (result.error.code !== "command_timeout") this.activeChats.delete(requestId);
+      if (result.error.code !== "command_timeout") {
+        if (previousOwnerSessionId) this.activeChats.set(requestId, previousOwnerSessionId);
+        else this.activeChats.delete(requestId);
+      }
       return { status: "unavailable", error: result.error };
     }
     return QuestionChatActivationResponseSchema.parse({ status: "ready", snapshot: result.value });

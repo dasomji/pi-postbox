@@ -12,8 +12,8 @@ import {
 import {
   QuestionChatActivationResponseSchema,
   QuestionChatEventSchema,
-  QuestionChatSendResponseSchema,
-  QuestionChatSnapshotSchema,
+  QuestionChatSendHttpResponseSchema,
+  QuestionChatSnapshotHttpResponseSchema,
   type QuestionChatActivationResponse,
   type QuestionChatEvent,
   type QuestionChatSendPayload,
@@ -90,9 +90,11 @@ export async function activateQuestionChat(requestId: string): Promise<QuestionC
 
 export async function fetchQuestionChatSnapshot(requestId: string): Promise<QuestionChatSnapshot> {
   const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat`);
-  const body = await response.json();
-  if (!response.ok) throw new Error(body?.error?.message ?? `Chat snapshot failed with ${response.status}`);
-  return QuestionChatSnapshotSchema.parse(body);
+  const body = QuestionChatSnapshotHttpResponseSchema.parse(await response.json());
+  if (!response.ok || body.status === "unavailable") {
+    throw new Error(body.status === "unavailable" ? body.error.message : `Chat snapshot failed with ${response.status}`);
+  }
+  return body.snapshot;
 }
 
 export async function sendQuestionChatMessage(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
@@ -101,9 +103,11 @@ export async function sendQuestionChatMessage(requestId: string, command: Questi
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(command)
   });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body?.error?.message ?? `Chat send failed with ${response.status}`);
-  return QuestionChatSendResponseSchema.parse(body);
+  const body = QuestionChatSendHttpResponseSchema.parse(await response.json());
+  if (!response.ok || body.status === "unavailable") {
+    throw new Error(body.status === "unavailable" ? body.error.message : `Chat send failed with ${response.status}`);
+  }
+  return body;
 }
 
 export interface QuestionChatEventConnection {

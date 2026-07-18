@@ -167,7 +167,10 @@ describe("Question Chat activation relay", () => {
         }
       } satisfies ExtensionClientMessage)
     );
-    expect(await (await snapshotResponse).json()).toMatchObject({ sequence: 4, messages: [{ text: "Earlier question" }, { text: "Earlier answer" }] });
+    expect(await (await snapshotResponse).json()).toMatchObject({
+      status: "ready",
+      snapshot: { sequence: 4, messages: [{ text: "Earlier question" }, { text: "Earlier answer" }] }
+    });
 
     const eventResponse = await fetch(`${baseUrl}/api/requests/ask-chat/chat/events`);
     expect(eventResponse.status).toBe(200);
@@ -334,6 +337,45 @@ describe("Question Chat activation relay", () => {
       payload: { requestId: "ask-chat", reason: "cancelled" }
     });
     expect((await cancel).statusCode).toBe(200);
+  });
+
+  it("preserves an active fork's deferred cleanup across an offline activation retry", async () => {
+    const { app, socket } = await setup();
+    await activateChat(app, socket);
+    await new Promise<void>((resolve) => {
+      socket.once("close", resolve);
+      socket.close();
+    });
+
+    const offlineRetry = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
+    expect(offlineRetry.statusCode).toBe(503);
+    expect(offlineRetry.json()).toMatchObject({ status: "unavailable", error: { code: "extension_offline" } });
+    expect((await app.inject({ method: "POST", url: "/api/requests/ask-chat/cancel", payload: {} })).statusCode).toBe(200);
+
+    const reconnected = new WebSocket(`ws://127.0.0.1:${listenerPort(app)}/api/extension/ws`);
+    sockets.push(reconnected);
+    await new Promise<void>((resolve, reject) => {
+      reconnected.once("open", resolve);
+      reconnected.once("error", reject);
+    });
+    reconnected.send(JSON.stringify({
+      type: "session.register",
+      payload: {
+        machine: { machineId: "machine-chat", hostname: "chat-host" },
+        project: { projectId: "project-chat", name: "Chat project", cwd: "/repo" },
+        session: {
+          sessionId: "session-chat-owner",
+          cwd: "/repo",
+          semanticState: "blocked",
+          agentSessionPath: "/private/question-time.jsonl",
+          leafId: "leaf-at-question"
+        }
+      }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(reconnected)).resolves.toMatchObject({
+      type: "chat.cleanup",
+      payload: { requestId: "ask-chat", reason: "cancelled" }
+    });
   });
 
   it("sends cleanup on expiry and owning Pi session shutdown", async () => {

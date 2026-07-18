@@ -4,6 +4,9 @@ import {
   type QuestionChatMessage,
   type QuestionChatSnapshot
 } from "@pi-postbox/protocol";
+import { Marked, Renderer } from "marked";
+
+const markdownRenderer = createMarkdownRenderer();
 
 export function applyQuestionChatEvent(snapshot: QuestionChatSnapshot, event: QuestionChatEvent): QuestionChatSnapshot {
   if (event.requestId !== snapshot.requestId || event.sequence <= snapshot.sequence) return snapshot;
@@ -34,18 +37,34 @@ export function applyQuestionChatEvent(snapshot: QuestionChatSnapshot, event: Qu
 }
 
 export function renderSafeMarkdown(markdown: string): string {
-  const escaped = escapeHtml(markdown.slice(0, QUESTION_CHAT_ASSISTANT_TEXT_MAX));
-  const codeBlocks: string[] = [];
-  let rendered = escaped.replace(/```(?:[^\n]*)\n?([\s\S]*?)```/g, (_match, code: string) => {
-    const index = codeBlocks.push(`<pre><code>${code}</code></pre>`) - 1;
-    return `\u0000CODE${index}\u0000`;
-  });
-  rendered = rendered
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\n/g, "<br>");
-  rendered = rendered.replace(/\u0000CODE(\d+)\u0000/g, (_match, index: string) => codeBlocks[Number(index)] ?? "");
-  return rendered;
+  // The HTML renderer makes raw tags inert while preserving CommonMark block
+  // syntax such as `>` quotes. Link/image renderers constrain URL-bearing HTML.
+  return markdownRenderer.parse(markdown.slice(0, QUESTION_CHAT_ASSISTANT_TEXT_MAX)) as string;
+}
+
+function createMarkdownRenderer(): Marked {
+  const renderer = new Renderer();
+  renderer.html = ({ text }) => escapeHtml(text);
+  renderer.link = function ({ href, title, tokens }) {
+    const label = this.parser.parseInline(tokens);
+    if (!isSafeLink(href)) return label;
+    const titleAttribute = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<a href="${escapeHtml(href)}"${titleAttribute} rel="noopener noreferrer">${label}</a>`;
+  };
+  renderer.image = function ({ text }) {
+    return escapeHtml(text);
+  };
+  return new Marked({ async: false, breaks: true, gfm: true, renderer });
+}
+
+function isSafeLink(href: string): boolean {
+  if (href.startsWith("/") || href.startsWith("#")) return true;
+  try {
+    const url = new URL(href);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function escapeHtml(value: string): string {
