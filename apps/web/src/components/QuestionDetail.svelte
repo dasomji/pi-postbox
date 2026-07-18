@@ -49,11 +49,11 @@
     (!mobile && (chatStarting || recoveryPanelVisible || (presentation.started && presentation.visible))) ||
       (mobile && (chatStarting || recoveryPanelVisible || (presentation.started && presentation.mobileTab === "chat")))
   );
-  const chatButtonLabel = $derived.by<"Question Chat" | "Open Question Chat" | undefined>(() => {
+  const chatButtonLabel = $derived.by<"Chat" | undefined>(() => {
     if (chatStarting || recoveryPanelVisible || (mobile && presentation.started) || (!mobile && presentation.started && presentation.visible)) {
       return undefined;
     }
-    return presentation.started ? "Open Question Chat" : "Question Chat";
+    return "Chat";
   });
 
   onMount(() => {
@@ -197,10 +197,10 @@
     aria-label={mobile && presentation.started ? undefined : "Question Chat sidebar"}
     aria-labelledby={mobile && presentation.started ? "chat-workspace-tab" : undefined}
     hidden={!chatPresented}
-    class="min-h-0 w-full shrink-0 overflow-y-auto border-t border-postbox-border bg-postbox-surface px-3 pb-24 md:w-[clamp(20rem,30vw,28rem)] md:border-l md:border-t-0 md:pb-3"
+    class="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-t border-postbox-border bg-postbox-surface px-3 pb-24 md:w-[clamp(20rem,30vw,28rem)] md:border-l md:border-t-0 md:pb-3"
   >
     {#if !mobile && presentation.started}
-      <div class="sticky top-0 z-10 flex justify-end bg-postbox-surface py-2">
+      <div class="z-10 flex shrink-0 justify-end bg-postbox-surface py-2">
         <button type="button" class="rounded-full border border-postbox-border px-2.5 py-1 text-xs text-postbox-subtle" onclick={() => layoutState.hideQuestionChat(request.requestId)}>Hide Question Chat</button>
       </div>
     {/if}

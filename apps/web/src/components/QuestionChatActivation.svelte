@@ -64,6 +64,7 @@
   let stopping = $state(false);
   let actionMessage = $state("");
   let commandCounter = 0;
+  let selectedRequestId: string | undefined;
   let observedActivationRequest = 0;
   let observedContextActivationRequest = 0;
   let observedRecoveryRequest = 0;
@@ -76,7 +77,10 @@
   );
 
   $effect(() => {
-    lifecycle.selectRequest(requestId);
+    const nextRequestId = requestId;
+    if (nextRequestId === selectedRequestId) return;
+    selectedRequestId = nextRequestId;
+    lifecycle.selectRequest(nextRequestId);
     composer = "";
     sending = false;
     stopping = false;
@@ -187,7 +191,7 @@
 {#if view.kind === "not-started" && showActivationButton}
   <button type="button" class="rounded-full border border-history-border bg-history/5 px-3 py-1 font-medium text-history-foreground transition hover:bg-history/10" onclick={() => lifecycle.start()}>Question Chat</button>
 {:else if view.kind !== "not-started"}
-  <section class="mt-5 rounded-lg border border-history-border bg-postbox-elevated p-4 shadow-postbox-section" aria-label="Question Chat">
+  <section class="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-history-border bg-postbox-elevated p-4 shadow-postbox-section" aria-label="Question Chat">
     {#if view.kind === "starting"}
       <p class="text-sm text-postbox-muted" role="status">Starting Question Chat…</p>
     {:else if view.kind === "unavailable"}
@@ -195,7 +199,7 @@
       <p class="mt-2 text-sm text-danger-foreground" role="alert">{view.error.message}</p>
       <button type="button" class="mt-3 rounded-full border border-postbox-border px-3 py-1 text-sm text-postbox-subtle" onclick={() => lifecycle.retry()}>Retry</button>
     {:else}
-      <div class="flex items-start justify-between gap-3">
+      <div class="flex shrink-0 items-start justify-between gap-3">
         <div>
           <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat</h2>
           {#if view.snapshot.forkKind === "context-only"}
@@ -215,7 +219,7 @@
           <button type="button" class="rounded-full border border-warning/40 px-3 py-1 font-medium" onclick={() => lifecycle.retry()}>Retry</button>
         </div>
       {/if}
-      <div class="mt-4 min-h-16 space-y-3 rounded-md border border-postbox-border p-3" aria-label="Question Chat messages" aria-live="polite">
+      <div class="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-md border border-postbox-border p-3" aria-label="Question Chat messages" aria-live="polite">
         {#if view.snapshot.messages.length === 0}
           <p class="text-sm text-postbox-muted">Ask what you need to understand this decision.</p>
         {:else}
@@ -224,53 +228,53 @@
               {#if message.role === "user"}
                 <p class="whitespace-pre-wrap">{message.text}</p>
               {:else}
-                <div class="chat-markdown">{@html renderSafeMarkdown(message.text)}</div>
+                <div class="chat-markdown leading-relaxed">{@html renderSafeMarkdown(message.text)}</div>
                 {#if message.status === "stopped"}<p class="mt-2 text-xs font-medium text-warning-foreground">Stopped</p>{/if}
                 {#if message.status === "interrupted"}<p class="mt-2 text-xs font-medium text-danger-foreground">Interrupted</p>{/if}
               {/if}
             </article>
           {/each}
         {/if}
-      </div>
-      {#if view.snapshot.tools.length > 0}
-        <ul class="mt-3 space-y-2" aria-label="Question Chat activity">
-          {#each view.snapshot.tools as activity (activity.id)}
-            <li class="rounded-md border border-postbox-border bg-postbox-surface px-3 py-2 text-xs text-postbox-subtle">
-              {#if activity.details}
-                <details>
-                  <summary class="cursor-pointer list-none">
+        {#if view.snapshot.tools.length > 0}
+          <ul class="space-y-2" aria-label="Question Chat activity">
+            {#each view.snapshot.tools as activity (activity.id)}
+              <li class="rounded-md border border-postbox-border bg-postbox-surface px-3 py-2 text-xs text-postbox-subtle">
+                {#if activity.details}
+                  <details>
+                    <summary class="cursor-pointer list-none">
+                      <span class="font-medium">{toolLabel(activity.tool)}</span>
+                      <span class="ml-2 font-mono">{activity.target}</span>
+                      <span class="ml-2 text-postbox-muted">{toolStateLabel(activity.state)}</span>
+                    </summary>
+                    <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-postbox-elevated p-2 font-mono text-[0.7rem]">{activity.details}</pre>
+                  </details>
+                {:else}
+                  <div>
                     <span class="font-medium">{toolLabel(activity.tool)}</span>
                     <span class="ml-2 font-mono">{activity.target}</span>
                     <span class="ml-2 text-postbox-muted">{toolStateLabel(activity.state)}</span>
-                  </summary>
-                  <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-postbox-elevated p-2 font-mono text-[0.7rem]">{activity.details}</pre>
-                </details>
-              {:else}
-                <div>
-                  <span class="font-medium">{toolLabel(activity.tool)}</span>
-                  <span class="ml-2 font-mono">{activity.target}</span>
-                  <span class="ml-2 text-postbox-muted">{toolStateLabel(activity.state)}</span>
-                </div>
-              {/if}
-              {#if showQuestionActions && activity.tool === "propose_answer" && activity.state === "success" && activity.action}
-                <button
-                  type="button"
-                  class="mt-2 rounded-full border border-history-border px-3 py-1 font-medium text-history-foreground"
-                  onclick={() => onShowQuestion?.(activity.action!.optionValue)}
-                >View in Question</button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {/if}
+                  </div>
+                {/if}
+                {#if showQuestionActions && activity.tool === "propose_answer" && activity.state === "success" && activity.action}
+                  <button
+                    type="button"
+                    class="mt-2 rounded-full border border-history-border px-3 py-1 font-medium text-history-foreground"
+                    onclick={() => onShowQuestion?.(activity.action!.optionValue)}
+                  >View in Question</button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
       {#if view.snapshot.messages.length === 0}
-        <div class="mt-3 flex flex-wrap gap-2" aria-label="Question Chat starters">
+        <div class="mt-3 flex shrink-0 flex-wrap gap-2" aria-label="Question Chat starters">
           {#each QUESTION_CHAT_STARTERS as starter}
             <button type="button" class="rounded-full border border-postbox-border px-3 py-1.5 text-sm text-postbox-subtle hover:border-attention-border disabled:opacity-50" disabled={view.connection !== "online"} onclick={() => send(starter.instruction)}>{starter.label}</button>
           {/each}
         </div>
       {/if}
-      <form class="mt-3 flex gap-2" onsubmit={(event) => { event.preventDefault(); void send(composer); }}>
+      <form class="mt-3 flex shrink-0 gap-2" onsubmit={(event) => { event.preventDefault(); void send(composer); }}>
         <label class="sr-only" for="question-chat-composer">Message Question Chat</label>
         <textarea id="question-chat-composer" class="min-h-12 flex-1 resize-y rounded-lg border border-postbox-border bg-postbox-surface p-2 text-sm text-postbox-text" placeholder="Ask about this decision…" bind:value={composer} disabled={!canSend}></textarea>
         <button type="submit" class="self-end rounded-full bg-attention px-4 py-2 text-sm font-medium text-attention-contrast disabled:opacity-50" disabled={!canSend || !composer.trim()}>Send</button>

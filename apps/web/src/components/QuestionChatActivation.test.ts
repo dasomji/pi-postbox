@@ -152,6 +152,8 @@ describe("Question Chat first message", () => {
 
     expect(await screen.findByText("From the fork")).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("heading", { name: "Safe heading" })).toBeTruthy());
+    const markdown = screen.getByRole("heading", { name: "Safe heading" }).closest(".chat-markdown");
+    expect(markdown?.classList).toContain("leading-relaxed");
     expect(screen.getByLabelText("Question Chat messages").querySelector("img")).toBeNull();
     expect(screen.getByLabelText("Question Chat messages").querySelectorAll("li")).toHaveLength(2);
     expect(screen.getByLabelText("Question Chat messages").querySelector("em")?.textContent).toBe("Emphasis");
@@ -189,6 +191,7 @@ describe("Question Chat first message", () => {
     const codeBlocks = (await screen.findByLabelText("Question Chat messages")).querySelectorAll("pre");
     expect(codeBlocks).toHaveLength(2);
     for (const codeBlock of codeBlocks) {
+      expect(codeBlock.classList).toContain("my-3");
       expect(codeBlock.classList).toContain("max-h-64");
       expect(codeBlock.classList).toContain("overflow-auto");
     }
