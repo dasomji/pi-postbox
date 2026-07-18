@@ -11,12 +11,12 @@ import {
 } from "@pi-postbox/protocol";
 import {
   QuestionChatActivationResponseSchema,
-  QuestionChatEventSchema,
+  QuestionChatStreamEventSchema,
   QuestionChatSendHttpResponseSchema,
   QuestionChatSnapshotHttpResponseSchema,
   QuestionChatStopHttpResponseSchema,
   type QuestionChatActivationResponse,
-  type QuestionChatEvent,
+  type QuestionChatStreamEvent,
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
   type QuestionChatSnapshot,
@@ -115,7 +115,8 @@ export async function fetchQuestionChatSnapshot(requestId: string): Promise<Ques
 
 export type QuestionChatProbeResult =
   | { status: "ready"; snapshot: QuestionChatSnapshot }
-  | { status: "not-started" };
+  | { status: "not-started" }
+  | { status: "unavailable"; error: import("@pi-postbox/protocol").QuestionChatAvailabilityError };
 
 /** Read-only discovery used to reattach a browser to an already-running Chat. */
 export async function probeQuestionChatSnapshot(requestId: string): Promise<QuestionChatProbeResult> {
@@ -126,7 +127,7 @@ export async function probeQuestionChatSnapshot(requestId: string): Promise<Ques
     return body;
   }
   if (body.error.code === "chat_not_started") return { status: "not-started" };
-  throw new Error(body.error.message);
+  return { status: "unavailable", error: body.error };
 }
 
 export async function sendQuestionChatMessage(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
@@ -160,7 +161,7 @@ export interface QuestionChatEventConnection {
   close(): void;
 }
 
-export function connectQuestionChatEvents(requestId: string, onEvent: (event: QuestionChatEvent) => void): QuestionChatEventConnection {
+export function connectQuestionChatEvents(requestId: string, onEvent: (event: QuestionChatStreamEvent) => void): QuestionChatEventConnection {
   const source = new EventSource(`/api/requests/${encodeURIComponent(requestId)}/chat/events`);
   let opened = false;
   let rejectReady: ((error: Error) => void) | undefined;
@@ -172,11 +173,12 @@ export function connectQuestionChatEvents(requestId: string, onEvent: (event: Qu
     };
     source.onerror = () => {
       if (!opened) reject(new Error("Question Chat event stream is unavailable."));
+      else onEvent({ requestId, type: "transport", state: "offline" });
     };
   });
   source.onmessage = (message) => {
     try {
-      const parsed = QuestionChatEventSchema.safeParse(JSON.parse(message.data));
+      const parsed = QuestionChatStreamEventSchema.safeParse(JSON.parse(message.data));
       if (parsed.success) onEvent(parsed.data);
     } catch {
       // Ignore malformed transient frames; the next snapshot can resynchronize.

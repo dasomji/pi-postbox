@@ -19,6 +19,11 @@ import {
 } from "./session.js";
 
 const WsCorrelationIdSchema = z.string().min(1).max(200);
+const QuestionChatRecoveryOfferSchema = z.object({
+  requestId: WsCorrelationIdSchema,
+  ownerSessionId: z.string().min(1).max(200),
+  forkKind: z.enum(["exact", "context-only"])
+});
 
 export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
@@ -83,7 +88,30 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("chat.stop.accepted"),
     requestId: WsCorrelationIdSchema,
-    payload: z.object({ requestId: WsCorrelationIdSchema, response: QuestionChatStopResponseSchema })
+      payload: z.object({ requestId: WsCorrelationIdSchema, response: QuestionChatStopResponseSchema })
+  }),
+  z.object({
+    type: z.literal("chat.recover.offer"),
+    requestId: WsCorrelationIdSchema,
+    payload: QuestionChatRecoveryOfferSchema
+  }),
+  z.object({
+    type: z.literal("chat.recover.complete"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({ ownerSessionId: z.string().min(1).max(200) })
+  }),
+  z.object({
+    type: z.literal("chat.reconciled"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({
+      requestId: WsCorrelationIdSchema,
+      forkKind: z.enum(["exact", "context-only"]),
+      result: z.discriminatedUnion("status", [
+        z.object({ status: z.literal("recovered"), snapshot: QuestionChatSnapshotSchema }),
+        z.object({ status: z.literal("deleted") }),
+        z.object({ status: z.literal("failed"), message: z.string().min(1).max(2_000) })
+      ])
+    })
   })
 ]);
 
@@ -131,7 +159,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1).optional(),
     payload: z.object({
       requestId: z.string().min(1).max(200),
-      reason: z.enum(["answered", "cancelled", "expired", "session_shutdown"])
+      reason: z.enum(["answered", "cancelled", "expired", "session_shutdown", "missing", "wrong_owner"])
     })
   }),
   z.object({
@@ -159,6 +187,24 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
       ownerSessionId: z.string().min(1).max(200),
       command: QuestionChatStopPayloadSchema
     })
+  }),
+  z.object({
+    type: z.literal("chat.reconcile"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.discriminatedUnion("action", [
+      z.object({
+        requestId: WsCorrelationIdSchema,
+        forkKind: z.enum(["exact", "context-only"]),
+        action: z.literal("recover"),
+        reason: z.literal("pending")
+      }),
+      z.object({
+        requestId: WsCorrelationIdSchema,
+        forkKind: z.enum(["exact", "context-only"]),
+        action: z.literal("delete"),
+        reason: z.enum(["missing", "terminal", "wrong_owner"])
+      })
+    ])
   }),
   z.object({
     type: z.literal("error"),

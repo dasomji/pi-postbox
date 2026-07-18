@@ -25,7 +25,9 @@
     contextActivationRequest = 0,
     recoveryRequest = 0,
     onStarted,
-    onActivationFailed
+    onActivationFailed,
+    onRecoveryUnavailable,
+    onRecoveryNotStarted
   }: {
     requestId: string;
     api?: Partial<QuestionChatApi>;
@@ -35,6 +37,8 @@
     onStarted?: () => void;
     contextActivationRequest?: number;
     onActivationFailed?: (error: import("@pi-postbox/protocol").QuestionChatAvailabilityError) => void;
+    onRecoveryUnavailable?: (error: import("@pi-postbox/protocol").QuestionChatAvailabilityError) => void;
+    onRecoveryNotStarted?: () => void;
   } = $props();
 
   // API dependencies are stable for one keyed Chat component instance.
@@ -74,6 +78,8 @@
     lifecycle.setCallbacks({
       started: onStarted,
       activationFailed: onActivationFailed,
+      recoveryUnavailable: onRecoveryUnavailable,
+      recoveryNotStarted: onRecoveryNotStarted,
       event: handleLifecycleEvent
     });
   });
@@ -107,7 +113,7 @@
 
   async function send(text: string): Promise<void> {
     const message = text.trim();
-    if (!message || view.kind !== "ready" || view.snapshot.state === "stopping" || stopping || sending) return;
+    if (!message || view.kind !== "ready" || view.connection !== "online" || view.snapshot.state === "stopping" || stopping || sending) return;
     const clientCommandId = `browser-${Date.now().toString(36)}-${(++commandCounter).toString(36)}`;
     lifecycle.applyEvent({
       requestId,
@@ -128,7 +134,7 @@
   }
 
   async function stopActive(): Promise<void> {
-    if (view.kind !== "ready" || view.snapshot.state !== "generating" || stopping) return;
+    if (view.kind !== "ready" || view.connection !== "online" || view.snapshot.state !== "generating" || stopping) return;
     const clientCommandId = `browser-stop-${Date.now().toString(36)}-${(++commandCounter).toString(36)}`;
     stopping = true;
     actionMessage = "Stopping…";
@@ -160,7 +166,7 @@
     {:else if view.kind === "unavailable"}
       <h2 class="font-display text-base font-semibold text-postbox-text">Chat unavailable</h2>
       <p class="mt-2 text-sm text-danger-foreground" role="alert">{view.error.message}</p>
-      <button type="button" class="mt-3 rounded-full border border-postbox-border px-3 py-1 text-sm text-postbox-subtle" onclick={() => lifecycle.start()}>Retry</button>
+      <button type="button" class="mt-3 rounded-full border border-postbox-border px-3 py-1 text-sm text-postbox-subtle" onclick={() => lifecycle.retry()}>Retry</button>
     {:else}
       <div class="flex items-start justify-between gap-3">
         <div>
@@ -175,6 +181,12 @@
       </div>
       {#if view.snapshot.forkKind === "context-only"}
         <p class="mt-3 text-xs text-warning-foreground">This fresh private interviewer uses persisted handoff context, not the exact source conversation.</p>
+      {/if}
+      {#if view.connection !== "online"}
+        <div class="mt-3 flex items-center justify-between gap-3 rounded-md border border-warning/30 bg-warning/10 p-2 text-sm text-warning-foreground" role="status">
+          <span>{view.connection === "offline" ? "Chat offline · showing saved messages" : "Chat stale · resynchronizing"}</span>
+          <button type="button" class="rounded-full border border-warning/40 px-3 py-1 font-medium" onclick={() => lifecycle.retry()}>Retry</button>
+        </div>
       {/if}
       <div class="mt-4 min-h-16 space-y-3 rounded-md border border-postbox-border p-3" aria-label="Chat messages" aria-live="polite">
         {#if view.snapshot.messages.length === 0}
@@ -196,17 +208,17 @@
       {#if view.snapshot.messages.length === 0}
         <div class="mt-3 flex flex-wrap gap-2" aria-label="Chat starters">
           {#each QUESTION_CHAT_STARTERS as starter}
-            <button type="button" class="rounded-full border border-postbox-border px-3 py-1.5 text-sm text-postbox-subtle hover:border-attention-border" onclick={() => send(starter.instruction)}>{starter.label}</button>
+            <button type="button" class="rounded-full border border-postbox-border px-3 py-1.5 text-sm text-postbox-subtle hover:border-attention-border disabled:opacity-50" disabled={view.connection !== "online"} onclick={() => send(starter.instruction)}>{starter.label}</button>
           {/each}
         </div>
       {/if}
       <form class="mt-3 flex gap-2" onsubmit={(event) => { event.preventDefault(); void send(composer); }}>
         <label class="sr-only" for="question-chat-composer">Message Question Chat</label>
-        <textarea id="question-chat-composer" class="min-h-12 flex-1 resize-y rounded-lg border border-postbox-border bg-postbox-surface p-2 text-sm text-postbox-text" placeholder="Ask about this decision…" bind:value={composer} disabled={view.snapshot.state === "stopping" || stopping || sending}></textarea>
-        <button type="submit" class="self-end rounded-full bg-attention px-4 py-2 text-sm font-medium text-attention-contrast disabled:opacity-50" disabled={!composer.trim() || view.snapshot.state === "stopping" || stopping || sending}>Send</button>
+        <textarea id="question-chat-composer" class="min-h-12 flex-1 resize-y rounded-lg border border-postbox-border bg-postbox-surface p-2 text-sm text-postbox-text" placeholder="Ask about this decision…" bind:value={composer} disabled={view.connection !== "online" || view.snapshot.state === "stopping" || stopping || sending}></textarea>
+        <button type="submit" class="self-end rounded-full bg-attention px-4 py-2 text-sm font-medium text-attention-contrast disabled:opacity-50" disabled={view.connection !== "online" || !composer.trim() || view.snapshot.state === "stopping" || stopping || sending}>Send</button>
       </form>
       {#if view.snapshot.state === "generating"}
-        <button type="button" class="mt-2 rounded-full border border-danger-border px-3 py-1.5 text-sm text-danger-foreground disabled:opacity-50" disabled={stopping} onclick={() => void stopActive()}>{stopping ? "Stopping…" : "Stop"}</button>
+        <button type="button" class="mt-2 rounded-full border border-danger-border px-3 py-1.5 text-sm text-danger-foreground disabled:opacity-50" disabled={view.connection !== "online" || stopping} onclick={() => void stopActive()}>{stopping ? "Stopping…" : "Stop"}</button>
       {/if}
       {#if actionMessage}<p class="mt-2 text-xs text-postbox-muted" role="status">{actionMessage}</p>{/if}
       <p class="mt-3 text-xs text-postbox-muted">Model: <span class="font-medium text-postbox-subtle">{view.snapshot.model.id}</span>{#if view.snapshot.model.source === "pi-default"} · Pi default fallback{/if}</p>

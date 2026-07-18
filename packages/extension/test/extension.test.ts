@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const postboxClientMock = vi.hoisted(() => ({
   options: [] as Array<{
     serverUrl: string;
+    registration?: { session: { sessionId: string } };
     resolveTarget?: () => unknown;
     activeLocalPollMs?: number;
     activeLocalPollingEnabled?: boolean;
@@ -22,7 +23,10 @@ const postboxClientMock = vi.hoisted(() => ({
   started: 0,
   stopped: 0
 }));
-const questionChatMock = vi.hoisted(() => ({ cleanupAll: vi.fn<() => Promise<void>>(async () => undefined) }));
+const questionChatMock = vi.hoisted(() => ({
+  cleanupAll: vi.fn<(ownerSessionId?: string) => Promise<void>>(async () => undefined),
+  suspendAll: vi.fn<() => Promise<void>>(async () => undefined)
+}));
 
 vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/client/PostboxClient.js")>();
@@ -31,6 +35,7 @@ vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
     PostboxClient: class {
       constructor(options: {
         serverUrl: string;
+        registration?: { session: { sessionId: string } };
         resolveTarget?: () => unknown;
         activeLocalPollMs?: number;
         activeLocalPollingEnabled?: boolean;
@@ -78,6 +83,7 @@ vi.mock("../src/questionChatRuntime.js", async (importOriginal) => {
     PiQuestionChatRuntimeAdapter: class {},
     QuestionChatRuntimeRegistry: class {
       cleanupAll = questionChatMock.cleanupAll;
+      suspendAll = questionChatMock.suspendAll;
     }
   };
 });
@@ -96,11 +102,14 @@ const DEV_INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
 afterEach(async () => {
   resetExtensionModuleState();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   postboxClientMock.options.length = 0;
   postboxClientMock.started = 0;
   postboxClientMock.stopped = 0;
   questionChatMock.cleanupAll.mockReset();
   questionChatMock.cleanupAll.mockResolvedValue(undefined);
+  questionChatMock.suspendAll.mockReset();
+  questionChatMock.suspendAll.mockResolvedValue(undefined);
   await Promise.all(servers.splice(0).map(closeServer));
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -142,6 +151,21 @@ describe("Pi Postbox extension registration", () => {
     expect(completed).toBe(true);
   });
 
+  it("suspends SDK Question Chat runtimes on reload without deleting their recovery manifests", async () => {
+    const shutdownHandlers: Array<(event: unknown, ctx: Record<string, unknown>) => unknown> = [];
+    postboxExtension({
+      on(event, handler) {
+        if (event === "session_shutdown") shutdownHandlers.push(handler);
+      },
+      registerTool: () => undefined,
+      registerCommand: () => undefined
+    });
+
+    await shutdownHandlers.at(-1)!({ reason: "reload" }, { cwd: process.cwd() });
+    expect(questionChatMock.suspendAll).toHaveBeenCalledOnce();
+    expect(questionChatMock.cleanupAll).not.toHaveBeenCalled();
+  });
+
   it("creates and reuses a persistent generated machine id", async () => {
     const env = await tempConfigEnv();
 
@@ -169,6 +193,43 @@ describe("Pi Postbox extension registration", () => {
 
     expect(first.sessionId).toBe(firstReconnect.sessionId);
     expect(replacement.sessionId).not.toBe(first.sessionId);
+  });
+
+  it("preserves a generated session identity across reload but rotates it on replacement", async () => {
+    const server = await startHealthServer({ role: "dev", instanceId: DEV_INSTANCE_ID });
+    vi.stubEnv("PI_POSTBOX_URL", server.url);
+    const handlers = new Map<string, Array<(event: unknown, ctx: Record<string, any>) => unknown>>();
+    const api = {
+      getSessionName: () => "Ephemeral reload session",
+      on(event: string, handler: (event: unknown, ctx: Record<string, any>) => unknown) {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+      },
+      registerTool: () => undefined,
+      registerCommand: () => undefined
+    };
+    const ctx = {
+      cwd: process.cwd(),
+      ui: { setStatus: () => undefined, notify: () => undefined, setWidget: () => undefined },
+      sessionManager: { getSessionFile: () => undefined, getLeafId: () => undefined }
+    };
+    const emit = async (event: string, payload: unknown) => {
+      await Promise.all((handlers.get(event) ?? []).map((handler) => handler(payload, ctx)));
+    };
+
+    postboxExtension(api);
+    await emit("session_start", {});
+    await vi.waitFor(() => expect(postboxClientMock.started).toBe(1));
+    const originalOwner = postboxClientMock.options.at(-1)!.registration!.session.sessionId;
+
+    await emit("session_shutdown", { reason: "reload" });
+    await emit("session_start", {});
+    await vi.waitFor(() => expect(postboxClientMock.started).toBe(2));
+    expect(postboxClientMock.options.at(-1)!.registration!.session.sessionId).toBe(originalOwner);
+
+    await emit("session_shutdown", { reason: "new" });
+    await emit("session_start", {});
+    await vi.waitFor(() => expect(postboxClientMock.started).toBe(3));
+    expect(postboxClientMock.options.at(-1)!.registration!.session.sessionId).not.toBe(originalOwner);
   });
 
   it("shows the active Postbox URL in the footer while an ask is waiting", async () => {

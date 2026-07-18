@@ -70,6 +70,11 @@ interface ActiveSessionRegistrationContext {
 const DEFAULT_SUPERVISOR_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_SUPERVISOR_MAX_DELAY_MS = 30_000;
 const AUTOSTART_RECOVERY_METADATA_TTL_MS = 24 * 60 * 60 * 1_000;
+const RELOAD_FALLBACK_IDENTITY = Symbol.for("@wienerberliner/pi-postbox/reload-fallback-session-identity");
+
+interface ReloadIdentityGlobal {
+  [RELOAD_FALLBACK_IDENTITY]?: string;
+}
 
 let client: PostboxClient | undefined;
 let currentRegistration: SessionRegisterPayload | undefined;
@@ -147,15 +152,23 @@ export default function postboxExtension(pi: PiLikeApi): void {
     activeUiScope?.deactivate();
     stopActiveLocalSupervisor();
     activeUiScope = createSessionUiScope(ctx);
-    const fallbackSessionIdentity = randomUUID();
+    const fallbackSessionIdentity = consumeReloadFallbackIdentity() ?? randomUUID();
     const options: StartRegistrationOptions = {};
     activeSessionRegistrationContext = { pi, ctx, uiScope: activeUiScope, fallbackSessionIdentity, options };
     void startRegistration(pi, ctx, process.env, activeUiScope, fallbackSessionIdentity, options);
   });
 
-  pi.on("session_shutdown", async (event) => {
+  pi.on("session_shutdown", async (event, ctx) => {
     const reason = event && typeof event === "object" && "reason" in event ? (event as { reason?: unknown }).reason : undefined;
-    const chatCleanup = reason !== "reload" ? questionChats.cleanupAll() : undefined;
+    preserveFallbackIdentityForReload(reason, activeSessionRegistrationContext?.fallbackSessionIdentity);
+    const ownerSessionId = currentRegistration?.session.sessionId ?? collectSessionMetadata(
+      pi,
+      activeSessionRegistrationContext?.ctx ?? ctx,
+      undefined,
+      undefined,
+      activeSessionRegistrationContext?.fallbackSessionIdentity
+    ).sessionId;
+    const chatCleanup = reason === "reload" ? questionChats.suspendAll() : questionChats.cleanupAll(ownerSessionId);
     activeUiScope?.deactivate();
     stopActiveLocalSupervisor();
     activeUiScope = undefined;
@@ -166,6 +179,22 @@ export default function postboxExtension(pi: PiLikeApi): void {
     notifyRegistrationWaiters();
     await chatCleanup;
   });
+}
+
+function consumeReloadFallbackIdentity(): string | undefined {
+  const reloadState = globalThis as ReloadIdentityGlobal;
+  const identity = reloadState[RELOAD_FALLBACK_IDENTITY];
+  delete reloadState[RELOAD_FALLBACK_IDENTITY];
+  return identity;
+}
+
+function preserveFallbackIdentityForReload(reason: unknown, identity: string | undefined): void {
+  const reloadState = globalThis as ReloadIdentityGlobal;
+  if (reason === "reload" && identity) {
+    reloadState[RELOAD_FALLBACK_IDENTITY] = identity;
+    return;
+  }
+  delete reloadState[RELOAD_FALLBACK_IDENTITY];
 }
 
 async function collectExtensionPostboxStatusSnapshot(env: NodeJS.ProcessEnv) {

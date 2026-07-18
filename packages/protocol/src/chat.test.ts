@@ -9,6 +9,7 @@ import {
   QuestionChatSendPayloadSchema,
   QuestionChatStopPayloadSchema,
   QuestionChatStopResponseSchema,
+  QuestionChatStreamEventSchema,
   QuestionChatSnapshotHttpResponseSchema,
   QuestionChatSnapshotSchema,
   QuestionChatSourceSchema
@@ -198,6 +199,20 @@ describe("Question Chat first-message protocol", () => {
     ).toThrow();
   });
 
+  it("keeps transient transport state separate from monotonic runtime sequence events", () => {
+    expect(QuestionChatStreamEventSchema.parse({
+      requestId: "ask-30",
+      type: "transport",
+      state: "offline"
+    })).toEqual({ requestId: "ask-30", type: "transport", state: "offline" });
+    expect(() => QuestionChatStreamEventSchema.parse({
+      requestId: "ask-30",
+      type: "transport",
+      state: "offline",
+      sequence: 99
+    })).toThrow();
+  });
+
   it("accepts a complete bounded transcript snapshot", () => {
     expect(
       QuestionChatSnapshotSchema.parse({
@@ -238,6 +253,53 @@ describe("Question Chat first-message protocol", () => {
         payload: { requestId: "ask-26", sequence: 3, type: "thinking.delta", text: "secret" }
       })
     ).toThrow();
+  });
+
+  it("defines a one-manifest-at-a-time correlated recovery reconciliation", () => {
+    expect(ExtensionClientMessageSchema.parse({
+      type: "chat.recover.offer",
+      requestId: "recover-1",
+      payload: { requestId: "ask-30", ownerSessionId: "session-1", forkKind: "exact" }
+    })).toMatchObject({ type: "chat.recover.offer", payload: { requestId: "ask-30" } });
+    expect(ExtensionServerMessageSchema.parse({
+      type: "chat.reconcile",
+      requestId: "recover-1",
+      payload: { requestId: "ask-30", forkKind: "exact", action: "recover", reason: "pending" }
+    })).toMatchObject({ type: "chat.reconcile", payload: { action: "recover" } });
+    expect(ExtensionClientMessageSchema.parse({
+      type: "chat.reconciled",
+      requestId: "recover-1",
+      payload: {
+        requestId: "ask-30",
+        forkKind: "exact",
+        result: {
+          status: "recovered",
+          snapshot: {
+            requestId: "ask-30",
+            state: "ready",
+            forkKind: "exact",
+            model: { id: "test/model", source: "originating" },
+            sequence: 8,
+            messages: []
+          }
+        }
+      }
+    })).toMatchObject({ type: "chat.reconciled", payload: { result: { status: "recovered" } } });
+    expect(() => ExtensionClientMessageSchema.parse({
+      type: "chat.recover.offer",
+      requestId: "recover-many",
+      payload: { entries: Array.from({ length: 1000 }, (_, index) => ({ requestId: `ask-${index}` })) }
+    })).toThrow();
+    expect(() => ExtensionServerMessageSchema.parse({
+      type: "chat.reconcile",
+      requestId: "contradiction",
+      payload: { requestId: "ask-30", forkKind: "exact", action: "recover", reason: "terminal" }
+    })).toThrow();
+    expect(ExtensionClientMessageSchema.parse({
+      type: "chat.recover.complete",
+      requestId: "recover-complete",
+      payload: { ownerSessionId: "session-1" }
+    })).toMatchObject({ type: "chat.recover.complete" });
   });
 
   it("validates browser HTTP snapshot/send success and unavailable envelopes", () => {

@@ -141,6 +141,17 @@ export const QuestionChatEventSchema = z.discriminatedUnion("type", [
   })
 ]);
 
+export const QuestionChatTransportEventSchema = z.object({
+  requestId: z.string().min(1).max(REQUEST_ID_MAX),
+  type: z.literal("transport"),
+  state: z.enum(["online", "offline"])
+}).strict();
+
+export const QuestionChatStreamEventSchema = z.union([
+  QuestionChatEventSchema,
+  QuestionChatTransportEventSchema
+]);
+
 export const QuestionChatSendResponseSchema = z.object({
   status: z.literal("accepted"),
   clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX),
@@ -217,4 +228,6 @@ export type QuestionChatUnavailableResponse = z.infer<typeof QuestionChatUnavail
 export type QuestionChatSnapshotHttpResponse = z.infer<typeof QuestionChatSnapshotHttpResponseSchema>;
 export type QuestionChatSendHttpResponse = z.infer<typeof QuestionChatSendHttpResponseSchema>;
 export type QuestionChatEvent = z.infer<typeof QuestionChatEventSchema>;
+export type QuestionChatTransportEvent = z.infer<typeof QuestionChatTransportEventSchema>;
+export type QuestionChatStreamEvent = z.infer<typeof QuestionChatStreamEventSchema>;
 export type QuestionChatActivationResponse = z.infer<typeof QuestionChatActivationResponseSchema>;

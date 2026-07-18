@@ -36,16 +36,17 @@
   let contextActivationRequest = $state(0);
   let activationError = $state<QuestionChatAvailabilityError | undefined>();
   let confirmingContextChat = $state(false);
+  let recoveryPanelVisible = $state(false);
   const presentation = $derived(layoutState.questionChat(request.requestId));
   const questionPresented = $derived(
-    !mobile || (!chatStarting && (!presentation.started || presentation.mobileTab === "question"))
+    !mobile || (!chatStarting && !recoveryPanelVisible && (!presentation.started || presentation.mobileTab === "question"))
   );
   const chatPresented = $derived(
-    (!mobile && (chatStarting || (presentation.started && presentation.visible))) ||
-      (mobile && (chatStarting || (presentation.started && presentation.mobileTab === "chat")))
+    (!mobile && (chatStarting || recoveryPanelVisible || (presentation.started && presentation.visible))) ||
+      (mobile && (chatStarting || recoveryPanelVisible || (presentation.started && presentation.mobileTab === "chat")))
   );
   const chatButtonLabel = $derived.by<"Chat" | "Open Chat" | undefined>(() => {
-    if (chatStarting || (mobile && presentation.started) || (!mobile && presentation.started && presentation.visible)) {
+    if (chatStarting || recoveryPanelVisible || (mobile && presentation.started) || (!mobile && presentation.started && presentation.visible)) {
       return undefined;
     }
     return presentation.started ? "Open Chat" : "Chat";
@@ -74,9 +75,19 @@
 
   function chatStarted(): void {
     chatStarting = false;
+    recoveryPanelVisible = false;
     activationError = undefined;
     confirmingContextChat = false;
     layoutState.markQuestionChatStarted(request.requestId);
+  }
+
+  function chatRecoveryUnavailable(): void {
+    chatStarting = false;
+    recoveryPanelVisible = true;
+  }
+
+  function chatRecoveryNotStarted(): void {
+    recoveryPanelVisible = false;
   }
 
   function chatActivationFailed(error: QuestionChatAvailabilityError): void {
@@ -198,6 +209,8 @@
       recoveryRequest={1}
       onStarted={chatStarted}
       onActivationFailed={chatActivationFailed}
+      onRecoveryUnavailable={chatRecoveryUnavailable}
+      onRecoveryNotStarted={chatRecoveryNotStarted}
     />
   </aside>
 

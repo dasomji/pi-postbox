@@ -1,5 +1,5 @@
 import { SessionManager, type CreateAgentSessionOptions, type CreateAgentSessionResult } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import {
 function createSourceFixture() {
   const root = mkdtempSync(join(tmpdir(), "postbox-chat-runtime-"));
   const cwd = join(root, "repo");
+  mkdirSync(cwd, { recursive: true });
   const sourceDir = join(root, "source");
   const manager = SessionManager.create(cwd, sourceDir);
   manager.appendModelChange("test-provider", "source-model");
@@ -53,6 +54,209 @@ function fakeCreateSession(selectedModel = { provider: "test-provider", id: "sou
 }
 
 describe("Pi Question Chat runtime adapter", () => {
+  it("treats an absent private recovery root as no recoverable Chats during cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "postbox-empty-chat-runtime-"));
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot: join(root, "not-created"),
+      agentDir: join(root, "agent"),
+      createAgentSession: fakeCreateSession().create
+    });
+    const registry = new QuestionChatRuntimeRegistry(adapter);
+
+    expect(adapter.listRecoveryOffers()).toEqual([]);
+    await expect(registry.cleanupAll("session-owner")).resolves.toBeUndefined();
+  });
+
+  it("persists a private versioned recovery manifest before events and reopens the same transcript after reload", async () => {
+    const fixture = createSourceFixture();
+    const privateRoot = join(fixture.root, "private-chats");
+    const sessions: Array<{ abort: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }> = [];
+    let activeManager: SessionManager | undefined;
+    const createSession = vi.fn(async (options: CreateAgentSessionOptions) => {
+      activeManager = options.sessionManager;
+      const session = {
+        model: { provider: "test-provider", id: "source-model" },
+        prompt: vi.fn(async (_text: string, promptOptions: { preflightResult?: (success: boolean) => void }) => {
+          promptOptions.preflightResult?.(true);
+        }),
+        abort: vi.fn(async () => undefined),
+        dispose: vi.fn()
+      };
+      sessions.push(session);
+      return { session, extensionsResult: { extensions: [], errors: [], runtime: undefined } } as unknown as CreateAgentSessionResult;
+    });
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot,
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: createSession
+    });
+    const registry = new QuestionChatRuntimeRegistry(adapter);
+    await registry.activate({
+      requestId: "ask-recover",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+
+    const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
+    const manifestPath = join(runtimeDir, "manifest.json");
+    expect(statSync(privateRoot).mode & 0o777).toBe(0o700);
+    expect(statSync(runtimeDir).mode & 0o777).toBe(0o700);
+    expect(statSync(manifestPath).mode & 0o777).toBe(0o600);
+    const createdManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(createdManifest).toMatchObject({
+      version: 1,
+      requestId: "ask-recover",
+      ownerSessionId: "session-owner",
+      forkKind: "exact",
+      cwd: fixture.cwd,
+      chatBoundaryId: fixture.selectedLeafId,
+      sequence: 0
+    });
+    expect(createdManifest.privateSessionPath).toBe(activeManager!.getSessionFile());
+
+    const observedSequences: number[] = [];
+    registry.subscribe("ask-recover", (event) => {
+      const durable = JSON.parse(readFileSync(manifestPath, "utf8"));
+      observedSequences.push(durable.sequence);
+      expect(durable.sequence).toBeGreaterThanOrEqual(event.sequence);
+    });
+    await registry.send("ask-recover", { clientCommandId: "persisted-command", message: "Explain recovery." });
+    expect(observedSequences.length).toBeGreaterThan(0);
+    activeManager!.appendMessage({ role: "user", content: "Explain recovery.", timestamp: Date.now() });
+
+    await registry.suspendAll();
+    expect(sessions[0]!.abort).toHaveBeenCalledOnce();
+    expect(sessions[0]!.dispose).toHaveBeenCalledOnce();
+    expect(existsSync(runtimeDir)).toBe(true);
+    expect(existsSync(manifestPath)).toBe(true);
+
+    const reloaded = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter({
+      privateRoot,
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: createSession
+    }));
+    expect(await reloaded.listRecoveryOffers()).toEqual([
+      { requestId: "ask-recover", ownerSessionId: "session-owner", forkKind: "exact" }
+    ]);
+    const [result] = await reloaded.reconcile("session-owner", [
+      { requestId: "ask-recover", forkKind: "exact", action: "recover" }
+    ]);
+    expect(result).toMatchObject({
+      status: "recovered",
+      snapshot: {
+        requestId: "ask-recover",
+        forkKind: "exact",
+        sequence: expect.any(Number),
+        messages: [expect.objectContaining({ role: "user", text: "Explain recovery." })]
+      }
+    });
+    expect(result.status === "recovered" && result.snapshot.sequence).toBeGreaterThanOrEqual(observedSequences.at(-1)!);
+    expect(createSession).toHaveBeenCalledTimes(2);
+    await reloaded.cleanup("ask-recover");
+    expect(existsSync(runtimeDir)).toBe(false);
+  });
+
+  it("deletes corrupt manifests and private-session symlink escapes without following them", async () => {
+    const fixture = createSourceFixture();
+    const privateRoot = join(fixture.root, "private-chats");
+    mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+    const corruptDir = join(privateRoot, "a".repeat(64));
+    mkdirSync(corruptDir, { mode: 0o700 });
+    writeFileSync(join(corruptDir, "manifest.json"), "{not-json", { mode: 0o600 });
+    const fake = fakeCreateSession();
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot,
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: fake.create
+    });
+    expect(adapter.listRecoveryOffers()).toEqual([]);
+    expect(existsSync(corruptDir)).toBe(false);
+
+    const registry = new QuestionChatRuntimeRegistry(adapter);
+    await registry.activate({
+      requestId: "ask-symlink",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+    const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
+    const manifest = JSON.parse(readFileSync(join(runtimeDir, "manifest.json"), "utf8"));
+    await registry.suspendAll();
+    const outside = join(fixture.root, "outside.jsonl");
+    writeFileSync(outside, "outside must survive\n", { mode: 0o600 });
+    unlinkSync(manifest.privateSessionPath);
+    symlinkSync(outside, manifest.privateSessionPath);
+
+    expect(adapter.listRecoveryOffers()).toEqual([]);
+    expect(existsSync(runtimeDir)).toBe(false);
+    expect(readFileSync(outside, "utf8")).toBe("outside must survive\n");
+
+    await registry.activate({
+      requestId: "ask-internal-symlink",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+    const internalDir = join(privateRoot, readdirSync(privateRoot)[0]!);
+    const internalManifest = JSON.parse(readFileSync(join(internalDir, "manifest.json"), "utf8"));
+    await registry.suspendAll();
+    const realSessionPath = `${internalManifest.privateSessionPath}.real`;
+    renameSync(internalManifest.privateSessionPath, realSessionPath);
+    symlinkSync(realSessionPath, internalManifest.privateSessionPath);
+    expect(adapter.listRecoveryOffers()).toEqual([]);
+    expect(existsSync(internalDir)).toBe(false);
+  });
+
+  it("deletes owned disk-only recovery manifests on replacement after reload", async () => {
+    const fixture = createSourceFixture();
+    const privateRoot = join(fixture.root, "private-chats");
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot,
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: fakeCreateSession().create
+    });
+    const live = new QuestionChatRuntimeRegistry(adapter);
+    await live.activate({
+      requestId: "ask-reload-replacement",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+    const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
+    await live.suspendAll();
+    expect(existsSync(join(runtimeDir, "manifest.json"))).toBe(true);
+
+    const reloaded = new QuestionChatRuntimeRegistry(adapter);
+    await reloaded.cleanupAll("session-owner");
+    expect(existsSync(runtimeDir)).toBe(false);
+  });
+
+  it("deletes a structurally invalid recovered fork whose transcript boundary is missing", async () => {
+    const fixture = createSourceFixture();
+    const privateRoot = join(fixture.root, "private-chats");
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot,
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: fakeCreateSession().create
+    });
+    const live = new QuestionChatRuntimeRegistry(adapter);
+    await live.activate({
+      requestId: "ask-missing-boundary",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+    const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
+    const manifestPath = join(runtimeDir, "manifest.json");
+    await live.suspendAll();
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, chatBoundaryId: "missing-boundary" })}\n`, { mode: 0o600 });
+
+    const reloaded = new QuestionChatRuntimeRegistry(adapter);
+    expect(reloaded.listRecoveryOffers()).toHaveLength(1);
+    await expect(reloaded.reconcile("session-owner", [
+      { requestId: "ask-missing-boundary", forkKind: "exact", action: "recover" }
+    ])).resolves.toEqual([
+      expect.objectContaining({ status: "failed", requestId: "ask-missing-boundary" })
+    ]);
+    expect(existsSync(runtimeDir)).toBe(false);
+  });
   it("creates an isolated context-only interviewer from authoritative persisted handoff context without inventing source history", async () => {
     const root = mkdtempSync(join(tmpdir(), "postbox-context-chat-runtime-"));
     const privateRoot = join(root, "private-chats");
@@ -95,8 +299,8 @@ describe("Pi Question Chat runtime adapter", () => {
     };
 
     const [first, retry] = await Promise.all([
-      registry.activateContext({ requestId: "ask-context", source }),
-      registry.activateContext({ requestId: "ask-context", source })
+      registry.activateContext({ requestId: "ask-context", ownerSessionId: "session-owner", source }),
+      registry.activateContext({ requestId: "ask-context", ownerSessionId: "session-owner", source })
     ]);
     expect(first).toEqual(retry);
     expect(first).toMatchObject({
@@ -154,7 +358,7 @@ describe("Pi Question Chat runtime adapter", () => {
       options: [{ value: "a", label: "A" }],
       context: { codebaseContext: "Codebase.", problemContext: "Problem." }
     };
-    const snapshot = await registry.activateContext({ requestId: "ask-context-fallback", source: contextSource });
+    const snapshot = await registry.activateContext({ requestId: "ask-context-fallback", ownerSessionId: "session-owner", source: contextSource });
     expect(snapshot.model).toMatchObject({
       id: "fallback-provider/default-model",
       source: "pi-default",
@@ -163,6 +367,7 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(fallback.create.mock.calls[0]![0].model).toBeUndefined();
     await expect(registry.activate({
       requestId: "ask-context-fallback",
+      ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     })).rejects.toMatchObject({ code: "runtime_busy" });
     expect(fallback.create).toHaveBeenCalledOnce();
@@ -184,8 +389,8 @@ describe("Pi Question Chat runtime adapter", () => {
 
     const source = { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd };
     const [first, retry] = await Promise.all([
-      registry.activate({ requestId: "ask/runtime-safe", source }),
-      registry.activate({ requestId: "ask/runtime-safe", source })
+      registry.activate({ requestId: "ask/runtime-safe", ownerSessionId: "session-owner", source }),
+      registry.activate({ requestId: "ask/runtime-safe", ownerSessionId: "session-owner", source })
     ]);
 
     expect(first).toEqual(retry);
@@ -234,6 +439,7 @@ describe("Pi Question Chat runtime adapter", () => {
 
     const runtime = await adapter.create({
       requestId: "ask-fallback",
+      ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     });
     expect(runtime.snapshot.model).toMatchObject({
@@ -272,6 +478,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const registry = new QuestionChatRuntimeRegistry(adapter);
     await registry.activate({
       requestId: "ask-deferred-abort",
+      ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     });
     const websocketCleanup = registry.cleanup("ask-deferred-abort");
@@ -302,10 +509,10 @@ describe("Pi Question Chat runtime adapter", () => {
     });
 
     await expect(
-      adapter.create({ requestId: "missing-path", source: { agentSessionPath: join(fixture.root, "missing"), leafId: "leaf", cwd: fixture.cwd } })
+      adapter.create({ requestId: "missing-path", ownerSessionId: "session-owner", source: { agentSessionPath: join(fixture.root, "missing"), leafId: "leaf", cwd: fixture.cwd } })
     ).rejects.toMatchObject({ code: "source_path_missing" } satisfies Partial<QuestionChatRuntimeError>);
     await expect(
-      adapter.create({ requestId: "missing-leaf", source: { agentSessionPath: fixture.sourcePath, leafId: "missing", cwd: fixture.cwd } })
+      adapter.create({ requestId: "missing-leaf", ownerSessionId: "session-owner", source: { agentSessionPath: fixture.sourcePath, leafId: "missing", cwd: fixture.cwd } })
     ).rejects.toMatchObject({ code: "source_leaf_missing" } satisfies Partial<QuestionChatRuntimeError>);
     expect(fake.create).not.toHaveBeenCalled();
   });
@@ -356,6 +563,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const requestId = "ask-stream";
     await registry.activate({
       requestId,
+      ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     });
     const events: QuestionChatEvent[] = [];
@@ -503,7 +711,7 @@ describe("Pi Question Chat runtime adapter", () => {
       terminate: vi.fn(async () => undefined)
     };
     const registry = new QuestionChatRuntimeRegistry({ create: vi.fn(async () => runtime) } as any);
-    await registry.activate({ requestId: "ask-dedupe", source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" } });
+    await registry.activate({ requestId: "ask-dedupe", ownerSessionId: "session-owner", source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" } });
     const first = registry.send("ask-dedupe", { clientCommandId: "same", message: "hello" });
     const retry = registry.send("ask-dedupe", { clientCommandId: "same", message: "hello" });
     await Promise.resolve();
@@ -557,6 +765,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const requestId = "ask-stop";
     await registry.activate({
       requestId,
+      ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     });
     forkManager!.appendMessage({ role: "user", content: "Earlier", timestamp: 17 });
@@ -670,6 +879,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const requestId = "ask-interrupted";
     await registry.activate({
       requestId,
+      ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     });
     await registry.send(requestId, { clientCommandId: "prompt-error", message: "Try" });

@@ -1,6 +1,6 @@
 import type { QuestionChatSnapshot } from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { activateContextQuestionChat, probeQuestionChatSnapshot } from "./postboxApi";
+import { activateContextQuestionChat, connectQuestionChatEvents, probeQuestionChatSnapshot } from "./postboxApi";
 
 const SNAPSHOT: QuestionChatSnapshot = {
   requestId: "question/probe",
@@ -62,5 +62,36 @@ describe("Question Chat snapshot discovery", () => {
     await expect(probeQuestionChatSnapshot("question-one")).resolves.toEqual({ status: "not-started" });
     await expect(probeQuestionChatSnapshot("question-one")).rejects.toThrow("probe failed with 500");
     await expect(probeQuestionChatSnapshot("question-one")).rejects.toThrow();
+  });
+
+  it("returns typed extension_offline discovery instead of reconstructing browser history", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
+      status: "unavailable",
+      error: { code: "extension_offline", message: "The originating extension is offline." }
+    }, 503)));
+    await expect(probeQuestionChatSnapshot("question-offline")).resolves.toEqual({
+      status: "unavailable",
+      error: { code: "extension_offline", message: "The originating extension is offline." }
+    });
+  });
+
+  it("reports an established event stream becoming stale", async () => {
+    let source!: { onopen: (() => void) | null; onerror: (() => void) | null; onmessage: ((event: MessageEvent) => void) | null };
+    class FakeEventSource {
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor() {
+        source = this;
+      }
+      close(): void {}
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const events: unknown[] = [];
+    const connection = connectQuestionChatEvents("question-offline", (event) => events.push(event));
+    source.onopen?.();
+    await connection.ready;
+    source.onerror?.();
+    expect(events).toEqual([{ requestId: "question-offline", type: "transport", state: "offline" }]);
   });
 });

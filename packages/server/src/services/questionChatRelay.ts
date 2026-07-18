@@ -12,6 +12,7 @@ import {
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
   type QuestionChatSnapshot,
+  type QuestionChatStreamEvent,
   type QuestionChatSource,
   type QuestionChatStopPayload,
   type QuestionChatStopResponse
@@ -37,21 +38,24 @@ interface PendingCommand {
 
 export type QuestionChatCommandResult<T> = { status: "ok"; value: T } | { status: "unavailable"; error: QuestionChatAvailabilityError };
 export type QuestionChatTerminalReason = "answered" | "cancelled" | "expired" | "session_shutdown";
+type QuestionChatCleanupReason = QuestionChatTerminalReason | "missing" | "wrong_owner";
 
 export class QuestionChatRelay {
   private readonly extensions = new Map<string, BoundExtension>();
   private readonly pending = new Map<string, PendingCommand>();
   private readonly activeChats = new Map<string, ActiveChat>();
-  private readonly subscribers = new Map<string, Set<(event: QuestionChatEvent) => void>>();
-  private readonly deferredCleanup = new Map<string, { requestId: string; reason: QuestionChatTerminalReason }>();
+  private readonly reconcilingSessions = new Set<string>();
+  private readonly subscribers = new Map<string, Set<(event: QuestionChatStreamEvent) => void>>();
+  private readonly deferredCleanup = new Map<string, { requestId: string; ownerSessionId: string; reason: QuestionChatCleanupReason }>();
 
   constructor(private readonly commandTimeoutMs = 10_000) {}
 
   bind(sessionId: string, connectionId: string, socket: WebSocket): void {
     this.extensions.set(sessionId, { connectionId, socket });
+    this.reconcilingSessions.add(sessionId);
     for (const [requestId, cleanup] of this.deferredCleanup) {
-      if (this.activeChats.get(requestId)?.ownerSessionId !== sessionId) continue;
-      this.send(socket, { type: "chat.cleanup", payload: cleanup });
+      if (cleanup.ownerSessionId !== sessionId) continue;
+      this.send(socket, { type: "chat.cleanup", payload: { requestId: cleanup.requestId, reason: cleanup.reason } });
       this.deferredCleanup.delete(requestId);
       this.activeChats.delete(requestId);
     }
@@ -59,8 +63,31 @@ export class QuestionChatRelay {
 
   unbind(connectionId: string): void {
     for (const [sessionId, extension] of this.extensions) {
-      if (extension.connectionId === connectionId) this.extensions.delete(sessionId);
+      if (extension.connectionId === connectionId) {
+        this.extensions.delete(sessionId);
+        this.reconcilingSessions.delete(sessionId);
+        for (const requestId of this.activeRequestIds(sessionId)) {
+          this.publishTransport(requestId, "offline");
+        }
+      }
     }
+  }
+
+  finishRecovery(sessionId: string): void {
+    this.reconcilingSessions.delete(sessionId);
+  }
+
+  restore(
+    connectionId: string,
+    ownerSessionId: string,
+    forkKind: ActiveChat["forkKind"],
+    snapshot: QuestionChatSnapshot
+  ): boolean {
+    const extension = this.extensions.get(ownerSessionId);
+    if (!extension || extension.connectionId !== connectionId || snapshot.forkKind !== forkKind) return false;
+    this.activeChats.set(snapshot.requestId, { ownerSessionId, forkKind });
+    this.publishTransport(snapshot.requestId, "online");
+    return true;
   }
 
   async activate(requestId: string, ownerSessionId: string, source: QuestionChatSource): Promise<QuestionChatActivationResponse> {
@@ -118,7 +145,7 @@ export class QuestionChatRelay {
 
   snapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatCommandResult<QuestionChatSnapshot>> {
     if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
-      return Promise.resolve(unavailableResult("chat_not_started", "Start Question Chat before fetching its snapshot."));
+      return Promise.resolve(this.inactiveResult(ownerSessionId));
     }
     return this.dispatch("snapshot", requestId, ownerSessionId, {
       type: "chat.snapshot",
@@ -133,7 +160,7 @@ export class QuestionChatRelay {
     command: QuestionChatSendPayload
   ): Promise<QuestionChatCommandResult<QuestionChatSendResponse>> {
     if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
-      return Promise.resolve(unavailableResult("chat_not_started", "Start Question Chat before sending a message."));
+      return Promise.resolve(this.inactiveResult(ownerSessionId));
     }
     return this.dispatch("send", requestId, ownerSessionId, {
       type: "chat.send",
@@ -148,7 +175,7 @@ export class QuestionChatRelay {
     command: QuestionChatStopPayload
   ): Promise<QuestionChatCommandResult<QuestionChatStopResponse>> {
     if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
-      return Promise.resolve(unavailableResult("chat_not_started", "Start Question Chat before stopping a response."));
+      return Promise.resolve(this.inactiveResult(ownerSessionId));
     }
     return this.dispatch("stop", requestId, ownerSessionId, {
       type: "chat.stop",
@@ -200,13 +227,18 @@ export class QuestionChatRelay {
     for (const listener of this.subscribers.get(normalized.requestId) ?? []) listener(normalized);
   }
 
-  subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void {
+  subscribe(requestId: string, listener: (event: QuestionChatStreamEvent) => void): () => void {
     let listeners = this.subscribers.get(requestId);
     if (!listeners) {
       listeners = new Set();
       this.subscribers.set(requestId, listeners);
     }
     listeners.add(listener);
+    const active = this.activeChats.get(requestId);
+    if (active) {
+      const extension = this.extensions.get(active.ownerSessionId);
+      if (extension?.socket.readyState !== 1) listener({ requestId, type: "transport", state: "offline" });
+    }
     return () => {
       listeners?.delete(listener);
       if (listeners?.size === 0) this.subscribers.delete(requestId);
@@ -224,11 +256,21 @@ export class QuestionChatRelay {
     this.subscribers.delete(requestId);
     const extension = this.extensions.get(ownerSessionId);
     if (!extension || extension.socket.readyState !== 1) {
-      this.deferredCleanup.set(requestId, { requestId, reason });
+      this.deferredCleanup.set(requestId, { requestId, ownerSessionId, reason });
       return;
     }
     this.send(extension.socket, { type: "chat.cleanup", payload: { requestId, reason } });
     this.activeChats.delete(requestId);
+  }
+
+  rejectRecovery(requestId: string, ownerSessionId: string, reason: QuestionChatCleanupReason): void {
+    this.activeChats.delete(requestId);
+    const extension = this.extensions.get(ownerSessionId);
+    if (!extension || extension.socket.readyState !== 1) {
+      this.deferredCleanup.set(requestId, { requestId, ownerSessionId, reason });
+      return;
+    }
+    this.send(extension.socket, { type: "chat.cleanup", payload: { requestId, reason } });
   }
 
   close(): void {
@@ -241,6 +283,7 @@ export class QuestionChatRelay {
     this.activeChats.clear();
     this.subscribers.clear();
     this.deferredCleanup.clear();
+    this.reconcilingSessions.clear();
   }
 
   private dispatch<T>(
@@ -285,6 +328,23 @@ export class QuestionChatRelay {
 
   private send(socket: WebSocket, message: ExtensionServerMessage): void {
     socket.send(JSON.stringify(message));
+  }
+
+  private inactiveResult(ownerSessionId: string): { status: "unavailable"; error: QuestionChatAvailabilityError } {
+    const extension = this.extensions.get(ownerSessionId);
+    if (!extension || extension.socket.readyState !== 1 || this.reconcilingSessions.has(ownerSessionId)) {
+      return unavailableResult("extension_offline", "The originating Pi extension is offline or still recovering Chat. Retry when it reconnects.");
+    }
+    return unavailableResult("chat_not_started", "Start Question Chat before fetching its snapshot.");
+  }
+
+  private activeRequestIds(ownerSessionId: string): string[] {
+    return [...this.activeChats].filter(([, active]) => active.ownerSessionId === ownerSessionId).map(([requestId]) => requestId);
+  }
+
+  private publishTransport(requestId: string, state: "offline" | "online"): void {
+    const event: QuestionChatStreamEvent = { requestId, type: "transport", state };
+    for (const listener of this.subscribers.get(requestId) ?? []) listener(event);
   }
 }
 

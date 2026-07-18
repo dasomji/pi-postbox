@@ -188,7 +188,7 @@ async function main() {
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const databasePath = join(tmp, "postbox.sqlite");
-  const server = spawn(process.execPath, [
+  const serverArgs = [
     cliPath,
     "--host", "127.0.0.1",
     "--port", String(port),
@@ -196,7 +196,8 @@ async function main() {
     "--ask-timeout-ms", "600000",
     "--history-retention-max-records", "100",
     "--no-tailscale"
-  ], {
+  ];
+  const serverOptions = {
     cwd: root,
     env: {
       ...process.env,
@@ -206,11 +207,21 @@ async function main() {
       PI_POSTBOX_TAILSCALE: "off"
     },
     stdio: ["ignore", "pipe", "pipe"]
-  });
+  };
 
   let stderr = "";
-  server.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
-  server.stdout?.on("data", (chunk) => process.stdout.write(`[server] ${chunk}`));
+  const launchServer = () => {
+    const child = spawn(process.execPath, serverArgs, serverOptions);
+    child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.stdout?.on("data", (chunk) => process.stdout.write(`[server] ${chunk}`));
+    return child;
+  };
+  const stopServer = async (child) => {
+    if (child.exitCode !== null) return;
+    child.kill("SIGTERM");
+    await new Promise((resolvePromise) => child.once("exit", resolvePromise));
+  };
+  let server = launchServer();
 
   let socket;
   let sse;
@@ -424,6 +435,91 @@ async function main() {
       undefined
     );
 
+    chatSse.close();
+    chatSse = undefined;
+    sse.close();
+    sse = undefined;
+    await stopServer(server);
+    socket.close();
+    socket = undefined;
+    server = launchServer();
+    await waitForHealth(baseUrl);
+
+    socket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    const restartRegistered = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "session.register",
+      requestId: "smoke-restart-register",
+      payload: {
+        machine: { machineId: "smoke-machine", hostname: "smoke-host", displayName: "Smoke Host" },
+        project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
+        session: { sessionId, cwd: root, semanticState: "working" }
+      }
+    }));
+    assert((await restartRegistered).type === "registered", "Fake extension did not re-register after server restart");
+
+    const replayCreated = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "ask.create",
+      requestId: "smoke-replay-ask",
+      payload: {
+        requestId,
+        sessionId,
+        mode: "single",
+        question: { prompt: "Is the release smoke path healthy?" },
+        options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }],
+        context: {
+          codebaseContext: "Packaged Pi Postbox extension, server, protocol, and web assets.",
+          problemContext: "Smoke verifies one remote handoff without full chat transcripts."
+        }
+      }
+    }));
+    assert((await replayCreated).type === "ask.created", "Pending ask did not replay after server restart");
+
+    const recoveryDecision = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "chat.recover.offer",
+      requestId: "smoke-recovery-offer",
+      payload: { requestId, ownerSessionId: sessionId, forkKind: "context-only" }
+    }));
+    const decision = await recoveryDecision;
+    assert(decision.type === "chat.reconcile" && decision.payload.action === "recover", "Server did not authorize pending Chat recovery");
+    const recoveredSnapshot = {
+      requestId,
+      state: "ready",
+      forkKind: "context-only",
+      model: { id: "smoke/fake-model", source: "originating" },
+      sequence: 7,
+      messages: [{ id: "smoke-assistant", role: "assistant", text: "smoke-streamed-private-fork-answer", status: "stopped" }]
+    };
+    const recoveryAccepted = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "chat.reconciled",
+      requestId: "smoke-recovery-offer",
+      payload: { requestId, forkKind: "context-only", result: { status: "recovered", snapshot: recoveredSnapshot } }
+    }));
+    assert((await recoveryAccepted).type === "ack", "Server did not accept recovered Chat snapshot");
+    socket.send(JSON.stringify({
+      type: "chat.recover.complete",
+      requestId: "smoke-recovery-complete",
+      payload: { ownerSessionId: sessionId }
+    }));
+
+    const recoveredSnapshotResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat`);
+    const recoveredSnapshotCommand = await nextMessage(socket);
+    assert(recoveredSnapshotCommand.type === "chat.snapshot", "Recovered Chat did not accept a fresh snapshot request");
+    socket.send(JSON.stringify({
+      type: "chat.snapshot",
+      requestId: recoveredSnapshotCommand.requestId,
+      payload: recoveredSnapshot
+    }));
+    const recoveredBody = await (await recoveredSnapshotResponse).json();
+    assert(recoveredBody.snapshot?.messages?.[0]?.text === "smoke-streamed-private-fork-answer", "Server restart did not restore Chat from the extension fork");
+
+    sse = new SseClient(`${baseUrl}/api/state/events`);
+    await sse.open();
+    await sse.nextStateMatching((snapshot) => snapshot.requests.some((request) => request.requestId === requestId && request.status === "pending"));
+
     const continueCommandId = `smoke-chat-continue-${randomUUID()}`;
     const continueResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
       method: "POST",
@@ -439,8 +535,6 @@ async function main() {
     }));
     const continued = await continueResponse;
     assert(continued.status === 200 && (await continued.json()).mode === "prompt", "Stopped Chat did not resume with an ordinary prompt");
-    chatSse.close();
-    chatSse = undefined;
 
     const terminalMessagesPromise = nextMessages(socket, 2);
     const answerResponse = await fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/answer`, {
@@ -463,13 +557,12 @@ async function main() {
     assert(history.history.some((record) => record.request.requestId === requestId && record.request.result?.status === "answered"), "History endpoint does not include answered request");
     assert(!JSON.stringify(history).includes("smoke-streamed-private-fork-answer"), "History persisted the private Chat transcript");
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, Chat prompt/steer/stop/resume, cleanup, answer, state, and history verified.");
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, Chat prompt/steer/stop/server-restart recovery/resume, cleanup, answer, state, and history verified.");
   } finally {
     chatSse?.close();
     sse?.close();
     socket?.close();
-    server.kill("SIGTERM");
-    await new Promise((resolvePromise) => server.once("exit", resolvePromise));
+    await stopServer(server);
     if (server.exitCode && server.exitCode !== 0 && server.exitCode !== null) {
       console.error(stderr);
     }

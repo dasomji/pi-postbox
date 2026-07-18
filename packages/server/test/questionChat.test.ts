@@ -22,9 +22,9 @@ function listenerPort(app: FastifyInstance): number {
   return address.port;
 }
 
-function nextMessage(socket: WebSocket): Promise<ExtensionServerMessage> {
+function nextMessage(socket: WebSocket, label = "extension message"): Promise<ExtensionServerMessage> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Timed out waiting for extension message")), 2_000);
+    const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 2_000);
     socket.once("message", (raw) => {
       clearTimeout(timeout);
       resolve(JSON.parse(raw.toString()) as ExtensionServerMessage);
@@ -120,7 +120,7 @@ async function setup(options: {
     );
     db.close();
   }
-  return { app, socket };
+  return { app, socket, databasePath };
 }
 
 function readySnapshot(): QuestionChatSnapshot {
@@ -143,6 +143,96 @@ async function activateChat(app: FastifyInstance, socket: WebSocket): Promise<vo
 }
 
 describe("Question Chat activation relay", () => {
+  it("restores a pending Chat after server restart and lets a terminal race delete instead of resurrecting it", async () => {
+    const first = await setup();
+    await activateChat(first.app, first.socket);
+    first.socket.close();
+    await first.app.close();
+    apps.splice(apps.indexOf(first.app), 1);
+
+    const app = await createPostboxApp({
+      databasePath: first.databasePath,
+      expirySweepMs: 0,
+      chatCommandTimeoutMs: 250
+    });
+    apps.push(app);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`ws://127.0.0.1:${listenerPort(app)}/api/extension/ws`);
+    sockets.push(socket);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+    socket.send(JSON.stringify({
+      type: "session.register",
+      requestId: "restart-register",
+      payload: {
+        machine: { machineId: "machine-chat", hostname: "chat-host" },
+        project: { projectId: "project-chat", name: "Chat project", cwd: "/repo" },
+        session: { sessionId: "session-chat-owner", cwd: "/repo", semanticState: "blocked" }
+      }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(socket, "restart registration")).resolves.toMatchObject({ type: "registered" });
+
+    const offlineProbe = await app.inject({ method: "GET", url: "/api/requests/ask-chat/chat" });
+    expect(offlineProbe.statusCode).toBe(503);
+    expect(offlineProbe.json()).toMatchObject({ status: "unavailable", error: { code: "extension_offline" } });
+
+    socket.send(JSON.stringify({
+      type: "chat.recover.offer",
+      requestId: "recover-after-restart",
+      payload: { requestId: "ask-chat", ownerSessionId: "session-chat-owner", forkKind: "exact" }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(socket, "restart reconciliation")).resolves.toEqual({
+      type: "chat.reconcile",
+      requestId: "recover-after-restart",
+      payload: { requestId: "ask-chat", forkKind: "exact", action: "recover", reason: "pending" }
+    });
+    const recovered = { ...readySnapshot(), sequence: 12, messages: [
+      { id: "prior", role: "assistant" as const, text: "Before restart", status: "final" as const }
+    ] };
+    const recoveryAcceptance = nextMessage(socket, "recovery acceptance");
+    socket.send(JSON.stringify({
+      type: "chat.reconciled",
+      requestId: "recover-after-restart",
+      payload: { requestId: "ask-chat", forkKind: "exact", result: { status: "recovered", snapshot: recovered } }
+    } satisfies ExtensionClientMessage));
+    await expect(recoveryAcceptance).resolves.toMatchObject({
+      type: "ack",
+      requestId: "recover-after-restart",
+      payload: { type: "chat.reconciled" }
+    });
+
+    const snapshotRequest = app.inject({ method: "GET", url: "/api/requests/ask-chat/chat" });
+    const snapshotCommand = await nextMessage(socket, "recovered snapshot command");
+    expect(snapshotCommand).toMatchObject({ type: "chat.snapshot", payload: { requestId: "ask-chat" } });
+    if (snapshotCommand.type !== "chat.snapshot") throw new Error("Expected recovered snapshot command");
+    socket.send(JSON.stringify({ type: "chat.snapshot", requestId: snapshotCommand.requestId, payload: recovered } satisfies ExtensionClientMessage));
+    expect((await snapshotRequest).json()).toEqual({ status: "ready", snapshot: recovered });
+
+    socket.send(JSON.stringify({
+      type: "chat.recover.offer",
+      requestId: "terminal-race",
+      payload: { requestId: "ask-chat", ownerSessionId: "session-chat-owner", forkKind: "exact" }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(socket, "terminal race reconciliation")).resolves.toMatchObject({ type: "chat.reconcile", payload: { action: "recover" } });
+    const terminalCleanup = nextMessage(socket, "terminal cleanup");
+    const answer = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/answer",
+      payload: { selectedValues: ["a"] }
+    });
+    expect(answer.statusCode).toBe(200);
+    await expect(terminalCleanup).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
+    const lateCleanup = nextMessage(socket, "late recovery cleanup");
+    socket.send(JSON.stringify({
+      type: "chat.reconciled",
+      requestId: "terminal-race",
+      payload: { requestId: "ask-chat", forkKind: "exact", result: { status: "recovered", snapshot: recovered } }
+    } satisfies ExtensionClientMessage));
+    await expect(lateCleanup).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
+  });
+
   it("offers but never auto-starts an eligible context-only fallback, then relays only the explicit confirmed command", async () => {
     const { app, socket } = await setup({ sessionPath: null });
     let unexpectedCommand = false;
@@ -491,6 +581,26 @@ describe("Question Chat activation relay", () => {
       payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-3", mode: "prompt" } }
     } satisfies ExtensionClientMessage));
     expect((await continueResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-3", mode: "prompt" });
+    await events.close();
+  });
+
+  it("streams extension offline without discarding the active Chat and rejects commands instead of queueing them", async () => {
+    const { app, socket } = await setup();
+    await activateChat(app, socket);
+    const eventResponse = await fetch(`http://127.0.0.1:${listenerPort(app)}/api/requests/ask-chat/chat/events`);
+    const events = createSseReader(eventResponse);
+    await new Promise<void>((resolve) => {
+      socket.once("close", resolve);
+      socket.close();
+    });
+    await expect(events.next()).resolves.toEqual({ requestId: "ask-chat", type: "transport", state: "offline" });
+    const send = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      payload: { clientCommandId: "offline-command", message: "Do not queue this" }
+    });
+    expect(send.statusCode).toBe(503);
+    expect(send.json()).toMatchObject({ status: "unavailable", error: { code: "extension_offline" } });
     await events.close();
   });
 

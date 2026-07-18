@@ -54,6 +54,84 @@ afterEach(() => {
 });
 
 describe("extension Question Chat commands", () => {
+  it("offers each private manifest after registration and returns recovered snapshots from reconciliation", async () => {
+    const snapshot = {
+      requestId: "ask-recover",
+      state: "ready" as const,
+      forkKind: "exact" as const,
+      model: { id: "test/model", source: "originating" as const },
+      sequence: 12,
+      messages: [{ id: "prior", role: "assistant" as const, text: "Before reload", status: "final" as const }]
+    };
+    const questionChats = {
+      activate: vi.fn(),
+      activateContext: vi.fn(),
+      getSnapshot: vi.fn(),
+      send: vi.fn(),
+      stop: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      cleanup: vi.fn(),
+      listRecoveryOffers: vi.fn(() => [
+        { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "exact" as const },
+        { requestId: "ask-stale", ownerSessionId: "old-session", forkKind: "context-only" as const }
+      ]),
+      reconcile: vi.fn(async (_owner: string, decisions: Array<{ requestId: string; action: string }>) =>
+        decisions.map((decision) => decision.action === "recover"
+          ? { status: "recovered" as const, snapshot }
+          : { status: "deleted" as const, requestId: decision.requestId }))
+    };
+    const client = new PostboxClient({
+      serverUrl: "http://postbox.local",
+      registration,
+      reconnect: false,
+      heartbeatMs: 60_000,
+      WebSocketImpl: FakeSocket as never,
+      questionChats
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+    socket.serverMessage({
+      type: "registered",
+      requestId: "register",
+      payload: { sessionId: "session-chat", presence: "live" }
+    });
+    await vi.waitFor(() => expect(socket.sent.filter((message: any) => message.type === "chat.recover.offer")).toEqual([
+      {
+        type: "chat.recover.offer",
+        requestId: expect.any(String),
+        payload: { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "exact" }
+      }
+    ]));
+    let offers = socket.sent.filter((message: any) => message.type === "chat.recover.offer") as any[];
+    socket.serverMessage({
+      type: "chat.reconcile",
+      requestId: offers[0]!.requestId,
+      payload: { requestId: "ask-recover", forkKind: "exact", action: "recover", reason: "pending" }
+    });
+    await vi.waitFor(() => expect(socket.sent.filter((message: any) => message.type === "chat.recover.offer")).toHaveLength(2));
+    offers = socket.sent.filter((message: any) => message.type === "chat.recover.offer") as any[];
+    expect(offers[1]).toMatchObject({
+      payload: { requestId: "ask-stale", ownerSessionId: "old-session", forkKind: "context-only" }
+    });
+    socket.serverMessage({
+      type: "chat.reconcile",
+      requestId: offers[1]!.requestId,
+      payload: { requestId: "ask-stale", forkKind: "context-only", action: "delete", reason: "wrong_owner" }
+    });
+    await vi.waitFor(() => expect(questionChats.reconcile).toHaveBeenCalledTimes(2));
+    expect(questionChats.reconcile).toHaveBeenCalledWith("session-chat", [
+      { requestId: "ask-recover", forkKind: "exact", action: "recover" }
+    ]);
+    expect(socket.sent).toContainEqual({
+      type: "chat.reconciled",
+      requestId: offers[0]!.requestId,
+      payload: { requestId: "ask-recover", forkKind: "exact", result: { status: "recovered", snapshot } }
+    });
+    expect(questionChats.subscribe).toHaveBeenCalledWith("ask-recover", expect.any(Function));
+    client.stop();
+  });
+
   it("activates the exact fork for its owning Postbox Session and returns ready", async () => {
     const questionChats = {
       activate: vi.fn(async ({ requestId }: { requestId: string }) => ({
@@ -133,6 +211,7 @@ describe("extension Question Chat commands", () => {
     });
     await vi.waitFor(() => expect(questionChats.activateContext).toHaveBeenCalledWith({
       requestId: "ask-context",
+      ownerSessionId: "session-chat",
       source: expect.objectContaining({
         cwd: "/repo",
         model: "anthropic/claude-sonnet-4",

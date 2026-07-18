@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import type {
-  QuestionChatEvent,
   QuestionChatSendPayload,
   QuestionChatSendResponse,
   QuestionChatSnapshot,
+  QuestionChatStreamEvent,
   QuestionChatStopPayload
 } from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -102,7 +102,7 @@ describe("Question Chat first message", () => {
   });
 
   it("buffers stream events until the extension-backed snapshot arrives, then renders safe bounded Markdown", async () => {
-    let onEvent!: (event: QuestionChatEvent) => void;
+    let onEvent!: (event: QuestionChatStreamEvent) => void;
     let finishOpen!: () => void;
     let finishSnapshot!: (value: QuestionChatSnapshot) => void;
     const streamReady = new Promise<void>((resolve) => {
@@ -117,7 +117,7 @@ describe("Question Chat first message", () => {
         api: {
           activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
           fetchSnapshot,
-          connectEvents: (_requestId: string, listener: (event: QuestionChatEvent) => void) => {
+          connectEvents: (_requestId: string, listener: (event: QuestionChatStreamEvent) => void) => {
             onEvent = listener;
             return { ready: streamReady, close: () => undefined };
           },
@@ -163,7 +163,7 @@ describe("Question Chat first message", () => {
   });
 
   it("steers while active, stops one turn with its partial marker, and remains reusable", async () => {
-    let onEvent!: (event: QuestionChatEvent) => void;
+    let onEvent!: (event: QuestionChatStreamEvent) => void;
     const active = snapshot({
       state: "generating",
       messages: [{ id: "assistant-live", role: "assistant", text: "Partial answer", status: "streaming" }]
@@ -185,7 +185,7 @@ describe("Question Chat first message", () => {
         api: {
           activate: async () => ({ status: "ready" as const, snapshot: active }),
           fetchSnapshot: async () => active,
-          connectEvents: (_requestId: string, listener: (event: QuestionChatEvent) => void) => {
+          connectEvents: (_requestId: string, listener: (event: QuestionChatStreamEvent) => void) => {
             onEvent = listener;
             return noEvents();
           },
@@ -244,17 +244,104 @@ describe("Question Chat first message", () => {
     const fallback = snapshot({
       model: { id: "openai/gpt-default", source: "pi-default", fallbackReason: "Originating model is unavailable; using Pi default." }
     });
-    const activate = vi
-      .fn()
-      .mockResolvedValueOnce({ status: "unavailable", error: { code: "extension_offline", message: "The originating Pi extension is offline." } })
-      .mockResolvedValueOnce({ status: "ready", snapshot: fallback });
-    render(QuestionChatActivation, { props: { requestId: "ask-ui", api: { activate, fetchSnapshot: async () => fallback, connectEvents: noEvents } } });
+    const activate = vi.fn().mockResolvedValueOnce({ status: "unavailable", error: { code: "extension_offline", message: "The originating Pi extension is offline." } });
+    const probeSnapshot = vi.fn(async () => ({ status: "ready" as const, snapshot: fallback }));
+    render(QuestionChatActivation, { props: { requestId: "ask-ui", api: { activate, probeSnapshot, fetchSnapshot: async () => fallback, connectEvents: noEvents } } });
 
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     expect((await screen.findByRole("alert")).textContent).toContain("originating Pi extension is offline");
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText(/Pi default fallback/)).toBeTruthy();
     expect(screen.getByText(/Originating model is unavailable/)).toBeTruthy();
+    expect(activate).toHaveBeenCalledOnce();
+    expect(probeSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("preserves rendered messages while offline, disables commands, and explicitly retries snapshot resync", async () => {
+    let onEvent!: (event: QuestionChatStreamEvent) => void;
+    const prior = snapshot({
+      state: "generating",
+      sequence: 4,
+      messages: [{ id: "prior", role: "assistant", text: "Keep this rendered", status: "streaming" }]
+    });
+    const recovered = snapshot({
+      sequence: 6,
+      messages: [{ id: "prior", role: "assistant", text: "Keep this rendered", status: "final" }]
+    });
+    const fetchSnapshot = vi.fn().mockResolvedValueOnce(prior).mockResolvedValueOnce(recovered);
+    render(QuestionChatActivation, {
+      props: {
+        requestId: "ask-ui",
+        api: {
+          activate: async () => ({ status: "ready" as const, snapshot: prior }),
+          fetchSnapshot,
+          connectEvents: (_requestId: string, listener: (event: QuestionChatStreamEvent) => void) => {
+            onEvent = listener;
+            return noEvents();
+          }
+        }
+      }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    expect(await screen.findByText("Keep this rendered")).toBeTruthy();
+    onEvent({ requestId: "ask-ui", type: "transport", state: "offline" });
+
+    expect(await screen.findByText(/Chat offline/)).toBeTruthy();
+    expect(screen.getByText("Keep this rendered")).toBeTruthy();
+    expect((screen.getByLabelText("Message Question Chat") as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(fetchSnapshot).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/Chat offline/)).toBeNull();
+    expect((screen.getByLabelText("Message Question Chat") as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
+  it("detects a runtime sequence gap and resynchronizes instead of applying across it", async () => {
+    let onEvent!: (event: QuestionChatStreamEvent) => void;
+    const initial = snapshot({ sequence: 4, messages: [{ id: "prior", role: "assistant", text: "Before gap", status: "final" }] });
+    const resynced = snapshot({ sequence: 7, messages: [{ id: "after", role: "assistant", text: "Recovered after gap", status: "final" }] });
+    const fetchSnapshot = vi.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(resynced);
+    render(QuestionChatActivation, {
+      props: {
+        requestId: "ask-ui",
+        api: {
+          activate: async () => ({ status: "ready" as const, snapshot: initial }),
+          fetchSnapshot,
+          connectEvents: (_requestId: string, listener: (event: QuestionChatStreamEvent) => void) => {
+            onEvent = listener;
+            return noEvents();
+          }
+        }
+      }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    expect(await screen.findByText("Before gap")).toBeTruthy();
+    onEvent({ requestId: "ask-ui", sequence: 6, type: "lifecycle", state: "generating" });
+    expect(await screen.findByText(/Chat stale/)).toBeTruthy();
+    await waitFor(() => expect(fetchSnapshot).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Recovered after gap")).toBeTruthy();
+    expect(screen.queryByText("Before gap")).toBeNull();
+    onEvent({ requestId: "ask-ui", sequence: 7, type: "lifecycle", state: "ready" });
+    expect(fetchSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows Chat unavailable rather than a start button for a fresh browser while the extension is offline", async () => {
+    render(QuestionChatActivation, {
+      props: {
+        requestId: "ask-ui",
+        recoveryRequest: 1,
+        api: {
+          probeSnapshot: async () => ({
+            status: "unavailable" as const,
+            error: { code: "extension_offline" as const, message: "The originating Pi extension is offline." }
+          }),
+          connectEvents: noEvents
+        }
+      }
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain("extension is offline");
+    expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
   it("clears one question's ready Chat when the selected request changes", async () => {

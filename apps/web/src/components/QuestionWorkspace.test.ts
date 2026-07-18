@@ -9,6 +9,7 @@ import type {
 } from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserLayoutState } from "../lib/layout.svelte";
+import type { QuestionChatProbeResult } from "../api/postboxApi";
 import QuestionDetail from "./QuestionDetail.svelte";
 
 afterEach(cleanup);
@@ -68,7 +69,7 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false) {
       snapshot: { ...active, forkKind: "context-only" }
     })),
     fetchSnapshot: vi.fn(async () => active),
-    probeSnapshot: vi.fn(async () => alreadyRunning
+    probeSnapshot: vi.fn(async (): Promise<QuestionChatProbeResult> => alreadyRunning
       ? { status: "ready" as const, snapshot: active }
       : { status: "not-started" as const }),
     sendMessage: vi.fn(async (_requestId: string, command: QuestionChatSendPayload) => ({
@@ -86,6 +87,32 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false) {
 }
 
 describe("responsive Question Chat workspace", () => {
+  it("reveals fresh-browser Chat unavailable with Retry when the extension is offline", async () => {
+    const media = mediaController(false);
+    const chatApi = chatBoundary();
+    chatApi.probeSnapshot.mockResolvedValueOnce({
+      status: "unavailable" as const,
+      error: { code: "extension_offline" as const, message: "The originating Pi extension is offline." }
+    }).mockResolvedValueOnce({ status: "ready" as const, snapshot: snapshot() });
+    render(QuestionDetail, {
+      props: {
+        request: REQUEST,
+        isMock: true,
+        layoutState: new BrowserLayoutState(),
+        matchMedia: () => media.query,
+        chatApi
+      }
+    });
+
+    expect((await screen.findByRole("alert")).textContent).toContain("extension is offline");
+    expect(screen.getByRole("complementary", { name: "Question Chat sidebar" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("heading", { name: "Question Chat" })).toBeTruthy();
+    expect(chatApi.activate).not.toHaveBeenCalled();
+    expect(chatApi.probeSnapshot).toHaveBeenCalledTimes(2);
+  });
+
   it("offers eligible context-only Chat as a separate disclosed action and waits for inline confirmation", async () => {
     const media = mediaController(true);
     const chatApi = chatBoundary();

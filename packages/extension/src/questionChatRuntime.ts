@@ -1,6 +1,7 @@
 import {
   QUESTION_CHAT_ASSISTANT_TEXT_MAX,
   QUESTION_CHAT_DELTA_MAX,
+  QuestionChatContextSourceSchema,
   QuestionChatEventSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatStopPayloadSchema,
@@ -26,20 +27,38 @@ import {
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult
 } from "@earendil-works/pi-coding-agent";
-import { createHash } from "node:crypto";
-import { constants, copyFileSync, existsSync, mkdirSync, rmSync, chmodSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  constants,
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  type Dirent,
+  writeFileSync
+} from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { z } from "zod";
 
 const INTERVIEWER_SYSTEM_PROMPT =
   "You are the focused interviewer for one pending Postbox Question. Explain the decision without resolving it. Only the human may select, submit, cancel, or otherwise resolve the question.";
 
 export interface QuestionChatActivation {
   requestId: string;
+  ownerSessionId: string;
   source: QuestionChatSource;
 }
 
 export interface QuestionChatContextActivation {
   requestId: string;
+  ownerSessionId: string;
   source: QuestionChatContextSource;
 }
 
@@ -66,8 +85,26 @@ export interface QuestionChatRuntime {
   send(command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
   stop(command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
   subscribe(listener: (event: QuestionChatEvent) => void): () => void;
+  suspend(): Promise<void>;
   terminate(): Promise<void>;
 }
+
+export interface QuestionChatRecoveryOffer {
+  requestId: string;
+  ownerSessionId: string;
+  forkKind: "exact" | "context-only";
+}
+
+export interface QuestionChatReconciliationDecision {
+  requestId: string;
+  forkKind: "exact" | "context-only";
+  action: "recover" | "delete";
+}
+
+export type QuestionChatReconciliationResult =
+  | { status: "recovered"; snapshot: QuestionChatSnapshot }
+  | { status: "deleted"; requestId: string }
+  | { status: "failed"; requestId: string; message: string };
 
 type RuntimeEventInput = QuestionChatEvent extends infer Event
   ? Event extends QuestionChatEvent
@@ -81,6 +118,27 @@ export interface PiQuestionChatRuntimeAdapterOptions {
   createAgentSession?: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
   createModelRuntime?: () => Promise<ModelRuntime>;
 }
+
+const RecoveryManifestSchema = z.object({
+  version: z.literal(1),
+  requestId: z.string().min(1).max(200),
+  ownerSessionId: z.string().min(1).max(200),
+  forkKind: z.enum(["exact", "context-only"]),
+  cwd: z.string().min(1).max(4_000),
+  privateSessionPath: z.string().min(1).max(4_000),
+  chatBoundaryId: z.string().min(1).max(400).nullable(),
+  sequence: z.number().int().nonnegative(),
+  model: z.object({
+    id: z.string().min(1).max(400),
+    source: z.enum(["originating", "pi-default"]),
+    fallbackReason: z.string().max(2_000).optional()
+  }),
+  contextSource: QuestionChatContextSourceSchema.optional()
+});
+
+type RecoveryManifest = z.infer<typeof RecoveryManifestSchema>;
+const RECOVERY_MANIFEST = "manifest.json";
+const RECOVERY_HASH = /^[a-f0-9]{64}$/;
 
 export class QuestionChatRuntimeError extends Error {
   constructor(
@@ -117,7 +175,7 @@ export class PiQuestionChatRuntimeAdapter {
 
   async create(input: QuestionChatActivation): Promise<QuestionChatRuntime> {
     this.assertSourceFile(input.source.agentSessionPath);
-    return this.createPrivateRuntime(input.requestId, "exact", (runtimeDir) => {
+    return this.createPrivateRuntime(input.requestId, input.ownerSessionId, "exact", undefined, (runtimeDir) => {
       // Pi 0.80.10 may migrate an opened session in place. Open a private byte
       // snapshot so even older source sessions remain immutable.
       const sourceSnapshotPath = join(runtimeDir, "source-snapshot.jsonl");
@@ -142,7 +200,7 @@ export class PiQuestionChatRuntimeAdapter {
   }
 
   async createContext(input: QuestionChatContextActivation): Promise<QuestionChatRuntime> {
-    return this.createPrivateRuntime(input.requestId, "context-only", (runtimeDir) => ({
+    return this.createPrivateRuntime(input.requestId, input.ownerSessionId, "context-only", input.source, (runtimeDir) => ({
       cwd: input.source.cwd,
       sessionManager: SessionManager.create(input.source.cwd, runtimeDir),
       systemPrompt: contextOnlySystemPrompt(input.source),
@@ -153,7 +211,9 @@ export class PiQuestionChatRuntimeAdapter {
 
   private async createPrivateRuntime(
     requestId: string,
+    ownerSessionId: string,
     forkKind: QuestionChatSnapshot["forkKind"],
+    contextSource: QuestionChatContextSource | undefined,
     prepare: (runtimeDir: string) => {
       cwd: string;
       sessionManager: SessionManager;
@@ -167,9 +227,9 @@ export class PiQuestionChatRuntimeAdapter {
 
     try {
       mkdirSync(this.privateRoot, { recursive: true, mode: 0o700 });
-      chmodSync(this.privateRoot, 0o700);
+      this.assertPrivateRoot();
       mkdirSync(runtimeDir, { recursive: false, mode: 0o700 });
-      chmodSync(runtimeDir, 0o700);
+      this.validateRuntimeDirectory(runtimeDir);
 
       const prepared = prepare(runtimeDir);
       const settingsManager = SettingsManager.create(prepared.cwd, this.agentDir, { projectTrusted: false });
@@ -230,13 +290,28 @@ export class PiQuestionChatRuntimeAdapter {
         sequence: 0,
         messages: []
       };
+      if (!privateSessionPath) throw new QuestionChatRuntimeError("runtime_failure", "Pi did not persist the private Question Chat fork.");
+      const manifest: RecoveryManifest = {
+        version: 1,
+        requestId,
+        ownerSessionId,
+        forkKind,
+        cwd: prepared.cwd,
+        privateSessionPath,
+        chatBoundaryId: prepared.sessionManager.getLeafId(),
+        sequence: 0,
+        model: snapshot.model,
+        ...(contextSource ? { contextSource } : {})
+      };
+      this.writeManifest(runtimeDir, manifest);
       return new ManagedQuestionChatRuntime(
         snapshot,
         session,
         prepared.sessionManager,
-        prepared.sessionManager.getLeafId(),
+        manifest.chatBoundaryId,
         runtimeDir,
-        this.privateRoot
+        this.privateRoot,
+        (sequence) => this.writeManifest(runtimeDir, { ...manifest, sequence })
       );
     } catch (error) {
       if (session) {
@@ -246,12 +321,138 @@ export class PiQuestionChatRuntimeAdapter {
           session.dispose();
         }
       }
-      this.removeRuntimeDirectory(runtimeDir);
+      try {
+        this.removeRuntimeDirectory(runtimeDir);
+      } catch {
+        // Never follow an unsafe path while handling the original failure.
+      }
       if (error instanceof QuestionChatRuntimeError) throw error;
       throw new QuestionChatRuntimeError(
         "runtime_failure",
         error instanceof Error ? `Question Chat runtime failed: ${error.message}` : "Question Chat runtime failed."
       );
+    }
+  }
+
+  listRecoveryOffers(): QuestionChatRecoveryOffer[] {
+    let entries: Dirent[];
+    try {
+      if (!existsSync(this.privateRoot)) return [];
+      this.assertPrivateRoot();
+      entries = readdirSync(this.privateRoot, { withFileTypes: true });
+    } catch (error) {
+      if (isMissingPathError(error)) return [];
+      throw error;
+    }
+    const offers: QuestionChatRecoveryOffer[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !RECOVERY_HASH.test(entry.name)) continue;
+      const runtimeDir = join(this.privateRoot, entry.name);
+      try {
+        const manifest = this.readManifest(runtimeDir);
+        this.validatePrivateSessionPath(runtimeDir, manifest.privateSessionPath);
+        offers.push({ requestId: manifest.requestId, ownerSessionId: manifest.ownerSessionId, forkKind: manifest.forkKind });
+      } catch {
+        try {
+          this.removeValidatedRuntimeDirectory(runtimeDir);
+        } catch (error) {
+          if (!isMissingPathError(error)) throw error;
+        }
+      }
+    }
+    return offers.sort((left, right) => left.requestId.localeCompare(right.requestId));
+  }
+
+  async recover(ownerSessionId: string, requestId: string, forkKind: QuestionChatSnapshot["forkKind"]): Promise<QuestionChatRuntime> {
+    const runtimeDir = this.runtimeDirectory(requestId);
+    const manifest = this.readManifest(runtimeDir);
+    if (manifest.ownerSessionId !== ownerSessionId || manifest.forkKind !== forkKind) {
+      throw new QuestionChatRuntimeError("runtime_failure", "Question Chat recovery metadata does not match the registered owner and fork kind.");
+    }
+    const privateSessionPath = this.validatePrivateSessionPath(runtimeDir, manifest.privateSessionPath);
+    let sessionManager: SessionManager;
+    try {
+      sessionManager = SessionManager.open(privateSessionPath, runtimeDir, manifest.cwd);
+      if (manifest.chatBoundaryId && !sessionManager.getEntry(manifest.chatBoundaryId)) {
+        throw new Error("Question Chat transcript boundary is unavailable.");
+      }
+    } catch (error) {
+      this.removeValidatedRuntimeDirectory(runtimeDir);
+      throw new QuestionChatRuntimeError(
+        "runtime_failure",
+        error instanceof Error ? error.message : "Question Chat recovery metadata is structurally invalid."
+      );
+    }
+    let session: SessionLifecycle | undefined;
+    try {
+      const settingsManager = SettingsManager.create(manifest.cwd, this.agentDir, { projectTrusted: false });
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: manifest.cwd,
+        agentDir: this.agentDir,
+        settingsManager,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        systemPrompt: manifest.contextSource ? contextOnlySystemPrompt(manifest.contextSource) : INTERVIEWER_SYSTEM_PROMPT,
+        appendSystemPrompt: []
+      });
+      await resourceLoader.reload();
+      const modelRuntime = await this.createModelRuntime();
+      const explicitModel = resolveRecordedModel(manifest.model.id, modelRuntime);
+      const result = await this.createSession({
+        cwd: manifest.cwd,
+        agentDir: this.agentDir,
+        sessionManager,
+        settingsManager,
+        resourceLoader,
+        modelRuntime,
+        ...(explicitModel ? { model: explicitModel } : {}),
+        tools: []
+      });
+      session = result.session;
+      const selectedModel = session.model;
+      if (!selectedModel) throw new QuestionChatRuntimeError("runtime_failure", "No authenticated Pi model is available for Question Chat.");
+      const selectedModelId = `${selectedModel.provider}/${selectedModel.id}`;
+      const model = selectedModelId === manifest.model.id
+        ? manifest.model
+        : {
+            id: selectedModelId,
+            source: "pi-default" as const,
+            fallbackReason: result.modelFallbackMessage ?? `Recovered model ${manifest.model.id} is unavailable; using Pi default ${selectedModelId}.`
+          };
+      const durableManifest: RecoveryManifest = { ...manifest, privateSessionPath, model };
+      this.writeManifest(runtimeDir, durableManifest);
+      return new ManagedQuestionChatRuntime(
+        { requestId, state: "ready", forkKind, model, sequence: manifest.sequence, messages: [] },
+        session,
+        sessionManager,
+        manifest.chatBoundaryId,
+        runtimeDir,
+        this.privateRoot,
+        (sequence) => this.writeManifest(runtimeDir, { ...durableManifest, sequence })
+      );
+    } catch (error) {
+      if (session) {
+        try {
+          await session.abort();
+        } finally {
+          session.dispose();
+        }
+      }
+      if (error instanceof QuestionChatRuntimeError) throw error;
+      throw new QuestionChatRuntimeError("runtime_failure", error instanceof Error ? error.message : "Question Chat recovery failed.");
+    }
+  }
+
+  discard(requestId: string): void {
+    const runtimeDir = this.runtimeDirectory(requestId);
+    try {
+      if (!existsSync(runtimeDir)) return;
+      this.removeValidatedRuntimeDirectory(runtimeDir);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
     }
   }
 
@@ -268,15 +469,88 @@ export class PiQuestionChatRuntimeAdapter {
     return join(this.privateRoot, key);
   }
 
-  private removeRuntimeDirectory(runtimeDir: string): void {
-    assertContained(this.privateRoot, runtimeDir);
+  private assertPrivateRoot(): void {
+    const configuredRootStat = lstatSync(this.privateRoot);
+    if (!configuredRootStat.isDirectory() || configuredRootStat.isSymbolicLink()) {
+      throw new Error("Question Chat private root is not a real directory");
+    }
+    const root = realpathSync(this.privateRoot);
+    if (!statSync(root).isDirectory()) throw new Error("Question Chat private root is not a directory");
+    chmodSync(root, 0o700);
+  }
+
+  private readManifest(runtimeDir: string): RecoveryManifest {
+    this.validateRuntimeDirectory(runtimeDir);
+    const manifestPath = join(runtimeDir, RECOVERY_MANIFEST);
+    const manifestStat = lstatSync(manifestPath);
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error("Question Chat recovery manifest is not a regular file");
+    const manifest = RecoveryManifestSchema.parse(JSON.parse(readFileSync(manifestPath, "utf8")));
+    if (this.runtimeDirectory(manifest.requestId) !== runtimeDir) throw new Error("Question Chat recovery directory key does not match its request");
+    if (manifest.forkKind === "context-only" && !manifest.contextSource) throw new Error("Context-only Question Chat recovery metadata is incomplete");
+    if (manifest.forkKind === "exact" && manifest.contextSource) throw new Error("Exact Question Chat recovery metadata has the wrong fork kind");
+    if (!isAbsolute(manifest.cwd) || !statSync(realpathSync(manifest.cwd)).isDirectory()) {
+      throw new Error("Question Chat recovery working directory is unavailable");
+    }
+    return manifest;
+  }
+
+  private writeManifest(runtimeDir: string, manifest: RecoveryManifest): void {
+    RecoveryManifestSchema.parse(manifest);
+    this.validateRuntimeDirectory(runtimeDir);
+    const path = join(runtimeDir, RECOVERY_MANIFEST);
+    const temporary = join(runtimeDir, `${RECOVERY_MANIFEST}.next-${randomUUID()}`);
+    writeFileSync(temporary, `${JSON.stringify(manifest)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, path);
+    chmodSync(path, 0o600);
+  }
+
+  private validateRuntimeDirectory(runtimeDir: string): void {
+    this.assertPrivateRoot();
+    if (!RECOVERY_HASH.test(runtimeDir.slice(runtimeDir.lastIndexOf("/") + 1))) throw new Error("Invalid Question Chat recovery directory key");
+    const configuredRuntimeStat = lstatSync(runtimeDir);
+    if (!configuredRuntimeStat.isDirectory() || configuredRuntimeStat.isSymbolicLink()) {
+      throw new Error("Question Chat recovery path is not a private directory");
+    }
+    const runtimeReal = realpathSync(runtimeDir);
+    assertContained(this.privateRoot, runtimeReal);
+    const runtimeStat = lstatSync(runtimeReal);
+    if (!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink()) throw new Error("Question Chat recovery path is not a private directory");
+    chmodSync(runtimeReal, 0o700);
+  }
+
+  private validatePrivateSessionPath(runtimeDir: string, privateSessionPath: string): string {
+    if (!isAbsolute(privateSessionPath)) throw new Error("Question Chat private session path must be absolute");
+    const configuredSessionStat = lstatSync(privateSessionPath);
+    if (!configuredSessionStat.isFile() || configuredSessionStat.isSymbolicLink()) {
+      throw new Error("Question Chat private session is not a regular file");
+    }
+    const sessionReal = realpathSync(privateSessionPath);
+    assertContained(runtimeDir, sessionReal);
+    const sessionStat = lstatSync(sessionReal);
+    if (!sessionStat.isFile() || sessionStat.isSymbolicLink()) throw new Error("Question Chat private session is not a regular file");
+    chmodSync(sessionReal, 0o600);
+    return sessionReal;
+  }
+
+  private removeValidatedRuntimeDirectory(runtimeDir: string): void {
+    this.validateRuntimeDirectory(runtimeDir);
     rmSync(runtimeDir, { recursive: true, force: true });
   }
+
+  private removeRuntimeDirectory(runtimeDir: string): void {
+    if (!existsSync(runtimeDir)) return;
+    this.removeValidatedRuntimeDirectory(runtimeDir);
+  }
+}
+
+function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   private terminated = false;
-  private sequence = 0;
+  private sequence: number;
   private state: QuestionChatState = "ready";
   private readonly listeners = new Set<(event: QuestionChatEvent) => void>();
   private readonly unsubscribeSession: (() => void) | undefined;
@@ -296,8 +570,10 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     private readonly sessionManager: SessionManager,
     private readonly chatBoundaryId: string | null,
     private readonly runtimeDir: string,
-    private readonly privateRoot: string
+    private readonly privateRoot: string,
+    private readonly persistSequence: (sequence: number) => void
   ) {
+    this.sequence = initialSnapshot.sequence;
     this.unsubscribeSession = this.session.subscribe?.((event) => this.onSessionEvent(event));
   }
 
@@ -562,10 +838,13 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   }
 
   private emit(event: RuntimeEventInput): void {
+    const sequence = this.sequence + 1;
+    this.persistSequence(sequence);
+    this.sequence = sequence;
     const normalized = QuestionChatEventSchema.parse({
       ...event,
       requestId: this.initialSnapshot.requestId,
-      sequence: ++this.sequence
+      sequence
     });
     if (normalized.type === "lifecycle") this.state = normalized.state;
     for (const listener of this.listeners) {
@@ -636,22 +915,41 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       rmSync(this.runtimeDir, { recursive: true, force: true });
     }
   }
+
+  async suspend(): Promise<void> {
+    if (this.terminated) return;
+    this.terminated = true;
+    this.unsubscribeSession?.();
+    this.listeners.clear();
+    try {
+      await this.session.abort();
+    } finally {
+      this.session.dispose();
+    }
+  }
 }
 
 export class QuestionChatRuntimeRegistry {
-  private readonly runtimes = new Map<string, { kind: "exact" | "context-only"; runtime: Promise<QuestionChatRuntime> }>();
+  private readonly runtimes = new Map<string, {
+    kind: "exact" | "context-only";
+    ownerSessionId: string;
+    runtime: Promise<QuestionChatRuntime>;
+  }>();
   private readonly terminations = new Map<string, Promise<void>>();
   private readonly completedCommands = new Map<string, Map<string, Promise<QuestionChatSendResponse>>>();
   private readonly completedStopCommands = new Map<string, Map<string, Promise<QuestionChatStopResponse>>>();
 
-  constructor(private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create" | "createContext">) {}
+  constructor(
+    private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create" | "createContext"> &
+      Partial<Pick<PiQuestionChatRuntimeAdapter, "listRecoveryOffers" | "recover" | "discard">>
+  ) {}
 
   async activate(input: QuestionChatActivation): Promise<QuestionChatSnapshot> {
-    return this.activateKind(input.requestId, "exact", () => this.adapter.create(input));
+    return this.activateKind(input.requestId, input.ownerSessionId, "exact", () => this.adapter.create(input));
   }
 
   async activateContext(input: QuestionChatContextActivation): Promise<QuestionChatSnapshot> {
-    return this.activateKind(input.requestId, "context-only", () => this.adapter.createContext(input));
+    return this.activateKind(input.requestId, input.ownerSessionId, "context-only", () => this.adapter.createContext(input));
   }
 
   async getSnapshot(requestId: string): Promise<QuestionChatSnapshot> {
@@ -741,25 +1039,90 @@ export class QuestionChatRuntimeRegistry {
     }
   }
 
-  async cleanupAll(): Promise<void> {
+  async cleanupAll(ownerSessionId?: string): Promise<void> {
+    const ownedRuntimeIds = [...this.runtimes]
+      .filter(([, entry]) => !ownerSessionId || entry.ownerSessionId === ownerSessionId)
+      .map(([requestId]) => requestId);
     await Promise.all([
       ...this.terminations.values(),
-      ...[...this.runtimes.keys()].map((requestId) => this.cleanup(requestId))
+      ...ownedRuntimeIds.map((requestId) => this.cleanup(requestId))
     ]);
+    for (const offer of this.adapter.listRecoveryOffers?.() ?? []) {
+      if (!ownerSessionId || offer.ownerSessionId === ownerSessionId) this.adapter.discard?.(offer.requestId);
+    }
+  }
+
+  async suspendAll(): Promise<void> {
+    const entries = [...this.runtimes.entries()];
+    this.runtimes.clear();
+    this.completedCommands.clear();
+    this.completedStopCommands.clear();
+    await Promise.all(entries.map(async ([, entry]) => (await entry.runtime).suspend()));
+  }
+
+  listRecoveryOffers(): QuestionChatRecoveryOffer[] {
+    return this.adapter.listRecoveryOffers?.() ?? [];
+  }
+
+  async reconcile(
+    ownerSessionId: string,
+    decisions: QuestionChatReconciliationDecision[]
+  ): Promise<QuestionChatReconciliationResult[]> {
+    const results: QuestionChatReconciliationResult[] = [];
+    for (const decision of decisions) {
+      if (decision.action === "delete") {
+        try {
+          await this.cleanup(decision.requestId);
+          this.adapter.discard?.(decision.requestId);
+          results.push({ status: "deleted", requestId: decision.requestId });
+        } catch (error) {
+          results.push({
+            status: "failed",
+            requestId: decision.requestId,
+            message: error instanceof Error ? error.message : "Question Chat cleanup failed."
+          });
+        }
+        continue;
+      }
+      try {
+        let entry = this.runtimes.get(decision.requestId);
+        if (entry && (entry.kind !== decision.forkKind || entry.ownerSessionId !== ownerSessionId)) {
+          throw new QuestionChatRuntimeError("runtime_busy", "A Question Chat with different recovery ownership is already running.");
+        }
+        if (!entry) {
+          if (!this.adapter.recover) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat recovery is not configured.");
+          const runtime = this.adapter.recover(ownerSessionId, decision.requestId, decision.forkKind);
+          entry = { kind: decision.forkKind, ownerSessionId, runtime };
+          this.runtimes.set(decision.requestId, entry);
+          void runtime.catch(() => {
+            if (this.runtimes.get(decision.requestId) === entry) this.runtimes.delete(decision.requestId);
+          });
+        }
+        results.push({ status: "recovered", snapshot: (await entry.runtime).snapshot });
+      } catch (error) {
+        results.push({
+          status: "failed",
+          requestId: decision.requestId,
+          message: error instanceof Error ? error.message : "Question Chat recovery failed."
+        });
+      }
+    }
+    return results;
   }
 
   private async activateKind(
     requestId: string,
+    ownerSessionId: string,
     kind: "exact" | "context-only",
     create: () => Promise<QuestionChatRuntime>
   ): Promise<QuestionChatSnapshot> {
     let entry = this.runtimes.get(requestId);
-    if (entry && entry.kind !== kind) {
-      throw new QuestionChatRuntimeError("runtime_busy", `A ${entry.kind} Question Chat is already running.`);
+    if (entry && (entry.kind !== kind || entry.ownerSessionId !== ownerSessionId)) {
+      throw new QuestionChatRuntimeError("runtime_busy", "A Question Chat with different ownership or fork kind is already running.");
     }
     if (!entry) {
       const runtime = create();
-      entry = { kind, runtime };
+      entry = { kind, ownerSessionId, runtime };
       this.runtimes.set(requestId, entry);
       void runtime.catch(() => {
         if (this.runtimes.get(requestId) === entry) this.runtimes.delete(requestId);

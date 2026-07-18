@@ -18,7 +18,7 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `GET /api/requests/:requestId/chat` | Fetch the current normalized Question Chat snapshot. |
 | `POST /api/requests/:requestId/chat/messages` | Send an idle prompt or steer the active turn, using a stable browser command id. |
 | `POST /api/requests/:requestId/chat/stop` | Abort only the active Question Chat turn, using a stable browser command id. |
-| `GET /api/requests/:requestId/chat/events` | Stream normalized Question Chat lifecycle/message events over SSE. |
+| `GET /api/requests/:requestId/chat/events` | Stream normalized Question Chat lifecycle/message events plus transient online/offline transport state over SSE. |
 | `POST /api/machines/:machineId/rename` | Persist dashboard-side machine alias. |
 | `POST /api/projects/:projectId/rename` | Persist dashboard-side project alias. |
 | `GET /api/history` | Recent terminal decision history. |
@@ -50,6 +50,7 @@ Client messages:
 - `ask.cancel` — reconciles a local terminal fallback cancellation.
 - `chat.ready`, `chat.snapshot`, `chat.send.accepted`, and `chat.stop.accepted` — correlated Question Chat command results.
 - `chat.event` — normalized visible Question Chat lifecycle/message output; private reasoning and tool traffic never cross this boundary.
+- `chat.recover.offer`, `chat.reconciled`, and `chat.recover.complete` — a one-manifest-at-a-time, correlated reconnect protocol. The extension offers private metadata only; a recovered full snapshot is transient and is never stored by the server.
 
 Server messages:
 
@@ -61,6 +62,7 @@ Server messages:
 - `chat.activate` — activate or reattach to an exact private fork at the recorded source leaf.
 - `chat.activate-context` — distinctly activate or reattach to a fresh private context-only interviewer from authoritative persisted Question, option, and handoff context. It carries cwd and an optional recorded model, but never a source path, leaf, or transcript.
 - `chat.snapshot`, `chat.send`, `chat.stop`, and `chat.cleanup` — owner-scoped commands shared by exact and context-only private Question Chat runtimes.
+- `chat.reconcile` — the server-authoritative `recover`/`delete` disposition for one offered manifest. Recovery requires the registered socket, pending request owner, request id, and fork kind to agree; missing, terminal, and wrong-owner manifests are deleted.
 
 ## Question Chat activation and context-only fallback
 
@@ -80,6 +82,10 @@ Historical Questions that lack either required context field remain readable and
 Question Chat snapshots and events use `ready`, `generating`, `stopping`, `stopped`, and `interrupted` states. A message sent while `ready` starts an ordinary SDK prompt. A message accepted while `generating` uses Pi's `streamingBehavior: "steer"` path and returns `mode: "steer"`; it is not queued as a follow-up turn.
 
 Stop aborts the active SDK operation without disposing the private runtime. Visible partial assistant output remains in the transcript with a `stopped` marker, the lifecycle passes through `stopping` and `stopped`, and the runtime returns to `ready`. A retry-exhausted SDK error similarly preserves the last visible partial with an `interrupted` marker before returning to `ready`; retryable attempts are not marked interrupted prematurely. Replayed send and Stop commands are idempotent by their bounded `clientCommandId`.
+
+The private Pi fork remains the only Chat transcript. A versioned `0600` manifest in a hash-keyed `0700` directory records the owning session, fork kind, private session path, transcript boundary, model metadata, and durable sequence high-water mark. `/reload` aborts/disposes the old SDK runtime but preserves this fork; replacement, quit, terminal resolution, invalid metadata, and authoritative reconciliation deletion remove it. Runtime sequence is persisted before an event is emitted so a crash cannot reuse a number.
+
+Browser snapshots are extension-backed. A fresh browser sees `extension_offline` when the extension cannot supply one. An already-open browser preserves its rendered snapshot during an outage, marks it offline/stale, disables commands, and requires Retry. Runtime events are monotonic; a gap causes a fresh snapshot resynchronization. Transient transport frames have no runtime sequence and are not transcript data. The server never queues Chat commands while the extension is offline and never stores Chat snapshots or messages in SQLite.
 
 ## Ask lifecycle
 

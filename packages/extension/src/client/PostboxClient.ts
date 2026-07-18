@@ -23,7 +23,13 @@ import type {
   QuestionChatStopPayload,
   QuestionChatStopResponse
 } from "../../../protocol/src/index.js";
-import { QuestionChatRuntimeError } from "../questionChatRuntime.js";
+import {
+  QuestionChatRuntimeError,
+  type QuestionChatReconciliationDecision,
+  type QuestionChatReconciliationResult,
+  type QuestionChatRecoveryOffer
+} from "../questionChatRuntime.js";
+import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
 import {
@@ -63,13 +69,15 @@ export interface PostboxClientOptions {
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
   questionChats?: {
-    activate(input: { requestId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
-    activateContext(input: { requestId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
+    activate(input: { requestId: string; ownerSessionId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
+    activateContext(input: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
     getSnapshot(requestId: string): Promise<QuestionChatSnapshot>;
     send(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
     stop(requestId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
     subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void;
     cleanup(requestId: string): Promise<void>;
+    listRecoveryOffers?(): QuestionChatRecoveryOffer[];
+    reconcile?(ownerSessionId: string, decisions: QuestionChatReconciliationDecision[]): Promise<QuestionChatReconciliationResult[]>;
   };
 }
 
@@ -151,6 +159,10 @@ export class PostboxClient {
   private deferredTargetUrl: string | undefined;
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
   private readonly questionChatSubscriptions = new Map<string, () => void>();
+  private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
+  private recoveryOffers: QuestionChatRecoveryOffer[] = [];
+  private recoveryOfferIndex = 0;
+  private recoveryCompleteSent = false;
 
   constructor(private readonly options: PostboxClientOptions) {
     this.heartbeatMs = options.heartbeatMs ?? 15_000;
@@ -189,6 +201,10 @@ export class PostboxClient {
     this.publishLocalFallbackStatus();
     for (const unsubscribe of this.questionChatSubscriptions.values()) unsubscribe();
     this.questionChatSubscriptions.clear();
+    this.pendingRecoveryOffers.clear();
+    this.recoveryOffers = [];
+    this.recoveryOfferIndex = 0;
+    this.recoveryCompleteSent = false;
     this.socket?.close();
   }
 
@@ -383,6 +399,14 @@ export class PostboxClient {
         const text = Buffer.isBuffer(raw) ? raw.toString() : String(raw);
         const parsed = ExtensionServerMessageSchema.safeParse(JSON.parse(text));
         if (!parsed.success) return;
+        if (parsed.data.type === "registered") {
+          this.offerQuestionChatRecovery();
+          return;
+        }
+        if (parsed.data.type === "chat.reconcile") {
+          void this.reconcileQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
         if (parsed.data.type === "chat.activate") {
           void this.activateQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
@@ -458,7 +482,7 @@ export class PostboxClient {
   private async handleQuestionChatActivation<Source extends QuestionChatSource | QuestionChatContextSource>(
     commandId: string,
     payload: { requestId: string; ownerSessionId: string; source: Source },
-    activate: (input: { requestId: string; source: Source }) => Promise<QuestionChatSnapshot>
+    activate: (input: { requestId: string; ownerSessionId: string; source: Source }) => Promise<QuestionChatSnapshot>
   ): Promise<void> {
     if (payload.ownerSessionId !== this.options.registration.session.sessionId) {
       this.sendQuestionChatError(commandId, payload.requestId, {
@@ -476,13 +500,8 @@ export class PostboxClient {
     }
 
     try {
-      const snapshot = await activate({ requestId: payload.requestId, source: payload.source });
-      if (!this.questionChatSubscriptions.has(payload.requestId)) {
-        const unsubscribe = this.options.questionChats.subscribe(payload.requestId, (event) => {
-          this.send({ type: "chat.event", payload: event });
-        });
-        this.questionChatSubscriptions.set(payload.requestId, unsubscribe);
-      }
+      const snapshot = await activate({ requestId: payload.requestId, ownerSessionId: payload.ownerSessionId, source: payload.source });
+      this.subscribeQuestionChat(payload.requestId);
       this.send({ type: "chat.ready", requestId: commandId, payload: snapshot });
     } catch (error) {
       const runtimeError = error instanceof QuestionChatRuntimeError ? error : undefined;
@@ -491,6 +510,75 @@ export class PostboxClient {
         message: runtimeError?.message ?? (error instanceof Error ? error.message : "Question Chat activation failed.")
       });
     }
+  }
+
+  private offerQuestionChatRecovery(): void {
+    this.pendingRecoveryOffers.clear();
+    this.recoveryOffers = this.options.questionChats?.listRecoveryOffers?.() ?? [];
+    this.recoveryOfferIndex = 0;
+    this.recoveryCompleteSent = false;
+    this.sendNextQuestionChatRecoveryOffer();
+  }
+
+  private sendNextQuestionChatRecoveryOffer(): void {
+    if (this.pendingRecoveryOffers.size > 0 || this.recoveryCompleteSent) return;
+    const offer = this.recoveryOffers[this.recoveryOfferIndex];
+    if (offer) {
+      const commandId = `chat_recover_${randomUUID()}`;
+      if (this.send({ type: "chat.recover.offer", requestId: commandId, payload: offer })) {
+        this.pendingRecoveryOffers.set(commandId, offer);
+        this.recoveryOfferIndex += 1;
+      }
+      return;
+    }
+    if (this.send({
+      type: "chat.recover.complete",
+      requestId: `chat_recover_complete_${randomUUID()}`,
+      payload: { ownerSessionId: this.options.registration.session.sessionId }
+    })) this.recoveryCompleteSent = true;
+  }
+
+  private async reconcileQuestionChat(
+    commandId: string,
+    payload: QuestionChatReconciliationDecision
+  ): Promise<void> {
+    const offered = this.pendingRecoveryOffers.get(commandId);
+    if (!offered || offered.requestId !== payload.requestId || offered.forkKind !== payload.forkKind) return;
+    this.pendingRecoveryOffers.delete(commandId);
+    let result: QuestionChatReconciliationResult;
+    try {
+      const [reconciled] = await this.options.questionChats?.reconcile?.(
+        this.options.registration.session.sessionId,
+        [{ requestId: payload.requestId, forkKind: payload.forkKind, action: payload.action }]
+      ) ?? [];
+      result = reconciled ?? { status: "failed", requestId: payload.requestId, message: "Question Chat recovery is not configured." };
+      if (result.status === "recovered") this.subscribeQuestionChat(payload.requestId);
+    } catch (error) {
+      result = {
+        status: "failed",
+        requestId: payload.requestId,
+        message: error instanceof Error ? error.message : "Question Chat recovery failed."
+      };
+    }
+    const wireResult = result.status === "recovered"
+      ? { status: "recovered" as const, snapshot: result.snapshot }
+      : result.status === "deleted"
+        ? { status: "deleted" as const }
+        : { status: "failed" as const, message: result.message.slice(0, 2_000) };
+    const sent = this.send({
+      type: "chat.reconciled",
+      requestId: commandId,
+      payload: { requestId: payload.requestId, forkKind: payload.forkKind, result: wireResult }
+    });
+    if (sent) this.sendNextQuestionChatRecoveryOffer();
+  }
+
+  private subscribeQuestionChat(requestId: string): void {
+    if (this.questionChatSubscriptions.has(requestId) || !this.options.questionChats) return;
+    const unsubscribe = this.options.questionChats.subscribe(requestId, (event) => {
+      this.send({ type: "chat.event", payload: event });
+    });
+    this.questionChatSubscriptions.set(requestId, unsubscribe);
   }
 
   private async snapshotQuestionChat(

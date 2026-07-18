@@ -61,6 +61,19 @@ export async function registerExtensionSocket(
 
     const connectionId = randomUUID();
     const unsubscribers = new Set<() => void>();
+    let registeredSessionId: string | undefined;
+    let recoveryOffersComplete = false;
+    const pendingRecoveries = new Map<string, {
+      requestId: string;
+      forkKind: "exact" | "context-only";
+      disposition: "recover" | "delete";
+      reason: "pending" | "missing" | "terminal" | "wrong_owner";
+    }>();
+    const maybeFinishRecovery = () => {
+      if (registeredSessionId && recoveryOffersComplete && pendingRecoveries.size === 0) {
+        questionChatRelay?.finishRecovery(registeredSessionId);
+      }
+    };
 
     socket.on("message", (raw) => {
       let parsedJson: unknown;
@@ -82,6 +95,102 @@ export async function registerExtensionSocket(
       }
 
       const message = result.data;
+      if (message.type === "chat.recover.offer") {
+        if (!registeredSessionId || recoveryOffersComplete || pendingRecoveries.size > 0 || pendingRecoveries.has(message.requestId)) {
+          send(socket, {
+            type: "error",
+            requestId: message.requestId,
+            error: { code: "invalid_recovery", message: "Question Chat recovery requires one registered, unique offer." }
+          });
+          return;
+        }
+        const snapshot = requestStore.get(message.payload.requestId);
+        const reason = !snapshot
+          ? "missing" as const
+          : message.payload.ownerSessionId !== registeredSessionId || snapshot.sessionId !== registeredSessionId
+            ? "wrong_owner" as const
+            : snapshot.status !== "pending"
+              ? "terminal" as const
+              : "pending" as const;
+        pendingRecoveries.set(message.requestId, {
+          requestId: message.payload.requestId,
+          forkKind: message.payload.forkKind,
+          disposition: reason === "pending" ? "recover" : "delete",
+          reason
+        });
+        send(socket, {
+          type: "chat.reconcile",
+          requestId: message.requestId,
+          payload: reason === "pending"
+            ? { requestId: message.payload.requestId, forkKind: message.payload.forkKind, action: "recover", reason }
+            : { requestId: message.payload.requestId, forkKind: message.payload.forkKind, action: "delete", reason }
+        });
+        return;
+      }
+
+      if (message.type === "chat.recover.complete") {
+        if (!registeredSessionId || recoveryOffersComplete || message.payload.ownerSessionId !== registeredSessionId) {
+          send(socket, {
+            type: "error",
+            requestId: message.requestId,
+            error: { code: "wrong_owner", message: "Question Chat recovery completion does not match the registered Pi Session." }
+          });
+          return;
+        }
+        recoveryOffersComplete = true;
+        maybeFinishRecovery();
+        return;
+      }
+
+      if (message.type === "chat.reconciled") {
+        const pendingRecovery = pendingRecoveries.get(message.requestId);
+        if (
+          !registeredSessionId ||
+          !pendingRecovery ||
+          pendingRecovery.requestId !== message.payload.requestId ||
+          pendingRecovery.forkKind !== message.payload.forkKind
+        ) return;
+        pendingRecoveries.delete(message.requestId);
+        const current = requestStore.get(pendingRecovery.requestId);
+        const stillPending = current?.status === "pending" && current.sessionId === registeredSessionId;
+        if (
+          pendingRecovery.disposition === "recover" &&
+          stillPending &&
+          message.payload.result.status === "recovered" &&
+          message.payload.result.snapshot.requestId === pendingRecovery.requestId &&
+          message.payload.result.snapshot.forkKind === pendingRecovery.forkKind
+        ) {
+          const restored = questionChatRelay?.restore(
+            connectionId,
+            registeredSessionId,
+            pendingRecovery.forkKind,
+            message.payload.result.snapshot
+          );
+          if (restored) send(socket, { type: "ack", requestId: message.requestId, payload: { type: "chat.reconciled" } });
+        } else if (!stillPending || pendingRecovery.disposition === "delete") {
+          const cleanupReason = !current
+            ? "missing" as const
+            : current.sessionId !== registeredSessionId
+              ? "wrong_owner" as const
+              : current.status === "expired"
+                ? "expired" as const
+                : current.status === "answered"
+                  ? "answered" as const
+                  : current.status === "cancelled"
+                    ? "cancelled" as const
+                    : pendingRecovery.reason === "wrong_owner"
+                      ? "wrong_owner" as const
+                      : "missing" as const;
+          if (message.payload.result.status !== "deleted") {
+            questionChatRelay?.rejectRecovery(pendingRecovery.requestId, registeredSessionId, cleanupReason);
+          } else {
+            send(socket, { type: "ack", requestId: message.requestId, payload: { type: "chat.reconciled" } });
+          }
+        }
+        maybeFinishRecovery();
+        return;
+      }
+
       if (message.type === "chat.ready") {
         questionChatRelay?.resolveReady(message.requestId, connectionId, message.payload);
         return;
@@ -113,6 +222,9 @@ export async function registerExtensionSocket(
       }
 
       if (message.type === "session.register") {
+        registeredSessionId = message.payload.session.sessionId;
+        recoveryOffersComplete = false;
+        pendingRecoveries.clear();
         sessionStore.register(connectionId, message.payload);
         questionChatRelay?.bind(message.payload.session.sessionId, connectionId, socket);
         broadcaster.broadcast();
