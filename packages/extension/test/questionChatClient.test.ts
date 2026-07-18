@@ -1,6 +1,7 @@
 import type { AskCreatePayload, ExtensionServerMessage, SessionRegisterPayload } from "@pi-postbox/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PostboxClient } from "../src/client/PostboxClient.js";
+import { QuestionChatRuntimeRegistry } from "../src/questionChatRuntime.js";
 
 const registration: SessionRegisterPayload = {
   machine: { machineId: "machine-chat", hostname: "workstation" },
@@ -54,6 +55,58 @@ afterEach(() => {
 });
 
 describe("extension Question Chat commands", () => {
+  it("shares one SDK runtime across concurrent browser activations with different relay command IDs", async () => {
+    let finishCreate!: (runtime: any) => void;
+    const runtime = {
+      snapshot: {
+        requestId: "ask-shared-runtime",
+        state: "ready" as const,
+        forkKind: "exact" as const,
+        model: { id: "test/model", source: "originating" as const },
+        sequence: 0,
+        messages: []
+      },
+      send: vi.fn(),
+      stop: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      terminate: vi.fn(async () => undefined),
+      suspend: vi.fn(async () => undefined)
+    };
+    const create = vi.fn(() => new Promise<any>((resolve) => {
+      finishCreate = resolve;
+    }));
+    const registry = new QuestionChatRuntimeRegistry({ create, createContext: vi.fn() } as any);
+    const client = new PostboxClient({
+      serverUrl: "http://postbox.local",
+      registration,
+      reconnect: false,
+      heartbeatMs: 60_000,
+      WebSocketImpl: FakeSocket as never,
+      questionChats: registry
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const payload = {
+      requestId: "ask-shared-runtime",
+      ownerSessionId: "session-chat",
+      source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+    };
+    socket.serverMessage({ type: "chat.activate", requestId: "browser-activation-a", payload });
+    socket.serverMessage({ type: "chat.activate", requestId: "browser-activation-b", payload });
+
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    finishCreate(runtime);
+    await vi.waitFor(() => {
+      expect(socket.sent.filter((message: any) => message.type === "chat.ready")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ requestId: "browser-activation-a" }),
+        expect.objectContaining({ requestId: "browser-activation-b" })
+      ]));
+    });
+    client.stop();
+  });
+
   it("correlates proposal replies by command and Question while ignoring mismatched and late replies", async () => {
     const client = new PostboxClient({
       serverUrl: "http://postbox.local",
@@ -146,6 +199,156 @@ describe("extension Question Chat commands", () => {
       status: "error",
       error: { code: "internal_error", message: expect.stringContaining("disconnected") }
     });
+    client.stop();
+  });
+
+  it("makes terminal cleanup invalidate live ownership, pending commands, proposals, and late results", async () => {
+    let finishSend!: (response: { status: "accepted"; clientCommandId: string; mode: "prompt" }) => void;
+    const snapshot = {
+      requestId: "ask-terminal-client",
+      state: "ready" as const,
+      forkKind: "exact" as const,
+      model: { id: "test/model", source: "originating" as const },
+      sequence: 0,
+      messages: []
+    };
+    const questionChats = {
+      activate: vi.fn(async () => snapshot),
+      activateContext: vi.fn(),
+      getSnapshot: vi.fn(async () => snapshot),
+      send: vi.fn(() => new Promise<{ status: "accepted"; clientCommandId: string; mode: "prompt" }>((resolve) => {
+        finishSend = resolve;
+      })),
+      stop: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      cleanup: vi.fn(async () => undefined)
+    };
+    const client = new PostboxClient({
+      serverUrl: "http://postbox.local",
+      registration,
+      reconnect: false,
+      heartbeatMs: 60_000,
+      proposalTimeoutMs: 25,
+      WebSocketImpl: FakeSocket as never,
+      questionChats
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+    socket.serverMessage({
+      type: "chat.activate",
+      requestId: "activate-terminal-client",
+      payload: {
+        requestId: snapshot.requestId,
+        ownerSessionId: "session-chat",
+        source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+      }
+    });
+    await vi.waitFor(() => expect(socket.sent).toContainEqual({
+      type: "chat.ready",
+      requestId: "activate-terminal-client",
+      payload: snapshot
+    }));
+
+    const proposal = client.proposeAnswer(snapshot.requestId, { label: "Too late" });
+    socket.serverMessage({
+      type: "chat.send",
+      requestId: "send-terminal-client",
+      payload: {
+        requestId: snapshot.requestId,
+        ownerSessionId: "session-chat",
+        command: { clientCommandId: "browser-terminal", message: "Explain" }
+      }
+    });
+    await vi.waitFor(() => expect(questionChats.send).toHaveBeenCalledOnce());
+
+    socket.serverMessage({
+      type: "chat.cleanup",
+      payload: { requestId: snapshot.requestId, reason: "answered" }
+    });
+    await vi.waitFor(() => expect(questionChats.cleanup).toHaveBeenCalledWith(snapshot.requestId));
+    await expect(proposal).resolves.toMatchObject({
+      status: "error",
+      error: { code: "request_terminal" }
+    });
+
+    finishSend({ status: "accepted", clientCommandId: "browser-terminal", mode: "prompt" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(socket.sent).not.toContainEqual(expect.objectContaining({
+      type: "chat.send.accepted",
+      requestId: "send-terminal-client"
+    }));
+
+    socket.serverMessage({
+      type: "chat.send",
+      requestId: "send-after-terminal",
+      payload: {
+        requestId: snapshot.requestId,
+        ownerSessionId: "session-chat",
+        command: { clientCommandId: "browser-after-terminal", message: "Must not run" }
+      }
+    });
+    await vi.waitFor(() => expect(socket.sent).toContainEqual({
+      type: "chat.error",
+      requestId: "send-after-terminal",
+      payload: {
+        requestId: snapshot.requestId,
+        error: { code: "request_not_pending", message: "The Postbox Question is already terminal." }
+      }
+    }));
+    expect(questionChats.send).toHaveBeenCalledOnce();
+    client.stop();
+  });
+
+  it("does not publish a late activation after terminal cleanup wins", async () => {
+    let finishActivation!: (snapshot: any) => void;
+    const questionChats = {
+      activate: vi.fn(() => new Promise<any>((resolve) => {
+        finishActivation = resolve;
+      })),
+      activateContext: vi.fn(),
+      getSnapshot: vi.fn(),
+      send: vi.fn(),
+      stop: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      cleanup: vi.fn(async () => undefined)
+    };
+    const client = new PostboxClient({
+      serverUrl: "http://postbox.local",
+      registration,
+      reconnect: false,
+      heartbeatMs: 60_000,
+      WebSocketImpl: FakeSocket as never,
+      questionChats
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+    socket.serverMessage({
+      type: "chat.activate",
+      requestId: "activation-race",
+      payload: {
+        requestId: "ask-activation-race",
+        ownerSessionId: "session-chat",
+        source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+      }
+    });
+    await vi.waitFor(() => expect(questionChats.activate).toHaveBeenCalledOnce());
+    socket.serverMessage({
+      type: "chat.cleanup",
+      payload: { requestId: "ask-activation-race", reason: "cancelled" }
+    });
+    finishActivation({
+      requestId: "ask-activation-race",
+      state: "ready",
+      forkKind: "exact",
+      model: { id: "test/model", source: "originating" },
+      sequence: 0,
+      messages: []
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(socket.sent).not.toContainEqual(expect.objectContaining({ type: "chat.ready", requestId: "activation-race" }));
+    expect(questionChats.subscribe).not.toHaveBeenCalled();
     client.stop();
   });
 
@@ -251,12 +454,12 @@ describe("extension Question Chat commands", () => {
         sequence: 7,
         messages: [{ id: "fork-user", role: "user" as const, text: "Earlier", status: "final" as const }]
       })),
-      send: vi.fn(async (_requestId: string, command: { clientCommandId: string }) => ({
+      send: vi.fn(async (_requestId: string, _ownerSessionId: string, command: { clientCommandId: string }) => ({
         status: "accepted" as const,
         clientCommandId: command.clientCommandId,
         mode: "prompt" as const
       })),
-      stop: vi.fn(async (_requestId: string, command: { clientCommandId: string }) => ({
+      stop: vi.fn(async (_requestId: string, _ownerSessionId: string, command: { clientCommandId: string }) => ({
         status: "accepted" as const,
         clientCommandId: command.clientCommandId
       })),
@@ -365,8 +568,8 @@ describe("extension Question Chat commands", () => {
         command: { clientCommandId: "browser-stop-1" }
       }
     });
-    await vi.waitFor(() => expect(questionChats.send).toHaveBeenCalledWith("ask-chat", { clientCommandId: "browser-1", message: "Explain it" }));
-    await vi.waitFor(() => expect(questionChats.stop).toHaveBeenCalledWith("ask-chat", { clientCommandId: "browser-stop-1" }));
+    await vi.waitFor(() => expect(questionChats.send).toHaveBeenCalledWith("ask-chat", "session-chat", { clientCommandId: "browser-1", message: "Explain it" }));
+    await vi.waitFor(() => expect(questionChats.stop).toHaveBeenCalledWith("ask-chat", "session-chat", { clientCommandId: "browser-stop-1" }));
     expect(socket.sent).toContainEqual({
       type: "chat.snapshot",
       requestId: "snapshot-1",

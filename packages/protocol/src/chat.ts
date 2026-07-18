@@ -6,6 +6,7 @@ const PATH_MAX = 4_000;
 const SHORT_TEXT_MAX = 2_000;
 const ERROR_MESSAGE_MAX = 8_000;
 export const QUESTION_CHAT_COMMAND_ID_MAX = 128;
+export const QUESTION_CHAT_RETRY_AFTER_MS_MAX = 3_600_000;
 export const QUESTION_CHAT_USER_TEXT_MAX = 8_000;
 export const QUESTION_CHAT_ASSISTANT_TEXT_MAX = 32_000;
 export const QUESTION_CHAT_DELTA_MAX = 4_000;
@@ -45,7 +46,9 @@ export const QuestionChatAvailabilityCodeSchema = z.enum([
   "chat_not_started",
   "invalid_command",
   "duplicate_command",
-  "runtime_busy"
+  "runtime_busy",
+  "forbidden_origin",
+  "rate_limited"
 ]);
 
 export const QuestionChatContextFallbackAvailabilitySchema = z.discriminatedUnion("status", [
@@ -59,6 +62,7 @@ export const QuestionChatContextFallbackAvailabilitySchema = z.discriminatedUnio
 export const QuestionChatAvailabilityErrorSchema = z.object({
   code: QuestionChatAvailabilityCodeSchema,
   message: z.string().min(1).max(ERROR_MESSAGE_MAX),
+  retryAfterMs: z.number().int().positive().max(QUESTION_CHAT_RETRY_AFTER_MS_MAX).optional(),
   contextFallback: QuestionChatContextFallbackAvailabilitySchema.optional()
 });
 
@@ -148,7 +152,7 @@ export const QuestionChatSnapshotSchema = z.object({
 export const QuestionChatSendPayloadSchema = z.object({
   clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX),
   message: z.string().trim().min(1).max(QUESTION_CHAT_USER_TEXT_MAX)
-});
+}).strict();
 
 const QuestionChatEventBaseSchema = z.object({
   requestId: z.string().min(1).max(REQUEST_ID_MAX),
@@ -210,7 +214,7 @@ export const QuestionChatSendResponseSchema = z.object({
 
 export const QuestionChatStopPayloadSchema = z.object({
   clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX)
-});
+}).strict();
 
 export const QuestionChatStopResponseSchema = z.object({
   status: z.literal("accepted"),

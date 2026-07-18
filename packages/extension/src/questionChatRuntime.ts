@@ -160,7 +160,15 @@ export class QuestionChatRuntimeError extends Error {
   constructor(
     public readonly code: Extract<
       QuestionChatAvailabilityCode,
-      "source_path_missing" | "source_leaf_missing" | "runtime_failure" | "runtime_busy"
+      | "source_path_missing"
+      | "source_leaf_missing"
+      | "runtime_failure"
+      | "runtime_busy"
+      | "wrong_owner"
+      | "request_not_pending"
+      | "chat_not_started"
+      | "duplicate_command"
+      | "rate_limited"
     >,
     message: string
   ) {
@@ -659,6 +667,14 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       this.promptStarting = false;
     }
 
+    if (this.terminated) {
+      void prompt.completion.catch(() => undefined);
+      throw new QuestionChatRuntimeError(
+        "request_not_pending",
+        "The Postbox Question became terminal before the prompt was accepted."
+      );
+    }
+
     this.transientMessages.push({
       message: userMessage,
       forkOccurrencesAtCreation: countMatchingMessages(this.finalizedMessagesFromFork(), userMessage)
@@ -746,6 +762,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   }
 
   private onSessionEvent(value: unknown): void {
+    if (this.terminated) return;
     try {
       if (!isRecord(value) || typeof value.type !== "string") return;
       if (value.type === "tool_execution_start") {
@@ -904,6 +921,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   }
 
   private emit(event: RuntimeEventInput): void {
+    if (this.terminated) return;
     const sequence = this.sequence + 1;
     this.persistSequence(sequence);
     this.sequence = sequence;
@@ -1040,8 +1058,14 @@ export class QuestionChatRuntimeRegistry {
     runtime: Promise<QuestionChatRuntime>;
   }>();
   private readonly terminations = new Map<string, Promise<void>>();
-  private readonly completedCommands = new Map<string, Map<string, Promise<QuestionChatSendResponse>>>();
-  private readonly completedStopCommands = new Map<string, Map<string, Promise<QuestionChatStopResponse>>>();
+  private readonly commandOutcomes = new Map<string, Map<string, {
+    kind: "send" | "stop";
+    fingerprint: string;
+    result: Promise<QuestionChatSendResponse | QuestionChatStopResponse>;
+    settled: boolean;
+    expiresAt: number;
+  }>>();
+  private readonly terminalTombstones = new Map<string, { ownerSessionId: string; expiresAt: number }>();
 
   constructor(
     private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create" | "createContext"> &
@@ -1056,54 +1080,33 @@ export class QuestionChatRuntimeRegistry {
     return this.activateKind(input.requestId, input.ownerSessionId, "context-only", () => this.adapter.createContext(input));
   }
 
-  async getSnapshot(requestId: string): Promise<QuestionChatSnapshot> {
-    const runtime = this.runtimes.get(requestId);
-    if (!runtime) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has not started.");
+  async getSnapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatSnapshot> {
+    const runtime = this.requireRuntime(requestId, ownerSessionId);
     return (await runtime.runtime).snapshot;
   }
 
-  async send(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
+  async send(requestId: string, ownerSessionId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
     const input = QuestionChatSendPayloadSchema.parse(command);
-    let commands = this.completedCommands.get(requestId);
-    if (!commands) {
-      commands = new Map();
-      this.completedCommands.set(requestId, commands);
-    }
-    const completed = commands.get(input.clientCommandId);
-    if (completed) return completed;
-    const runtime = this.runtimes.get(requestId);
-    if (!runtime) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has not started.");
+    this.assertKnownOwner(requestId, ownerSessionId);
+    const retained = this.retainedCommand<QuestionChatSendResponse>(requestId, "send", input.clientCommandId, input);
+    if (retained) return retained;
+    const runtime = this.requireRuntime(requestId, ownerSessionId);
+    this.assertCommandCapacity(requestId);
     const response = runtime.runtime.then((active) => active.send(input));
-    commands.set(input.clientCommandId, response);
-    if (commands.size > 256) commands.delete(commands.keys().next().value!);
-    try {
-      return await response;
-    } catch (error) {
-      if (commands.get(input.clientCommandId) === response) commands.delete(input.clientCommandId);
-      throw error;
-    }
+    this.retainCommand(requestId, "send", input.clientCommandId, input, response);
+    return response;
   }
 
-  async stop(requestId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse> {
+  async stop(requestId: string, ownerSessionId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse> {
     const input = QuestionChatStopPayloadSchema.parse(command);
-    let commands = this.completedStopCommands.get(requestId);
-    if (!commands) {
-      commands = new Map();
-      this.completedStopCommands.set(requestId, commands);
-    }
-    const completed = commands.get(input.clientCommandId);
-    if (completed) return completed;
-    const runtime = this.runtimes.get(requestId);
-    if (!runtime) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has not started.");
+    this.assertKnownOwner(requestId, ownerSessionId);
+    const retained = this.retainedCommand<QuestionChatStopResponse>(requestId, "stop", input.clientCommandId, input);
+    if (retained) return retained;
+    const runtime = this.requireRuntime(requestId, ownerSessionId);
+    this.assertCommandCapacity(requestId);
     const response = runtime.runtime.then((active) => active.stop(input));
-    commands.set(input.clientCommandId, response);
-    if (commands.size > 256) commands.delete(commands.keys().next().value!);
-    try {
-      return await response;
-    } catch (error) {
-      if (commands.get(input.clientCommandId) === response) commands.delete(input.clientCommandId);
-      throw error;
-    }
+    this.retainCommand(requestId, "stop", input.clientCommandId, input, response);
+    return response;
   }
 
   subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void {
@@ -1125,9 +1128,8 @@ export class QuestionChatRuntimeRegistry {
     if (existingTermination) return existingTermination;
     const runtime = this.runtimes.get(requestId);
     if (!runtime) return;
+    this.retainTerminalTombstone(requestId, runtime.ownerSessionId);
     this.runtimes.delete(requestId);
-    this.completedCommands.delete(requestId);
-    this.completedStopCommands.delete(requestId);
     const termination = (async () => {
       try {
         await (await runtime.runtime).terminate();
@@ -1159,8 +1161,8 @@ export class QuestionChatRuntimeRegistry {
   async suspendAll(): Promise<void> {
     const entries = [...this.runtimes.entries()];
     this.runtimes.clear();
-    this.completedCommands.clear();
-    this.completedStopCommands.clear();
+    this.commandOutcomes.clear();
+    this.terminalTombstones.clear();
     await Promise.all(entries.map(async ([, entry]) => (await entry.runtime).suspend()));
   }
 
@@ -1220,8 +1222,19 @@ export class QuestionChatRuntimeRegistry {
     kind: "exact" | "context-only",
     create: () => Promise<QuestionChatRuntime>
   ): Promise<QuestionChatSnapshot> {
+    this.pruneTerminalTombstones();
+    const terminal = this.terminalTombstones.get(requestId);
+    if (terminal) {
+      if (terminal.ownerSessionId !== ownerSessionId) {
+        throw new QuestionChatRuntimeError("wrong_owner", "Question Chat belongs to a different Pi Session.");
+      }
+      throw new QuestionChatRuntimeError("request_not_pending", "The Postbox Question is already terminal.");
+    }
     let entry = this.runtimes.get(requestId);
-    if (entry && (entry.kind !== kind || entry.ownerSessionId !== ownerSessionId)) {
+    if (entry && entry.ownerSessionId !== ownerSessionId) {
+      throw new QuestionChatRuntimeError("wrong_owner", "Question Chat belongs to a different Pi Session.");
+    }
+    if (entry && entry.kind !== kind) {
       throw new QuestionChatRuntimeError("runtime_busy", "A Question Chat with different ownership or fork kind is already running.");
     }
     if (!entry) {
@@ -1232,8 +1245,133 @@ export class QuestionChatRuntimeRegistry {
         if (this.runtimes.get(requestId) === entry) this.runtimes.delete(requestId);
       });
     }
-    return (await entry.runtime).snapshot;
+    const snapshot = (await entry.runtime).snapshot;
+    if (this.runtimes.get(requestId) !== entry) {
+      throw new QuestionChatRuntimeError("request_not_pending", "The Postbox Question became terminal during Chat activation.");
+    }
+    return snapshot;
   }
+
+  private requireRuntime(requestId: string, ownerSessionId: string) {
+    this.assertKnownOwner(requestId, ownerSessionId);
+    if (this.terminalTombstones.has(requestId)) {
+      throw new QuestionChatRuntimeError("request_not_pending", "The Postbox Question is already terminal.");
+    }
+    const runtime = this.runtimes.get(requestId);
+    if (!runtime) throw new QuestionChatRuntimeError("chat_not_started", "Question Chat has not started.");
+    return runtime;
+  }
+
+  private assertKnownOwner(requestId: string, ownerSessionId: string): void {
+    this.pruneTerminalTombstones();
+    const knownOwner = this.runtimes.get(requestId)?.ownerSessionId ?? this.terminalTombstones.get(requestId)?.ownerSessionId;
+    if (knownOwner && knownOwner !== ownerSessionId) {
+      throw new QuestionChatRuntimeError("wrong_owner", "Question Chat belongs to a different Pi Session.");
+    }
+  }
+
+  private retainedCommand<T extends QuestionChatSendResponse | QuestionChatStopResponse>(
+    requestId: string,
+    kind: "send" | "stop",
+    commandId: string,
+    payload: unknown
+  ): Promise<T> | undefined {
+    this.pruneCommandOutcomes();
+    const retained = this.commandOutcomes.get(requestId)?.get(commandId);
+    if (!retained) return undefined;
+    if (retained.kind !== kind || retained.fingerprint !== runtimeCommandFingerprint(kind, payload)) {
+      return Promise.reject(new QuestionChatRuntimeError(
+        "duplicate_command",
+        "This command ID was already used for different Question Chat input."
+      ));
+    }
+    return retained.result as Promise<T>;
+  }
+
+  private retainCommand<T extends QuestionChatSendResponse | QuestionChatStopResponse>(
+    requestId: string,
+    kind: "send" | "stop",
+    commandId: string,
+    payload: unknown,
+    result: Promise<T>
+  ): void {
+    this.pruneCommandOutcomes();
+    let commands = this.commandOutcomes.get(requestId);
+    if (!commands) {
+      commands = new Map();
+      this.commandOutcomes.set(requestId, commands);
+    }
+    const retained = {
+      kind,
+      fingerprint: runtimeCommandFingerprint(kind, payload),
+      result: result as Promise<QuestionChatSendResponse | QuestionChatStopResponse>,
+      settled: false,
+      expiresAt: Number.POSITIVE_INFINITY
+    };
+    commands.set(commandId, retained);
+    void result.finally(() => {
+      retained.settled = true;
+      retained.expiresAt = Date.now() + 5 * 60_000;
+    }).catch(() => undefined);
+  }
+
+  private pruneCommandOutcomes(): void {
+    const now = Date.now();
+    for (const [retainedRequestId, commands] of this.commandOutcomes) {
+      for (const [commandId, retained] of commands) {
+        if (retained.settled && retained.expiresAt <= now) commands.delete(commandId);
+      }
+      if (commands.size === 0) this.commandOutcomes.delete(retainedRequestId);
+    }
+  }
+
+  private assertCommandCapacity(requestId: string): void {
+    this.pruneCommandOutcomes();
+    const commands = this.commandOutcomes.get(requestId);
+    if (commands && commands.size >= 256) {
+      const removable = [...commands].find(([, retained]) => retained.settled);
+      if (!removable) throw runtimeCommandCapacityError();
+      commands.delete(removable[0]);
+    }
+    if (!commands && this.commandOutcomes.size >= 256) {
+      const removable = [...this.commandOutcomes].find(([, retained]) =>
+        [...retained.values()].every((command) => command.settled)
+      );
+      if (!removable) throw runtimeCommandCapacityError();
+      this.commandOutcomes.delete(removable[0]);
+    }
+  }
+
+  private retainTerminalTombstone(requestId: string, ownerSessionId: string): void {
+    this.pruneTerminalTombstones();
+    while (this.terminalTombstones.size >= 256) {
+      const oldestRequestId = this.terminalTombstones.keys().next().value!;
+      this.terminalTombstones.delete(oldestRequestId);
+      this.commandOutcomes.delete(oldestRequestId);
+    }
+    this.terminalTombstones.set(requestId, { ownerSessionId, expiresAt: Date.now() + 5 * 60_000 });
+  }
+
+  private pruneTerminalTombstones(): void {
+    const now = Date.now();
+    for (const [requestId, tombstone] of this.terminalTombstones) {
+      if (tombstone.expiresAt <= now) {
+        this.terminalTombstones.delete(requestId);
+        this.commandOutcomes.delete(requestId);
+      }
+    }
+  }
+}
+
+function runtimeCommandFingerprint(kind: "send" | "stop", payload: unknown): string {
+  return createHash("sha256").update(`${kind}\u0000${JSON.stringify(payload)}`).digest("hex");
+}
+
+function runtimeCommandCapacityError(): QuestionChatRuntimeError {
+  return new QuestionChatRuntimeError(
+    "rate_limited",
+    "Question Chat has too many commands in flight. Retry after an active command settles."
+  );
 }
 
 function resolveRecordedModel(modelId: string | undefined, modelRuntime: ModelRuntime): ReturnType<ModelRuntime["getModel"]> {

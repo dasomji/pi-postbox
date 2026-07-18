@@ -69,22 +69,22 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("chat.ready"),
-    requestId: z.string().min(1),
+    requestId: WsCorrelationIdSchema,
     payload: QuestionChatSnapshotSchema
   }),
   z.object({
     type: z.literal("chat.error"),
-    requestId: z.string().min(1),
+    requestId: WsCorrelationIdSchema,
     payload: z.object({ requestId: z.string().min(1), error: QuestionChatAvailabilityErrorSchema })
   }),
   z.object({
     type: z.literal("chat.snapshot"),
-    requestId: z.string().min(1),
+    requestId: WsCorrelationIdSchema,
     payload: QuestionChatSnapshotSchema
   }),
   z.object({
     type: z.literal("chat.send.accepted"),
-    requestId: z.string().min(1),
+    requestId: WsCorrelationIdSchema,
     payload: z.object({ requestId: z.string().min(1), response: QuestionChatSendResponseSchema })
   }),
   z.object({
@@ -152,7 +152,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("chat.activate"),
-    requestId: z.string().min(1),
+    requestId: WsCorrelationIdSchema,
     payload: z.object({
       requestId: z.string().min(1),
       ownerSessionId: z.string().min(1).max(200),
@@ -178,7 +178,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("chat.snapshot"),
-    requestId: z.string().min(1),
+    requestId: WsCorrelationIdSchema,
     payload: z.object({
       requestId: z.string().min(1).max(200),
       ownerSessionId: z.string().min(1).max(200)
@@ -186,7 +186,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("chat.send"),
-    requestId: z.string().min(1),
+    requestId: WsCorrelationIdSchema,
     payload: z.object({
       requestId: z.string().min(1).max(200),
       ownerSessionId: z.string().min(1).max(200),

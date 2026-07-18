@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   QUESTION_CHAT_STARTERS,
+  QUESTION_CHAT_RETRY_AFTER_MS_MAX,
   QUESTION_CHAT_TOOL_DETAILS_MAX,
   QuestionChatActivationResponseSchema,
   QuestionChatContextActivationPayloadSchema,
@@ -240,6 +241,33 @@ describe("Question Chat first-message protocol", () => {
     ).toEqual({ clientCommandId: "browser_01JABC", message: "What does this mean?" });
     expect(() => QuestionChatSendPayloadSchema.parse({ clientCommandId: "x".repeat(129), message: "hello" })).toThrow();
     expect(() => QuestionChatSendPayloadSchema.parse({ clientCommandId: "ok", message: "x".repeat(8_001) })).toThrow();
+    expect(() => QuestionChatSendPayloadSchema.parse({ clientCommandId: "ok", message: "hello", hidden: true })).toThrow();
+    expect(() => QuestionChatStopPayloadSchema.parse({ clientCommandId: "ok", hidden: true })).toThrow();
+  });
+
+  it("defines bounded typed origin and rate-limit failures", () => {
+    expect(
+      QuestionChatSendHttpResponseSchema.parse({
+        status: "unavailable",
+        error: { code: "forbidden_origin", message: "The browser origin is not allowed." }
+      })
+    ).toMatchObject({ error: { code: "forbidden_origin" } });
+    expect(
+      QuestionChatSendHttpResponseSchema.parse({
+        status: "unavailable",
+        error: { code: "rate_limited", message: "Retry later.", retryAfterMs: 1_000 }
+      })
+    ).toMatchObject({ error: { code: "rate_limited", retryAfterMs: 1_000 } });
+    expect(() =>
+      QuestionChatSendHttpResponseSchema.parse({
+        status: "unavailable",
+        error: {
+          code: "rate_limited",
+          message: "Retry later.",
+          retryAfterMs: QUESTION_CHAT_RETRY_AFTER_MS_MAX + 1
+        }
+      })
+    ).toThrow();
   });
 
   it("accepts only normalized visible lifecycle and assistant text events", () => {
@@ -361,6 +389,20 @@ describe("Question Chat first-message protocol", () => {
       ExtensionClientMessageSchema.parse({
         type: "chat.event",
         payload: { requestId: "ask-26", sequence: 3, type: "thinking.delta", text: "secret" }
+      })
+    ).toThrow();
+    expect(() =>
+      ExtensionClientMessageSchema.parse({
+        type: "chat.ready",
+        requestId: "x".repeat(201),
+        payload: {
+          requestId: "ask-26",
+          state: "ready",
+          forkKind: "exact",
+          model: { id: "test/model", source: "originating" },
+          sequence: 0,
+          messages: []
+        }
       })
     ).toThrow();
   });

@@ -98,13 +98,13 @@ export async function registerRequestRoutes(
         error: { code, message, contextFallback }
       }));
     }
-    const response = await questionChat.relay.activate(requestId, snapshot.sessionId, source);
+    const response = await questionChat.relay.activate(requestId, snapshot.sessionId, source, chatCallerKey(request));
     const disclosed = response.status === "unavailable" &&
       (response.error.code === "source_path_missing" || response.error.code === "source_leaf_missing")
       ? { ...response, error: { ...response.error, contextFallback } }
       : response;
     return reply
-      .code(disclosed.status === "ready" ? 200 : disclosed.error.code === "extension_offline" ? 503 : 409)
+      .code(disclosed.status === "ready" ? 200 : chatErrorStatus(disclosed.error.code))
       .send(QuestionChatActivationResponseSchema.parse(disclosed));
   });
 
@@ -139,7 +139,12 @@ export async function registerRequestRoutes(
       options: snapshot.options,
       context: snapshot.context
     });
-    const response = await questionChat!.relay.activateContext(snapshot.requestId, snapshot.sessionId, source);
+    const response = await questionChat!.relay.activateContext(
+      snapshot.requestId,
+      snapshot.sessionId,
+      source,
+      chatCallerKey(request)
+    );
     return reply
       .code(response.status === "ready" ? 200 : chatErrorStatus(response.error.code))
       .send(QuestionChatActivationResponseSchema.parse(response));
@@ -156,21 +161,35 @@ export async function registerRequestRoutes(
   app.post("/api/requests/:requestId/chat/messages", async (request, reply) => {
     const body = QuestionChatSendPayloadSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send(chatUnavailable({ code: "invalid_command", message: body.error.message }));
+    const { requestId } = request.params as { requestId: string };
+    const retained = questionChat?.relay.replaySend(requestId, body.data);
+    if (retained) return sendChatCommandResult(reply, await retained);
     const state = pendingChatRequest(request.params as { requestId: string }, requestStore, expireDue, questionChat);
     if (state.error) return reply.code(state.error.status).send(state.error.body);
-    const response = await questionChat!.relay.sendMessage(state.snapshot!.requestId, state.snapshot!.sessionId, body.data);
-    if (response.status === "unavailable") return reply.code(chatErrorStatus(response.error.code)).send(chatUnavailable(response.error));
-    return QuestionChatSendHttpResponseSchema.parse(response.value);
+    const response = await questionChat!.relay.sendMessage(
+      state.snapshot!.requestId,
+      state.snapshot!.sessionId,
+      body.data,
+      chatCallerKey(request)
+    );
+    return sendChatCommandResult(reply, response);
   });
 
   app.post("/api/requests/:requestId/chat/stop", async (request, reply) => {
     const body = QuestionChatStopPayloadSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send(chatUnavailable({ code: "invalid_command", message: body.error.message }));
+    const { requestId } = request.params as { requestId: string };
+    const retained = questionChat?.relay.replayStop(requestId, body.data);
+    if (retained) return sendChatStopResult(reply, await retained);
     const state = pendingChatRequest(request.params as { requestId: string }, requestStore, expireDue, questionChat);
     if (state.error) return reply.code(state.error.status).send(state.error.body);
-    const response = await questionChat!.relay.stop(state.snapshot!.requestId, state.snapshot!.sessionId, body.data);
-    if (response.status === "unavailable") return reply.code(chatErrorStatus(response.error.code)).send(chatUnavailable(response.error));
-    return QuestionChatStopHttpResponseSchema.parse(response.value);
+    const response = await questionChat!.relay.stop(
+      state.snapshot!.requestId,
+      state.snapshot!.sessionId,
+      body.data,
+      chatCallerKey(request)
+    );
+    return sendChatStopResult(reply, response);
   });
 
   app.get("/api/requests/:requestId/chat/events", async (request, reply) => {
@@ -214,7 +233,33 @@ function pendingChatRequest(
 function chatErrorStatus(code: string): number {
   if (code === "extension_offline" || code === "command_timeout") return 503;
   if (code === "request_missing") return 404;
+  if (code === "forbidden_origin") return 403;
+  if (code === "rate_limited") return 429;
   return 409;
+}
+
+function chatCallerKey(request: { headers: { origin?: string }; ip: string }): string {
+  return request.headers.origin ? `origin:${request.headers.origin}` : `client:${request.ip}`;
+}
+
+function sendChatCommandResult(
+  reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } },
+  response: Awaited<ReturnType<QuestionChatRelay["sendMessage"]>>
+): unknown {
+  if (response.status === "unavailable") {
+    return reply.code(chatErrorStatus(response.error.code)).send(chatUnavailable(response.error));
+  }
+  return QuestionChatSendHttpResponseSchema.parse(response.value);
+}
+
+function sendChatStopResult(
+  reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } },
+  response: Awaited<ReturnType<QuestionChatRelay["stop"]>>
+): unknown {
+  if (response.status === "unavailable") {
+    return reply.code(chatErrorStatus(response.error.code)).send(chatUnavailable(response.error));
+  }
+  return QuestionChatStopHttpResponseSchema.parse(response.value);
 }
 
 function chatUnavailable(error: QuestionChatAvailabilityError) {

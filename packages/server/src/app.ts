@@ -3,6 +3,7 @@ import websocket from "@fastify/websocket";
 import {
   createHealthResponse,
   HealthResponseSchema,
+  QuestionChatUnavailableResponseSchema,
   StateSnapshotSchema,
   type ActiveLocalTargetIdentity
 } from "@pi-postbox/protocol";
@@ -46,6 +47,10 @@ export interface CreatePostboxAppOptions {
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
   chatCommandTimeoutMs?: number;
+  chatCommandRateLimitMax?: number;
+  chatCommandRateLimitWindowMs?: number;
+  chatCommandDedupeTtlMs?: number;
+  chatCommandDedupeCapacity?: number;
   vapidPublicKey?: string;
   vapidPrivateKey?: string;
   pushSender?: PushSender;
@@ -109,7 +114,25 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     throw error;
   }
   const requestStore = new RequestStore(db, now, { askTimeoutMs: options.askTimeoutMs });
-  const questionChatRelay = new QuestionChatRelay(options.chatCommandTimeoutMs);
+  const questionChatRelay = new QuestionChatRelay({
+    commandTimeoutMs: options.chatCommandTimeoutMs,
+    commandRateLimitMax: options.chatCommandRateLimitMax,
+    commandRateLimitWindowMs: options.chatCommandRateLimitWindowMs,
+    commandDedupeTtlMs: options.chatCommandDedupeTtlMs,
+    commandDedupeCapacity: options.chatCommandDedupeCapacity,
+    now,
+    authorize: (requestId, ownerSessionId) => {
+      const request = requestStore.get(requestId);
+      if (!request) return { code: "request_missing", message: "This Postbox Question no longer exists." };
+      if (request.sessionId !== ownerSessionId) {
+        return { code: "wrong_owner", message: "Question Chat is not owned by this Pi Session." };
+      }
+      if (request.status !== "pending") {
+        return { code: "request_not_pending", message: "Chat is available only while the Postbox Question is pending." };
+      }
+      return undefined;
+    }
+  });
   const pushStore = new PushStore(db, now, {
     publicKey: options.vapidPublicKey,
     privateKey: options.vapidPrivateKey
@@ -167,16 +190,18 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
+    const isQuestionChatControl = /^\/api\/requests\/[^/?]+\/chat(?:[/?]|$)/.test(request.url);
+    if (!isQuestionChatControl && !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
     if (!origin) return;
 
-    try {
-      const originUrl = new URL(origin);
-      const host = request.headers.host;
-      if (host && originUrl.host === host) return;
-    } catch {
-      // Fall through to rejection below.
+    if (isAllowedBrowserOrigin(origin, request.headers.host)) return;
+
+    if (isQuestionChatControl) {
+      return reply.code(403).send(QuestionChatUnavailableResponseSchema.parse({
+        status: "unavailable",
+        error: { code: "forbidden_origin", message: "Question Chat requests must come from this Postbox origin." }
+      }));
     }
 
     return reply.code(403).send({ error: "forbidden_origin", message: "Cross-origin state-changing requests are not allowed." });
@@ -238,4 +263,16 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   }
 
   return app;
+}
+
+function isAllowedBrowserOrigin(origin: string, host: string | undefined): boolean {
+  if (!host || origin.includes(",")) return false;
+  try {
+    const parsed = new URL(origin);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:")
+      && parsed.origin === origin
+      && parsed.host.toLowerCase() === host.toLowerCase();
+  } catch {
+    return false;
+  }
 }

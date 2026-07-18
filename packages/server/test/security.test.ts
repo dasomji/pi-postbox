@@ -50,6 +50,58 @@ describe("browser-origin and payload safety", () => {
     expect(allowed.statusCode).toBe(200);
   });
 
+  it("protects every Question Chat control route while preserving same-host proxy and no-Origin CLI access", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:" });
+    apps.push(app);
+
+    for (const origin of ["https://evil.example", "not-an-origin", "http://postbox.local, https://evil.example"]) {
+      const blocked = await app.inject({
+        method: "POST",
+        url: "/api/requests/question-origin/chat/messages",
+        headers: { host: "postbox.local", origin },
+        payload: { clientCommandId: "origin-check", message: "Do not dispatch" }
+      });
+      expect(blocked.statusCode).toBe(403);
+      expect(blocked.json()).toEqual({
+        status: "unavailable",
+        error: { code: "forbidden_origin", message: "Question Chat requests must come from this Postbox origin." }
+      });
+    }
+
+    const blockedRead = await app.inject({
+      method: "GET",
+      url: "/api/requests/question-origin/chat",
+      headers: { host: "postbox.local", origin: "https://evil.example" }
+    });
+    expect(blockedRead.statusCode).toBe(403);
+    expect(blockedRead.json()).toMatchObject({ status: "unavailable", error: { code: "forbidden_origin" } });
+
+    const proxiedSameHost = await app.inject({
+      method: "POST",
+      url: "/api/requests/question-origin/chat/messages",
+      headers: { host: "postbox.local", origin: "https://postbox.local" },
+      payload: { clientCommandId: "same-host", message: "Allowed through origin check" }
+    });
+    expect(proxiedSameHost.statusCode).toBe(404);
+    expect(proxiedSameHost.json()).toMatchObject({ status: "unavailable", error: { code: "request_missing" } });
+
+    const proxiedSameHostDifferentCase = await app.inject({
+      method: "POST",
+      url: "/api/requests/question-origin/chat/messages",
+      headers: { host: "POSTBOX.local", origin: "https://postbox.local" },
+      payload: { clientCommandId: "same-host-case", message: "DNS host casing is not an origin change" }
+    });
+    expect(proxiedSameHostDifferentCase.statusCode).toBe(404);
+
+    const cliWithoutOrigin = await app.inject({
+      method: "POST",
+      url: "/api/requests/question-origin/chat/messages",
+      payload: { clientCommandId: "cli", message: "Allowed without a browser Origin header" }
+    });
+    expect(cliWithoutOrigin.statusCode).toBe(404);
+    expect(cliWithoutOrigin.json()).toMatchObject({ status: "unavailable", error: { code: "request_missing" } });
+  });
+
   it("rejects cross-origin extension WebSocket connections", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:" });
     apps.push(app);

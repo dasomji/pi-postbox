@@ -53,6 +53,20 @@ function nextMessages(socket: WebSocket, count: number, label = "extension messa
   });
 }
 
+function expectNoMessage(socket: WebSocket, durationMs = 75): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onMessage = (raw: WebSocket.RawData) => {
+      clearTimeout(timer);
+      reject(new Error(`Unexpected extension message: ${raw.toString()}`));
+    };
+    const timer = setTimeout(() => {
+      socket.off("message", onMessage);
+      resolve();
+    }, durationMs);
+    socket.once("message", onMessage);
+  });
+}
+
 async function registerOtherSession(app: FastifyInstance): Promise<WebSocket> {
   const socket = new WebSocket(`ws://127.0.0.1:${listenerPort(app)}/api/extension/ws`);
   sockets.push(socket);
@@ -80,6 +94,10 @@ async function setup(options: {
   now?: () => number;
   legacyContext?: Record<string, unknown> | null;
   askOptions?: AskCreatePayload["options"];
+  chatCommandRateLimitMax?: number;
+  chatCommandRateLimitWindowMs?: number;
+  chatCommandDedupeTtlMs?: number;
+  chatCommandDedupeCapacity?: number;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "postbox-chat-server-"));
   const databasePath = join(root, "postbox.sqlite");
@@ -87,6 +105,10 @@ async function setup(options: {
     databasePath,
     expirySweepMs: 0,
     chatCommandTimeoutMs: 250,
+    chatCommandRateLimitMax: options.chatCommandRateLimitMax,
+    chatCommandRateLimitWindowMs: options.chatCommandRateLimitWindowMs,
+    chatCommandDedupeTtlMs: options.chatCommandDedupeTtlMs,
+    chatCommandDedupeCapacity: options.chatCommandDedupeCapacity,
     now: options.now
   });
   apps.push(app);
@@ -856,13 +878,16 @@ describe("Question Chat activation relay", () => {
     expect((await activation).json()).toEqual({ status: "ready", snapshot: readySnapshot() });
   });
 
-  it("lets retries and alternate browsers attach to the same extension-owned runtime", async () => {
+  it("lets two browsers with distinct activation correlations share one runtime, snapshots, and SSE events", async () => {
     const { app, socket } = await setup();
+    const baseUrl = `http://127.0.0.1:${listenerPort(app)}`;
     let runtimeStarts = 0;
     const extensionRuntimes = new Set<string>();
+    const activationCommandIds: string[] = [];
     const respond = async () => {
       const command = await nextMessage(socket);
       if (command.type !== "chat.activate") throw new Error("Expected Chat activation command");
+      activationCommandIds.push(command.requestId);
       if (!extensionRuntimes.has(command.payload.requestId)) {
         extensionRuntimes.add(command.payload.requestId);
         runtimeStarts += 1;
@@ -877,7 +902,346 @@ describe("Question Chat activation relay", () => {
 
     expect((await first).statusCode).toBe(200);
     expect((await second).json()).toEqual({ status: "ready", snapshot: readySnapshot() });
+    expect(activationCommandIds[0]).not.toBe(activationCommandIds[1]);
     expect(runtimeStarts).toBe(1);
+
+    const [firstEventResponse, secondEventResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/requests/ask-chat/chat/events`),
+      fetch(`${baseUrl}/api/requests/ask-chat/chat/events`)
+    ]);
+    const firstEvents = createSseReader(firstEventResponse);
+    const secondEvents = createSseReader(secondEventResponse);
+    const sharedSnapshot = { ...readySnapshot(), sequence: 4 };
+
+    const firstSnapshot = app.inject({ method: "GET", url: "/api/requests/ask-chat/chat" });
+    const firstSnapshotCommand = await nextMessage(socket, "first browser snapshot");
+    const secondSnapshot = app.inject({ method: "GET", url: "/api/requests/ask-chat/chat" });
+    const secondSnapshotCommand = await nextMessage(socket, "second browser snapshot");
+    if (firstSnapshotCommand.type !== "chat.snapshot" || secondSnapshotCommand.type !== "chat.snapshot") {
+      throw new Error("Expected correlated browser snapshot commands");
+    }
+    expect(firstSnapshotCommand.requestId).not.toBe(secondSnapshotCommand.requestId);
+    socket.send(JSON.stringify({
+      type: "chat.snapshot",
+      requestId: firstSnapshotCommand.requestId,
+      payload: sharedSnapshot
+    } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({
+      type: "chat.snapshot",
+      requestId: secondSnapshotCommand.requestId,
+      payload: sharedSnapshot
+    } satisfies ExtensionClientMessage));
+    expect((await firstSnapshot).json()).toEqual({ status: "ready", snapshot: sharedSnapshot });
+    expect((await secondSnapshot).json()).toEqual({ status: "ready", snapshot: sharedSnapshot });
+
+    const sharedEvent = {
+      requestId: "ask-chat",
+      sequence: 5,
+      type: "lifecycle" as const,
+      state: "generating" as const
+    };
+    const firstEvent = firstEvents.next();
+    const secondEvent = secondEvents.next();
+    socket.send(JSON.stringify({ type: "chat.event", payload: sharedEvent } satisfies ExtensionClientMessage));
+    await expect(Promise.all([firstEvent, secondEvent])).resolves.toEqual([sharedEvent, sharedEvent]);
+    await firstEvents.close();
+    await secondEvents.close();
+  });
+
+  it("deduplicates concurrent two-browser commands before relay and rejects conflicting command reuse", async () => {
+    const { app, socket } = await setup();
+    await activateChat(app, socket);
+    const headers = { host: "postbox.local", origin: "https://postbox.local" };
+    const payload = { clientCommandId: "shared-browser-command", message: "Explain the shared runtime" };
+
+    const first = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat/messages", headers, payload });
+    const second = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat/messages", headers, payload });
+    const command = await nextMessage(socket, "deduplicated browser command");
+    expect(command).toMatchObject({ type: "chat.send", payload: { command: payload } });
+    if (command.type !== "chat.send") throw new Error("Expected Chat send command");
+    const noDuplicateRelay = expectNoMessage(socket);
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: command.requestId,
+      payload: {
+        requestId: "ask-chat",
+        response: { status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" }
+      }
+    } satisfies ExtensionClientMessage));
+    expect((await first).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" });
+    expect((await second).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" });
+    await noDuplicateRelay;
+
+    const noConflictRelay = expectNoMessage(socket);
+    const conflict = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers,
+      payload: { clientCommandId: payload.clientCommandId, message: "Different payload" }
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toEqual({
+      status: "unavailable",
+      error: { code: "duplicate_command", message: "This command ID was already used for different Question Chat input." }
+    });
+    await noConflictRelay;
+  });
+
+  it("charges only unique commands, partitions limits by caller and Question, and resets with injected time", async () => {
+    let nowMs = 10_000;
+    const { app, socket } = await setup({
+      now: () => nowMs,
+      chatCommandRateLimitMax: 1,
+      chatCommandRateLimitWindowMs: 1_000
+    });
+    await activateChat(app, socket);
+    const firstHeaders = { host: "first.postbox", origin: "https://first.postbox" };
+    const firstPayload = { clientCommandId: "limited-1", message: "First unique command" };
+
+    const first = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat/messages", headers: firstHeaders, payload: firstPayload });
+    const firstCommand = await nextMessage(socket, "first limited command");
+    if (firstCommand.type !== "chat.send") throw new Error("Expected Chat send command");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: firstCommand.requestId,
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "limited-1", mode: "prompt" } }
+    } satisfies ExtensionClientMessage));
+    expect((await first).statusCode).toBe(200);
+
+    const exactRetry = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers: firstHeaders,
+      payload: firstPayload
+    });
+    expect(exactRetry.statusCode).toBe(200);
+
+    const noLimitedRelay = expectNoMessage(socket);
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers: firstHeaders,
+      payload: { clientCommandId: "limited-2", message: "Second unique command" }
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({
+      status: "unavailable",
+      error: { code: "rate_limited", message: "Question Chat command rate limit exceeded.", retryAfterMs: 1_000 }
+    });
+    expect(JSON.stringify(limited.json())).not.toContain("Second unique command");
+    await noLimitedRelay;
+
+    const secondHeaders = { host: "second.postbox", origin: "https://second.postbox" };
+    const secondCaller = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers: secondHeaders,
+      payload: { clientCommandId: "other-caller", message: "Independent caller bucket" }
+    });
+    const secondCommand = await nextMessage(socket, "partitioned caller command");
+    if (secondCommand.type !== "chat.send") throw new Error("Expected partitioned Chat send command");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: secondCommand.requestId,
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "other-caller", mode: "prompt" } }
+    } satisfies ExtensionClientMessage));
+    expect((await secondCaller).statusCode).toBe(200);
+
+    nowMs += 1_001;
+    const reset = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers: firstHeaders,
+      payload: { clientCommandId: "limited-after-reset", message: "Allowed after reset" }
+    });
+    const resetCommand = await nextMessage(socket, "reset command");
+    if (resetCommand.type !== "chat.send") throw new Error("Expected reset Chat send command");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: resetCommand.requestId,
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "limited-after-reset", mode: "prompt" } }
+    } satisfies ExtensionClientMessage));
+    expect((await reset).statusCode).toBe(200);
+  });
+
+  it("maps activation limits to 429 and clamps oversized retry configuration to the protocol bound", async () => {
+    const { app, socket } = await setup({
+      now: () => 42_000,
+      chatCommandRateLimitMax: 1,
+      chatCommandRateLimitWindowMs: Number.MAX_SAFE_INTEGER,
+      chatCommandDedupeTtlMs: Number.POSITIVE_INFINITY,
+      chatCommandDedupeCapacity: Number.NaN
+    });
+    await activateChat(app, socket);
+
+    const noSecondActivation = expectNoMessage(socket);
+    const limited = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({
+      status: "unavailable",
+      error: {
+        code: "rate_limited",
+        message: "Question Chat command rate limit exceeded.",
+        retryAfterMs: 3_600_000
+      }
+    });
+    await noSecondActivation;
+  });
+
+  it("bounds retained commands without charging capacity-rejected attempts", async () => {
+    let nowMs = 20_000;
+    const { app, socket } = await setup({
+      now: () => nowMs,
+      chatCommandRateLimitMax: 2,
+      chatCommandRateLimitWindowMs: 1_000,
+      chatCommandDedupeTtlMs: 10,
+      chatCommandDedupeCapacity: 1
+    });
+    await activateChat(app, socket);
+    const headers = { host: "bounded.postbox", origin: "https://bounded.postbox" };
+
+    const first = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers,
+      payload: { clientCommandId: "bounded-1", message: "Hold this command in flight" }
+    });
+    const firstCommand = await nextMessage(socket, "first bounded command");
+    if (firstCommand.type !== "chat.send") throw new Error("Expected first bounded command");
+
+    const noCapacityRelay = expectNoMessage(socket);
+    const capacityRejected = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers,
+      payload: { clientCommandId: "bounded-rejected", message: "Do not charge this attempt" }
+    });
+    expect(capacityRejected.statusCode).toBe(429);
+    expect(capacityRejected.json()).toMatchObject({
+      status: "unavailable",
+      error: { code: "rate_limited", retryAfterMs: 1 }
+    });
+    await noCapacityRelay;
+
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: firstCommand.requestId,
+      payload: {
+        requestId: "ask-chat",
+        response: { status: "accepted", clientCommandId: "bounded-1", mode: "prompt" }
+      }
+    } satisfies ExtensionClientMessage));
+    expect((await first).statusCode).toBe(200);
+
+    const second = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers,
+      payload: { clientCommandId: "bounded-2", message: "Use the second available rate slot" }
+    });
+    const secondCommand = await nextMessage(socket, "second bounded command");
+    if (secondCommand.type !== "chat.send") throw new Error("Expected second bounded command");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: secondCommand.requestId,
+      payload: {
+        requestId: "ask-chat",
+        response: { status: "accepted", clientCommandId: "bounded-2", mode: "steer" }
+      }
+    } satisfies ExtensionClientMessage));
+    expect((await second).statusCode).toBe(200);
+
+    const noReplayRelay = expectNoMessage(socket);
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers,
+      payload: { clientCommandId: "bounded-2", message: "Use the second available rate slot" }
+    });
+    expect(replay.statusCode).toBe(200);
+    await noReplayRelay;
+
+    nowMs += 11;
+    const noExpiredReplayRelay = expectNoMessage(socket);
+    const afterTtl = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      headers,
+      payload: { clientCommandId: "bounded-2", message: "Use the second available rate slot" }
+    });
+    expect(afterTtl.statusCode).toBe(429);
+    expect(afterTtl.json()).toMatchObject({ status: "unavailable", error: { code: "rate_limited" } });
+    await noExpiredReplayRelay;
+  });
+
+  it("settles an in-flight command once at terminal cleanup, retains its retry, and drops late extension effects", async () => {
+    const { app, socket } = await setup();
+    await activateChat(app, socket);
+    const eventResponse = await fetch(`http://127.0.0.1:${listenerPort(app)}/api/requests/ask-chat/chat/events`);
+    const events = createSseReader(eventResponse);
+    const payload = { clientCommandId: "terminal-race-command", message: "Do not survive the answer" };
+
+    const send = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      payload
+    });
+    const command = await nextMessage(socket, "terminal-race send command");
+    if (command.type !== "chat.send") throw new Error("Expected Chat send command");
+
+    const terminalMessages = nextMessages(socket, 2, "terminal cleanup messages");
+    const answer = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/answer",
+      payload: { selectedValues: ["a"] }
+    });
+    expect(await terminalMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "chat.cleanup", payload: expect.objectContaining({ requestId: "ask-chat" }) }),
+      expect.objectContaining({ type: "ask.resolved", payload: expect.objectContaining({ requestId: "ask-chat" }) })
+    ]));
+    expect((await answer).statusCode).toBe(200);
+    expect((await send).json()).toEqual({
+      status: "unavailable",
+      error: { code: "request_not_pending", message: "The Question became terminal while Chat was active." }
+    });
+
+    const noRetryRelay = expectNoMessage(socket);
+    const retry = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      payload
+    });
+    expect(retry.statusCode).toBe(409);
+    expect(retry.json()).toEqual((await send).json());
+    await noRetryRelay;
+
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: command.requestId,
+      payload: {
+        requestId: "ask-chat",
+        response: { status: "accepted", clientCommandId: payload.clientCommandId, mode: "prompt" }
+      }
+    } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({
+      type: "chat.event",
+      payload: {
+        requestId: "ask-chat",
+        sequence: 99,
+        type: "tool.started",
+        activity: { id: "late-tool", tool: "repository_read", target: "secret.ts", state: "running" }
+      }
+    } satisfies ExtensionClientMessage));
+    const lateEvent = events.next().then(() => true, () => false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await expect(Promise.race([lateEvent, Promise.resolve(false)])).resolves.toBe(false);
+    await events.close();
+    await expect(lateEvent).resolves.toBe(false);
+
+    const state = (await app.inject({ method: "GET", url: "/api/state" })).json();
+    expect(state.requests[0]).toMatchObject({ requestId: "ask-chat", status: "answered" });
+    expect(JSON.stringify(state)).not.toContain("late-tool");
+    expect(JSON.stringify(state)).not.toContain("secret.ts");
   });
 
   it("returns typed errors for missing, terminal, offline, and incomplete source questions", async () => {

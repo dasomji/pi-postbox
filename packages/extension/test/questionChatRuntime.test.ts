@@ -184,7 +184,7 @@ describe("Pi Question Chat runtime adapter", () => {
       observedSequences.push(durable.sequence);
       expect(durable.sequence).toBeGreaterThanOrEqual(event.sequence);
     });
-    await registry.send("ask-recover", { clientCommandId: "persisted-command", message: "Explain recovery." });
+    await registry.send("ask-recover", "session-owner", { clientCommandId: "persisted-command", message: "Explain recovery." });
     expect(observedSequences.length).toBeGreaterThan(0);
     activeManager!.appendMessage({ role: "user", content: "Explain recovery.", timestamp: Date.now() });
     activeManager!.appendMessage({
@@ -695,13 +695,13 @@ describe("Pi Question Chat runtime adapter", () => {
     const events: QuestionChatEvent[] = [];
     registry.subscribe(requestId, (event) => events.push(event));
 
-    const firstSend = registry.send(requestId, { clientCommandId: "browser-command-1", message: "Please explain." });
+    const firstSend = registry.send(requestId, "session-owner", { clientCommandId: "browser-command-1", message: "Please explain." });
     await Promise.resolve();
     await expect(
-      registry.send(requestId, { clientCommandId: "too-early-steer", message: "Do not start another prompt" })
+      registry.send(requestId, "session-owner", { clientCommandId: "too-early-steer", message: "Do not start another prompt" })
     ).rejects.toMatchObject({ code: "runtime_busy" });
-    await expect(registry.stop(requestId, { clientCommandId: "too-early-stop" })).rejects.toMatchObject({ code: "runtime_busy" });
-    expect((await registry.getSnapshot(requestId)).state).toBe("ready");
+    await expect(registry.stop(requestId, "session-owner", { clientCommandId: "too-early-stop" })).rejects.toMatchObject({ code: "runtime_busy" });
+    expect((await registry.getSnapshot(requestId, "session-owner")).state).toBe("ready");
     acceptFirstPrompt();
     await expect(firstSend).resolves.toEqual({
       status: "accepted",
@@ -713,7 +713,7 @@ describe("Pi Question Chat runtime adapter", () => {
       source: "rpc",
       preflightResult: expect.any(Function)
     }));
-    await expect(registry.send(requestId, { clientCommandId: "browser-command-2", message: "Correction while running" })).resolves.toEqual({
+    await expect(registry.send(requestId, "session-owner", { clientCommandId: "browser-command-2", message: "Correction while running" })).resolves.toEqual({
       status: "accepted",
       clientCommandId: "browser-command-2",
       mode: "steer"
@@ -726,10 +726,10 @@ describe("Pi Question Chat runtime adapter", () => {
     });
     prompt.mockRejectedValueOnce(new Error("steer queue unavailable"));
     await expect(
-      registry.send(requestId, { clientCommandId: "browser-command-rejected", message: "Rejected correction" })
+      registry.send(requestId, "session-owner", { clientCommandId: "browser-command-rejected", message: "Rejected correction" })
     ).rejects.toThrow("steer queue unavailable");
-    expect((await registry.getSnapshot(requestId)).state).toBe("generating");
-    expect((await registry.getSnapshot(requestId)).messages).not.toContainEqual(
+    expect((await registry.getSnapshot(requestId, "session-owner")).state).toBe("generating");
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages).not.toContainEqual(
       expect.objectContaining({ text: "Rejected correction" })
     );
 
@@ -829,7 +829,7 @@ describe("Pi Question Chat runtime adapter", () => {
       }
     });
     listener?.({ type: "queue_update", steering: [], followUp: [] });
-    expect((await registry.getSnapshot(requestId)).messages.at(-1)).toMatchObject({ role: "assistant", text: "Visible **answer**", status: "final" });
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages.at(-1)).toMatchObject({ role: "assistant", text: "Visible **answer**", status: "final" });
     forkManager!.appendMessage({
       role: "assistant",
       content: [{ type: "text", text: "Visible **answer**" }],
@@ -887,7 +887,7 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(JSON.stringify(toolEvents)).not.toContain("must-not-stream");
     expect(JSON.stringify(toolEvents)).not.toContain("/host/private");
     expect(JSON.stringify(toolEvents)).not.toContain("cat .env");
-    const snapshot = await registry.getSnapshot(requestId);
+    const snapshot = await registry.getSnapshot(requestId, "session-owner");
     expect(snapshot).toMatchObject({ state: "ready", sequence: events.at(-1)?.sequence });
     expect(snapshot.messages.map((message) => message.text)).toEqual([
       "Please explain.",
@@ -901,8 +901,8 @@ describe("Pi Question Chat runtime adapter", () => {
       expect.objectContaining({ tool: "repository_read", state: "running", target: "src/b.ts" })
     ]));
 
-    await registry.send(requestId, { clientCommandId: "browser-command-3", message: "Please explain." });
-    expect((await registry.getSnapshot(requestId)).messages.filter((message) => message.role === "user" && message.text === "Please explain.")).toHaveLength(2);
+    await registry.send(requestId, "session-owner", { clientCommandId: "browser-command-3", message: "Please explain." });
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages.filter((message) => message.role === "user" && message.text === "Please explain.")).toHaveLength(2);
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 11 } });
     listener?.({
       type: "message_update",
@@ -913,7 +913,7 @@ describe("Pi Question Chat runtime adapter", () => {
       type: "message_end",
       message: { role: "assistant", content: [{ type: "text", text: "Visible **answer**" }], stopReason: "stop", timestamp: 11 }
     });
-    expect((await registry.getSnapshot(requestId)).messages.filter((message) => message.role === "assistant" && message.text === "Visible **answer**")).toHaveLength(2);
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages.filter((message) => message.role === "assistant" && message.text === "Visible **answer**")).toHaveLength(2);
     forkManager!.appendMessage({ role: "user", content: "Please explain.", timestamp: 10 });
     forkManager!.appendMessage({
       role: "assistant",
@@ -926,7 +926,7 @@ describe("Pi Question Chat runtime adapter", () => {
       timestamp: 11
     });
     listener?.({ type: "agent_settled" });
-    expect((await registry.getSnapshot(requestId)).messages.filter((message) => message.role === "assistant" && message.text === "Visible **answer**")).toHaveLength(2);
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages.filter((message) => message.role === "assistant" && message.text === "Visible **answer**")).toHaveLength(2);
   });
 
   it("deduplicates an in-flight client command without prompting twice", async () => {
@@ -941,8 +941,8 @@ describe("Pi Question Chat runtime adapter", () => {
     };
     const registry = new QuestionChatRuntimeRegistry({ create: vi.fn(async () => runtime) } as any);
     await registry.activate({ requestId: "ask-dedupe", ownerSessionId: "session-owner", source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" } });
-    const first = registry.send("ask-dedupe", { clientCommandId: "same", message: "hello" });
-    const retry = registry.send("ask-dedupe", { clientCommandId: "same", message: "hello" });
+    const first = registry.send("ask-dedupe", "session-owner", { clientCommandId: "same", message: "hello" });
+    const retry = registry.send("ask-dedupe", "session-owner", { clientCommandId: "same", message: "hello" });
     await Promise.resolve();
     expect(runtime.send).toHaveBeenCalledOnce();
     finishSend();
@@ -950,6 +950,330 @@ describe("Pi Question Chat runtime adapter", () => {
       { status: "accepted", clientCommandId: "same", mode: "prompt" },
       { status: "accepted", clientCommandId: "same", mode: "prompt" }
     ]);
+  });
+
+  it("creates exactly one runtime for concurrent activations and enforces its owner", async () => {
+    let finishCreate!: (runtime: any) => void;
+    const create = vi.fn(() => new Promise<any>((resolve) => {
+      finishCreate = resolve;
+    }));
+    const registry = new QuestionChatRuntimeRegistry({ create } as any);
+    const input = {
+      requestId: "ask-concurrent-activation",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+    };
+    const first = registry.activate(input);
+    const second = registry.activate(input);
+    expect(create).toHaveBeenCalledOnce();
+    await expect(registry.activate({ ...input, ownerSessionId: "session-other" })).rejects.toMatchObject({
+      code: "wrong_owner"
+    });
+    finishCreate({
+      snapshot: {
+        requestId: input.requestId,
+        state: "ready",
+        forkKind: "exact",
+        model: { id: "test/model", source: "originating" },
+        sequence: 0,
+        messages: []
+      },
+      send: vi.fn(),
+      stop: vi.fn(),
+      subscribe: vi.fn(() => () => undefined),
+      terminate: vi.fn(async () => undefined)
+    });
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ requestId: input.requestId }),
+      expect.objectContaining({ requestId: input.requestId })
+    ]);
+  });
+
+  it("bounds runtime command outcomes and terminal ownership tombstones", async () => {
+    const send = vi.fn(async (command: { clientCommandId: string }) => ({
+      status: "accepted" as const,
+      clientCommandId: command.clientCommandId,
+      mode: "prompt" as const
+    }));
+    const create = vi.fn(async ({ requestId }: { requestId: string }) => ({
+      snapshot: {
+        requestId,
+        state: "ready" as const,
+        forkKind: "exact" as const,
+        model: { id: "test/model", source: "originating" as const },
+        sequence: 0,
+        messages: []
+      },
+      send,
+      stop: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      terminate: vi.fn(async () => undefined),
+      suspend: vi.fn(async () => undefined)
+    }));
+    const registry = new QuestionChatRuntimeRegistry({ create, createContext: vi.fn() } as any);
+
+    await registry.activate({
+      requestId: "ask-bounded-commands",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+    });
+    for (let index = 0; index < 300; index += 1) {
+      await registry.send("ask-bounded-commands", "session-owner", {
+        clientCommandId: `command-${index}`,
+        message: `Message ${index}`
+      });
+    }
+    await registry.send("ask-bounded-commands", "session-owner", {
+      clientCommandId: "command-299",
+      message: "Message 299"
+    });
+    expect(send).toHaveBeenCalledTimes(300);
+    await registry.send("ask-bounded-commands", "session-owner", {
+      clientCommandId: "command-0",
+      message: "Message 0"
+    });
+    expect(send).toHaveBeenCalledTimes(301);
+
+    const beforeMultiRequestChurn = send.mock.calls.length;
+    for (let index = 0; index < 300; index += 1) {
+      const requestId = `ask-outcome-${index}`;
+      await registry.activate({
+        requestId,
+        ownerSessionId: "session-owner",
+        source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      });
+      await registry.send(requestId, "session-owner", {
+        clientCommandId: "server-restart-stable-command",
+        message: `Question ${index}`
+      });
+    }
+    expect(send).toHaveBeenCalledTimes(beforeMultiRequestChurn + 300);
+    await registry.send("ask-outcome-299", "session-owner", {
+      clientCommandId: "server-restart-stable-command",
+      message: "Question 299"
+    });
+    expect(send).toHaveBeenCalledTimes(beforeMultiRequestChurn + 300);
+    await registry.send("ask-outcome-0", "session-owner", {
+      clientCommandId: "server-restart-stable-command",
+      message: "Question 0"
+    });
+    expect(send).toHaveBeenCalledTimes(beforeMultiRequestChurn + 301);
+
+    for (let index = 0; index < 300; index += 1) {
+      const requestId = `ask-terminal-${index}`;
+      await registry.activate({
+        requestId,
+        ownerSessionId: "session-owner",
+        source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      });
+      await registry.cleanup(requestId);
+    }
+    await expect(registry.activate({
+      requestId: "ask-terminal-299",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+    })).rejects.toMatchObject({ code: "request_not_pending" });
+    await expect(registry.activate({
+      requestId: "ask-terminal-0",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+    })).resolves.toMatchObject({ requestId: "ask-terminal-0" });
+  });
+
+  it("never evicts an in-flight extension command outcome at capacity", async () => {
+    const finishes: Array<() => void> = [];
+    const send = vi.fn((command: { clientCommandId: string }) => new Promise<{
+      status: "accepted";
+      clientCommandId: string;
+      mode: "prompt";
+    }>((resolve) => {
+      finishes.push(() => resolve({ status: "accepted", clientCommandId: command.clientCommandId, mode: "prompt" }));
+    }));
+    const runtime = {
+      snapshot: {
+        requestId: "ask-inflight-capacity",
+        state: "ready" as const,
+        forkKind: "exact" as const,
+        model: { id: "test/model", source: "originating" as const },
+        sequence: 0,
+        messages: []
+      },
+      send,
+      stop: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      terminate: vi.fn(async () => undefined)
+    };
+    const registry = new QuestionChatRuntimeRegistry({ create: vi.fn(async () => runtime) } as any);
+    await registry.activate({
+      requestId: "ask-inflight-capacity",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+    });
+
+    const pending = Array.from({ length: 256 }, (_, index) => registry.send(
+      "ask-inflight-capacity",
+      "session-owner",
+      { clientCommandId: `inflight-${index}`, message: `Message ${index}` }
+    ));
+    await expect(registry.send("ask-inflight-capacity", "session-owner", {
+      clientCommandId: "inflight-over-capacity",
+      message: "Must not execute"
+    })).rejects.toMatchObject({ code: "rate_limited" });
+    void registry.send("ask-inflight-capacity", "session-owner", {
+      clientCommandId: "inflight-0",
+      message: "Message 0"
+    });
+    expect(send).toHaveBeenCalledTimes(256);
+    for (const finish of finishes) finish();
+    await expect(Promise.all(pending)).resolves.toHaveLength(256);
+  });
+
+  it("retains failed command outcomes and rejects conflicting stable command reuse", async () => {
+    const failure = new QuestionChatRuntimeError("runtime_failure", "Failed after the runtime accepted work.");
+    const runtime = {
+      snapshot: {
+        requestId: "ask-failed-dedupe",
+        state: "ready" as const,
+        forkKind: "exact" as const,
+        model: { id: "test/model", source: "originating" as const },
+        sequence: 0,
+        messages: []
+      },
+      send: vi.fn(async () => { throw failure; }),
+      stop: vi.fn(),
+      subscribe: vi.fn(() => () => undefined),
+      terminate: vi.fn(async () => undefined)
+    };
+    const registry = new QuestionChatRuntimeRegistry({ create: vi.fn(async () => runtime) } as any);
+    await registry.activate({
+      requestId: "ask-failed-dedupe",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+    });
+
+    await expect(registry.send("ask-failed-dedupe", "session-owner", {
+      clientCommandId: "stable-failure",
+      message: "Run once"
+    })).rejects.toBe(failure);
+    await expect(registry.send("ask-failed-dedupe", "session-owner", {
+      clientCommandId: "stable-failure",
+      message: "Run once"
+    })).rejects.toBe(failure);
+    expect(runtime.send).toHaveBeenCalledOnce();
+    await expect(registry.send("ask-failed-dedupe", "session-owner", {
+      clientCommandId: "stable-failure",
+      message: "Different input"
+    })).rejects.toMatchObject({ code: "duplicate_command" });
+    expect(runtime.send).toHaveBeenCalledOnce();
+  });
+
+  it("makes cleanup win over an in-flight activation and leaves an owner-bound terminal tombstone", async () => {
+    let finishCreate!: (runtime: any) => void;
+    const terminate = vi.fn(async () => undefined);
+    const registry = new QuestionChatRuntimeRegistry({
+      create: vi.fn(() => new Promise<any>((resolve) => {
+        finishCreate = resolve;
+      }))
+    } as any);
+    const activation = registry.activate({
+      requestId: "ask-activation-terminal",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+    });
+    const cleanup = registry.cleanup("ask-activation-terminal");
+    finishCreate({
+      snapshot: {
+        requestId: "ask-activation-terminal",
+        state: "ready",
+        forkKind: "exact",
+        model: { id: "test/model", source: "originating" },
+        sequence: 0,
+        messages: []
+      },
+      send: vi.fn(),
+      stop: vi.fn(),
+      subscribe: vi.fn(() => () => undefined),
+      terminate
+    });
+    await cleanup;
+    await expect(activation).rejects.toMatchObject({ code: "request_not_pending" });
+    expect(terminate).toHaveBeenCalledOnce();
+    await expect(registry.getSnapshot("ask-activation-terminal", "session-owner")).rejects.toMatchObject({
+      code: "request_not_pending"
+    });
+    await expect(registry.getSnapshot("ask-activation-terminal", "session-other")).rejects.toMatchObject({
+      code: "wrong_owner"
+    });
+  });
+
+  it("aborts an in-flight prompt and ignores late SDK effects after terminal cleanup", async () => {
+    const fixture = createSourceFixture();
+    const privateRoot = join(fixture.root, "private-terminal-race");
+    let acceptPrompt!: () => void;
+    let finishPrompt!: () => void;
+    let listener: ((event: any) => void) | undefined;
+    const abort = vi.fn(async () => undefined);
+    const dispose = vi.fn();
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot,
+      agentDir: join(fixture.root, "agent-terminal-race"),
+      createAgentSession: vi.fn(async (options: CreateAgentSessionOptions) => ({
+        session: {
+          model: { provider: "test-provider", id: "source-model" },
+          isStreaming: false,
+          state: {},
+          sessionManager: options.sessionManager,
+          subscribe: (next: (event: any) => void) => {
+            listener = next;
+            return vi.fn();
+          },
+          prompt: vi.fn((_text: string, promptOptions: { preflightResult?: (success: boolean) => void }) =>
+            new Promise<void>((resolve) => {
+              acceptPrompt = () => promptOptions.preflightResult?.(true);
+              finishPrompt = resolve;
+            })),
+          abort,
+          dispose
+        },
+        extensionsResult: { extensions: [], errors: [], runtime: undefined }
+      }) as unknown as CreateAgentSessionResult)
+    });
+    const registry = new QuestionChatRuntimeRegistry(adapter);
+    const requestId = "ask-prompt-terminal";
+    await registry.activate({
+      requestId,
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+    const events: QuestionChatEvent[] = [];
+    registry.subscribe(requestId, (event) => events.push(event));
+    const send = registry.send(requestId, "session-owner", {
+      clientCommandId: "prompt-terminal",
+      message: "This must lose to terminal cleanup"
+    });
+    await vi.waitFor(() => expect(acceptPrompt).toBeTypeOf("function"));
+    const cleanup = registry.cleanup(requestId);
+    await cleanup;
+    acceptPrompt();
+    finishPrompt();
+    await expect(send).rejects.toMatchObject({ code: "request_not_pending" });
+
+    listener?.({
+      type: "tool_execution_start",
+      toolName: "repository_read",
+      toolCallId: "late-tool",
+      args: { path: "src/late.ts" }
+    });
+    listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 1 } });
+    listener?.({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "text", text: "late" }], timestamp: 1 },
+      assistantMessageEvent: { type: "text_delta", delta: "late" }
+    });
+    expect(events).toEqual([]);
+    expect(abort).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(readdirSync(privateRoot)).toEqual([]);
   });
 
   it("stops only the active turn, preserves partial output, and accepts a later ordinary prompt", async () => {
@@ -1010,7 +1334,7 @@ describe("Pi Question Chat runtime adapter", () => {
     });
     const events: QuestionChatEvent[] = [];
     registry.subscribe(requestId, (event) => events.push(event));
-    await expect(registry.send(requestId, { clientCommandId: "prompt-1", message: "Start" })).resolves.toMatchObject({ mode: "prompt" });
+    await expect(registry.send(requestId, "session-owner", { clientCommandId: "prompt-1", message: "Start" })).resolves.toMatchObject({ mode: "prompt" });
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 20 } });
     listener?.({
       type: "message_update",
@@ -1018,10 +1342,10 @@ describe("Pi Question Chat runtime adapter", () => {
       assistantMessageEvent: { type: "text_delta", delta: "Partial before stop" }
     });
 
-    const firstStop = registry.stop(requestId, { clientCommandId: "stop-1" });
-    const duplicateStop = registry.stop(requestId, { clientCommandId: "stop-1" });
+    const firstStop = registry.stop(requestId, "session-owner", { clientCommandId: "stop-1" });
+    const duplicateStop = registry.stop(requestId, "session-owner", { clientCommandId: "stop-1" });
     await Promise.resolve();
-    await expect(registry.stop(requestId, { clientCommandId: "stop-distinct" })).rejects.toMatchObject({ code: "runtime_busy" });
+    await expect(registry.stop(requestId, "session-owner", { clientCommandId: "stop-distinct" })).rejects.toMatchObject({ code: "runtime_busy" });
     expect(abort).toHaveBeenCalledOnce();
     expect(dispose).not.toHaveBeenCalled();
     finishAbort();
@@ -1032,7 +1356,7 @@ describe("Pi Question Chat runtime adapter", () => {
     listener?.({ type: "agent_end", messages: [], willRetry: false });
     listener?.({ type: "agent_settled" });
 
-    const stoppedBeforePersistence = await registry.getSnapshot(requestId);
+    const stoppedBeforePersistence = await registry.getSnapshot(requestId, "session-owner");
     expect(stoppedBeforePersistence).toMatchObject({
       state: "ready",
       messages: [
@@ -1053,19 +1377,19 @@ describe("Pi Question Chat runtime adapter", () => {
       stopReason: "aborted",
       timestamp: 20
     });
-    expect((await registry.getSnapshot(requestId)).messages.filter(
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages.filter(
       (message) => message.role === "assistant" && message.text === "Partial before stop"
     ).map((message) => message.status)).toEqual(["final", "stopped"]);
     expect(events).toContainEqual(expect.objectContaining({ type: "lifecycle", state: "stopping" }));
     expect(events).toContainEqual(expect.objectContaining({ type: "lifecycle", state: "stopped" }));
     expect(events).toContainEqual(expect.objectContaining({ type: "message.finished", status: "stopped" }));
-    await expect(registry.send(requestId, { clientCommandId: "prompt-2", message: "Continue" })).resolves.toMatchObject({ mode: "prompt" });
+    await expect(registry.send(requestId, "session-owner", { clientCommandId: "prompt-2", message: "Continue" })).resolves.toMatchObject({ mode: "prompt" });
     expect(prompt).toHaveBeenLastCalledWith("Continue", expect.objectContaining({
       expandPromptTemplates: false,
       source: "rpc",
       preflightResult: expect.any(Function)
     }));
-    await registry.stop(requestId, { clientCommandId: "stop-before-token" });
+    await registry.stop(requestId, "session-owner", { clientCommandId: "stop-before-token" });
     listener?.({ type: "agent_settled" });
     expect(events.slice(-3)).toEqual([
       expect.objectContaining({ type: "lifecycle", state: "stopping" }),
@@ -1111,7 +1435,7 @@ describe("Pi Question Chat runtime adapter", () => {
       ownerSessionId: "session-owner",
       source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
     });
-    await registry.send(requestId, { clientCommandId: "prompt-error", message: "Try" });
+    await registry.send(requestId, "session-owner", { clientCommandId: "prompt-error", message: "Try" });
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 30 } });
     listener?.({
       type: "message_update",
@@ -1134,16 +1458,16 @@ describe("Pi Question Chat runtime adapter", () => {
       timestamp: 30
     });
     listener?.({ type: "agent_end", messages: [], willRetry: true });
-    expect((await registry.getSnapshot(requestId)).state).toBe("generating");
-    expect((await registry.getSnapshot(requestId)).messages).not.toContainEqual(
+    expect((await registry.getSnapshot(requestId, "session-owner")).state).toBe("generating");
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages).not.toContainEqual(
       expect.objectContaining({ status: "interrupted" })
     );
 
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 31 } });
-    expect((await registry.getSnapshot(requestId)).messages).toContainEqual(
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages).toContainEqual(
       expect.objectContaining({ text: "Partial before failure", status: "final" })
     );
-    expect((await registry.getSnapshot(requestId)).messages).not.toContainEqual(
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages).not.toContainEqual(
       expect.objectContaining({ text: "Partial before failure", status: "interrupted" })
     );
     listener?.({
@@ -1168,7 +1492,7 @@ describe("Pi Question Chat runtime adapter", () => {
     listener?.({ type: "agent_end", messages: [], willRetry: false });
     listener?.({ type: "agent_settled" });
 
-    expect(await registry.getSnapshot(requestId)).toMatchObject({
+    expect(await registry.getSnapshot(requestId, "session-owner")).toMatchObject({
       state: "ready",
       messages: [
         expect.objectContaining({ role: "user", text: "Try", status: "final" }),
@@ -1176,9 +1500,9 @@ describe("Pi Question Chat runtime adapter", () => {
         expect.objectContaining({ role: "assistant", text: "Partial after retry", status: "interrupted" })
       ]
     });
-    expect((await registry.getSnapshot(requestId)).messages.filter((message) => message.status === "interrupted")).toHaveLength(1);
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages.filter((message) => message.status === "interrupted")).toHaveLength(1);
     expect(prompt).toHaveBeenCalledTimes(1);
-    await expect(registry.send(requestId, { clientCommandId: "prompt-after-error", message: "Retry manually" })).resolves.toMatchObject({ mode: "prompt" });
+    await expect(registry.send(requestId, "session-owner", { clientCommandId: "prompt-after-error", message: "Retry manually" })).resolves.toMatchObject({ mode: "prompt" });
     expect(prompt).toHaveBeenCalledTimes(2);
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 32 } });
     listener?.({
@@ -1202,7 +1526,7 @@ describe("Pi Question Chat runtime adapter", () => {
       timestamp: 32
     });
     listener?.({ type: "agent_settled" });
-    expect((await registry.getSnapshot(requestId)).messages).toContainEqual(
+    expect((await registry.getSnapshot(requestId, "session-owner")).messages).toContainEqual(
       expect.objectContaining({ text: "Partial after retry", status: "interrupted" })
     );
   });

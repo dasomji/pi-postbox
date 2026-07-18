@@ -74,9 +74,9 @@ export interface PostboxClientOptions {
   questionChats?: {
     activate(input: { requestId: string; ownerSessionId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
     activateContext(input: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
-    getSnapshot(requestId: string): Promise<QuestionChatSnapshot>;
-    send(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
-    stop(requestId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
+    getSnapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatSnapshot>;
+    send(requestId: string, ownerSessionId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
+    stop(requestId: string, ownerSessionId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
     subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void;
     cleanup(requestId: string): Promise<void>;
     listRecoveryOffers?(): QuestionChatRecoveryOffer[];
@@ -173,6 +173,8 @@ export class PostboxClient {
   private readonly questionChatSubscriptions = new Map<string, () => void>();
   private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
   private readonly pendingProposals = new Map<string, PendingProposal>();
+  private readonly liveQuestionChats = new Map<string, string>();
+  private readonly terminalQuestionChats = new Map<string, string>();
   private recoveryOffers: QuestionChatRecoveryOffer[] = [];
   private recoveryOfferIndex = 0;
   private recoveryCompleteSent = false;
@@ -219,6 +221,8 @@ export class PostboxClient {
     this.recoveryOfferIndex = 0;
     this.recoveryCompleteSent = false;
     this.failPendingProposals("Question Chat proposal stopped before the server responded.");
+    this.liveQuestionChats.clear();
+    this.terminalQuestionChats.clear();
     this.socket?.close();
   }
 
@@ -250,6 +254,7 @@ export class PostboxClient {
   }
 
   proposeAnswer(requestId: string, proposal: ProposeAnswerPayload, signal?: AbortSignal): Promise<ProposeAnswerResult> {
+    if (this.terminalQuestionChats.has(requestId)) return Promise.resolve(proposalTerminalError());
     if (signal?.aborted) return Promise.resolve(proposalTransportError("Question Chat proposal was aborted."));
     const commandId = `chat_proposal_${randomUUID()}`;
     return new Promise<ProposeAnswerResult>((resolve) => {
@@ -463,6 +468,7 @@ export class PostboxClient {
           return;
         }
         if (parsed.data.type === "chat.cleanup") {
+          this.markQuestionChatTerminal(parsed.data.payload.requestId);
           this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
           this.questionChatSubscriptions.delete(parsed.data.payload.requestId);
           void this.options.questionChats?.cleanup(parsed.data.payload.requestId);
@@ -481,6 +487,10 @@ export class PostboxClient {
           }
         }
         if (parsed.data.type === "ask.resolved") {
+          this.markQuestionChatTerminal(parsed.data.payload.requestId);
+          this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
+          this.questionChatSubscriptions.delete(parsed.data.payload.requestId);
+          void this.options.questionChats?.cleanup(parsed.data.payload.requestId);
           this.pendingAsks.get(parsed.data.payload.requestId)?.resolve(parsed.data.payload);
         }
       } catch {
@@ -542,7 +552,10 @@ export class PostboxClient {
     }
 
     try {
+      if (this.terminalQuestionChats.has(payload.requestId)) return;
       const snapshot = await activate({ requestId: payload.requestId, ownerSessionId: payload.ownerSessionId, source: payload.source });
+      if (this.terminalQuestionChats.has(payload.requestId)) return;
+      this.liveQuestionChats.set(payload.requestId, payload.ownerSessionId);
       this.subscribeQuestionChat(payload.requestId);
       this.send({ type: "chat.ready", requestId: commandId, payload: snapshot });
     } catch (error) {
@@ -594,7 +607,10 @@ export class PostboxClient {
         [{ requestId: payload.requestId, forkKind: payload.forkKind, action: payload.action }]
       ) ?? [];
       result = reconciled ?? { status: "failed", requestId: payload.requestId, message: "Question Chat recovery is not configured." };
-      if (result.status === "recovered") this.subscribeQuestionChat(payload.requestId);
+      if (result.status === "recovered" && !this.terminalQuestionChats.has(payload.requestId)) {
+        this.liveQuestionChats.set(payload.requestId, this.options.registration.session.sessionId);
+        this.subscribeQuestionChat(payload.requestId);
+      }
     } catch (error) {
       result = {
         status: "failed",
@@ -618,7 +634,9 @@ export class PostboxClient {
   private subscribeQuestionChat(requestId: string): void {
     if (this.questionChatSubscriptions.has(requestId) || !this.options.questionChats) return;
     const unsubscribe = this.options.questionChats.subscribe(requestId, (event) => {
-      this.send({ type: "chat.event", payload: event });
+      if (this.liveQuestionChats.has(requestId) && !this.terminalQuestionChats.has(requestId)) {
+        this.send({ type: "chat.event", payload: event });
+      }
     });
     this.questionChatSubscriptions.set(requestId, unsubscribe);
   }
@@ -629,7 +647,8 @@ export class PostboxClient {
   ): Promise<void> {
     if (!this.validateQuestionChatCommandOwner(commandId, payload, "snapshot")) return;
     try {
-      const snapshot = await this.options.questionChats!.getSnapshot(payload.requestId);
+      const snapshot = await this.options.questionChats!.getSnapshot(payload.requestId, payload.ownerSessionId);
+      if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) return;
       this.send({ type: "chat.snapshot", requestId: commandId, payload: snapshot });
     } catch (error) {
       this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat snapshot failed.");
@@ -642,7 +661,8 @@ export class PostboxClient {
   ): Promise<void> {
     if (!this.validateQuestionChatCommandOwner(commandId, payload, "send")) return;
     try {
-      const response = await this.options.questionChats!.send(payload.requestId, payload.command);
+      const response = await this.options.questionChats!.send(payload.requestId, payload.ownerSessionId, payload.command);
+      if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) return;
       this.send({ type: "chat.send.accepted", requestId: commandId, payload: { requestId: payload.requestId, response } });
     } catch (error) {
       this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat send failed.");
@@ -655,7 +675,8 @@ export class PostboxClient {
   ): Promise<void> {
     if (!this.validateQuestionChatCommandOwner(commandId, payload, "stop")) return;
     try {
-      const response = await this.options.questionChats!.stop(payload.requestId, payload.command);
+      const response = await this.options.questionChats!.stop(payload.requestId, payload.ownerSessionId, payload.command);
+      if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) return;
       this.send({ type: "chat.stop.accepted", requestId: commandId, payload: { requestId: payload.requestId, response } });
     } catch (error) {
       this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat stop failed.");
@@ -671,6 +692,20 @@ export class PostboxClient {
       this.sendQuestionChatError(commandId, payload.requestId, {
         code: "wrong_owner",
         message: `Question Chat ${action} was routed to the wrong Pi Session.`
+      });
+      return false;
+    }
+    if (this.terminalQuestionChats.has(payload.requestId)) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "request_not_pending",
+        message: "The Postbox Question is already terminal."
+      });
+      return false;
+    }
+    if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "chat_not_started",
+        message: "Question Chat has not started for this Pi Session."
       });
       return false;
     }
@@ -698,6 +733,22 @@ export class PostboxClient {
     error: QuestionChatAvailabilityError
   ): void {
     this.send({ type: "chat.error", requestId: commandId, payload: { requestId, error } });
+  }
+
+  private isLiveQuestionChat(requestId: string, ownerSessionId: string): boolean {
+    return this.liveQuestionChats.get(requestId) === ownerSessionId && !this.terminalQuestionChats.has(requestId);
+  }
+
+  private markQuestionChatTerminal(requestId: string): void {
+    const ownerSessionId = this.liveQuestionChats.get(requestId) ?? this.options.registration.session.sessionId;
+    this.liveQuestionChats.delete(requestId);
+    if (!this.terminalQuestionChats.has(requestId) && this.terminalQuestionChats.size >= 256) {
+      this.terminalQuestionChats.delete(this.terminalQuestionChats.keys().next().value!);
+    }
+    this.terminalQuestionChats.set(requestId, ownerSessionId);
+    for (const [commandId, proposal] of this.pendingProposals) {
+      if (proposal.requestId === requestId) this.finishProposal(commandId, proposalTerminalError());
+    }
   }
 
   private startHeartbeat(): void {
@@ -1061,6 +1112,13 @@ function expiredResult(requestId: string): AskResult {
 
 function proposalTransportError(message: string): ProposeAnswerResult {
   return { status: "error", error: { code: "internal_error", message } };
+}
+
+function proposalTerminalError(): ProposeAnswerResult {
+  return {
+    status: "error",
+    error: { code: "request_terminal", message: "The Postbox Question is already terminal." }
+  };
 }
 
 function messageFrom(error: unknown): string {
