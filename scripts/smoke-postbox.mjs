@@ -549,6 +549,38 @@ async function main() {
     await sse.open();
     await sse.nextStateMatching((snapshot) => snapshot.requests.some((request) => request.requestId === requestId && request.status === "pending"));
 
+    const proposedState = sse.nextStateMatching((snapshot) => snapshot.requests.some((request) =>
+      request.requestId === requestId && request.options.some((option) => option.provenance === "chat")
+    ));
+    const proposalResult = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "smoke-proposal-command",
+      payload: {
+        requestId,
+        proposal: {
+          label: "Stage release first",
+          description: "Verify the release with a limited cohort.",
+          meaning: "Use a reversible rollout before full release."
+        }
+      }
+    }));
+    const proposal = await proposalResult;
+    assert(
+      proposal.type === "chat.propose-answer.result" &&
+        proposal.requestId === "smoke-proposal-command" &&
+        proposal.payload.requestId === requestId &&
+        proposal.payload.result.status === "appended" &&
+        proposal.payload.result.option.provenance === "chat",
+      "Fake Question Chat could not append an authoritative answer option"
+    );
+    const proposedValue = proposal.payload.result.option.value;
+    const proposalSnapshot = await proposedState;
+    assert(
+      proposalSnapshot.requests.find((request) => request.requestId === requestId)?.options.at(-1)?.value === proposedValue,
+      "Chat-proposed option was not broadcast durably over state SSE"
+    );
+
     const continueCommandId = `smoke-chat-continue-${randomUUID()}`;
     const continueResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
       method: "POST",
@@ -569,7 +601,7 @@ async function main() {
     const answerResponse = await fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/answer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ selectedValues: ["yes"], note: "Smoke answered", rationale: "All release path checks passed." })
+      body: JSON.stringify({ selectedValues: [proposedValue], note: "Smoke answered", rationale: "All release path checks passed." })
     });
     assert(answerResponse.status === 200, `Answer returned ${answerResponse.status}`);
     const terminalMessages = await terminalMessagesPromise;
@@ -581,14 +613,22 @@ async function main() {
     const state = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
     assert(state.sessions.some((session) => session.sessionId === sessionId), "State endpoint does not include registered session");
     assert(state.requests.some((request) => request.requestId === requestId && request.status === "answered"), "State endpoint does not include answered request");
+    assert(state.requests.some((request) => request.requestId === requestId && request.options.some((option) =>
+      option.value === proposedValue && option.label === "Stage release first" && option.provenance === "chat"
+    )), "State endpoint does not retain the Chat-proposed option");
     assert(!JSON.stringify(state).includes("smoke-private-repository-evidence"), "State persisted private repository evidence");
 
     const history = await fetch(`${baseUrl}/api/history`).then((response) => response.json());
-    assert(history.history.some((record) => record.request.requestId === requestId && record.request.result?.status === "answered"), "History endpoint does not include answered request");
+    assert(history.history.some((record) =>
+      record.request.requestId === requestId &&
+        record.request.result?.status === "answered" &&
+        record.request.result.selectedValues?.[0] === proposedValue &&
+        record.request.options.some((option) => option.value === proposedValue && option.provenance === "chat")
+    ), "History endpoint does not include the answered Chat-proposed option");
     assert(!JSON.stringify(history).includes("smoke-streamed-private-fork-answer"), "History persisted the private Chat transcript");
     assert(!JSON.stringify(history).includes("smoke-private-repository-evidence"), "History persisted private repository evidence");
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Chat prompt/steer/stop/server-restart recovery/resume, cleanup, answer, state, and history verified.");
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Chat prompt/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, state, and history verified.");
   } finally {
     chatSse?.close();
     sse?.close();

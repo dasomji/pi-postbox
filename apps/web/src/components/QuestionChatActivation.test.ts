@@ -209,7 +209,7 @@ describe("Question Chat first message", () => {
       }
     });
     expect(await screen.findByText("Success")).toBeTruthy();
-    const activity = screen.getByRole("list", { name: "Repository evidence activity" });
+    const activity = screen.getByRole("list", { name: "Question Chat activity" });
     expect(activity.querySelector("img")).toBeNull();
     expect(activity.textContent).toContain("<img src=x onerror=alert(1)> bounded evidence");
     expect(activity.querySelector("details")).toBeTruthy();

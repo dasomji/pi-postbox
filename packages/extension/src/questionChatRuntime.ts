@@ -55,9 +55,14 @@ import {
   createRepositoryEvidenceTools,
   isRepositoryEvidenceRestrictedPath
 } from "./repositoryEvidenceTools.js";
+import {
+  PROPOSE_ANSWER_TOOL_NAME,
+  createProposeAnswerTool,
+  type ProposeAnswerTransport
+} from "./proposeAnswerTool.js";
 
 const INTERVIEWER_SYSTEM_PROMPT =
-  "You are the focused interviewer for one pending Postbox Question. Explain the decision without resolving it. Only the human may select, submit, cancel, or otherwise resolve the question. Repository evidence is available only through the scoped repository_read, repository_grep, repository_find, and repository_list tools. Never claim shell or mutation capability.";
+  "You are the focused interviewer for one pending Postbox Question. Explain the decision without resolving it. Only the human may select, submit, cancel, or otherwise resolve the question. Repository evidence is available only through the scoped repository_read, repository_grep, repository_find, and repository_list tools. You may use propose_answer to append one answer option when it would help the human decide; it never selects, submits, cancels, or resolves the Question. Never claim shell or other mutation capability.";
 const DISABLED_BUILTIN_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 
 export interface QuestionChatActivation {
@@ -127,6 +132,7 @@ export interface PiQuestionChatRuntimeAdapterOptions {
   agentDir?: string;
   createAgentSession?: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
   createModelRuntime?: () => Promise<ModelRuntime>;
+  proposeAnswer?: ProposeAnswerTransport;
 }
 
 const RecoveryManifestSchema = z.object({
@@ -168,6 +174,7 @@ export class PiQuestionChatRuntimeAdapter {
   private readonly agentDir: string;
   private readonly createSession: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
   private readonly createModelRuntime: () => Promise<ModelRuntime>;
+  private readonly proposeAnswer: ProposeAnswerTransport;
 
   constructor(options: PiQuestionChatRuntimeAdapterOptions = {}) {
     this.privateRoot = resolve(options.privateRoot ?? join(getAgentDir(), "postbox", "question-chats"));
@@ -181,6 +188,10 @@ export class PiQuestionChatRuntimeAdapter {
           modelsPath: join(this.agentDir, "models.json"),
           allowModelNetwork: false
         }));
+    this.proposeAnswer = options.proposeAnswer ?? (async () => ({
+      status: "error",
+      error: { code: "internal_error", message: "Postbox proposal transport is unavailable." }
+    }));
   }
 
   async create(input: QuestionChatActivation): Promise<QuestionChatRuntime> {
@@ -257,6 +268,7 @@ export class PiQuestionChatRuntimeAdapter {
       });
       await resourceLoader.reload();
       const evidence = await createRepositoryEvidenceTools(prepared.cwd);
+      const proposalTool = createProposeAnswerTool(requestId, this.proposeAnswer);
 
       const modelRuntime = await this.createModelRuntime();
       const explicitModel = resolveRecordedModel(prepared.explicitModelId, modelRuntime);
@@ -268,8 +280,8 @@ export class PiQuestionChatRuntimeAdapter {
         resourceLoader,
         modelRuntime,
         ...(explicitModel ? { model: explicitModel } : {}),
-        tools: [...REPOSITORY_EVIDENCE_TOOL_NAMES],
-        customTools: evidence.tools,
+        tools: [...REPOSITORY_EVIDENCE_TOOL_NAMES, PROPOSE_ANSWER_TOOL_NAME],
+        customTools: [...evidence.tools, proposalTool],
         excludeTools: DISABLED_BUILTIN_TOOLS
       });
       session = result.session;
@@ -414,6 +426,7 @@ export class PiQuestionChatRuntimeAdapter {
       });
       await resourceLoader.reload();
       const evidence = await createRepositoryEvidenceTools(manifest.cwd);
+      const proposalTool = createProposeAnswerTool(requestId, this.proposeAnswer);
       const modelRuntime = await this.createModelRuntime();
       const explicitModel = resolveRecordedModel(manifest.model.id, modelRuntime);
       const result = await this.createSession({
@@ -424,8 +437,8 @@ export class PiQuestionChatRuntimeAdapter {
         resourceLoader,
         modelRuntime,
         ...(explicitModel ? { model: explicitModel } : {}),
-        tools: [...REPOSITORY_EVIDENCE_TOOL_NAMES],
-        customTools: evidence.tools,
+        tools: [...REPOSITORY_EVIDENCE_TOOL_NAMES, PROPOSE_ANSWER_TOOL_NAME],
+        customTools: [...evidence.tools, proposalTool],
         excludeTools: DISABLED_BUILTIN_TOOLS
       });
       session = result.session;
@@ -736,26 +749,29 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     try {
       if (!isRecord(value) || typeof value.type !== "string") return;
       if (value.type === "tool_execution_start") {
-        if (!isRepositoryEvidenceTool(value.toolName) || typeof value.toolCallId !== "string") return;
+        if (!isQuestionChatTool(value.toolName) || typeof value.toolCallId !== "string") return;
         const activity: QuestionChatToolActivity = {
           id: sanitizeToolId(value.toolCallId),
           tool: value.toolName,
-          target: sanitizeToolTarget(value.args),
+          target: sanitizeQuestionChatToolTarget(value.toolName, value.args),
           state: "running",
-          ...sanitizeToolArguments(value.toolName, value.args)
+          ...sanitizeQuestionChatToolArguments(value.toolName, value.args)
         };
         this.liveToolActivities.set(value.toolCallId, activity);
         this.emit({ type: "tool.started", activity });
         return;
       }
       if (value.type === "tool_execution_end") {
-        if (!isRepositoryEvidenceTool(value.toolName) || typeof value.toolCallId !== "string") return;
+        if (!isQuestionChatTool(value.toolName) || typeof value.toolCallId !== "string") return;
         const started = this.liveToolActivities.get(value.toolCallId);
         if (!started) return;
         const details = sanitizeToolResult(value.result);
+        const action = value.isError === true || value.toolName !== PROPOSE_ANSWER_TOOL_NAME
+          ? undefined
+          : sanitizeProposalAction(value.result);
         const activity = value.isError === true
           ? { ...started, state: "error" as const, ...(details ? { details } : {}) }
-          : { ...started, state: "success" as const, ...(details ? { details } : {}) };
+          : { ...started, state: "success" as const, ...(details ? { details } : {}), ...(action ? { action } : {}) };
         this.liveToolActivities.set(value.toolCallId, activity);
         this.emit({ type: "tool.finished", activity });
         return;
@@ -963,23 +979,27 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       const message = entry.message;
       if (message.role === "assistant" && Array.isArray(message.content)) {
         for (const item of message.content) {
-          if (!isRecord(item) || item.type !== "toolCall" || typeof item.id !== "string" || !isRepositoryEvidenceTool(item.name)) continue;
+          if (!isRecord(item) || item.type !== "toolCall" || typeof item.id !== "string" || !isQuestionChatTool(item.name)) continue;
           activities.set(item.id, {
             id: sanitizeToolId(item.id),
             tool: item.name,
-            target: sanitizeToolTarget(item.arguments),
+            target: sanitizeQuestionChatToolTarget(item.name, item.arguments),
             state: "stale",
-            ...sanitizeToolArguments(item.name, item.arguments)
+            ...sanitizeQuestionChatToolArguments(item.name, item.arguments)
           });
         }
       } else if (message.role === "toolResult" && typeof message.toolCallId === "string") {
         const started = activities.get(message.toolCallId);
-        if (!started || !isRepositoryEvidenceTool(message.toolName)) continue;
+        if (!started || !isQuestionChatTool(message.toolName)) continue;
         const details = sanitizeToolResult(message);
+        const action = message.isError || message.toolName !== PROPOSE_ANSWER_TOOL_NAME
+          ? undefined
+          : sanitizeProposalAction(message);
         activities.set(message.toolCallId, {
           ...started,
           state: message.isError ? "error" : "success",
-          ...(details ? { details } : {})
+          ...(details ? { details } : {}),
+          ...(action ? { action } : {})
         });
       }
     }
@@ -1244,6 +1264,12 @@ function isRepositoryEvidenceTool(value: unknown): value is (typeof REPOSITORY_E
   return typeof value === "string" && (REPOSITORY_EVIDENCE_TOOL_NAMES as readonly string[]).includes(value);
 }
 
+function isQuestionChatTool(
+  value: unknown
+): value is (typeof REPOSITORY_EVIDENCE_TOOL_NAMES)[number] | typeof PROPOSE_ANSWER_TOOL_NAME {
+  return isRepositoryEvidenceTool(value) || value === PROPOSE_ANSWER_TOOL_NAME;
+}
+
 function sanitizeToolId(value: string): string {
   const sanitized = stripToolControls(value);
   if (!sanitized) return "repository-tool";
@@ -1261,6 +1287,25 @@ function sanitizeToolTarget(args: unknown): string {
     isRepositoryEvidenceRestrictedPath(path)
   ) return "restricted target";
   return path;
+}
+
+function sanitizeProposalTarget(args: unknown): string {
+  if (!isRecord(args) || typeof args.label !== "string") return "Suggested option";
+  return sanitizeToolText(args.label, QUESTION_CHAT_TOOL_TARGET_MAX) || "Suggested option";
+}
+
+function sanitizeQuestionChatToolTarget(
+  tool: (typeof REPOSITORY_EVIDENCE_TOOL_NAMES)[number] | typeof PROPOSE_ANSWER_TOOL_NAME,
+  args: unknown
+): string {
+  return isRepositoryEvidenceTool(tool) ? sanitizeToolTarget(args) : sanitizeProposalTarget(args);
+}
+
+function sanitizeQuestionChatToolArguments(
+  tool: (typeof REPOSITORY_EVIDENCE_TOOL_NAMES)[number] | typeof PROPOSE_ANSWER_TOOL_NAME,
+  args: unknown
+): { details?: string } {
+  return isRepositoryEvidenceTool(tool) ? sanitizeToolArguments(tool, args) : {};
 }
 
 function sanitizeToolArguments(
@@ -1283,6 +1328,17 @@ function sanitizeToolResult(result: unknown): string | undefined {
   if (sanitized.length <= QUESTION_CHAT_TOOL_DETAILS_MAX) return sanitized;
   const marker = "… details truncated …";
   return `${sanitized.slice(0, QUESTION_CHAT_TOOL_DETAILS_MAX - marker.length)}${marker}`;
+}
+
+function sanitizeProposalAction(
+  result: unknown
+): { type: "show-question"; optionValue: string } | undefined {
+  if (!isRecord(result) || !isRecord(result.details) || !isRecord(result.details.action)) return undefined;
+  const action = result.details.action;
+  if (action.type !== "show-question" || typeof action.optionValue !== "string") return undefined;
+  const optionValue = stripToolControls(action.optionValue);
+  if (!optionValue || optionValue.length > 200) return undefined;
+  return { type: "show-question", optionValue };
 }
 
 function sanitizeToolText(value: string, maximum: number): string {

@@ -1,11 +1,57 @@
 import { describe, expect, it } from "vitest";
 import {
   AskCreatePayloadSchema,
+  AskOptionSchema,
   AskResultSchema,
+  ProposeAnswerPayloadSchema,
+  ProposeAnswerResultSchema,
   StateSnapshotSchema
 } from "./index.js";
 
 describe("ask_postbox protocol", () => {
+  it("keeps Chat provenance authoritative while accepting only bounded proposal fields", () => {
+    const createPayload = {
+      requestId: "ask-provenance",
+      sessionId: "session-1",
+      mode: "single",
+      question: { prompt: "Which path?" },
+      options: [{ value: "ship", label: "Ship", provenance: "chat" }],
+      context: {
+        codebaseContext: "Fastify service.",
+        problemContext: "Choose a release path."
+      }
+    } as const;
+
+    expect(() => AskCreatePayloadSchema.parse(createPayload)).toThrow();
+    expect(AskOptionSchema.parse({ value: "chat_opaque", label: "Stage first", provenance: "chat" })).toEqual({
+      value: "chat_opaque",
+      label: "Stage first",
+      provenance: "chat"
+    });
+    expect(AskOptionSchema.parse({ value: "ship", label: "Ship" })).toEqual({ value: "ship", label: "Ship" });
+
+    expect(
+      ProposeAnswerPayloadSchema.parse({
+        label: "Stage first",
+        description: "Deploy to a small cohort.",
+        meaning: "A reversible rollout.",
+        context: "The release pipeline supports cohorts."
+      })
+    ).toMatchObject({ label: "Stage first", meaning: "A reversible rollout." });
+    expect(() => ProposeAnswerPayloadSchema.parse({ label: "x".repeat(2_001) })).toThrow();
+    expect(() => ProposeAnswerPayloadSchema.parse({ label: "Valid", provenance: "chat" })).toThrow();
+    expect(() => ProposeAnswerPayloadSchema.parse({ label: "Valid", value: "spoofed" })).toThrow();
+    expect(() =>
+      ProposeAnswerResultSchema.parse({ status: "appended", option: { value: "chat_opaque", label: "Stage first" } })
+    ).toThrow();
+    expect(
+      ProposeAnswerResultSchema.parse({
+        status: "appended",
+        option: { value: "chat_opaque", label: "Stage first", provenance: "chat" }
+      })
+    ).toMatchObject({ status: "appended", option: { provenance: "chat" } });
+  });
+
   it("accepts finite urgency levels and defaults legacy asks to normal urgency", () => {
     const basePayload = {
       requestId: "ask-urgency",

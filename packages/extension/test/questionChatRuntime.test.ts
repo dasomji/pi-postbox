@@ -10,6 +10,7 @@ import {
   QuestionChatRuntimeRegistry
 } from "../src/questionChatRuntime.js";
 import { REPOSITORY_EVIDENCE_TOOL_NAMES } from "../src/repositoryEvidenceTools.js";
+import { PROPOSE_ANSWER_TOOL_NAME } from "../src/proposeAnswerTool.js";
 
 function createSourceFixture() {
   const root = mkdtempSync(join(tmpdir(), "postbox-chat-runtime-"));
@@ -55,13 +56,68 @@ function fakeCreateSession(selectedModel = { provider: "test-provider", id: "sou
 }
 
 function expectReadOnlyEvidenceTools(options: CreateAgentSessionOptions): void {
-  expect(options.tools).toEqual(REPOSITORY_EVIDENCE_TOOL_NAMES);
-  expect(options.customTools?.map((tool) => tool.name)).toEqual(REPOSITORY_EVIDENCE_TOOL_NAMES);
+  expect(REPOSITORY_EVIDENCE_TOOL_NAMES).toEqual([
+    "repository_read",
+    "repository_grep",
+    "repository_find",
+    "repository_list"
+  ]);
+  expect(options.tools).toEqual([...REPOSITORY_EVIDENCE_TOOL_NAMES, PROPOSE_ANSWER_TOOL_NAME]);
+  expect(options.customTools?.map((tool) => tool.name)).toEqual([...REPOSITORY_EVIDENCE_TOOL_NAMES, PROPOSE_ANSWER_TOOL_NAME]);
   expect(options.excludeTools).toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "bash", "edit", "write"]));
   expect(options.tools).not.toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "bash", "edit", "write"]));
 }
 
 describe("Pi Question Chat runtime adapter", () => {
+  it("adds the separate propose_answer tool and awaits authoritative append results", async () => {
+    const fixture = createSourceFixture();
+    const fake = fakeCreateSession();
+    const proposeAnswer = vi.fn()
+      .mockResolvedValueOnce({
+        status: "appended",
+        option: { value: "chat_opaque", label: "Stage first", provenance: "chat" }
+      })
+      .mockResolvedValueOnce({
+        status: "error",
+        error: { code: "duplicate_option", message: "An option with that label already exists." }
+      });
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot: join(fixture.root, "private-chats"),
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: fake.create,
+      proposeAnswer
+    });
+
+    const runtime = await adapter.create({
+      requestId: "ask-propose-tool",
+      ownerSessionId: "session-owner",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+    const options = fake.create.mock.calls[0]![0];
+    expect(REPOSITORY_EVIDENCE_TOOL_NAMES).toEqual([
+      "repository_read",
+      "repository_grep",
+      "repository_find",
+      "repository_list"
+    ]);
+    expect(options.tools).toEqual([...REPOSITORY_EVIDENCE_TOOL_NAMES, PROPOSE_ANSWER_TOOL_NAME]);
+    expect(options.customTools?.map((tool) => tool.name)).toEqual([...REPOSITORY_EVIDENCE_TOOL_NAMES, PROPOSE_ANSWER_TOOL_NAME]);
+    const tool = options.customTools?.find((candidate) => candidate.name === PROPOSE_ANSWER_TOOL_NAME);
+    expect(tool).toBeTruthy();
+    await expect(tool!.execute("proposal-call-1", { label: "Stage first" }, new AbortController().signal)).resolves.toEqual({
+      content: [{ type: "text", text: "Added “Stage first” as a Suggested in Chat option." }],
+      details: {
+        optionValue: "chat_opaque",
+        action: { type: "show-question", optionValue: "chat_opaque" }
+      }
+    });
+    expect(proposeAnswer).toHaveBeenCalledWith("ask-propose-tool", { label: "Stage first" }, expect.any(AbortSignal));
+    await expect(tool!.execute("proposal-call-2", { label: "Stage first" }, new AbortController().signal))
+      .rejects.toMatchObject({ code: "duplicate_option", message: "An option with that label already exists." });
+    expect(options.resourceLoader?.getSystemPrompt()).toContain("propose_answer");
+    await runtime.terminate();
+  });
+
   it("treats an absent private recovery root as no recoverable Chats during cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "postbox-empty-chat-runtime-"));
     const adapter = new PiQuestionChatRuntimeAdapter({
@@ -142,6 +198,25 @@ describe("Pi Question Chat runtime adapter", () => {
       timestamp: Date.now()
     });
     activeManager!.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "persisted-proposal", name: "propose_answer", arguments: { label: "Stage first" } }],
+      api: "anthropic-messages",
+      provider: "test-provider",
+      model: "source-model",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "toolUse",
+      timestamp: Date.now()
+    });
+    activeManager!.appendMessage({
+      role: "toolResult",
+      toolCallId: "persisted-proposal",
+      toolName: "propose_answer",
+      content: [{ type: "text", text: "Added “Stage first” as a Suggested in Chat option." }],
+      details: { optionValue: "chat_persisted", action: { type: "show-question", optionValue: "chat_persisted" } },
+      isError: false,
+      timestamp: Date.now()
+    });
+    activeManager!.appendMessage({
       role: "toolResult",
       toolCallId: "persisted-tool",
       toolName: "repository_read",
@@ -166,10 +241,12 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(existsSync(runtimeDir)).toBe(true);
     expect(existsSync(manifestPath)).toBe(true);
 
+    const recoveredPropose = vi.fn();
     const reloaded = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter({
       privateRoot,
       agentDir: join(fixture.root, "agent"),
-      createAgentSession: createSession
+      createAgentSession: createSession,
+      proposeAnswer: recoveredPropose
     }));
     expect(await reloaded.listRecoveryOffers()).toEqual([
       { requestId: "ask-recover", ownerSessionId: "session-owner", forkKind: "exact" }
@@ -186,12 +263,20 @@ describe("Pi Question Chat runtime adapter", () => {
         messages: [expect.objectContaining({ role: "user", text: "Explain recovery." })],
         tools: [
           expect.objectContaining({ id: "persisted-tool", state: "success", details: "bounded persisted evidence" }),
+          expect.objectContaining({
+            id: "persisted-proposal",
+            tool: "propose_answer",
+            state: "success",
+            target: "Stage first",
+            action: { type: "show-question", optionValue: "chat_persisted" }
+          }),
           expect.objectContaining({ id: "interrupted-tool", state: "stale" })
         ]
       }
     });
     expect(result.status === "recovered" && result.snapshot.sequence).toBeGreaterThanOrEqual(observedSequences.at(-1)!);
     expect(createSession).toHaveBeenCalledTimes(2);
+    expect(recoveredPropose).not.toHaveBeenCalled();
     for (const [options] of createSession.mock.calls) expectReadOnlyEvidenceTools(options);
     await reloaded.cleanup("ask-recover");
     expect(existsSync(runtimeDir)).toBe(false);
@@ -689,6 +774,22 @@ describe("Pi Question Chat runtime adapter", () => {
     listener?.({ type: "tool_execution_start", toolCallId: "tool-shell", toolName: "bash", args: { command: "cat .env" } });
     listener?.({
       type: "tool_execution_start",
+      toolCallId: "tool-proposal-1",
+      toolName: "propose_answer",
+      args: { label: "Stage first", description: "private input must not stream" }
+    });
+    listener?.({
+      type: "tool_execution_end",
+      toolCallId: "tool-proposal-1",
+      toolName: "propose_answer",
+      result: {
+        content: [{ type: "text", text: "Added “Stage first” as a Suggested in Chat option." }],
+        details: { optionValue: "chat_live", action: { type: "show-question", optionValue: "chat_live" } }
+      },
+      isError: false
+    });
+    listener?.({
+      type: "tool_execution_start",
       toolCallId: "tool-restricted-display",
       toolName: "repository_read",
       args: { path: "config/token-store.json" }
@@ -770,6 +871,18 @@ describe("Pi Question Chat runtime adapter", () => {
         activity: expect.objectContaining({ id: "tool-restricted-display", target: "restricted target" })
       })
     );
+    expect(toolEvents).toContainEqual(expect.objectContaining({
+      type: "tool.finished",
+      activity: expect.objectContaining({
+        id: "tool-proposal-1",
+        tool: "propose_answer",
+        target: "Stage first",
+        state: "success",
+        details: "Added “Stage first” as a Suggested in Chat option.",
+        action: { type: "show-question", optionValue: "chat_live" }
+      })
+    }));
+    expect(JSON.stringify(toolEvents)).not.toContain("private input must not stream");
     expect(JSON.stringify(toolEvents)).not.toContain("token-store.json");
     expect(JSON.stringify(toolEvents)).not.toContain("must-not-stream");
     expect(JSON.stringify(toolEvents)).not.toContain("/host/private");

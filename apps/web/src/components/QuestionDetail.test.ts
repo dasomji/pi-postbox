@@ -43,4 +43,18 @@ describe("selected Postbox Question detail", () => {
     expect(body).not.toContain("Meaning:");
     expect(body).not.toContain("Context:");
   });
+
+  it("badges an authoritative Chat suggestion in the ordinary chronological option list", () => {
+    const request: AskRequestSnapshot = {
+      ...REQUEST,
+      options: [
+        ...REQUEST.options,
+        { value: "chat_opaque", label: "Stage first", provenance: "chat" }
+      ]
+    };
+
+    const { body } = render(QuestionDetail, { props: { request, isMock: true } });
+    expect(body.indexOf("SQLite")).toBeLessThan(body.indexOf("Stage first"));
+    expect(body).toContain("Suggested in Chat");
+  });
 });

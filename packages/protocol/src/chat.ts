@@ -103,18 +103,29 @@ export const QuestionChatMessageSchema = z.discriminatedUnion("role", [
   })
 ]);
 
-export const QuestionChatToolNameSchema = z.enum([
+export const QuestionChatRepositoryToolNameSchema = z.enum([
   "repository_read",
   "repository_grep",
   "repository_find",
   "repository_list"
 ]);
+export const QuestionChatPostboxToolNameSchema = z.literal("propose_answer");
+export const QuestionChatToolNameSchema = z.union([
+  QuestionChatRepositoryToolNameSchema,
+  QuestionChatPostboxToolNameSchema
+]);
+
+export const QuestionChatToolActionSchema = z.object({
+  type: z.literal("show-question"),
+  optionValue: z.string().min(1).max(200)
+}).strict();
 
 const QuestionChatToolActivityBaseSchema = z.object({
   id: z.string().min(1).max(REQUEST_ID_MAX),
   tool: QuestionChatToolNameSchema,
   target: z.string().min(1).max(QUESTION_CHAT_TOOL_TARGET_MAX),
-  details: z.string().max(QUESTION_CHAT_TOOL_DETAILS_MAX).optional()
+  details: z.string().max(QUESTION_CHAT_TOOL_DETAILS_MAX).optional(),
+  action: QuestionChatToolActionSchema.optional()
 }).strict();
 
 export const QuestionChatToolActivitySchema = z.discriminatedUnion("state", [
@@ -256,6 +267,9 @@ export type QuestionChatModel = z.infer<typeof QuestionChatModelSchema>;
 export type QuestionChatState = z.infer<typeof QuestionChatStateSchema>;
 export type QuestionChatMessage = z.infer<typeof QuestionChatMessageSchema>;
 export type QuestionChatToolName = z.infer<typeof QuestionChatToolNameSchema>;
+export type QuestionChatRepositoryToolName = z.infer<typeof QuestionChatRepositoryToolNameSchema>;
+export type QuestionChatPostboxToolName = z.infer<typeof QuestionChatPostboxToolNameSchema>;
+export type QuestionChatToolAction = z.infer<typeof QuestionChatToolActionSchema>;
 export type QuestionChatToolActivity = z.infer<typeof QuestionChatToolActivitySchema>;
 export type QuestionChatSnapshot = z.infer<typeof QuestionChatSnapshotSchema>;
 export type QuestionChatSendPayload = z.infer<typeof QuestionChatSendPayloadSchema>;

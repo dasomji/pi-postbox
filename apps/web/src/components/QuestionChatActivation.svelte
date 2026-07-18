@@ -28,7 +28,9 @@
     onStarted,
     onActivationFailed,
     onRecoveryUnavailable,
-    onRecoveryNotStarted
+    onRecoveryNotStarted,
+    showQuestionActions = false,
+    onShowQuestion
   }: {
     requestId: string;
     api?: Partial<QuestionChatApi>;
@@ -40,6 +42,8 @@
     onActivationFailed?: (error: import("@pi-postbox/protocol").QuestionChatAvailabilityError) => void;
     onRecoveryUnavailable?: (error: import("@pi-postbox/protocol").QuestionChatAvailabilityError) => void;
     onRecoveryNotStarted?: () => void;
+    showQuestionActions?: boolean;
+    onShowQuestion?: (optionValue: string) => void;
   } = $props();
 
   // API dependencies are stable for one keyed Chat component instance.
@@ -159,7 +163,8 @@
     if (tool === "repository_read") return "Read";
     if (tool === "repository_grep") return "Grep";
     if (tool === "repository_find") return "Find";
-    return "List";
+    if (tool === "repository_list") return "List";
+    return "Suggested in Chat";
   }
 
   function toolStateLabel(state: QuestionChatToolActivity["state"]): string {
@@ -221,7 +226,7 @@
         {/if}
       </div>
       {#if view.snapshot.tools.length > 0}
-        <ul class="mt-3 space-y-2" aria-label="Repository evidence activity">
+        <ul class="mt-3 space-y-2" aria-label="Question Chat activity">
           {#each view.snapshot.tools as activity (activity.id)}
             <li class="rounded-md border border-postbox-border bg-postbox-surface px-3 py-2 text-xs text-postbox-subtle">
               {#if activity.details}
@@ -239,6 +244,13 @@
                   <span class="ml-2 font-mono">{activity.target}</span>
                   <span class="ml-2 text-postbox-muted">{toolStateLabel(activity.state)}</span>
                 </div>
+              {/if}
+              {#if showQuestionActions && activity.tool === "propose_answer" && activity.state === "success" && activity.action}
+                <button
+                  type="button"
+                  class="mt-2 rounded-full border border-history-border px-3 py-1 font-medium text-history-foreground"
+                  onclick={() => onShowQuestion?.(activity.action!.optionValue)}
+                >View in Question</button>
               {/if}
             </li>
           {/each}

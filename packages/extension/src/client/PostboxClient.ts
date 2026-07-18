@@ -7,6 +7,8 @@ import {
   OTHER_OPTION_VALUE,
   type AskResult,
   type ExtensionClientMessage,
+  type ProposeAnswerPayload,
+  type ProposeAnswerResult,
   type SemanticState,
   type ActiveLocalRole,
   type SessionRegisterPayload,
@@ -62,6 +64,7 @@ export interface PostboxClientOptions {
   activeLocalPollingEnabled?: boolean;
   activeLocalPollMs?: number;
   targetAffinityTimeoutMs?: number;
+  proposalTimeoutMs?: number;
   targetSource?: string;
   targetRole?: ActiveLocalRole;
   inspectTailscale?: PostboxStatusTailscaleInspector;
@@ -130,10 +133,19 @@ interface PendingAsk {
   targetAffinityTimer?: NodeJS.Timeout;
 }
 
+interface PendingProposal {
+  requestId: string;
+  resolve(result: ProposeAnswerResult): void;
+  timer: NodeJS.Timeout;
+  signal?: AbortSignal;
+  abort?: () => void;
+}
+
 const DEFAULT_UNAVAILABLE_AFTER_MS = 30_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_ACTIVE_LOCAL_POLL_MS = 5_000;
 const DEFAULT_TARGET_AFFINITY_TIMEOUT_MS = 30_000;
+const DEFAULT_PROPOSAL_TIMEOUT_MS = 10_000;
 
 export class PostboxClient {
   private socket: WebSocketLike | undefined;
@@ -160,6 +172,7 @@ export class PostboxClient {
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
   private readonly questionChatSubscriptions = new Map<string, () => void>();
   private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
+  private readonly pendingProposals = new Map<string, PendingProposal>();
   private recoveryOffers: QuestionChatRecoveryOffer[] = [];
   private recoveryOfferIndex = 0;
   private recoveryCompleteSent = false;
@@ -205,6 +218,7 @@ export class PostboxClient {
     this.recoveryOffers = [];
     this.recoveryOfferIndex = 0;
     this.recoveryCompleteSent = false;
+    this.failPendingProposals("Question Chat proposal stopped before the server responded.");
     this.socket?.close();
   }
 
@@ -231,6 +245,27 @@ export class PostboxClient {
         cwd: source.cwd,
         agentSessionPath: source.agentSessionPath,
         leafId: source.leafId
+      }
+    });
+  }
+
+  proposeAnswer(requestId: string, proposal: ProposeAnswerPayload, signal?: AbortSignal): Promise<ProposeAnswerResult> {
+    if (signal?.aborted) return Promise.resolve(proposalTransportError("Question Chat proposal was aborted."));
+    const commandId = `chat_proposal_${randomUUID()}`;
+    return new Promise<ProposeAnswerResult>((resolve) => {
+      const timeoutMs = Math.max(1, Math.min(this.options.proposalTimeoutMs ?? DEFAULT_PROPOSAL_TIMEOUT_MS, 60_000));
+      const timer = setTimeout(() => {
+        this.finishProposal(commandId, proposalTransportError("Question Chat proposal timed out."));
+      }, timeoutMs);
+      timer.unref?.();
+      const abort = signal
+        ? () => this.finishProposal(commandId, proposalTransportError("Question Chat proposal was aborted."))
+        : undefined;
+      const pending: PendingProposal = { requestId, resolve, timer, signal, abort };
+      this.pendingProposals.set(commandId, pending);
+      signal?.addEventListener("abort", abort!, { once: true });
+      if (!this.send({ type: "chat.propose-answer", requestId: commandId, payload: { requestId, proposal } })) {
+        this.finishProposal(commandId, proposalTransportError("Question Chat proposal could not be sent while Postbox is disconnected."));
       }
     });
   }
@@ -433,6 +468,12 @@ export class PostboxClient {
           void this.options.questionChats?.cleanup(parsed.data.payload.requestId);
           return;
         }
+        if (parsed.data.type === "chat.propose-answer.result") {
+          const pending = this.pendingProposals.get(parsed.data.requestId);
+          if (!pending || pending.requestId !== parsed.data.payload.requestId) return;
+          this.finishProposal(parsed.data.requestId, parsed.data.payload.result);
+          return;
+        }
         if (parsed.data.type === "error") {
           this.options.onStatus?.(`server-error:${parsed.data.error.code}`);
           if (parsed.data.requestId) {
@@ -455,6 +496,7 @@ export class PostboxClient {
 
     socket.on("close", () => {
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      this.failPendingProposals("Postbox disconnected before the Question Chat proposal completed.");
       this.connectionState = "disconnected";
       this.recordConnectionDiagnostic("websocket:disconnected");
       if (this.stopped) return;
@@ -676,6 +718,21 @@ export class PostboxClient {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify(message));
     return true;
+  }
+
+  private finishProposal(commandId: string, result: ProposeAnswerResult): void {
+    const pending = this.pendingProposals.get(commandId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    if (pending.signal && pending.abort) pending.signal.removeEventListener("abort", pending.abort);
+    this.pendingProposals.delete(commandId);
+    pending.resolve(result);
+  }
+
+  private failPendingProposals(message: string): void {
+    for (const commandId of [...this.pendingProposals.keys()]) {
+      this.finishProposal(commandId, proposalTransportError(message));
+    }
   }
 
   private ensureConnection(): void {
@@ -1000,6 +1057,10 @@ function expiredResult(requestId: string): AskResult {
     rationale: "Postbox request expired before an answer was submitted.",
     resolvedAt: new Date().toISOString()
   };
+}
+
+function proposalTransportError(message: string): ProposeAnswerResult {
+  return { status: "error", error: { code: "internal_error", message } };
 }
 
 function messageFrom(error: unknown): string {

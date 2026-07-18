@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { AskAnswerPayloadSchema, AskCancelPayloadSchema, AskCreatePayloadSchema, AskResultSchema } from "./ask.js";
+import {
+  AskAnswerPayloadSchema,
+  AskCancelPayloadSchema,
+  AskCreatePayloadSchema,
+  AskResultSchema,
+  ProposeAnswerResultSchema
+} from "./ask.js";
 import {
   QuestionChatAvailabilityErrorSchema,
   QuestionChatContextSourceSchema,
@@ -84,6 +90,14 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("chat.event"),
     payload: QuestionChatEventSchema
+  }),
+  z.object({
+    type: z.literal("chat.propose-answer"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({
+      requestId: WsCorrelationIdSchema,
+      proposal: z.unknown()
+    }).strict()
   }),
   z.object({
     type: z.literal("chat.stop.accepted"),
@@ -187,6 +201,14 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
       ownerSessionId: z.string().min(1).max(200),
       command: QuestionChatStopPayloadSchema
     })
+  }),
+  z.object({
+    type: z.literal("chat.propose-answer.result"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({
+      requestId: WsCorrelationIdSchema,
+      result: ProposeAnswerResultSchema
+    }).strict()
   }),
   z.object({
     type: z.literal("chat.reconcile"),

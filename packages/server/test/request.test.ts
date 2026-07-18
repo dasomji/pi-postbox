@@ -154,6 +154,34 @@ describe("ask_postbox request loop", () => {
     expect((await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json()).toEqual({ requests: [] });
   });
 
+  it("rejects creator-spoofed Chat provenance before state or history serialization", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", now: () => 800 });
+    apps.push(app);
+    const socket = await connectAndRegister(app);
+
+    const rejected = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "ask.create",
+      requestId: "wire-spoofed-provenance",
+      payload: {
+        requestId: "ask-spoofed-provenance",
+        sessionId: "session-1",
+        mode: "single",
+        question: { prompt: "Which path?" },
+        options: [{ value: "ship", label: "Ship", provenance: "chat" }],
+        context: interviewerContext()
+      }
+    }));
+
+    await expect(rejected).resolves.toMatchObject({
+      type: "error",
+      requestId: "wire-spoofed-provenance",
+      error: { code: "invalid_message" }
+    });
+    expect((await app.inject({ method: "GET", url: "/api/state" })).json().requests).toEqual([]);
+    expect((await app.inject({ method: "GET", url: "/api/history" })).json().history).toEqual([]);
+  });
+
   it("creates a pending single-choice card and resolves the waiting extension caller when answered over HTTP", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 1_000 });
     apps.push(app);

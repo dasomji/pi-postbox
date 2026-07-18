@@ -30,6 +30,10 @@
   // svelte-ignore state_referenced_locally
   const form = createQuestionForm(request, isMock);
 
+  $effect(() => {
+    form.updateRequest(request);
+  });
+
   let mobile = $state(false);
   let chatStarting = $state(false);
   let activationRequest = $state(0);
@@ -211,6 +215,8 @@
       onActivationFailed={chatActivationFailed}
       onRecoveryUnavailable={chatRecoveryUnavailable}
       onRecoveryNotStarted={chatRecoveryNotStarted}
+      showQuestionActions={mobile}
+      onShowQuestion={() => selectTab("question")}
     />
   </aside>
 

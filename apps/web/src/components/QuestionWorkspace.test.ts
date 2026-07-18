@@ -60,8 +60,7 @@ function mediaController(initialMatches: boolean) {
   };
 }
 
-function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false) {
-  const active = snapshot(requestId);
+function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false, active = snapshot(requestId)) {
   const close = vi.fn();
   return {
     activate: vi.fn(async (): Promise<QuestionChatActivationResponse> => ({ status: "ready", snapshot: active })),
@@ -88,6 +87,81 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false) {
 }
 
 describe("responsive Question Chat workspace", () => {
+  it("preserves selection and note across a live option append and never auto-selects the suggestion", async () => {
+    const media = mediaController(false);
+    const view = render(QuestionDetail, {
+      props: {
+        request: REQUEST,
+        isMock: true,
+        layoutState: new BrowserLayoutState(),
+        matchMedia: () => media.query,
+        chatApi: chatBoundary()
+      }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Path A" }));
+    await fireEvent.click(screen.getByRole("button", { name: "+ Add a note" }));
+    await fireEvent.input(screen.getByPlaceholderText("Add nuance for the coding agent…"), { target: { value: "Keep my draft" } });
+
+    await view.rerender({
+      request: {
+        ...REQUEST,
+        options: [...REQUEST.options, { value: "chat_opaque", label: "Stage first", provenance: "chat" as const }]
+      },
+      isMock: true,
+      layoutState: new BrowserLayoutState(),
+      matchMedia: () => media.query,
+      chatApi: chatBoundary()
+    });
+
+    expect((screen.getByPlaceholderText("Add nuance for the coding agent…") as HTMLTextAreaElement).value).toBe("Keep my draft");
+    expect(screen.getByRole("button", { name: "Path A" }).className).toContain("bg-attention/5");
+    expect(screen.getByRole("button", { name: /Stage first Suggested in Chat/ }).className).not.toContain("bg-attention/5");
+    await fireEvent.click(screen.getByRole("button", { name: /Stage first Suggested in Chat/ }));
+    expect(screen.getByRole("button", { name: /Stage first Suggested in Chat/ }).className).toContain("bg-attention/5");
+    expect((screen.getByPlaceholderText("Add nuance for the coding agent…") as HTMLTextAreaElement).value).toBe("Keep my draft");
+  });
+
+  it("offers an explicit proposal action on mobile without switching the desktop workspace", async () => {
+    const proposalSnapshot = snapshot();
+    proposalSnapshot.tools = [{
+      id: "proposal-tool",
+      tool: "propose_answer",
+      target: "Stage first",
+      state: "success",
+      details: "Added “Stage first” as a Suggested in Chat option.",
+      action: { type: "show-question", optionValue: "chat_opaque" }
+    }];
+    const mobile = mediaController(true);
+    const mobileView = render(QuestionDetail, {
+      props: {
+        request: REQUEST,
+        isMock: true,
+        layoutState: new BrowserLayoutState(),
+        matchMedia: () => mobile.query,
+        chatApi: chatBoundary(REQUEST.requestId, true, proposalSnapshot)
+      }
+    });
+    const action = await screen.findByRole("button", { name: "View in Question" });
+    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe("true");
+    await fireEvent.click(action);
+    expect(screen.getByRole("tab", { name: "Question" }).getAttribute("aria-selected")).toBe("true");
+    mobileView.unmount();
+
+    const desktop = mediaController(false);
+    render(QuestionDetail, {
+      props: {
+        request: REQUEST,
+        isMock: true,
+        layoutState: new BrowserLayoutState(),
+        matchMedia: () => desktop.query,
+        chatApi: chatBoundary(REQUEST.requestId, true, proposalSnapshot)
+      }
+    });
+    expect(await screen.findByRole("complementary", { name: "Question Chat sidebar" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View in Question" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Question" })).toBeTruthy();
+  });
+
   it("reveals fresh-browser Chat unavailable with Retry when the extension is offline", async () => {
     const media = mediaController(false);
     const chatApi = chatBoundary();

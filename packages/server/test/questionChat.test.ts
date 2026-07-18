@@ -1,4 +1,4 @@
-import type { ExtensionClientMessage, ExtensionServerMessage, QuestionChatSnapshot } from "@pi-postbox/protocol";
+import type { AskCreatePayload, ExtensionClientMessage, ExtensionServerMessage, QuestionChatSnapshot } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,12 +32,54 @@ function nextMessage(socket: WebSocket, label = "extension message"): Promise<Ex
   });
 }
 
+function nextMessages(socket: WebSocket, count: number, label = "extension messages"): Promise<ExtensionServerMessage[]> {
+  return new Promise((resolve, reject) => {
+    const messages: ExtensionServerMessage[] = [];
+    const timeout = setTimeout(() => finish(new Error(`Timed out waiting for ${label}`)), 2_000);
+    const onMessage = (raw: WebSocket.RawData) => {
+      messages.push(JSON.parse(raw.toString()) as ExtensionServerMessage);
+      if (messages.length === count) finish();
+    };
+    const onError = (error: Error) => finish(error);
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+      if (error) reject(error);
+      else resolve(messages);
+    };
+    socket.on("message", onMessage);
+    socket.on("error", onError);
+  });
+}
+
+async function registerOtherSession(app: FastifyInstance): Promise<WebSocket> {
+  const socket = new WebSocket(`ws://127.0.0.1:${listenerPort(app)}/api/extension/ws`);
+  sockets.push(socket);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  socket.send(JSON.stringify({
+    type: "session.register",
+    requestId: "register-other-session",
+    payload: {
+      machine: { machineId: "machine-other", hostname: "other-host" },
+      project: { projectId: "project-other", name: "Other project", cwd: "/other" },
+      session: { sessionId: "session-other", cwd: "/other", semanticState: "blocked" }
+    }
+  } satisfies ExtensionClientMessage));
+  await expect(nextMessage(socket, "other session registration")).resolves.toMatchObject({ type: "registered" });
+  return socket;
+}
+
 async function setup(options: {
   sessionPath?: string | null;
   leafId?: string | null;
   expiresAt?: string;
   now?: () => number;
   legacyContext?: Record<string, unknown> | null;
+  askOptions?: AskCreatePayload["options"];
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "postbox-chat-server-"));
   const databasePath = join(root, "postbox.sqlite");
@@ -100,7 +142,7 @@ async function setup(options: {
         sessionId: "session-chat-owner",
         mode: "single",
         question: { prompt: "Which design?" },
-        options: [{ value: "a", label: "A" }],
+        options: options.askOptions ?? [{ value: "a", label: "A" }],
         context: { codebaseContext: "A real Fastify server.", problemContext: "Choose the design." },
         forkReference: {
           agentSessionPath: "/browser-must-not-control/source.jsonl",
@@ -144,6 +186,197 @@ async function activateChat(app: FastifyInstance, socket: WebSocket): Promise<vo
 }
 
 describe("Question Chat activation relay", () => {
+  it("accepts a live owner's correlated proposal, persists it in state/history, and keeps it answerable", async () => {
+    const { app, socket, databasePath } = await setup();
+    await activateChat(app, socket);
+
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-command-1",
+      payload: {
+        requestId: "ask-chat",
+        proposal: {
+          label: "Stage first",
+          description: "Deploy to a limited cohort.",
+          meaning: "A reversible rollout.",
+          context: "The release pipeline supports cohorts."
+        }
+      }
+    } satisfies ExtensionClientMessage));
+
+    const response = await nextMessage(socket, "proposal result");
+    expect(response).toMatchObject({
+      type: "chat.propose-answer.result",
+      requestId: "proposal-command-1",
+      payload: {
+        requestId: "ask-chat",
+        result: {
+          status: "appended",
+          option: { label: "Stage first", provenance: "chat" }
+        }
+      }
+    });
+    if (response.type !== "chat.propose-answer.result" || response.payload.result.status !== "appended") {
+      throw new Error("Expected appended proposal result");
+    }
+    const proposedValue = response.payload.result.option.value;
+    const pendingState = (await app.inject({ method: "GET", url: "/api/state" })).json();
+    expect(pendingState.requests[0].options).toEqual([
+      { value: "a", label: "A" },
+      expect.objectContaining({ value: proposedValue, label: "Stage first", provenance: "chat" })
+    ]);
+
+    const answer = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/answer",
+      payload: { selectedValues: [proposedValue], note: "Prefer the reversible path." }
+    });
+    await expect(nextMessage(socket, "proposal answer cleanup")).resolves.toMatchObject({
+      type: "chat.cleanup",
+      payload: { requestId: "ask-chat", reason: "answered" }
+    });
+    expect((await answer).statusCode).toBe(200);
+
+    const history = (await app.inject({ method: "GET", url: "/api/history" })).json();
+    expect(history.history[0].request).toMatchObject({
+      result: { status: "answered", selectedValues: [proposedValue] },
+      options: [
+        { value: "a", label: "A" },
+        { value: proposedValue, label: "Stage first", provenance: "chat" }
+      ]
+    });
+
+    const db = openPostboxDatabase(databasePath);
+    const stored = db.prepare("SELECT options_json FROM ask_requests WHERE request_id = ?").get("ask-chat") as { options_json: string };
+    db.close();
+    expect(stored.options_json).not.toContain("proposal-command-1");
+    expect(stored.options_json).not.toContain("tool");
+    expect(stored.options_json).not.toContain("transcript");
+  });
+
+  it("returns correlated typed errors for inactive, invalid, and terminal proposal commands without mutation", async () => {
+    const { app, socket } = await setup();
+
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-inactive",
+      payload: { requestId: "ask-chat", proposal: { label: "Stage first" } }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(socket, "inactive proposal result")).resolves.toMatchObject({
+      type: "chat.propose-answer.result",
+      requestId: "proposal-inactive",
+      payload: { requestId: "ask-chat", result: { status: "error", error: { code: "wrong_owner" } } }
+    });
+
+    await activateChat(app, socket);
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-invalid",
+      payload: { requestId: "ask-chat", proposal: { label: "" } }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(socket, "invalid proposal result")).resolves.toMatchObject({
+      type: "chat.propose-answer.result",
+      requestId: "proposal-invalid",
+      payload: { requestId: "ask-chat", result: { status: "error", error: { code: "invalid_proposal" } } }
+    });
+
+    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
+    await nextMessage(socket, "terminal cleanup");
+    await answer;
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-terminal",
+      payload: { requestId: "ask-chat", proposal: { label: "Too late" } }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(socket, "terminal proposal result")).resolves.toMatchObject({
+      type: "chat.propose-answer.result",
+      requestId: "proposal-terminal",
+      payload: { requestId: "ask-chat", result: { status: "error", error: { code: "request_terminal" } } }
+    });
+
+    const state = (await app.inject({ method: "GET", url: "/api/state" })).json();
+    expect(state.requests[0].options).toEqual([{ value: "a", label: "A" }]);
+  });
+
+  it("rejects a different owning session and the option limit without state mutation or SSE broadcasts", async () => {
+    const askOptions = Array.from({ length: 20 }, (_, index) => ({ value: `v-${index}`, label: `Option ${index}` }));
+    const { app, socket } = await setup({ askOptions });
+    await activateChat(app, socket);
+    const otherSocket = await registerOtherSession(app);
+
+    const stateResponse = await fetch(`http://127.0.0.1:${listenerPort(app)}/api/state/events`);
+    const stateEvents = createSseReader(stateResponse);
+    await stateEvents.next();
+    const unexpectedBroadcast = stateEvents.next().then(() => true, () => false);
+
+    otherSocket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-wrong-session",
+      payload: { requestId: "ask-chat", proposal: { label: "Wrong owner option" } }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(otherSocket, "wrong-session proposal result")).resolves.toMatchObject({
+      type: "chat.propose-answer.result",
+      requestId: "proposal-wrong-session",
+      payload: { result: { status: "error", error: { code: "wrong_owner" } } }
+    });
+
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-over-limit",
+      payload: { requestId: "ask-chat", proposal: { label: "One too many" } }
+    } satisfies ExtensionClientMessage));
+    await expect(nextMessage(socket, "option-limit proposal result")).resolves.toMatchObject({
+      type: "chat.propose-answer.result",
+      requestId: "proposal-over-limit",
+      payload: { result: { status: "error", error: { code: "option_limit_reached" } } }
+    });
+
+    expect((await app.inject({ method: "GET", url: "/api/state" })).json().requests[0].options).toEqual(askOptions);
+    expect(await Promise.race([
+      unexpectedBroadcast,
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100))
+    ])).toBe(false);
+    await stateEvents.close();
+  });
+
+  it("keeps proposal-versus-answer contenders atomic regardless of which reaches the server first", async () => {
+    const { app, socket } = await setup();
+    await activateChat(app, socket);
+
+    const messagesPromise = nextMessages(socket, 3, "proposal race result and terminal messages");
+    const answerPromise = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/answer",
+      payload: { selectedValues: ["a"] }
+    });
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-terminal-race",
+      payload: { requestId: "ask-chat", proposal: { label: "Stage first" } }
+    } satisfies ExtensionClientMessage));
+
+    expect((await answerPromise).statusCode).toBe(200);
+    const messages = await messagesPromise;
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "chat.cleanup", payload: expect.objectContaining({ requestId: "ask-chat" }) }),
+      expect.objectContaining({ type: "chat.propose-answer.result", requestId: "proposal-terminal-race" })
+    ]));
+    const proposalMessage = messages.find((message) => message.type === "chat.propose-answer.result");
+    if (proposalMessage?.type !== "chat.propose-answer.result") throw new Error("Expected proposal race result");
+
+    const request = (await app.inject({ method: "GET", url: "/api/state" })).json().requests[0];
+    expect(request).toMatchObject({ status: "answered", result: { selectedValues: ["a"] } });
+    if (proposalMessage.payload.result.status === "appended") {
+      expect(request.options).toEqual([
+        { value: "a", label: "A" },
+        proposalMessage.payload.result.option
+      ]);
+    } else {
+      expect(proposalMessage.payload.result.error.code).toBe("request_terminal");
+      expect(request.options).toEqual([{ value: "a", label: "A" }]);
+    }
+  });
+
   it("restores a pending Chat after server restart and lets a terminal race delete instead of resurrecting it", async () => {
     const first = await setup();
     await activateChat(first.app, first.socket);

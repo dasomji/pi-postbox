@@ -54,6 +54,101 @@ afterEach(() => {
 });
 
 describe("extension Question Chat commands", () => {
+  it("correlates proposal replies by command and Question while ignoring mismatched and late replies", async () => {
+    const client = new PostboxClient({
+      serverUrl: "http://postbox.local",
+      registration,
+      reconnect: false,
+      heartbeatMs: 60_000,
+      proposalTimeoutMs: 5_000,
+      WebSocketImpl: FakeSocket as never
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    let settled = false;
+    const pending = client.proposeAnswer("ask-proposal", { label: "Stage first" }).then((result) => {
+      settled = true;
+      return result;
+    });
+    const command = socket.sent.find((message: any) => message.type === "chat.propose-answer") as any;
+    expect(command).toMatchObject({
+      type: "chat.propose-answer",
+      requestId: expect.any(String),
+      payload: { requestId: "ask-proposal", proposal: { label: "Stage first" } }
+    });
+
+    socket.serverMessage({
+      type: "chat.propose-answer.result",
+      requestId: command.requestId,
+      payload: {
+        requestId: "another-question",
+        result: { status: "appended", option: { value: "chat_wrong", label: "Wrong", provenance: "chat" } }
+      }
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    socket.serverMessage({
+      type: "chat.propose-answer.result",
+      requestId: command.requestId,
+      payload: {
+        requestId: "ask-proposal",
+        result: { status: "appended", option: { value: "chat_right", label: "Stage first", provenance: "chat" } }
+      }
+    });
+    await expect(pending).resolves.toEqual({
+      status: "appended",
+      option: { value: "chat_right", label: "Stage first", provenance: "chat" }
+    });
+
+    socket.serverMessage({
+      type: "chat.propose-answer.result",
+      requestId: command.requestId,
+      payload: {
+        requestId: "ask-proposal",
+        result: { status: "error", error: { code: "request_terminal", message: "Late." } }
+      }
+    });
+    client.stop();
+  });
+
+  it("bounds proposal waits and clears them on timeout, abort, socket close, and stop", async () => {
+    vi.useFakeTimers();
+    const client = new PostboxClient({
+      serverUrl: "http://postbox.local",
+      registration,
+      reconnect: false,
+      heartbeatMs: 60_000,
+      proposalTimeoutMs: 25,
+      WebSocketImpl: FakeSocket as never
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const timedOut = client.proposeAnswer("ask-timeout", { label: "Stage first" });
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(timedOut).resolves.toMatchObject({
+      status: "error",
+      error: { code: "internal_error", message: expect.stringContaining("timed out") }
+    });
+
+    const controller = new AbortController();
+    const aborted = client.proposeAnswer("ask-abort", { label: "Stage first" }, controller.signal);
+    controller.abort();
+    await expect(aborted).resolves.toMatchObject({ status: "error", error: { code: "internal_error" } });
+
+    const disconnected = client.proposeAnswer("ask-close", { label: "Stage first" });
+    socket.close();
+    await expect(disconnected).resolves.toMatchObject({
+      status: "error",
+      error: { code: "internal_error", message: expect.stringContaining("disconnected") }
+    });
+    client.stop();
+  });
+
   it("offers each private manifest after registration and returns recovered snapshots from reconciliation", async () => {
     const snapshot = {
       requestId: "ask-recover",

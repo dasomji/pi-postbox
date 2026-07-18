@@ -25,6 +25,7 @@ export {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreateHandoffContextSchema,
+  AskCreateOptionSchema,
   AskCreatePayloadSchema,
   AskModeSchema,
   AskOptionSchema,
@@ -37,12 +38,17 @@ export {
   ForkReferenceSchema,
   HandoffContextSchema,
   OTHER_OPTION_VALUE,
+  ProposeAnswerErrorCodeSchema,
+  ProposedAnswerOptionSchema,
+  ProposeAnswerPayloadSchema,
+  ProposeAnswerResultSchema,
   RichContextItemSchema
 } from "./ask.js";
 export type {
   AskAnswerPayload,
   AskCancelPayload,
   AskCreateHandoffContext,
+  AskCreateOption,
   AskCreatePayload,
   AskMode,
   AskOption,
@@ -53,6 +59,10 @@ export type {
   AskUrgency,
   ForkReference,
   HandoffContext,
+  ProposeAnswerErrorCode,
+  ProposedAnswerOption,
+  ProposeAnswerPayload,
+  ProposeAnswerResult,
   RichContextItem
 } from "./ask.js";
 export {
@@ -91,7 +101,10 @@ export {
   QuestionChatStopPayloadSchema,
   QuestionChatStopResponseSchema,
   QuestionChatToolActivitySchema,
+  QuestionChatToolActionSchema,
   QuestionChatToolNameSchema,
+  QuestionChatPostboxToolNameSchema,
+  QuestionChatRepositoryToolNameSchema,
   QuestionChatStreamEventSchema,
   QuestionChatTransportEventSchema,
   QuestionChatSourceSchema,
@@ -117,7 +130,10 @@ export type {
   QuestionChatStopPayload,
   QuestionChatStopResponse,
   QuestionChatToolActivity,
+  QuestionChatToolAction,
   QuestionChatToolName,
+  QuestionChatPostboxToolName,
+  QuestionChatRepositoryToolName,
   QuestionChatStreamEvent,
   QuestionChatTransportEvent,
   QuestionChatSource,

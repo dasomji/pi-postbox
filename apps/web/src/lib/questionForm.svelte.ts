@@ -17,6 +17,7 @@ export interface QuestionForm {
   readonly done: string | undefined;
   readonly busy: boolean;
   readonly canSubmit: boolean;
+  updateRequest(request: AskRequestSnapshot): void;
   isSelected(value: string): boolean;
   toggle(value: string): void;
   submit(): void;
@@ -24,6 +25,7 @@ export interface QuestionForm {
 }
 
 export function createQuestionForm(request: AskRequestSnapshot, isMock = false): QuestionForm {
+  let currentRequest = request;
   let selected = $state<string[]>([]);
   let note = $state("");
   let error = $state<string | undefined>(undefined);
@@ -32,7 +34,7 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
 
   function toggle(value: string): void {
     done = undefined;
-    if (request.mode === "single") {
+    if (currentRequest.mode === "single") {
       selected = [value];
       return;
     }
@@ -42,22 +44,22 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
   async function resolveVia(action: () => Promise<void>, fallback: string): Promise<void> {
     busy = true;
     error = undefined;
-    store.beginLocalResolve(request.requestId);
+    store.beginLocalResolve(currentRequest.requestId);
     try {
       await action();
       await store.refresh();
-      store.routeAfterRequestResolved(request.sessionId);
+      store.routeAfterRequestResolved(currentRequest.sessionId);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : fallback;
     } finally {
       busy = false;
-      store.endLocalResolve(request.requestId);
+      store.endLocalResolve(currentRequest.requestId);
     }
   }
 
   function labelFor(values: string[]): string {
     return values
-      .map((value) => request.options.find((option) => option.value === value)?.label ?? (value === OTHER_OPTION_VALUE ? "Other" : value))
+      .map((value) => currentRequest.options.find((option) => option.value === value)?.label ?? (value === OTHER_OPTION_VALUE ? "Other" : value))
       .join(", ");
   }
 
@@ -71,7 +73,7 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
       // Local submits resolve in milliseconds; hold the view long enough for the
       // delivered-stamp animation to land before routing away.
       const minimumStampTime = new Promise((resolve) => setTimeout(resolve, 900));
-      await postJson(`/api/requests/${encodeURIComponent(request.requestId)}/answer`, {
+      await postJson(`/api/requests/${encodeURIComponent(currentRequest.requestId)}/answer`, {
         selectedValues: selected,
         note: note.trim() || undefined
       });
@@ -85,7 +87,7 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
       return;
     }
     void resolveVia(
-      () => postJson(`/api/requests/${encodeURIComponent(request.requestId)}/cancel`, { note: note.trim() || undefined }),
+      () => postJson(`/api/requests/${encodeURIComponent(currentRequest.requestId)}/cancel`, { note: note.trim() || undefined }),
       "Unable to cancel request"
     );
   }
@@ -111,6 +113,9 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
     },
     get canSubmit() {
       return selected.length > 0 && !busy;
+    },
+    updateRequest(nextRequest) {
+      if (nextRequest.requestId === currentRequest.requestId) currentRequest = nextRequest;
     },
     isSelected: (value: string) => selected.includes(value),
     toggle,

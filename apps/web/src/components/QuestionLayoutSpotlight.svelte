@@ -194,7 +194,12 @@
             </span>
             <span class="w-px self-stretch bg-postbox-border" aria-hidden="true"></span>
             <span class="min-w-0">
-              <span class="block font-display text-base font-semibold text-postbox-text">{option.label}</span>
+              <span class="flex flex-wrap items-center gap-2 font-display text-base font-semibold text-postbox-text">
+                <span>{option.label}</span>
+                {#if option.provenance === "chat"}
+                  <span class="rounded-full bg-history/10 px-2 py-0.5 font-sans text-[0.65rem] font-medium uppercase tracking-wide text-history-foreground">Suggested in Chat</span>
+                {/if}
+              </span>
               {#if option.description}<span class="mt-1 block text-sm text-postbox-muted">{option.description}</span>{/if}
               {#if option.meaning}<span class="mt-2 block text-sm text-attention-foreground/80">Meaning: {option.meaning}</span>{/if}
               {#if option.context}<span class="mt-1 block text-sm text-postbox-muted">Context: {option.context}</span>{/if}

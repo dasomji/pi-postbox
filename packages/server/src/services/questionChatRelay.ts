@@ -77,6 +77,13 @@ export class QuestionChatRelay {
     this.reconcilingSessions.delete(sessionId);
   }
 
+  isLiveOwner(connectionId: string, ownerSessionId: string, requestId: string): boolean {
+    const extension = this.extensions.get(ownerSessionId);
+    return extension?.connectionId === connectionId
+      && extension.socket.readyState === 1
+      && this.activeChats.get(requestId)?.ownerSessionId === ownerSessionId;
+  }
+
   restore(
     connectionId: string,
     ownerSessionId: string,

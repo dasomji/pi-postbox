@@ -13,11 +13,71 @@ import {
   QuestionChatStreamEventSchema,
   QuestionChatSnapshotHttpResponseSchema,
   QuestionChatSnapshotSchema,
-  QuestionChatSourceSchema
+  QuestionChatSourceSchema,
+  QuestionChatToolActivitySchema
 } from "./chat.js";
 import { ExtensionClientMessageSchema, ExtensionServerMessageSchema } from "./ws.js";
 
 describe("Question Chat activation protocol", () => {
+  it("correlates separately defined Postbox proposal commands by command and Question", () => {
+    expect(
+      ExtensionClientMessageSchema.parse({
+        type: "chat.propose-answer",
+        requestId: "proposal-command-1",
+        payload: {
+          requestId: "ask-32",
+          proposal: { label: "Stage first", description: "Roll out gradually." }
+        }
+      })
+    ).toMatchObject({ requestId: "proposal-command-1", payload: { requestId: "ask-32" } });
+
+    expect(
+      ExtensionServerMessageSchema.parse({
+        type: "chat.propose-answer.result",
+        requestId: "proposal-command-1",
+        payload: {
+          requestId: "ask-32",
+          result: {
+            status: "appended",
+            option: { value: "chat_opaque", label: "Stage first", provenance: "chat" }
+          }
+        }
+      })
+    ).toMatchObject({
+      requestId: "proposal-command-1",
+      payload: { requestId: "ask-32", result: { status: "appended", option: { provenance: "chat" } } }
+    });
+
+    expect(() =>
+      ExtensionServerMessageSchema.parse({
+        type: "chat.propose-answer.result",
+        requestId: "proposal-command-1",
+        payload: {
+          requestId: "ask-32",
+          result: { status: "error", error: { code: "duplicate_option", message: "x".repeat(2_001) } }
+        }
+      })
+    ).toThrow();
+  });
+
+  it("models propose_answer as a separate visible Postbox tool with a safe Question action", () => {
+    expect(QuestionChatToolActivitySchema.parse({
+      id: "proposal-tool-1",
+      tool: "propose_answer",
+      target: "Stage first",
+      state: "success",
+      details: "Added “Stage first” as a Suggested in Chat option.",
+      action: { type: "show-question", optionValue: "chat_opaque" }
+    })).toMatchObject({ tool: "propose_answer", action: { type: "show-question", optionValue: "chat_opaque" } });
+    expect(() => QuestionChatToolActivitySchema.parse({
+      id: "proposal-tool-1",
+      tool: "propose_answer",
+      target: "Stage first",
+      state: "success",
+      action: { type: "submit-answer", optionValue: "chat_opaque" }
+    })).toThrow();
+  });
+
   it("accepts a ready exact-fork snapshot with an empty transcript", () => {
     expect(
       QuestionChatActivationResponseSchema.parse({

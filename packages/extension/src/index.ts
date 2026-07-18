@@ -84,7 +84,14 @@ let activeLocalSupervisor: ActiveLocalSupervisor | undefined;
 let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
 let unavailableRationale = "Pi Postbox is not connected.";
 const registrationWaiters = new Set<() => void>();
-const questionChats = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter());
+const questionChats = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter({
+  proposeAnswer: (requestId, proposal, signal) => client
+    ? client.proposeAnswer(requestId, proposal, signal)
+    : Promise.resolve({
+        status: "error",
+        error: { code: "internal_error", message: "Postbox is not connected." }
+      })
+}));
 
 export default function postboxExtension(pi: PiLikeApi): void {
   semanticStateController = createSemanticStateController(() => client, pi);

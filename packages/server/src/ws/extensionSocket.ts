@@ -1,5 +1,8 @@
 import {
   ExtensionClientMessageSchema,
+  type ProposeAnswerErrorCode,
+  type ProposeAnswerPayload,
+  type ProposeAnswerResult,
   type ExtensionServerMessage
 } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
@@ -33,6 +36,27 @@ function sendAskError(socket: WebSocket, requestId: string | undefined, fallback
       message: error instanceof Error ? error.message : String(error)
     }
   });
+}
+
+const PROPOSAL_ERROR_CODES = new Set<ProposeAnswerErrorCode>([
+  "request_not_found",
+  "request_terminal",
+  "wrong_owner",
+  "invalid_proposal",
+  "duplicate_option",
+  "option_value_collision",
+  "option_limit_reached",
+  "internal_error"
+]);
+
+function proposalError(error: unknown): ProposeAnswerResult {
+  if (error instanceof RequestStoreError && PROPOSAL_ERROR_CODES.has(error.code as ProposeAnswerErrorCode)) {
+    return {
+      status: "error",
+      error: { code: error.code as ProposeAnswerErrorCode, message: error.message }
+    };
+  }
+  return { status: "error", error: { code: "internal_error", message: "Suggested option could not be appended." } };
 }
 
 export async function registerExtensionSocket(
@@ -218,6 +242,40 @@ export async function registerExtensionSocket(
 
       if (message.type === "chat.event") {
         questionChatRelay?.publishEvent(connectionId, message.payload);
+        return;
+      }
+
+      if (message.type === "chat.propose-answer") {
+        const current = requestStore.get(message.payload.requestId);
+        let proposalResult: ProposeAnswerResult;
+        if (
+          !registeredSessionId
+          || (current && current.sessionId !== registeredSessionId)
+          || (current?.status === "pending"
+            && !questionChatRelay?.isLiveOwner(connectionId, registeredSessionId, message.payload.requestId))
+        ) {
+          proposalResult = {
+            status: "error",
+            error: { code: "wrong_owner", message: "Question Chat does not own this Question." }
+          };
+        } else {
+          try {
+            const appended = requestStore.proposeAnswer(
+              message.payload.requestId,
+              registeredSessionId,
+              message.payload.proposal as ProposeAnswerPayload
+            );
+            proposalResult = { status: "appended", option: appended.option };
+            broadcaster.broadcast();
+          } catch (error) {
+            proposalResult = proposalError(error);
+          }
+        }
+        send(socket, {
+          type: "chat.propose-answer.result",
+          requestId: message.requestId,
+          payload: { requestId: message.payload.requestId, result: proposalResult }
+        });
         return;
       }
 
