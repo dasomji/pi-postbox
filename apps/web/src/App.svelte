@@ -1,10 +1,25 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { layout, type BrowserLayoutState } from "./lib/layout.svelte";
   import { store } from "./lib/store.svelte";
   import { modalFocus } from "./lib/modalFocus";
   import DevMockToggle from "./components/DevMockToggle.svelte";
   import MainView from "./components/MainView.svelte";
   import Sidebar from "./components/Sidebar.svelte";
+
+  type ShortcutPlatform = "mac" | "other";
+
+  function browserShortcutPlatform(): ShortcutPlatform {
+    return /Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? "mac" : "other";
+  }
+
+  let {
+    layoutState = layout,
+    shortcutPlatform = browserShortcutPlatform()
+  }: {
+    layoutState?: BrowserLayoutState;
+    shortcutPlatform?: ShortcutPlatform;
+  } = $props();
 
   let mobileNavigationOpen = $state(false);
   let mobileNavigationOpener = $state<HTMLElement | null>(null);
@@ -18,8 +33,29 @@
     mobileNavigationOpen = false;
   }
 
+  function isEditableTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+  }
+
   function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && mobileNavigationOpen) mobileNavigationOpen = false;
+    if (event.key === "Escape" && mobileNavigationOpen) {
+      mobileNavigationOpen = false;
+      return;
+    }
+    const ownsModifier = shortcutPlatform === "mac"
+      ? event.metaKey && !event.ctrlKey
+      : event.ctrlKey && !event.metaKey;
+    if (
+      event.key.toLowerCase() !== "b" ||
+      !ownsModifier ||
+      event.altKey ||
+      event.shiftKey ||
+      event.repeat ||
+      isEditableTarget(event.target)
+    ) return;
+    event.preventDefault();
+    layoutState.toggleNavigation();
   }
 
   function notificationRequestIdFromMessage(event: MessageEvent): string | undefined {
@@ -52,7 +88,7 @@
 
 <svelte:window {onkeydown} />
 
-<div class="flex h-full w-full flex-col overflow-hidden bg-postbox-canvas text-postbox-text md:flex-row">
+<div class="relative flex h-full w-full flex-col overflow-hidden bg-postbox-canvas text-postbox-text md:flex-row">
   <div class="flex shrink-0 items-center gap-3 border-b border-postbox-border bg-postbox-surface/80 px-4 py-3 md:hidden">
     <button
       type="button"
@@ -74,9 +110,27 @@
     </button>
   </div>
 
-  <div class="hidden md:flex md:h-full md:w-80 md:shrink-0">
+  <div
+    id="desktop-navigation"
+    class="hidden md:flex md:h-full md:w-80 md:shrink-0"
+    style:display={layoutState.navigationOpen ? undefined : "none"}
+    aria-hidden={!layoutState.navigationOpen}
+    inert={!layoutState.navigationOpen}
+  >
     <Sidebar />
   </div>
+
+  <button
+    type="button"
+    class="absolute top-3 z-40 hidden h-9 w-9 items-center justify-center rounded-lg border border-postbox-border bg-postbox-surface text-postbox-subtle shadow-postbox-section transition hover:border-attention-border hover:text-attention-foreground md:inline-flex {layoutState.navigationOpen ? 'left-[17rem]' : 'left-3'}"
+    aria-label={layoutState.navigationOpen ? "Hide navigation" : "Show navigation"}
+    aria-controls="desktop-navigation"
+    aria-expanded={layoutState.navigationOpen}
+    aria-keyshortcuts={shortcutPlatform === "mac" ? "Meta+B" : "Control+B"}
+    onclick={() => layoutState.toggleNavigation()}
+  >
+    {layoutState.navigationOpen ? "‹" : "›"}
+  </button>
 
   {#if mobileNavigationOpen}
     <div

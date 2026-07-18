@@ -100,6 +100,22 @@ export async function fetchQuestionChatSnapshot(requestId: string): Promise<Ques
   return body.snapshot;
 }
 
+export type QuestionChatProbeResult =
+  | { status: "ready"; snapshot: QuestionChatSnapshot }
+  | { status: "not-started" };
+
+/** Read-only discovery used to reattach a browser to an already-running Chat. */
+export async function probeQuestionChatSnapshot(requestId: string): Promise<QuestionChatProbeResult> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat`);
+  const body = QuestionChatSnapshotHttpResponseSchema.parse(await response.json());
+  if (body.status === "ready") {
+    if (!response.ok) throw new Error(`Chat snapshot probe failed with ${response.status}`);
+    return body;
+  }
+  if (body.error.code === "chat_not_started") return { status: "not-started" };
+  throw new Error(body.error.message);
+}
+
 export async function sendQuestionChatMessage(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
   const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
     method: "POST",

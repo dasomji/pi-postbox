@@ -14,7 +14,11 @@
   const showMock = $derived(layout.mockQuestion && !realRequest);
 </script>
 
-<main class="min-h-0 flex-1 overflow-y-auto bg-postbox-canvas">
+<main
+  class="min-h-0 flex-1 bg-postbox-canvas"
+  class:overflow-hidden={showMock || selection.kind === "request"}
+  class:overflow-y-auto={!showMock && selection.kind !== "request"}
+>
   {#if showMock}
     <QuestionDetail request={mockRequest} session={mockSession} isMock />
   {:else if selection.kind === "request"}

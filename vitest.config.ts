@@ -18,12 +18,19 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
-          exclude: ["apps/web/src/components/QuestionChatActivation.test.ts"],
+          exclude: [
+            "apps/web/src/App.test.ts",
+            "apps/web/src/components/QuestionChatActivation.test.ts",
+            "apps/web/src/components/QuestionWorkspace.test.ts"
+          ],
           environment: "node"
         }
       },
       {
         plugins: [svelte(), svelteTesting({ autoCleanup: false })],
+        define: {
+          __APP_VERSION__: JSON.stringify("test")
+        },
         resolve: {
           alias: {
             "@pi-postbox/protocol": fileURLToPath(new URL("./packages/protocol/src/index.ts", import.meta.url))
@@ -31,7 +38,11 @@ export default defineConfig({
         },
         test: {
           name: "svelte-dom",
-          include: ["apps/web/src/components/QuestionChatActivation.test.ts"],
+          include: [
+            "apps/web/src/App.test.ts",
+            "apps/web/src/components/QuestionChatActivation.test.ts",
+            "apps/web/src/components/QuestionWorkspace.test.ts"
+          ],
           globals: true,
           environment: "jsdom"
         }

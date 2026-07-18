@@ -7,13 +7,20 @@
   import type { QuestionForm } from "../lib/questionForm.svelte";
   import { branchLabel } from "../lib/status";
   import RichContext from "./RichContext.svelte";
-  import QuestionChatActivation from "./QuestionChatActivation.svelte";
 
   let {
     request,
     session,
-    form
-  }: { request: AskRequestSnapshot; session?: SessionSnapshot; form: QuestionForm } = $props();
+    form,
+    chatButtonLabel,
+    onChat
+  }: {
+    request: AskRequestSnapshot;
+    session?: SessionSnapshot;
+    form: QuestionForm;
+    chatButtonLabel?: "Chat" | "Open Chat";
+    onChat?: () => void;
+  } = $props();
 
   let showContext = $state(false);
   let showNote = $state(false);
@@ -82,9 +89,11 @@
     </button>
   </div>
 
-  <div class="mt-3">
-    <QuestionChatActivation requestId={request.requestId} />
-  </div>
+  {#if chatButtonLabel}
+    <div class="mt-3">
+      <button type="button" class="rounded-full border border-history-border bg-history/5 px-3 py-1 font-medium text-history-foreground transition hover:bg-history/10" onclick={onChat}>{chatButtonLabel}</button>
+    </div>
+  {/if}
 
   <div class="flex flex-1 justify-center py-6 sm:py-8">
     <div class="w-full max-w-2xl">

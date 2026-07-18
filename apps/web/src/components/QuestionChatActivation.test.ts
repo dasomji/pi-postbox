@@ -30,7 +30,7 @@ describe("Question Chat first message", () => {
   it("starts explicitly, fetches the fork snapshot, and shows freeform plus three deterministic starters", async () => {
     const activate = vi.fn(async () => ({ status: "ready" as const, snapshot: snapshot() }));
     const fetchSnapshot = vi.fn(async () => snapshot());
-    render(QuestionChatActivation, { props: { requestId: "ask-ui", activate, fetchSnapshot, connectEvents: noEvents } });
+    render(QuestionChatActivation, { props: { requestId: "ask-ui", api: { activate, fetchSnapshot, connectEvents: noEvents } } });
 
     expect(activate).not.toHaveBeenCalled();
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -53,10 +53,12 @@ describe("Question Chat first message", () => {
     render(QuestionChatActivation, {
       props: {
         requestId: "ask-ui",
-        activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
-        fetchSnapshot: async () => snapshot(),
-        connectEvents: noEvents,
-        sendMessage
+        api: {
+          activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
+          fetchSnapshot: async () => snapshot(),
+          connectEvents: noEvents,
+          sendMessage
+        }
       }
     });
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -78,10 +80,12 @@ describe("Question Chat first message", () => {
     render(QuestionChatActivation, {
       props: {
         requestId: "ask-ui",
-        activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
-        fetchSnapshot: async () => snapshot(),
-        connectEvents: noEvents,
-        sendMessage
+        api: {
+          activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
+          fetchSnapshot: async () => snapshot(),
+          connectEvents: noEvents,
+          sendMessage
+        }
       }
     });
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -110,17 +114,19 @@ describe("Question Chat first message", () => {
     render(QuestionChatActivation, {
       props: {
         requestId: "ask-ui",
-        activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
-        fetchSnapshot,
-        connectEvents: (_requestId: string, listener: (event: QuestionChatEvent) => void) => {
-          onEvent = listener;
-          return { ready: streamReady, close: () => undefined };
-        },
-        sendMessage: async (_requestId: string, command: { clientCommandId: string }) => ({
-          status: "accepted" as const,
-          clientCommandId: command.clientCommandId,
-          mode: "prompt" as const
-        })
+        api: {
+          activate: async () => ({ status: "ready" as const, snapshot: snapshot() }),
+          fetchSnapshot,
+          connectEvents: (_requestId: string, listener: (event: QuestionChatEvent) => void) => {
+            onEvent = listener;
+            return { ready: streamReady, close: () => undefined };
+          },
+          sendMessage: async (_requestId: string, command: { clientCommandId: string }) => ({
+            status: "accepted" as const,
+            clientCommandId: command.clientCommandId,
+            mode: "prompt" as const
+          })
+        }
       }
     });
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -176,14 +182,16 @@ describe("Question Chat first message", () => {
     render(QuestionChatActivation, {
       props: {
         requestId: "ask-ui",
-        activate: async () => ({ status: "ready" as const, snapshot: active }),
-        fetchSnapshot: async () => active,
-        connectEvents: (_requestId: string, listener: (event: QuestionChatEvent) => void) => {
-          onEvent = listener;
-          return noEvents();
-        },
-        sendMessage,
-        stop
+        api: {
+          activate: async () => ({ status: "ready" as const, snapshot: active }),
+          fetchSnapshot: async () => active,
+          connectEvents: (_requestId: string, listener: (event: QuestionChatEvent) => void) => {
+            onEvent = listener;
+            return noEvents();
+          },
+          sendMessage,
+          stop
+        }
       }
     });
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -240,7 +248,7 @@ describe("Question Chat first message", () => {
       .fn()
       .mockResolvedValueOnce({ status: "unavailable", error: { code: "extension_offline", message: "The originating Pi extension is offline." } })
       .mockResolvedValueOnce({ status: "ready", snapshot: fallback });
-    render(QuestionChatActivation, { props: { requestId: "ask-ui", activate, fetchSnapshot: async () => fallback, connectEvents: noEvents } });
+    render(QuestionChatActivation, { props: { requestId: "ask-ui", api: { activate, fetchSnapshot: async () => fallback, connectEvents: noEvents } } });
 
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     expect((await screen.findByRole("alert")).textContent).toContain("originating Pi extension is offline");
@@ -253,9 +261,11 @@ describe("Question Chat first message", () => {
     const view = render(QuestionChatActivation, {
       props: {
         requestId: "ask-one",
-        activate: async (requestId: string) => ({ status: "ready" as const, snapshot: snapshot({ requestId }) }),
-        fetchSnapshot: async (requestId: string) => snapshot({ requestId }),
-        connectEvents: noEvents
+        api: {
+          activate: async (requestId: string) => ({ status: "ready" as const, snapshot: snapshot({ requestId }) }),
+          fetchSnapshot: async (requestId: string) => snapshot({ requestId }),
+          connectEvents: noEvents
+        }
       }
     });
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -263,9 +273,11 @@ describe("Question Chat first message", () => {
 
     await view.rerender({
       requestId: "ask-two",
-      activate: async (requestId: string) => ({ status: "ready" as const, snapshot: snapshot({ requestId }) }),
-      fetchSnapshot: async (requestId: string) => snapshot({ requestId }),
-      connectEvents: noEvents
+      api: {
+        activate: async (requestId: string) => ({ status: "ready" as const, snapshot: snapshot({ requestId }) }),
+        fetchSnapshot: async (requestId: string) => snapshot({ requestId }),
+        connectEvents: noEvents
+      }
     });
     expect(await screen.findByRole("button", { name: "Chat" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Question Chat" })).toBeNull();
@@ -277,13 +289,47 @@ describe("Question Chat first message", () => {
       finishActivation = resolve;
     }));
     const view = render(QuestionChatActivation, {
-      props: { requestId: "ask-one", activate, fetchSnapshot: async (requestId: string) => snapshot({ requestId }), connectEvents: noEvents }
+      props: { requestId: "ask-one", api: { activate, fetchSnapshot: async (requestId: string) => snapshot({ requestId }), connectEvents: noEvents } }
     });
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-    await view.rerender({ requestId: "ask-two", activate, fetchSnapshot: async (requestId: string) => snapshot({ requestId }), connectEvents: noEvents });
+    await view.rerender({ requestId: "ask-two", api: { activate, fetchSnapshot: async (requestId: string) => snapshot({ requestId }), connectEvents: noEvents } });
     finishActivation({ status: "ready", snapshot: snapshot({ requestId: "ask-one" }) });
 
     expect(await screen.findByRole("button", { name: "Chat" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Question Chat" })).toBeNull();
+  });
+
+  it("does not create an event connection when activation resolves after unmount", async () => {
+    let finishActivation!: (value: { status: "ready"; snapshot: QuestionChatSnapshot }) => void;
+    const activate = vi.fn(() => new Promise<{ status: "ready"; snapshot: QuestionChatSnapshot }>((resolve) => {
+      finishActivation = resolve;
+    }));
+    const connectEvents = vi.fn(noEvents);
+    const view = render(QuestionChatActivation, {
+      props: { requestId: "ask-ui", api: { activate, fetchSnapshot: async () => snapshot(), connectEvents } }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    view.unmount();
+    finishActivation({ status: "ready", snapshot: snapshot() });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(connectEvents).not.toHaveBeenCalled();
+  });
+
+  it("does not create an event connection when a recovery probe resolves after unmount", async () => {
+    let finishProbe!: (value: { status: "ready"; snapshot: QuestionChatSnapshot }) => void;
+    const probeSnapshot = vi.fn(() => new Promise<{ status: "ready"; snapshot: QuestionChatSnapshot }>((resolve) => {
+      finishProbe = resolve;
+    }));
+    const connectEvents = vi.fn(noEvents);
+    const view = render(QuestionChatActivation, {
+      props: { requestId: "ask-ui", recoveryRequest: 1, api: { probeSnapshot, connectEvents } }
+    });
+    await waitFor(() => expect(probeSnapshot).toHaveBeenCalledOnce());
+    view.unmount();
+    finishProbe({ status: "ready", snapshot: snapshot() });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(connectEvents).not.toHaveBeenCalled();
   });
 });

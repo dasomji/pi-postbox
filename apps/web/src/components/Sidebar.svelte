@@ -21,7 +21,7 @@
   }
 </script>
 
-<aside class="flex h-full min-h-0 w-full shrink-0 flex-col border-b border-postbox-border bg-postbox-surface md:h-full md:max-w-xs md:border-b-0 md:border-r">
+<aside class="flex h-full min-h-0 w-full shrink-0 flex-col border-b border-postbox-border bg-postbox-surface md:h-full md:max-w-xs md:border-b-0 md:border-r" aria-label="Project and question navigation">
   <header class="border-b border-postbox-border px-4 py-4">
     <div class="flex items-center gap-2">
       <button
