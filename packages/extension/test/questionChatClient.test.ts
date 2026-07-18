@@ -63,6 +63,22 @@ describe("extension Question Chat commands", () => {
         model: { id: "test/source", source: "originating" as const },
         messages: [] as []
       })),
+      getSnapshot: vi.fn(async (requestId: string) => ({
+        requestId,
+        state: "ready" as const,
+        forkKind: "exact" as const,
+        model: { id: "test/source", source: "originating" as const },
+        sequence: 7,
+        messages: [{ id: "fork-user", role: "user" as const, text: "Earlier", status: "final" as const }]
+      })),
+      send: vi.fn(async (_requestId: string, command: { clientCommandId: string }) => ({
+        status: "accepted" as const,
+        clientCommandId: command.clientCommandId
+      })),
+      subscribe: vi.fn((_requestId: string, listener: (event: any) => void) => {
+        listener({ requestId: "ask-chat", sequence: 8, type: "lifecycle", state: "generating" });
+        return vi.fn();
+      }),
       cleanup: vi.fn(async () => undefined)
     };
     const client = new PostboxClient({
@@ -86,6 +102,7 @@ describe("extension Question Chat commands", () => {
         leafId: "leaf-at-question"
       }
     });
+
     socket.serverMessage({
       type: "chat.activate",
       requestId: "command-1",
@@ -107,6 +124,36 @@ describe("extension Question Chat commands", () => {
         model: { id: "test/source", source: "originating" },
         messages: []
       }
+    });
+
+    socket.serverMessage({
+      type: "chat.snapshot",
+      requestId: "snapshot-1",
+      payload: { requestId: "ask-chat", ownerSessionId: "session-chat" }
+    });
+    socket.serverMessage({
+      type: "chat.send",
+      requestId: "send-1",
+      payload: {
+        requestId: "ask-chat",
+        ownerSessionId: "session-chat",
+        command: { clientCommandId: "browser-1", message: "Explain it" }
+      }
+    });
+    await vi.waitFor(() => expect(questionChats.send).toHaveBeenCalledWith("ask-chat", { clientCommandId: "browser-1", message: "Explain it" }));
+    expect(socket.sent).toContainEqual({
+      type: "chat.snapshot",
+      requestId: "snapshot-1",
+      payload: expect.objectContaining({ requestId: "ask-chat", sequence: 7, messages: [expect.objectContaining({ text: "Earlier" })] })
+    });
+    expect(socket.sent).toContainEqual({
+      type: "chat.send.accepted",
+      requestId: "send-1",
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-1" } }
+    });
+    expect(socket.sent).toContainEqual({
+      type: "chat.event",
+      payload: { requestId: "ask-chat", sequence: 8, type: "lifecycle", state: "generating" }
     });
 
     socket.serverMessage({ type: "chat.cleanup", payload: { requestId: "ask-chat", reason: "answered" } });

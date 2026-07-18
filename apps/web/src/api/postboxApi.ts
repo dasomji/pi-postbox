@@ -11,7 +11,14 @@ import {
 } from "@pi-postbox/protocol";
 import {
   QuestionChatActivationResponseSchema,
-  type QuestionChatActivationResponse
+  QuestionChatEventSchema,
+  QuestionChatSendResponseSchema,
+  QuestionChatSnapshotSchema,
+  type QuestionChatActivationResponse,
+  type QuestionChatEvent,
+  type QuestionChatSendPayload,
+  type QuestionChatSendResponse,
+  type QuestionChatSnapshot
 } from "@pi-postbox/protocol";
 
 export async function fetchHealth(): Promise<HealthResponse> {
@@ -79,4 +86,58 @@ export async function activateQuestionChat(requestId: string): Promise<QuestionC
     throw new Error(`Chat activation failed with ${response.status}`);
   }
   return parsed;
+}
+
+export async function fetchQuestionChatSnapshot(requestId: string): Promise<QuestionChatSnapshot> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat`);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body?.error?.message ?? `Chat snapshot failed with ${response.status}`);
+  return QuestionChatSnapshotSchema.parse(body);
+}
+
+export async function sendQuestionChatMessage(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(command)
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body?.error?.message ?? `Chat send failed with ${response.status}`);
+  return QuestionChatSendResponseSchema.parse(body);
+}
+
+export interface QuestionChatEventConnection {
+  ready: Promise<void>;
+  close(): void;
+}
+
+export function connectQuestionChatEvents(requestId: string, onEvent: (event: QuestionChatEvent) => void): QuestionChatEventConnection {
+  const source = new EventSource(`/api/requests/${encodeURIComponent(requestId)}/chat/events`);
+  let opened = false;
+  let rejectReady: ((error: Error) => void) | undefined;
+  const ready = new Promise<void>((resolve, reject) => {
+    rejectReady = reject;
+    source.onopen = () => {
+      opened = true;
+      resolve();
+    };
+    source.onerror = () => {
+      if (!opened) reject(new Error("Question Chat event stream is unavailable."));
+    };
+  });
+  source.onmessage = (message) => {
+    try {
+      const parsed = QuestionChatEventSchema.safeParse(JSON.parse(message.data));
+      if (parsed.success) onEvent(parsed.data);
+    } catch {
+      // Ignore malformed transient frames; the next snapshot can resynchronize.
+    }
+  };
+  return {
+    ready,
+    close: () => {
+      source.close();
+      if (!opened) rejectReady?.(new Error("Question Chat event stream closed before connecting."));
+    }
+  };
 }

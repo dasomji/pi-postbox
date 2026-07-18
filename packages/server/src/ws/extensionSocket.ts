@@ -88,7 +88,22 @@ export async function registerExtensionSocket(
       }
 
       if (message.type === "chat.error") {
-        questionChatRelay?.resolveError(message.requestId, connectionId, message.payload.error);
+        questionChatRelay?.resolveError(message.requestId, connectionId, message.payload.requestId, message.payload.error);
+        return;
+      }
+
+      if (message.type === "chat.snapshot") {
+        questionChatRelay?.resolveSnapshot(message.requestId, connectionId, message.payload);
+        return;
+      }
+
+      if (message.type === "chat.send.accepted") {
+        questionChatRelay?.resolveSend(message.requestId, connectionId, message.payload.requestId, message.payload.response);
+        return;
+      }
+
+      if (message.type === "chat.event") {
+        questionChatRelay?.publishEvent(connectionId, message.payload);
         return;
       }
 

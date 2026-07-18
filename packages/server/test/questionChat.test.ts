@@ -114,6 +114,7 @@ function readySnapshot(): QuestionChatSnapshot {
     state: "ready",
     forkKind: "exact",
     model: { id: "anthropic/claude-sonnet-4", source: "originating" },
+    sequence: 0,
     messages: []
   };
 }
@@ -127,6 +128,80 @@ async function activateChat(app: FastifyInstance, socket: WebSocket): Promise<vo
 }
 
 describe("Question Chat activation relay", () => {
+  it("fetches the extension-fork snapshot before streaming later normalized events over question SSE", async () => {
+    const { app, socket } = await setup();
+    await activateChat(app, socket);
+    const baseUrl = `http://127.0.0.1:${listenerPort(app)}`;
+
+    const snapshotResponse = fetch(`${baseUrl}/api/requests/ask-chat/chat`);
+    const snapshotCommand = await nextMessage(socket);
+    expect(snapshotCommand).toMatchObject({
+      type: "chat.snapshot",
+      payload: { requestId: "ask-chat", ownerSessionId: "session-chat-owner" }
+    });
+    if (snapshotCommand.type !== "chat.snapshot") throw new Error("Expected snapshot command");
+    let snapshotSettled = false;
+    void snapshotResponse.then(() => {
+      snapshotSettled = true;
+    });
+    socket.send(
+      JSON.stringify({
+        type: "chat.snapshot",
+        requestId: snapshotCommand.requestId,
+        payload: { ...readySnapshot(), requestId: "different-question" }
+      } satisfies ExtensionClientMessage)
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(snapshotSettled).toBe(false);
+    socket.send(
+      JSON.stringify({
+        type: "chat.snapshot",
+        requestId: snapshotCommand.requestId,
+        payload: {
+          ...readySnapshot(),
+          sequence: 4,
+          messages: [
+            { id: "fork-user", role: "user", text: "Earlier question", status: "final" },
+            { id: "fork-assistant", role: "assistant", text: "Earlier answer", status: "final" }
+          ]
+        }
+      } satisfies ExtensionClientMessage)
+    );
+    expect(await (await snapshotResponse).json()).toMatchObject({ sequence: 4, messages: [{ text: "Earlier question" }, { text: "Earlier answer" }] });
+
+    const eventResponse = await fetch(`${baseUrl}/api/requests/ask-chat/chat/events`);
+    expect(eventResponse.status).toBe(200);
+    const events = createSseReader(eventResponse);
+    const sendResponse = fetch(`${baseUrl}/api/requests/ask-chat/chat/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientCommandId: "browser-command-1", message: "Please elaborate" })
+    });
+    const sendCommand = await nextMessage(socket);
+    expect(sendCommand).toMatchObject({
+      type: "chat.send",
+      payload: {
+        requestId: "ask-chat",
+        command: { clientCommandId: "browser-command-1", message: "Please elaborate" }
+      }
+    });
+    if (sendCommand.type !== "chat.send") throw new Error("Expected send command");
+    socket.send(
+      JSON.stringify({
+        type: "chat.send.accepted",
+        requestId: sendCommand.requestId,
+        payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-1" } }
+      } satisfies ExtensionClientMessage)
+    );
+    expect(await (await sendResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-1" });
+
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 5, type: "lifecycle", state: "generating" } } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 6, type: "assistant.text.delta", messageId: "assistant-1", text: "Streamed answer" } } satisfies ExtensionClientMessage));
+    await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 5, type: "lifecycle" });
+    await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 6, type: "assistant.text.delta", text: "Streamed answer" });
+    await events.close();
+  });
+
   it("routes activation to the owning extension and returns its ready empty snapshot", async () => {
     const { app, socket } = await setup();
     const activation = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
@@ -247,6 +322,20 @@ describe("Question Chat activation relay", () => {
     expect(state.requests[0]).not.toHaveProperty("chat");
   });
 
+  it("retains cleanup authority when activation times out after reaching the extension", async () => {
+    const { app, socket } = await setup();
+    const activation = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
+    await expect(nextMessage(socket)).resolves.toMatchObject({ type: "chat.activate" });
+    expect((await activation).json()).toMatchObject({ status: "unavailable", error: { code: "command_timeout" } });
+
+    const cancel = app.inject({ method: "POST", url: "/api/requests/ask-chat/cancel", payload: {} });
+    await expect(nextMessage(socket)).resolves.toMatchObject({
+      type: "chat.cleanup",
+      payload: { requestId: "ask-chat", reason: "cancelled" }
+    });
+    expect((await cancel).statusCode).toBe(200);
+  });
+
   it("sends cleanup on expiry and owning Pi session shutdown", async () => {
     let nowMs = Date.parse("2026-07-17T12:00:00.000Z");
     const expiredSetup = await setup({
@@ -280,11 +369,57 @@ describe("Question Chat activation relay", () => {
     const { app, socket } = await setup();
     const activation = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
     const command = await nextMessage(socket);
-    socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId!, payload: readySnapshot() } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({
+      type: "chat.ready",
+      requestId: command.requestId!,
+      payload: {
+        ...readySnapshot(),
+        sequence: 2,
+        messages: [
+          { id: "private-user", role: "user", text: "server-must-not-store-this-user", status: "final" },
+          { id: "private-assistant", role: "assistant", text: "server-must-not-store-this-assistant", status: "final" }
+        ]
+      }
+    } satisfies ExtensionClientMessage));
     await activation;
 
     const state = (await app.inject({ method: "GET", url: "/api/state" })).json();
     expect(state.requests[0]).not.toHaveProperty("chat");
     expect(JSON.stringify(state)).not.toContain("messages");
+
+    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
+    await expect(nextMessage(socket)).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
+    expect((await answer).statusCode).toBe(200);
+    const history = (await app.inject({ method: "GET", url: "/api/history" })).json();
+    expect(JSON.stringify(history)).not.toContain("server-must-not-store-this");
+    expect(JSON.stringify(history)).not.toContain('"messages"');
+    expect(JSON.stringify(history)).not.toContain('"chat"');
   });
 });
+
+function createSseReader(response: Response): { next(): Promise<any>; close(): Promise<void> } {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Expected SSE body");
+  let buffer = "";
+  return {
+    async next(): Promise<any> {
+      while (true) {
+        const boundary = buffer.indexOf("\n\n");
+        if (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+          if (data) return JSON.parse(data);
+          continue;
+        }
+        const next = await reader.read();
+        if (next.done) throw new Error("SSE ended before an event arrived");
+        buffer += new TextDecoder().decode(next.value, { stream: true });
+      }
+    },
+    async close(): Promise<void> {
+      await reader.cancel();
+      reader.releaseLock();
+    }
+  };
+}

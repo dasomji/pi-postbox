@@ -63,19 +63,35 @@ export {
 } from "./health.js";
 export type { CreateHealthResponseOptions, HealthResponse } from "./health.js";
 export {
+  QUESTION_CHAT_ASSISTANT_TEXT_MAX,
+  QUESTION_CHAT_COMMAND_ID_MAX,
+  QUESTION_CHAT_DELTA_MAX,
+  QUESTION_CHAT_MESSAGE_MAX,
+  QUESTION_CHAT_STARTERS,
+  QUESTION_CHAT_USER_TEXT_MAX,
   QuestionChatActivationResponseSchema,
   QuestionChatAvailabilityCodeSchema,
   QuestionChatAvailabilityErrorSchema,
+  QuestionChatEventSchema,
+  QuestionChatMessageSchema,
   QuestionChatModelSchema,
+  QuestionChatSendPayloadSchema,
+  QuestionChatSendResponseSchema,
   QuestionChatSnapshotSchema,
+  QuestionChatStateSchema,
   QuestionChatSourceSchema
 } from "./chat.js";
 export type {
   QuestionChatActivationResponse,
   QuestionChatAvailabilityCode,
   QuestionChatAvailabilityError,
+  QuestionChatEvent,
+  QuestionChatMessage,
   QuestionChatModel,
+  QuestionChatSendPayload,
+  QuestionChatSendResponse,
   QuestionChatSnapshot,
+  QuestionChatState,
   QuestionChatSource
 } from "./chat.js";
 export {

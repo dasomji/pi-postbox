@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { QuestionChatEvent } from "@pi-postbox/protocol";
 import {
   PiQuestionChatRuntimeAdapter,
   QuestionChatRuntimeError,
@@ -191,5 +192,139 @@ describe("Pi Question Chat runtime adapter", () => {
       adapter.create({ requestId: "missing-leaf", source: { agentSessionPath: fixture.sourcePath, leafId: "missing", cwd: fixture.cwd } })
     ).rejects.toMatchObject({ code: "source_leaf_missing" } satisfies Partial<QuestionChatRuntimeError>);
     expect(fake.create).not.toHaveBeenCalled();
+  });
+
+  it("sends an ordinary SDK prompt and exposes only normalized visible stream events", async () => {
+    const fixture = createSourceFixture();
+    let listener: ((event: any) => void) | undefined;
+    let forkManager: SessionManager | undefined;
+    const prompt = vi.fn(async () => undefined);
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot: join(fixture.root, "private-chats"),
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: vi.fn(async (options: CreateAgentSessionOptions) => {
+        forkManager = options.sessionManager;
+        return ({
+        session: {
+          model: { provider: "test-provider", id: "source-model" },
+          isStreaming: false,
+          state: {},
+          sessionManager: options.sessionManager,
+          subscribe: vi.fn((next: (event: any) => void) => {
+            listener = next;
+            return vi.fn();
+          }),
+          prompt,
+          abort: vi.fn(async () => undefined),
+          dispose: vi.fn()
+        },
+        extensionsResult: { extensions: [], errors: [], runtime: undefined }
+      }) as unknown as CreateAgentSessionResult;
+      })
+    });
+    const registry = new QuestionChatRuntimeRegistry(adapter);
+    const requestId = "ask-stream";
+    await registry.activate({
+      requestId,
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    });
+    const events: QuestionChatEvent[] = [];
+    registry.subscribe(requestId, (event) => events.push(event));
+
+    await expect(registry.send(requestId, { clientCommandId: "browser-command-1", message: "Please explain." })).resolves.toEqual({
+      status: "accepted",
+      clientCommandId: "browser-command-1"
+    });
+    expect(prompt).toHaveBeenCalledWith("Please explain.", { expandPromptTemplates: false, source: "rpc" });
+    await expect(registry.send(requestId, { clientCommandId: "browser-command-2", message: "Too soon" })).rejects.toMatchObject({
+      code: "runtime_busy"
+    });
+
+    listener?.({ type: "agent_start" });
+    listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 10 } });
+    listener?.({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "secret" }], timestamp: 10 },
+      assistantMessageEvent: { type: "thinking_delta", delta: "private chain of thought" }
+    });
+    listener?.({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "text", text: "Visible **answer**" }], timestamp: 10 },
+      assistantMessageEvent: { type: "text_delta", delta: "Visible **answer**" }
+    });
+    listener?.({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "text", text: "x".repeat(33_000) }], timestamp: 10 },
+      assistantMessageEvent: { type: "text_delta", delta: "x".repeat(33_000) }
+    });
+    listener?.({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "text", text: "must-not-escape" }], timestamp: 10 },
+      assistantMessageEvent: { type: "text_delta", delta: "must-not-escape" }
+    });
+    forkManager!.appendMessage({ role: "user", content: "Please explain.", timestamp: 9 });
+    listener?.({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "secret" },
+          { type: "text", text: "Visible **answer**" },
+          { type: "toolCall", id: "tool-1", name: "read", arguments: { path: ".env" } }
+        ],
+        timestamp: 10
+      }
+    });
+    listener?.({ type: "queue_update", steering: [], followUp: [] });
+    expect((await registry.getSnapshot(requestId)).messages.at(-1)).toMatchObject({ role: "assistant", text: "Visible **answer**", status: "final" });
+    forkManager!.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "Visible **answer**" }],
+      api: "anthropic-messages",
+      provider: "test-provider",
+      model: "source-model",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: 10
+    });
+    listener?.({ type: "agent_settled" });
+
+    expect(events.slice(0, 3).map((event) => event.type)).toEqual(["message.started", "lifecycle", "message.started"]);
+    expect(events.slice(-2).map((event) => event.type)).toEqual(["message.finished", "lifecycle"]);
+    expect(events.filter((event) => event.type === "assistant.text.delta").map((event) => event.text).join("")).toHaveLength(32_000);
+    expect(JSON.stringify(events)).toContain("Visible **answer**");
+    expect(JSON.stringify(events)).not.toContain("secret");
+    expect(JSON.stringify(events)).not.toContain(".env");
+    expect(JSON.stringify(events)).not.toContain("must-not-escape");
+    const snapshot = await registry.getSnapshot(requestId);
+    expect(snapshot).toMatchObject({ state: "ready", sequence: events.at(-1)?.sequence });
+    expect(snapshot.messages.map((message) => message.text)).toEqual(["Please explain.", "Visible **answer**"]);
+    expect(JSON.stringify(snapshot.messages)).not.toContain("selected branch");
+
+    await registry.send(requestId, { clientCommandId: "browser-command-3", message: "Please explain." });
+    expect((await registry.getSnapshot(requestId)).messages.filter((message) => message.role === "user" && message.text === "Please explain.")).toHaveLength(2);
+  });
+
+  it("deduplicates an in-flight client command without prompting twice", async () => {
+    let finishSend!: () => void;
+    const runtime = {
+      snapshot: { requestId: "ask-dedupe", state: "ready", forkKind: "exact", model: { id: "test/model", source: "originating" }, sequence: 0, messages: [] },
+      send: vi.fn((command: { clientCommandId: string }) => new Promise<{ status: "accepted"; clientCommandId: string }>((resolve) => {
+        finishSend = () => resolve({ status: "accepted", clientCommandId: command.clientCommandId });
+      })),
+      subscribe: vi.fn(() => () => undefined),
+      terminate: vi.fn(async () => undefined)
+    };
+    const registry = new QuestionChatRuntimeRegistry({ create: vi.fn(async () => runtime) } as any);
+    await registry.activate({ requestId: "ask-dedupe", source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" } });
+    const first = registry.send("ask-dedupe", { clientCommandId: "same", message: "hello" });
+    const retry = registry.send("ask-dedupe", { clientCommandId: "same", message: "hello" });
+    await Promise.resolve();
+    expect(runtime.send).toHaveBeenCalledOnce();
+    finishSend();
+    await expect(Promise.all([first, retry])).resolves.toEqual([
+      { status: "accepted", clientCommandId: "same" },
+      { status: "accepted", clientCommandId: "same" }
+    ]);
   });
 });

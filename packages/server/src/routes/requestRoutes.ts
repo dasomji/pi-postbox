@@ -1,4 +1,4 @@
-import { AskAnswerPayloadSchema, AskCancelPayloadSchema, AskStatusSchema } from "@pi-postbox/protocol";
+import { AskAnswerPayloadSchema, AskCancelPayloadSchema, AskStatusSchema, QuestionChatSendPayloadSchema } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import type { StateBroadcaster } from "../services/broadcaster.js";
 import type { QuestionChatRelay } from "../services/questionChatRelay.js";
@@ -82,6 +82,67 @@ export async function registerRequestRoutes(
     const response = await questionChat.relay.activate(requestId, snapshot.sessionId, source);
     return reply.code(response.status === "ready" ? 200 : response.error.code === "extension_offline" ? 503 : 409).send(response);
   });
+
+  app.get("/api/requests/:requestId/chat", async (request, reply) => {
+    const state = pendingChatRequest(request.params as { requestId: string }, requestStore, expireDue, questionChat);
+    if (state.error) return reply.code(state.error.status).send(state.error.body);
+    const response = await questionChat!.relay.snapshot(state.snapshot!.requestId, state.snapshot!.sessionId);
+    if (response.status === "unavailable") return reply.code(chatErrorStatus(response.error.code)).send({ status: "unavailable", error: response.error });
+    return response.value;
+  });
+
+  app.post("/api/requests/:requestId/chat/messages", async (request, reply) => {
+    const body = QuestionChatSendPayloadSchema.safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ status: "unavailable", error: { code: "invalid_command", message: body.error.message } });
+    const state = pendingChatRequest(request.params as { requestId: string }, requestStore, expireDue, questionChat);
+    if (state.error) return reply.code(state.error.status).send(state.error.body);
+    const response = await questionChat!.relay.sendMessage(state.snapshot!.requestId, state.snapshot!.sessionId, body.data);
+    if (response.status === "unavailable") return reply.code(chatErrorStatus(response.error.code)).send({ status: "unavailable", error: response.error });
+    return response.value;
+  });
+
+  app.get("/api/requests/:requestId/chat/events", async (request, reply) => {
+    const state = pendingChatRequest(request.params as { requestId: string }, requestStore, expireDue, questionChat);
+    if (state.error) return reply.code(state.error.status).send(state.error.body);
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+    reply.raw.write(": question-chat-connected\n\n");
+    const unsubscribe = questionChat!.relay.subscribe(state.snapshot!.requestId, (event) => {
+      if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    });
+    request.raw.once("close", unsubscribe);
+  });
+}
+
+function pendingChatRequest(
+  params: { requestId: string },
+  requestStore: RequestStore,
+  expireDue: () => unknown,
+  questionChat: { relay: QuestionChatRelay; sessionStore: SessionStore } | undefined
+): { snapshot?: NonNullable<ReturnType<RequestStore["get"]>>; error?: { status: number; body: unknown } } {
+  expireDue();
+  const snapshot = requestStore.get(params.requestId);
+  if (!snapshot) {
+    return { error: { status: 404, body: { status: "unavailable", error: { code: "request_missing", message: "This Postbox Question no longer exists." } } } };
+  }
+  if (snapshot.status !== "pending") {
+    return { error: { status: 409, body: { status: "unavailable", error: { code: "request_not_pending", message: "Chat is available only while the Postbox Question is pending." } } } };
+  }
+  if (!questionChat) {
+    return { error: { status: 503, body: { status: "unavailable", error: { code: "extension_offline", message: "The originating Pi extension is unavailable." } } } };
+  }
+  return { snapshot };
+}
+
+function chatErrorStatus(code: string): number {
+  if (code === "extension_offline" || code === "command_timeout") return 503;
+  if (code === "request_missing") return 404;
+  return 409;
 }
 
 function sendRequestError(reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } }, error: unknown): unknown {

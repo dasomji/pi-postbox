@@ -13,7 +13,10 @@ import {
   type SessionShutdownReason
 } from "../../../protocol/src/index.js";
 import type {
+  QuestionChatEvent,
   QuestionChatAvailabilityError,
+  QuestionChatSendPayload,
+  QuestionChatSendResponse,
   QuestionChatSnapshot,
   QuestionChatSource
 } from "../../../protocol/src/index.js";
@@ -58,6 +61,9 @@ export interface PostboxClientOptions {
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
   questionChats?: {
     activate(input: { requestId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
+    getSnapshot(requestId: string): Promise<QuestionChatSnapshot>;
+    send(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
+    subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void;
     cleanup(requestId: string): Promise<void>;
   };
 }
@@ -139,6 +145,7 @@ export class PostboxClient {
   private activeLocalPollTimer: NodeJS.Timeout | undefined;
   private deferredTargetUrl: string | undefined;
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
+  private readonly questionChatSubscriptions = new Map<string, () => void>();
 
   constructor(private readonly options: PostboxClientOptions) {
     this.heartbeatMs = options.heartbeatMs ?? 15_000;
@@ -175,6 +182,8 @@ export class PostboxClient {
       this.deleteLocalResolution(requestId);
     }
     this.publishLocalFallbackStatus();
+    for (const unsubscribe of this.questionChatSubscriptions.values()) unsubscribe();
+    this.questionChatSubscriptions.clear();
     this.socket?.close();
   }
 
@@ -373,7 +382,17 @@ export class PostboxClient {
           void this.activateQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
         }
+        if (parsed.data.type === "chat.snapshot") {
+          void this.snapshotQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.send") {
+          void this.sendQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
         if (parsed.data.type === "chat.cleanup") {
+          this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
+          this.questionChatSubscriptions.delete(parsed.data.payload.requestId);
           void this.options.questionChats?.cleanup(parsed.data.payload.requestId);
           return;
         }
@@ -430,6 +449,12 @@ export class PostboxClient {
 
     try {
       const snapshot = await this.options.questionChats.activate({ requestId: payload.requestId, source: payload.source });
+      if (!this.questionChatSubscriptions.has(payload.requestId)) {
+        const unsubscribe = this.options.questionChats.subscribe(payload.requestId, (event) => {
+          this.send({ type: "chat.event", payload: event });
+        });
+        this.questionChatSubscriptions.set(payload.requestId, unsubscribe);
+      }
       this.send({ type: "chat.ready", requestId: commandId, payload: snapshot });
     } catch (error) {
       const runtimeError = error instanceof QuestionChatRuntimeError ? error : undefined;
@@ -438,6 +463,62 @@ export class PostboxClient {
         message: runtimeError?.message ?? (error instanceof Error ? error.message : "Question Chat activation failed.")
       });
     }
+  }
+
+  private async snapshotQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string }
+  ): Promise<void> {
+    if (!this.validateQuestionChatCommandOwner(commandId, payload, "snapshot")) return;
+    try {
+      const snapshot = await this.options.questionChats!.getSnapshot(payload.requestId);
+      this.send({ type: "chat.snapshot", requestId: commandId, payload: snapshot });
+    } catch (error) {
+      this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat snapshot failed.");
+    }
+  }
+
+  private async sendQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; command: QuestionChatSendPayload }
+  ): Promise<void> {
+    if (!this.validateQuestionChatCommandOwner(commandId, payload, "send")) return;
+    try {
+      const response = await this.options.questionChats!.send(payload.requestId, payload.command);
+      this.send({ type: "chat.send.accepted", requestId: commandId, payload: { requestId: payload.requestId, response } });
+    } catch (error) {
+      this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat send failed.");
+    }
+  }
+
+  private validateQuestionChatCommandOwner(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string },
+    action: string
+  ): boolean {
+    if (payload.ownerSessionId !== this.options.registration.session.sessionId) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "wrong_owner",
+        message: `Question Chat ${action} was routed to the wrong Pi Session.`
+      });
+      return false;
+    }
+    if (!this.options.questionChats) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "runtime_failure",
+        message: "Question Chat runtime is not configured."
+      });
+      return false;
+    }
+    return true;
+  }
+
+  private sendRuntimeQuestionChatError(commandId: string, requestId: string, error: unknown, fallback: string): void {
+    const runtimeError = error instanceof QuestionChatRuntimeError ? error : undefined;
+    this.sendQuestionChatError(commandId, requestId, {
+      code: runtimeError?.code ?? "runtime_failure",
+      message: runtimeError?.message ?? (error instanceof Error ? error.message : fallback)
+    });
   }
 
   private sendQuestionChatError(
