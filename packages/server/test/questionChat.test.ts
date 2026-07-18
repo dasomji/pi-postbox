@@ -193,15 +193,84 @@ describe("Question Chat activation relay", () => {
       JSON.stringify({
         type: "chat.send.accepted",
         requestId: sendCommand.requestId,
-        payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-1" } }
+        payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-1", mode: "prompt" } }
       } satisfies ExtensionClientMessage)
     );
-    expect(await (await sendResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-1" });
+    expect(await (await sendResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-1", mode: "prompt" });
 
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 5, type: "lifecycle", state: "generating" } } satisfies ExtensionClientMessage));
-    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 6, type: "assistant.text.delta", messageId: "assistant-1", text: "Streamed answer" } } satisfies ExtensionClientMessage));
     await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 5, type: "lifecycle" });
-    await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 6, type: "assistant.text.delta", text: "Streamed answer" });
+
+    const steerResponse = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      payload: { clientCommandId: "browser-command-2", message: "Correct one detail" }
+    });
+    const steerCommand = await nextMessage(socket);
+    expect(steerCommand).toMatchObject({
+      type: "chat.send",
+      payload: { command: { clientCommandId: "browser-command-2", message: "Correct one detail" } }
+    });
+    if (steerCommand.type !== "chat.send") throw new Error("Expected steering send command");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: steerCommand.requestId,
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-2", mode: "steer" } }
+    } satisfies ExtensionClientMessage));
+    expect((await steerResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-2", mode: "steer" });
+
+    socket.send(JSON.stringify({
+      type: "chat.event",
+      payload: {
+        requestId: "ask-chat",
+        sequence: 6,
+        type: "message.started",
+        message: { id: "assistant-1", role: "assistant", text: "", status: "streaming" }
+      }
+    } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 7, type: "assistant.text.delta", messageId: "assistant-1", text: "Partial answer" } } satisfies ExtensionClientMessage));
+    await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 6, type: "message.started" });
+    await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 7, type: "assistant.text.delta", text: "Partial answer" });
+
+    const stopResponse = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/stop",
+      payload: { clientCommandId: "browser-stop-1" }
+    });
+    const stopCommand = await nextMessage(socket);
+    expect(stopCommand).toMatchObject({
+      type: "chat.stop",
+      payload: { requestId: "ask-chat", command: { clientCommandId: "browser-stop-1" } }
+    });
+    if (stopCommand.type !== "chat.stop") throw new Error("Expected stop command");
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 8, type: "lifecycle", state: "stopping" } } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 9, type: "message.finished", messageId: "assistant-1", text: "Partial answer", status: "stopped" } } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 10, type: "lifecycle", state: "stopped" } } satisfies ExtensionClientMessage));
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 11, type: "lifecycle", state: "ready" } } satisfies ExtensionClientMessage));
+    await expect(events.next()).resolves.toMatchObject({ sequence: 8, state: "stopping" });
+    await expect(events.next()).resolves.toMatchObject({ sequence: 9, type: "message.finished", status: "stopped", text: "Partial answer" });
+    await expect(events.next()).resolves.toMatchObject({ sequence: 10, state: "stopped" });
+    await expect(events.next()).resolves.toMatchObject({ sequence: 11, state: "ready" });
+    socket.send(JSON.stringify({
+      type: "chat.stop.accepted",
+      requestId: stopCommand.requestId,
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-stop-1" } }
+    } satisfies ExtensionClientMessage));
+    expect(await (await stopResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-stop-1" });
+
+    const continueResponse = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-chat/chat/messages",
+      payload: { clientCommandId: "browser-command-3", message: "Continue" }
+    });
+    const continueCommand = await nextMessage(socket);
+    if (continueCommand.type !== "chat.send") throw new Error("Expected continued send command");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: continueCommand.requestId,
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-3", mode: "prompt" } }
+    } satisfies ExtensionClientMessage));
+    expect((await continueResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-3", mode: "prompt" });
     await events.close();
   });
 

@@ -5,13 +5,16 @@
     type QuestionChatEvent,
     type QuestionChatSendPayload,
     type QuestionChatSendResponse,
-    type QuestionChatSnapshot
+    type QuestionChatSnapshot,
+    type QuestionChatStopPayload,
+    type QuestionChatStopResponse
   } from "@pi-postbox/protocol";
   import {
     activateQuestionChat,
     connectQuestionChatEvents,
     fetchQuestionChatSnapshot,
     sendQuestionChatMessage,
+    stopQuestionChat,
     type QuestionChatEventConnection
   } from "../api/postboxApi";
   import { applyQuestionChatEvent, renderSafeMarkdown } from "../lib/questionChat";
@@ -21,12 +24,14 @@
     activate = activateQuestionChat,
     fetchSnapshot = fetchQuestionChatSnapshot,
     sendMessage = sendQuestionChatMessage,
+    stop = stopQuestionChat,
     connectEvents = connectQuestionChatEvents
   }: {
     requestId: string;
     activate?: (requestId: string) => Promise<QuestionChatActivationResponse>;
     fetchSnapshot?: (requestId: string) => Promise<QuestionChatSnapshot>;
     sendMessage?: (requestId: string, command: QuestionChatSendPayload) => Promise<QuestionChatSendResponse>;
+    stop?: (requestId: string, command: QuestionChatStopPayload) => Promise<QuestionChatStopResponse>;
     connectEvents?: (requestId: string, onEvent: (event: QuestionChatEvent) => void) => QuestionChatEventConnection;
   } = $props();
 
@@ -40,6 +45,8 @@
   let activeRequestId: string | undefined = $state();
   let composer = $state("");
   let sending = $state(false);
+  let stopping = $state(false);
+  let actionMessage = $state("");
   let disconnectEvents: (() => void) | undefined;
   let commandCounter = 0;
 
@@ -50,6 +57,8 @@
       activeRequestId = requestId;
       composer = "";
       sending = false;
+      stopping = false;
+      actionMessage = "";
       view = { kind: "not-started" };
     }
     return () => disconnectEvents?.();
@@ -97,11 +106,17 @@
   function reduceEvent(event: QuestionChatEvent): void {
     if (view.kind !== "ready") return;
     view = { kind: "ready", snapshot: applyQuestionChatEvent(view.snapshot, event) };
+    if (event.type === "lifecycle" && (event.state === "stopped" || event.state === "interrupted" || event.state === "ready")) {
+      if (stopping) {
+        actionMessage = event.state === "stopped" ? "Response stopped" : event.state === "interrupted" ? "Response interrupted" : "Ready";
+      }
+      stopping = false;
+    }
   }
 
   async function send(text: string): Promise<void> {
     const message = text.trim();
-    if (!message || view.kind !== "ready" || view.snapshot.state === "generating" || sending) return;
+    if (!message || view.kind !== "ready" || view.snapshot.state === "stopping" || stopping || sending) return;
     const clientCommandId = `browser-${Date.now().toString(36)}-${(++commandCounter).toString(36)}`;
     const optimistic = applyQuestionChatEvent(view.snapshot, {
       requestId,
@@ -113,12 +128,34 @@
     composer = "";
     sending = true;
     try {
-      await sendMessage(requestId, { clientCommandId, message });
+      const response = await sendMessage(requestId, { clientCommandId, message });
+      actionMessage = response.mode === "steer" ? "Steering accepted" : "Message sent";
     } catch (error) {
-      view = { kind: "unavailable", message: error instanceof Error ? error.message : "Question Chat send failed." };
+      actionMessage = error instanceof Error ? error.message : "Question Chat send failed.";
     } finally {
       sending = false;
     }
+  }
+
+  async function stopActive(): Promise<void> {
+    if (view.kind !== "ready" || view.snapshot.state !== "generating" || stopping) return;
+    const clientCommandId = `browser-stop-${Date.now().toString(36)}-${(++commandCounter).toString(36)}`;
+    stopping = true;
+    actionMessage = "Stopping…";
+    try {
+      await stop(requestId, { clientCommandId });
+    } catch (error) {
+      stopping = false;
+      actionMessage = error instanceof Error ? error.message : "Question Chat stop failed.";
+    }
+  }
+
+  function stateLabel(snapshot: QuestionChatSnapshot): string {
+    if (stopping || snapshot.state === "stopping") return "Stopping…";
+    if (snapshot.state === "generating") return "Answering…";
+    if (snapshot.state === "stopped") return "Stopped";
+    if (snapshot.state === "interrupted") return "Interrupted";
+    return "Ready";
   }
 
   function isCurrent(value: string): boolean {
@@ -139,7 +176,7 @@
     {:else}
       <div class="flex items-start justify-between gap-3">
         <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat</h2>
-        <span class="rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success-foreground">{view.snapshot.state === "generating" ? "Answering…" : "Ready"}</span>
+        <span class="rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success-foreground">{stateLabel(view.snapshot)}</span>
       </div>
       <div class="mt-4 min-h-16 space-y-3 rounded-md border border-postbox-border p-3" aria-label="Chat messages" aria-live="polite">
         {#if view.snapshot.messages.length === 0}
@@ -151,6 +188,8 @@
                 <p class="whitespace-pre-wrap">{message.text}</p>
               {:else}
                 <div class="chat-markdown">{@html renderSafeMarkdown(message.text)}</div>
+                {#if message.status === "stopped"}<p class="mt-2 text-xs font-medium text-warning-foreground">Stopped</p>{/if}
+                {#if message.status === "interrupted"}<p class="mt-2 text-xs font-medium text-danger-foreground">Interrupted</p>{/if}
               {/if}
             </article>
           {/each}
@@ -165,9 +204,13 @@
       {/if}
       <form class="mt-3 flex gap-2" onsubmit={(event) => { event.preventDefault(); void send(composer); }}>
         <label class="sr-only" for="question-chat-composer">Message Question Chat</label>
-        <textarea id="question-chat-composer" class="min-h-12 flex-1 resize-y rounded-lg border border-postbox-border bg-postbox-surface p-2 text-sm text-postbox-text" placeholder="Ask about this decision…" bind:value={composer} disabled={view.snapshot.state === "generating" || sending}></textarea>
-        <button type="submit" class="self-end rounded-full bg-attention px-4 py-2 text-sm font-medium text-attention-contrast disabled:opacity-50" disabled={!composer.trim() || view.snapshot.state === "generating" || sending}>Send</button>
+        <textarea id="question-chat-composer" class="min-h-12 flex-1 resize-y rounded-lg border border-postbox-border bg-postbox-surface p-2 text-sm text-postbox-text" placeholder="Ask about this decision…" bind:value={composer} disabled={view.snapshot.state === "stopping" || stopping || sending}></textarea>
+        <button type="submit" class="self-end rounded-full bg-attention px-4 py-2 text-sm font-medium text-attention-contrast disabled:opacity-50" disabled={!composer.trim() || view.snapshot.state === "stopping" || stopping || sending}>Send</button>
       </form>
+      {#if view.snapshot.state === "generating"}
+        <button type="button" class="mt-2 rounded-full border border-danger-border px-3 py-1.5 text-sm text-danger-foreground disabled:opacity-50" disabled={stopping} onclick={() => void stopActive()}>{stopping ? "Stopping…" : "Stop"}</button>
+      {/if}
+      {#if actionMessage}<p class="mt-2 text-xs text-postbox-muted" role="status">{actionMessage}</p>{/if}
       <p class="mt-3 text-xs text-postbox-muted">Model: <span class="font-medium text-postbox-subtle">{view.snapshot.model.id}</span>{#if view.snapshot.model.source === "pi-default"} · Pi default fallback{/if}</p>
       {#if view.snapshot.model.fallbackReason}<p class="mt-1 text-xs text-warning-foreground">{view.snapshot.model.fallbackReason}</p>{/if}
     {/if}

@@ -14,11 +14,14 @@ import {
   QuestionChatEventSchema,
   QuestionChatSendHttpResponseSchema,
   QuestionChatSnapshotHttpResponseSchema,
+  QuestionChatStopHttpResponseSchema,
   type QuestionChatActivationResponse,
   type QuestionChatEvent,
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
-  type QuestionChatSnapshot
+  type QuestionChatSnapshot,
+  type QuestionChatStopPayload,
+  type QuestionChatStopResponse
 } from "@pi-postbox/protocol";
 
 export async function fetchHealth(): Promise<HealthResponse> {
@@ -106,6 +109,19 @@ export async function sendQuestionChatMessage(requestId: string, command: Questi
   const body = QuestionChatSendHttpResponseSchema.parse(await response.json());
   if (!response.ok || body.status === "unavailable") {
     throw new Error(body.status === "unavailable" ? body.error.message : `Chat send failed with ${response.status}`);
+  }
+  return body;
+}
+
+export async function stopQuestionChat(requestId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(command)
+  });
+  const body = QuestionChatStopHttpResponseSchema.parse(await response.json());
+  if (!response.ok || body.status === "unavailable") {
+    throw new Error(body.status === "unavailable" ? body.error.message : `Chat stop failed with ${response.status}`);
   }
   return body;
 }

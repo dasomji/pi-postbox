@@ -5,6 +5,8 @@ import {
   QuestionChatEventSchema,
   QuestionChatSendHttpResponseSchema,
   QuestionChatSendPayloadSchema,
+  QuestionChatStopPayloadSchema,
+  QuestionChatStopResponseSchema,
   QuestionChatSnapshotHttpResponseSchema,
   QuestionChatSnapshotSchema,
   QuestionChatSourceSchema
@@ -168,5 +170,98 @@ describe("Question Chat first-message protocol", () => {
         error: { code: "runtime_busy", message: "Wait for the current answer." }
       })
     ).toMatchObject({ status: "unavailable", error: { code: "runtime_busy" } });
+  });
+
+  it("distinguishes ordinary prompts from steering and defines idempotent Stop", () => {
+    expect(
+      QuestionChatSendHttpResponseSchema.parse({
+        status: "accepted",
+        clientCommandId: "browser-steer-1",
+        mode: "steer"
+      })
+    ).toMatchObject({ mode: "steer" });
+    expect(
+      QuestionChatSendHttpResponseSchema.parse({ status: "accepted", clientCommandId: "legacy-extension" })
+    ).toEqual({ status: "accepted", clientCommandId: "legacy-extension" });
+    expect(QuestionChatStopPayloadSchema.parse({ clientCommandId: "browser-stop-1" })).toEqual({
+      clientCommandId: "browser-stop-1"
+    });
+    expect(
+      QuestionChatStopResponseSchema.parse({ status: "accepted", clientCommandId: "browser-stop-1" })
+    ).toMatchObject({ status: "accepted" });
+  });
+
+  it.each(["stopping", "stopped", "interrupted"] as const)("accepts coherent %s lifecycle snapshots", (state) => {
+    expect(
+      QuestionChatSnapshotSchema.parse({
+        requestId: "ask-27",
+        state,
+        forkKind: "exact",
+        model: { id: "test/model", source: "originating" },
+        sequence: 9,
+        messages: [
+          {
+            id: "assistant-partial",
+            role: "assistant",
+            text: "Partial answer",
+            status: state === "stopped" ? "stopped" : state === "interrupted" ? "interrupted" : "streaming"
+          }
+        ]
+      })
+    ).toMatchObject({ state });
+  });
+
+  it("marks a finished partial assistant message as stopped or interrupted", () => {
+    expect(
+      QuestionChatEventSchema.parse({
+        requestId: "ask-27",
+        sequence: 10,
+        type: "message.finished",
+        messageId: "assistant-partial",
+        text: "Partial answer",
+        status: "stopped"
+      })
+    ).toMatchObject({ status: "stopped" });
+  });
+
+  it("defines correlated stop commands on the extension WebSocket", () => {
+    expect(
+      ExtensionServerMessageSchema.parse({
+        type: "chat.stop",
+        requestId: "relay-stop-1",
+        payload: {
+          requestId: "ask-27",
+          ownerSessionId: "session-1",
+          command: { clientCommandId: "browser-stop-1" }
+        }
+      })
+    ).toMatchObject({ type: "chat.stop" });
+    expect(
+      ExtensionClientMessageSchema.parse({
+        type: "chat.stop.accepted",
+        requestId: "relay-stop-1",
+        payload: {
+          requestId: "ask-27",
+          response: { status: "accepted", clientCommandId: "browser-stop-1" }
+        }
+      })
+    ).toMatchObject({ type: "chat.stop.accepted" });
+    expect(() => ExtensionServerMessageSchema.parse({
+      type: "chat.stop",
+      requestId: "x".repeat(201),
+      payload: {
+        requestId: "ask-27",
+        ownerSessionId: "session-1",
+        command: { clientCommandId: "browser-stop-1" }
+      }
+    })).toThrow();
+    expect(() => ExtensionClientMessageSchema.parse({
+      type: "chat.stop.accepted",
+      requestId: "relay-stop-1",
+      payload: {
+        requestId: "x".repeat(201),
+        response: { status: "accepted", clientCommandId: "browser-stop-1" }
+      }
+    })).toThrow();
   });
 });

@@ -81,6 +81,9 @@ export {
   QuestionChatSnapshotHttpResponseSchema,
   QuestionChatSnapshotSchema,
   QuestionChatStateSchema,
+  QuestionChatStopHttpResponseSchema,
+  QuestionChatStopPayloadSchema,
+  QuestionChatStopResponseSchema,
   QuestionChatSourceSchema,
   QuestionChatUnavailableResponseSchema
 } from "./chat.js";
@@ -97,6 +100,9 @@ export type {
   QuestionChatSnapshotHttpResponse,
   QuestionChatSnapshot,
   QuestionChatState,
+  QuestionChatStopHttpResponse,
+  QuestionChatStopPayload,
+  QuestionChatStopResponse,
   QuestionChatSource,
   QuestionChatUnavailableResponse
 } from "./chat.js";

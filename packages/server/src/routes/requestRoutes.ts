@@ -5,6 +5,8 @@ import {
   QuestionChatSendHttpResponseSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatSnapshotHttpResponseSchema,
+  QuestionChatStopHttpResponseSchema,
+  QuestionChatStopPayloadSchema,
   QuestionChatUnavailableResponseSchema,
   type QuestionChatAvailabilityError
 } from "@pi-postbox/protocol";
@@ -108,6 +110,16 @@ export async function registerRequestRoutes(
     const response = await questionChat!.relay.sendMessage(state.snapshot!.requestId, state.snapshot!.sessionId, body.data);
     if (response.status === "unavailable") return reply.code(chatErrorStatus(response.error.code)).send(chatUnavailable(response.error));
     return QuestionChatSendHttpResponseSchema.parse(response.value);
+  });
+
+  app.post("/api/requests/:requestId/chat/stop", async (request, reply) => {
+    const body = QuestionChatStopPayloadSchema.safeParse(request.body);
+    if (!body.success) return reply.code(400).send(chatUnavailable({ code: "invalid_command", message: body.error.message }));
+    const state = pendingChatRequest(request.params as { requestId: string }, requestStore, expireDue, questionChat);
+    if (state.error) return reply.code(state.error.status).send(state.error.body);
+    const response = await questionChat!.relay.stop(state.snapshot!.requestId, state.snapshot!.sessionId, body.data);
+    if (response.status === "unavailable") return reply.code(chatErrorStatus(response.error.code)).send(chatUnavailable(response.error));
+    return QuestionChatStopHttpResponseSchema.parse(response.value);
   });
 
   app.get("/api/requests/:requestId/chat/events", async (request, reply) => {

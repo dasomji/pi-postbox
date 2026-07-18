@@ -3,6 +3,7 @@ import {
   QUESTION_CHAT_DELTA_MAX,
   QuestionChatEventSchema,
   QuestionChatSendPayloadSchema,
+  QuestionChatStopPayloadSchema,
   type QuestionChatAvailabilityCode,
   type QuestionChatEvent,
   type QuestionChatMessage,
@@ -10,7 +11,9 @@ import {
   type QuestionChatSendResponse,
   type QuestionChatSnapshot,
   type QuestionChatSource,
-  type QuestionChatState
+  type QuestionChatState,
+  type QuestionChatStopPayload,
+  type QuestionChatStopResponse
 } from "../../protocol/src/index.js";
 import {
   DefaultResourceLoader,
@@ -39,7 +42,15 @@ interface SessionLifecycle {
   isStreaming?: boolean;
   state?: { streamingMessage?: unknown };
   subscribe?(listener: (event: unknown) => void): () => void;
-  prompt?(text: string, options: { expandPromptTemplates: false; source: "rpc" }): Promise<void>;
+  prompt?(
+    text: string,
+    options: {
+      expandPromptTemplates: false;
+      source: "rpc";
+      streamingBehavior?: "steer";
+      preflightResult?: (success: boolean) => void;
+    }
+  ): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
 }
@@ -47,6 +58,7 @@ interface SessionLifecycle {
 export interface QuestionChatRuntime {
   readonly snapshot: QuestionChatSnapshot;
   send(command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
+  stop(command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
   subscribe(listener: (event: QuestionChatEvent) => void): () => void;
   terminate(): Promise<void>;
 }
@@ -220,8 +232,15 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   private state: QuestionChatState = "ready";
   private readonly listeners = new Set<(event: QuestionChatEvent) => void>();
   private readonly unsubscribeSession: (() => void) | undefined;
-  private streamingAssistant: QuestionChatMessage | undefined;
+  private streamingAssistant: Extract<QuestionChatMessage, { role: "assistant" }> | undefined;
   private transientMessages: Array<{ message: QuestionChatMessage; forkOccurrencesAtCreation: number }> = [];
+  private pendingErrorMessage: Extract<QuestionChatMessage, { role: "assistant" }> | undefined;
+  private awaitingRetry = false;
+  private stopRequested = false;
+  private stopOutcomeEmitted = false;
+  private promptStarting = false;
+  private sdkActive = false;
+  private readonly forkOutcomes = new Map<string, "final" | "stopped" | "interrupted">();
 
   constructor(
     private readonly initialSnapshot: QuestionChatSnapshot,
@@ -252,10 +271,14 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
   async send(command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
     const input = QuestionChatSendPayloadSchema.parse(command);
     if (this.terminated) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has terminated.");
-    if (this.state !== "ready" || this.session.isStreaming) {
-      throw new QuestionChatRuntimeError("runtime_busy", "Question Chat is already generating a response.");
+    if (this.promptStarting || this.state === "stopping" || this.state === "stopped" || this.state === "interrupted") {
+      throw new QuestionChatRuntimeError("runtime_busy", "Question Chat is not ready for another message.");
     }
     if (!this.session.prompt) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat cannot accept prompts.");
+    const mode = this.state === "generating" && (this.sdkActive || Boolean(this.session.isStreaming)) ? "steer" : "prompt";
+    if (this.state === "generating" && mode !== "steer") {
+      throw new QuestionChatRuntimeError("runtime_busy", "Question Chat is still starting its response.");
+    }
 
     const userMessage: QuestionChatMessage = {
       id: input.clientCommandId,
@@ -263,6 +286,17 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       text: input.message,
       status: "final"
     };
+    this.promptStarting = true;
+    const prompt = this.startPrompt(input.message, mode === "steer" ? "steer" : undefined);
+    try {
+      await prompt.accepted;
+    } catch (error) {
+      void prompt.completion.catch(() => undefined);
+      throw error;
+    } finally {
+      this.promptStarting = false;
+    }
+
     this.transientMessages.push({
       message: userMessage,
       forkOccurrencesAtCreation: countMatchingMessages(this.finalizedMessagesFromFork(), userMessage)
@@ -271,10 +305,43 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       type: "message.started",
       message: userMessage
     });
-    this.emit({ type: "lifecycle", state: "generating" });
-    void this.session.prompt(input.message, { expandPromptTemplates: false, source: "rpc" }).catch(() => {
-      if (!this.terminated && this.state !== "ready") this.emit({ type: "lifecycle", state: "ready" });
-    });
+    if (mode === "prompt") {
+      this.sdkActive = true;
+      this.emit({ type: "lifecycle", state: "generating" });
+      void prompt.completion.catch(() => {
+        if (!this.terminated && this.state !== "ready") {
+          this.sdkActive = false;
+          this.emit({ type: "lifecycle", state: "interrupted" });
+          this.emit({ type: "lifecycle", state: "ready" });
+        }
+      });
+    } else {
+      // Accepted steering completes with the active run; terminal outcomes are
+      // normalized from SDK events rather than changing lifecycle here.
+      void prompt.completion.catch(() => undefined);
+    }
+    return { status: "accepted", clientCommandId: input.clientCommandId, mode };
+  }
+
+  async stop(command: QuestionChatStopPayload): Promise<QuestionChatStopResponse> {
+    const input = QuestionChatStopPayloadSchema.parse(command);
+    if (this.terminated) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has terminated.");
+    if (this.promptStarting || this.state === "stopping") {
+      throw new QuestionChatRuntimeError("runtime_busy", "Question Chat is already starting or stopping a response.");
+    }
+    if (this.state !== "generating" || (!this.sdkActive && !this.session.isStreaming)) {
+      throw new QuestionChatRuntimeError("runtime_busy", "Question Chat has no active response to stop.");
+    }
+    this.stopRequested = true;
+    this.stopOutcomeEmitted = false;
+    this.emit({ type: "lifecycle", state: "stopping" });
+    try {
+      await this.session.abort();
+    } catch (error) {
+      this.stopRequested = false;
+      this.emit({ type: "lifecycle", state: "generating" });
+      throw error;
+    }
     return { status: "accepted", clientCommandId: input.clientCommandId };
   }
 
@@ -283,16 +350,78 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     return () => this.listeners.delete(listener);
   }
 
+  private startPrompt(
+    text: string,
+    streamingBehavior: "steer" | undefined
+  ): { accepted: Promise<void>; completion: Promise<void> } {
+    let notified = false;
+    let accept!: () => void;
+    let reject!: (error: unknown) => void;
+    const accepted = new Promise<void>((resolve, rejectPromise) => {
+      accept = resolve;
+      reject = rejectPromise;
+    });
+    const completion = this.session.prompt!(text, {
+      expandPromptTemplates: false,
+      source: "rpc",
+      ...(streamingBehavior ? { streamingBehavior } : {}),
+      preflightResult: (success) => {
+        if (notified) return;
+        notified = true;
+        if (success) accept();
+        else reject(new QuestionChatRuntimeError("runtime_failure", "Pi rejected the Question Chat prompt before acceptance."));
+      }
+    });
+    void completion.then(
+      () => {
+        if (!notified) reject(new QuestionChatRuntimeError("runtime_failure", "Pi completed without reporting prompt acceptance."));
+      },
+      (error) => {
+        if (!notified) reject(error);
+      }
+    );
+    return { accepted, completion };
+  }
+
   private onSessionEvent(value: unknown): void {
     try {
       if (!isRecord(value) || typeof value.type !== "string") return;
       if (value.type === "agent_start") {
-        if (this.state !== "generating") this.emit({ type: "lifecycle", state: "generating" });
+        if (this.promptStarting) return;
+        if (this.state !== "generating" && this.state !== "stopping") this.emit({ type: "lifecycle", state: "generating" });
         return;
       }
       if (value.type === "agent_settled") {
+        if (this.stopRequested && !this.stopOutcomeEmitted) {
+          if (this.streamingAssistant) {
+            const partial = this.streamingAssistant;
+            this.streamingAssistant = undefined;
+            this.finishAssistant(partial, "stopped", true);
+          }
+          this.emit({ type: "lifecycle", state: "stopped" });
+          this.stopOutcomeEmitted = true;
+        }
         void this.snapshot;
-        this.emit({ type: "lifecycle", state: "ready" });
+        this.pendingErrorMessage = undefined;
+        this.awaitingRetry = false;
+        this.stopRequested = false;
+        this.stopOutcomeEmitted = false;
+        this.sdkActive = false;
+        if (this.state !== "ready") this.emit({ type: "lifecycle", state: "ready" });
+        return;
+      }
+      if (value.type === "agent_end") {
+        if (!this.pendingErrorMessage) return;
+        const pendingErrorMessage = this.pendingErrorMessage;
+        this.pendingErrorMessage = undefined;
+        if (value.willRetry === true) {
+          this.awaitingRetry = true;
+          this.finishAssistant(pendingErrorMessage, "final", true);
+        } else {
+          this.awaitingRetry = false;
+          this.finishAssistant(pendingErrorMessage, "interrupted", true);
+          this.emit({ type: "lifecycle", state: "interrupted" });
+        }
         return;
       }
       if (value.type === "message_start" && isAssistantMessage(value.message)) {
@@ -319,18 +448,69 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
       if (value.type === "message_end" && this.streamingAssistant && isAssistantMessage(value.message)) {
         const text = visibleAssistantText(value.message).slice(0, QUESTION_CHAT_ASSISTANT_TEXT_MAX);
         const messageId = this.streamingAssistant.id;
-        const message: QuestionChatMessage = { id: messageId, role: "assistant", text, status: "final" };
-        this.transientMessages.push({
-          message,
-          forkOccurrencesAtCreation: countMatchingMessages(this.finalizedMessagesFromFork(), message)
-        });
+        const message: Extract<QuestionChatMessage, { role: "assistant" }> = {
+          id: messageId,
+          role: "assistant",
+          text,
+          status: "final"
+        };
         this.streamingAssistant = undefined;
-        this.emit({ type: "message.finished", messageId, text });
+        const stopReason = typeof value.message.stopReason === "string" ? value.message.stopReason : undefined;
+        if (this.stopRequested || stopReason === "aborted") {
+          this.awaitingRetry = false;
+          this.finishAssistant(message, "stopped");
+          this.emit({ type: "lifecycle", state: "stopped" });
+          this.stopOutcomeEmitted = true;
+        } else if (stopReason === "error") {
+          this.pendingErrorMessage = message;
+        } else {
+          this.awaitingRetry = false;
+          this.finishAssistant(message, "final");
+        }
       }
     } catch {
       // Pi does not contain listener failures. A malformed/private SDK event is
       // therefore ignored at this normalization boundary rather than escaping.
     }
+  }
+
+  private finishAssistant(
+    message: Extract<QuestionChatMessage, { role: "assistant" }>,
+    status: "final" | "stopped" | "interrupted",
+    persistedAtFinish = false
+  ): void {
+    const finished: QuestionChatMessage = { ...message, status };
+    const persisted = persistedAtFinish && this.recordPersistedOutcome(finished, status);
+    const finalized = this.finalizedMessagesFromFork();
+    const lastFinalized = finalized.at(-1);
+    const alreadyPersisted =
+      persisted &&
+      lastFinalized?.role === "assistant" &&
+      lastFinalized.text === finished.text &&
+      lastFinalized.status === status;
+    if (!alreadyPersisted) {
+      this.transientMessages.push({
+        message: finished,
+        forkOccurrencesAtCreation: countMatchingMessages(finalized, finished)
+      });
+    }
+    this.emit({ type: "message.finished", messageId: finished.id, text: finished.text, status });
+  }
+
+  private recordPersistedOutcome(
+    message: Extract<QuestionChatMessage, { role: "assistant" }>,
+    status: "final" | "stopped" | "interrupted"
+  ): boolean {
+    const branch = this.sessionManager.getBranch();
+    const boundaryIndex = this.chatBoundaryId ? branch.findIndex((entry) => entry.id === this.chatBoundaryId) : -1;
+    for (let index = branch.length - 1; index > boundaryIndex; index -= 1) {
+      const entry = branch[index]!;
+      if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+      if (assistantMessageId(entry.message, -1) !== message.id) continue;
+      this.forkOutcomes.set(entry.id, status);
+      return true;
+    }
+    return false;
   }
 
   private emit(event: RuntimeEventInput): void {
@@ -353,17 +533,42 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
     const branch = this.sessionManager.getBranch();
     const boundaryIndex = this.chatBoundaryId ? branch.findIndex((entry) => entry.id === this.chatBoundaryId) : -1;
     const messages: QuestionChatMessage[] = [];
-    for (const entry of branch.slice(boundaryIndex + 1)) {
+    const chatEntries = branch.slice(boundaryIndex + 1);
+    let lastAssistantIndex = -1;
+    for (let index = chatEntries.length - 1; index >= 0; index -= 1) {
+      const entry = chatEntries[index]!;
+      if (entry.type === "message" && entry.message.role === "assistant") {
+        lastAssistantIndex = index;
+        break;
+      }
+    }
+    for (const [index, entry] of chatEntries.entries()) {
       if (entry.type !== "message") continue;
       if (entry.message.role === "user") {
         const text = visibleUserText(entry.message);
         if (text) messages.push({ id: entry.id, role: "user", text: text.slice(0, 8_000), status: "final" });
       } else if (entry.message.role === "assistant") {
+        const stopReason = "stopReason" in entry.message ? entry.message.stopReason : undefined;
+        let nextConversationalRole: "user" | "assistant" | undefined;
+        for (let later = index + 1; later < chatEntries.length; later += 1) {
+          const laterEntry = chatEntries[later]!;
+          if (laterEntry.type !== "message") continue;
+          if (laterEntry.message.role === "user" || laterEntry.message.role === "assistant") {
+            nextConversationalRole = laterEntry.message.role;
+            break;
+          }
+        }
+        const status = this.forkOutcomes.get(entry.id) ?? (stopReason === "aborted"
+          ? "stopped"
+          : stopReason === "error" && nextConversationalRole !== "assistant" &&
+              !(index === lastAssistantIndex && (this.pendingErrorMessage || this.awaitingRetry))
+            ? "interrupted"
+            : "final");
         messages.push({
           id: entry.id,
           role: "assistant",
           text: visibleAssistantText(entry.message).slice(0, QUESTION_CHAT_ASSISTANT_TEXT_MAX),
-          status: "final"
+          status
         });
       }
     }
@@ -389,6 +594,7 @@ export class QuestionChatRuntimeRegistry {
   private readonly runtimes = new Map<string, Promise<QuestionChatRuntime>>();
   private readonly terminations = new Map<string, Promise<void>>();
   private readonly completedCommands = new Map<string, Map<string, Promise<QuestionChatSendResponse>>>();
+  private readonly completedStopCommands = new Map<string, Map<string, Promise<QuestionChatStopResponse>>>();
 
   constructor(private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create">) {}
 
@@ -432,6 +638,28 @@ export class QuestionChatRuntimeRegistry {
     }
   }
 
+  async stop(requestId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse> {
+    const input = QuestionChatStopPayloadSchema.parse(command);
+    let commands = this.completedStopCommands.get(requestId);
+    if (!commands) {
+      commands = new Map();
+      this.completedStopCommands.set(requestId, commands);
+    }
+    const completed = commands.get(input.clientCommandId);
+    if (completed) return completed;
+    const runtime = this.runtimes.get(requestId);
+    if (!runtime) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has not started.");
+    const response = runtime.then((active) => active.stop(input));
+    commands.set(input.clientCommandId, response);
+    if (commands.size > 256) commands.delete(commands.keys().next().value!);
+    try {
+      return await response;
+    } catch (error) {
+      if (commands.get(input.clientCommandId) === response) commands.delete(input.clientCommandId);
+      throw error;
+    }
+  }
+
   subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void {
     const runtime = this.runtimes.get(requestId);
     if (!runtime) return () => undefined;
@@ -453,6 +681,7 @@ export class QuestionChatRuntimeRegistry {
     if (!runtime) return;
     this.runtimes.delete(requestId);
     this.completedCommands.delete(requestId);
+    this.completedStopCommands.delete(requestId);
     const termination = (async () => {
       try {
         await (await runtime).terminate();

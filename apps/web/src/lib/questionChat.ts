@@ -25,7 +25,7 @@ export function applyQuestionChatEvent(snapshot: QuestionChatSnapshot, event: Qu
     const existing = messages.find((message) => message.id === event.messageId && message.role === "assistant");
     if (existing?.role === "assistant") {
       existing.text = event.text;
-      existing.status = "final";
+      existing.status = event.status;
     }
   }
   return {

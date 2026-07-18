@@ -61,7 +61,7 @@ export const QuestionChatModelSchema = z.object({
   fallbackReason: z.string().min(1).max(ERROR_MESSAGE_MAX).optional()
 });
 
-export const QuestionChatStateSchema = z.enum(["ready", "generating"]);
+export const QuestionChatStateSchema = z.enum(["ready", "generating", "stopping", "stopped", "interrupted"]);
 
 export const QuestionChatMessageSchema = z.discriminatedUnion("role", [
   z.object({
@@ -74,7 +74,7 @@ export const QuestionChatMessageSchema = z.discriminatedUnion("role", [
     id: z.string().min(1).max(REQUEST_ID_MAX),
     role: z.literal("assistant"),
     text: z.string().max(QUESTION_CHAT_ASSISTANT_TEXT_MAX),
-    status: z.enum(["streaming", "final"])
+    status: z.enum(["streaming", "final", "stopped", "interrupted"])
   })
 ]);
 
@@ -114,11 +114,24 @@ export const QuestionChatEventSchema = z.discriminatedUnion("type", [
   QuestionChatEventBaseSchema.extend({
     type: z.literal("message.finished"),
     messageId: z.string().min(1).max(REQUEST_ID_MAX),
-    text: z.string().max(QUESTION_CHAT_ASSISTANT_TEXT_MAX)
+    text: z.string().max(QUESTION_CHAT_ASSISTANT_TEXT_MAX),
+    status: z.enum(["final", "stopped", "interrupted"]).default("final")
   })
 ]);
 
 export const QuestionChatSendResponseSchema = z.object({
+  status: z.literal("accepted"),
+  clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX),
+  // Optional while older extension peers may still acknowledge without the
+  // prompt/steer distinction. All current producers include it.
+  mode: z.enum(["prompt", "steer"]).optional()
+});
+
+export const QuestionChatStopPayloadSchema = z.object({
+  clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX)
+});
+
+export const QuestionChatStopResponseSchema = z.object({
   status: z.literal("accepted"),
   clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX)
 });
@@ -138,6 +151,11 @@ export const QuestionChatSendHttpResponseSchema = z.discriminatedUnion("status",
   QuestionChatUnavailableResponseSchema
 ]);
 
+export const QuestionChatStopHttpResponseSchema = z.discriminatedUnion("status", [
+  QuestionChatStopResponseSchema,
+  QuestionChatUnavailableResponseSchema
+]);
+
 export const QuestionChatActivationResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("ready"), snapshot: QuestionChatSnapshotSchema }),
   z.object({ status: z.literal("unavailable"), error: QuestionChatAvailabilityErrorSchema })
@@ -152,6 +170,9 @@ export type QuestionChatMessage = z.infer<typeof QuestionChatMessageSchema>;
 export type QuestionChatSnapshot = z.infer<typeof QuestionChatSnapshotSchema>;
 export type QuestionChatSendPayload = z.infer<typeof QuestionChatSendPayloadSchema>;
 export type QuestionChatSendResponse = z.infer<typeof QuestionChatSendResponseSchema>;
+export type QuestionChatStopPayload = z.infer<typeof QuestionChatStopPayloadSchema>;
+export type QuestionChatStopResponse = z.infer<typeof QuestionChatStopResponseSchema>;
+export type QuestionChatStopHttpResponse = z.infer<typeof QuestionChatStopHttpResponseSchema>;
 export type QuestionChatUnavailableResponse = z.infer<typeof QuestionChatUnavailableResponseSchema>;
 export type QuestionChatSnapshotHttpResponse = z.infer<typeof QuestionChatSnapshotHttpResponseSchema>;
 export type QuestionChatSendHttpResponse = z.infer<typeof QuestionChatSendHttpResponseSchema>;

@@ -3,6 +3,7 @@ import {
   QuestionChatEventSchema,
   QuestionChatSendResponseSchema,
   QuestionChatSnapshotSchema,
+  QuestionChatStopResponseSchema,
   type ExtensionServerMessage,
   type QuestionChatActivationResponse,
   type QuestionChatAvailabilityError,
@@ -10,7 +11,9 @@ import {
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
   type QuestionChatSnapshot,
-  type QuestionChatSource
+  type QuestionChatSource,
+  type QuestionChatStopPayload,
+  type QuestionChatStopResponse
 } from "@pi-postbox/protocol";
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
@@ -20,7 +23,7 @@ interface BoundExtension {
   socket: WebSocket;
 }
 
-type PendingKind = "activate" | "snapshot" | "send";
+type PendingKind = "activate" | "snapshot" | "send" | "stop";
 interface PendingCommand {
   kind: PendingKind;
   connectionId: string;
@@ -105,6 +108,21 @@ export class QuestionChatRelay {
     });
   }
 
+  stop(
+    requestId: string,
+    ownerSessionId: string,
+    command: QuestionChatStopPayload
+  ): Promise<QuestionChatCommandResult<QuestionChatStopResponse>> {
+    if (this.activeChats.get(requestId) !== ownerSessionId) {
+      return Promise.resolve(unavailableResult("chat_not_started", "Start Question Chat before stopping a response."));
+    }
+    return this.dispatch("stop", requestId, ownerSessionId, {
+      type: "chat.stop",
+      requestId: "",
+      payload: { requestId, ownerSessionId, command }
+    });
+  }
+
   resolveReady(commandId: string, connectionId: string, snapshot: QuestionChatSnapshot): void {
     this.resolve(commandId, connectionId, "activate", snapshot.requestId, QuestionChatSnapshotSchema.parse(snapshot));
   }
@@ -115,6 +133,10 @@ export class QuestionChatRelay {
 
   resolveSend(commandId: string, connectionId: string, requestId: string, response: QuestionChatSendResponse): void {
     this.resolve(commandId, connectionId, "send", requestId, QuestionChatSendResponseSchema.parse(response));
+  }
+
+  resolveStop(commandId: string, connectionId: string, requestId: string, response: QuestionChatStopResponse): void {
+    this.resolve(commandId, connectionId, "stop", requestId, QuestionChatStopResponseSchema.parse(response));
   }
 
   resolveError(commandId: string, connectionId: string, requestId: string, error: QuestionChatAvailabilityError): void {

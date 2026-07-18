@@ -73,6 +73,11 @@ describe("extension Question Chat commands", () => {
       })),
       send: vi.fn(async (_requestId: string, command: { clientCommandId: string }) => ({
         status: "accepted" as const,
+        clientCommandId: command.clientCommandId,
+        mode: "prompt" as const
+      })),
+      stop: vi.fn(async (_requestId: string, command: { clientCommandId: string }) => ({
+        status: "accepted" as const,
         clientCommandId: command.clientCommandId
       })),
       subscribe: vi.fn((_requestId: string, listener: (event: any) => void) => {
@@ -140,7 +145,17 @@ describe("extension Question Chat commands", () => {
         command: { clientCommandId: "browser-1", message: "Explain it" }
       }
     });
+    socket.serverMessage({
+      type: "chat.stop",
+      requestId: "stop-1",
+      payload: {
+        requestId: "ask-chat",
+        ownerSessionId: "session-chat",
+        command: { clientCommandId: "browser-stop-1" }
+      }
+    });
     await vi.waitFor(() => expect(questionChats.send).toHaveBeenCalledWith("ask-chat", { clientCommandId: "browser-1", message: "Explain it" }));
+    await vi.waitFor(() => expect(questionChats.stop).toHaveBeenCalledWith("ask-chat", { clientCommandId: "browser-stop-1" }));
     expect(socket.sent).toContainEqual({
       type: "chat.snapshot",
       requestId: "snapshot-1",
@@ -149,7 +164,12 @@ describe("extension Question Chat commands", () => {
     expect(socket.sent).toContainEqual({
       type: "chat.send.accepted",
       requestId: "send-1",
-      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-1" } }
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-1", mode: "prompt" } }
+    });
+    expect(socket.sent).toContainEqual({
+      type: "chat.stop.accepted",
+      requestId: "stop-1",
+      payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-stop-1" } }
     });
     expect(socket.sent).toContainEqual({
       type: "chat.event",

@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
-import type { QuestionChatEvent, QuestionChatSendPayload, QuestionChatSnapshot } from "@pi-postbox/protocol";
+import type {
+  QuestionChatEvent,
+  QuestionChatSendPayload,
+  QuestionChatSendResponse,
+  QuestionChatSnapshot,
+  QuestionChatStopPayload
+} from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import QuestionChatActivation from "./QuestionChatActivation.svelte";
 
@@ -41,7 +47,8 @@ describe("Question Chat first message", () => {
   it("maps a starter to its fixed instruction and renders the optimistic user message plainly", async () => {
     const sendMessage = vi.fn(async (_requestId: string, command: QuestionChatSendPayload) => ({
       status: "accepted" as const,
-      clientCommandId: command.clientCommandId
+      clientCommandId: command.clientCommandId,
+      mode: "prompt" as const
     }));
     render(QuestionChatActivation, {
       props: {
@@ -65,7 +72,8 @@ describe("Question Chat first message", () => {
   it("sends freeform text with a bounded command ID and never interprets the user message as HTML", async () => {
     const sendMessage = vi.fn(async (_requestId: string, command: QuestionChatSendPayload) => ({
       status: "accepted" as const,
-      clientCommandId: command.clientCommandId
+      clientCommandId: command.clientCommandId,
+      mode: "prompt" as const
     }));
     render(QuestionChatActivation, {
       props: {
@@ -108,7 +116,11 @@ describe("Question Chat first message", () => {
           onEvent = listener;
           return { ready: streamReady, close: () => undefined };
         },
-        sendMessage: async (_requestId: string, command: { clientCommandId: string }) => ({ status: "accepted" as const, clientCommandId: command.clientCommandId })
+        sendMessage: async (_requestId: string, command: { clientCommandId: string }) => ({
+          status: "accepted" as const,
+          clientCommandId: command.clientCommandId,
+          mode: "prompt" as const
+        })
       }
     });
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -142,6 +154,82 @@ describe("Question Chat first message", () => {
     expect(screen.getByLabelText("Chat messages").textContent).toContain("bad");
     expect(screen.getByLabelText("Chat messages").innerHTML).not.toContain("javascript:");
     expect(screen.getByText("Answering…")).toBeTruthy();
+  });
+
+  it("steers while active, stops one turn with its partial marker, and remains reusable", async () => {
+    let onEvent!: (event: QuestionChatEvent) => void;
+    const active = snapshot({
+      state: "generating",
+      messages: [{ id: "assistant-live", role: "assistant", text: "Partial answer", status: "streaming" }]
+    });
+    const sendMessage = vi
+      .fn(async (_requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> => ({
+        status: "accepted" as const,
+        clientCommandId: command.clientCommandId,
+        mode: "prompt" as const
+      }))
+      .mockResolvedValueOnce({ status: "accepted", clientCommandId: "steer", mode: "steer" });
+    const stop = vi.fn(async (_requestId: string, command: QuestionChatStopPayload) => ({
+      status: "accepted" as const,
+      clientCommandId: command.clientCommandId
+    }));
+    render(QuestionChatActivation, {
+      props: {
+        requestId: "ask-ui",
+        activate: async () => ({ status: "ready" as const, snapshot: active }),
+        fetchSnapshot: async () => active,
+        connectEvents: (_requestId: string, listener: (event: QuestionChatEvent) => void) => {
+          onEvent = listener;
+          return noEvents();
+        },
+        sendMessage,
+        stop
+      }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    const composer = await screen.findByLabelText("Message Question Chat");
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+
+    await fireEvent.input(composer, { target: { value: "Correct that detail" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Steering accepted")).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(stop).toHaveBeenCalledWith("ask-ui", { clientCommandId: expect.stringMatching(/^browser-stop-/) });
+    expect((await screen.findAllByText("Stopping…")).length).toBeGreaterThan(0);
+    onEvent({ requestId: "ask-ui", sequence: 2, type: "message.finished", messageId: "assistant-live", text: "Partial answer", status: "stopped" });
+    onEvent({ requestId: "ask-ui", sequence: 3, type: "lifecycle", state: "stopped" });
+    onEvent({ requestId: "ask-ui", sequence: 4, type: "lifecycle", state: "ready" });
+    expect(await screen.findByText("Stopped")).toBeTruthy();
+    expect(screen.getByText("Ready")).toBeTruthy();
+    expect(screen.queryByText("Stopping…")).toBeNull();
+
+    await fireEvent.input(composer, { target: { value: "Continue now" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Message sent")).toBeTruthy();
+    expect(sendMessage).toHaveBeenLastCalledWith("ask-ui", {
+      clientCommandId: expect.stringMatching(/^browser-/),
+      message: "Continue now"
+    });
+
+    onEvent({
+      requestId: "ask-ui",
+      sequence: 6,
+      type: "message.started",
+      message: { id: "assistant-error", role: "assistant", text: "Failed partial", status: "streaming" }
+    });
+    onEvent({
+      requestId: "ask-ui",
+      sequence: 7,
+      type: "message.finished",
+      messageId: "assistant-error",
+      text: "Failed partial",
+      status: "interrupted"
+    });
+    onEvent({ requestId: "ask-ui", sequence: 8, type: "lifecycle", state: "interrupted" });
+    onEvent({ requestId: "ask-ui", sequence: 9, type: "lifecycle", state: "ready" });
+    expect(await screen.findByText("Interrupted")).toBeTruthy();
   });
 
   it("shows a typed availability message and retries into a disclosed Pi-default fallback", async () => {

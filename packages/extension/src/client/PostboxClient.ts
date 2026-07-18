@@ -18,7 +18,9 @@ import type {
   QuestionChatSendPayload,
   QuestionChatSendResponse,
   QuestionChatSnapshot,
-  QuestionChatSource
+  QuestionChatSource,
+  QuestionChatStopPayload,
+  QuestionChatStopResponse
 } from "../../../protocol/src/index.js";
 import { QuestionChatRuntimeError } from "../questionChatRuntime.js";
 import WebSocket from "ws";
@@ -63,6 +65,7 @@ export interface PostboxClientOptions {
     activate(input: { requestId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
     getSnapshot(requestId: string): Promise<QuestionChatSnapshot>;
     send(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
+    stop(requestId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
     subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void;
     cleanup(requestId: string): Promise<void>;
   };
@@ -390,6 +393,10 @@ export class PostboxClient {
           void this.sendQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
         }
+        if (parsed.data.type === "chat.stop") {
+          void this.stopQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
         if (parsed.data.type === "chat.cleanup") {
           this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
           this.questionChatSubscriptions.delete(parsed.data.payload.requestId);
@@ -488,6 +495,19 @@ export class PostboxClient {
       this.send({ type: "chat.send.accepted", requestId: commandId, payload: { requestId: payload.requestId, response } });
     } catch (error) {
       this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat send failed.");
+    }
+  }
+
+  private async stopQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; command: QuestionChatStopPayload }
+  ): Promise<void> {
+    if (!this.validateQuestionChatCommandOwner(commandId, payload, "stop")) return;
+    try {
+      const response = await this.options.questionChats!.stop(payload.requestId, payload.command);
+      this.send({ type: "chat.stop.accepted", requestId: commandId, payload: { requestId: payload.requestId, response } });
+    } catch (error) {
+      this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat stop failed.");
     }
   }
 

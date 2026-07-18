@@ -13,6 +13,11 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired`. |
 | `POST /api/requests/:requestId/answer` | Browser/user answer action. First pending answer wins. |
 | `POST /api/requests/:requestId/cancel` | Browser/user cancel action. |
+| `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned private Question Chat fork. |
+| `GET /api/requests/:requestId/chat` | Fetch the current normalized Question Chat snapshot. |
+| `POST /api/requests/:requestId/chat/messages` | Send an idle prompt or steer the active turn, using a stable browser command id. |
+| `POST /api/requests/:requestId/chat/stop` | Abort only the active Question Chat turn, using a stable browser command id. |
+| `GET /api/requests/:requestId/chat/events` | Stream normalized Question Chat lifecycle/message events over SSE. |
 | `POST /api/machines/:machineId/rename` | Persist dashboard-side machine alias. |
 | `POST /api/projects/:projectId/rename` | Persist dashboard-side project alias. |
 | `GET /api/history` | Recent terminal decision history. |
@@ -42,6 +47,8 @@ Client messages:
 - `ask.create` — creates or replays an idempotent pending request by `requestId`.
 - `ask.answer` — reconciles a local terminal fallback answer.
 - `ask.cancel` — reconciles a local terminal fallback cancellation.
+- `chat.ready`, `chat.snapshot`, `chat.send.accepted`, and `chat.stop.accepted` — correlated Question Chat command results.
+- `chat.event` — normalized visible Question Chat lifecycle/message output; private reasoning and tool traffic never cross this boundary.
 
 Server messages:
 
@@ -50,6 +57,13 @@ Server messages:
 - `ask.created` — pending ask card exists.
 - `ask.resolved` — ask reached a terminal `answered`, `cancelled`, `expired`, or `unavailable` result.
 - `error` — validation or transition error.
+- `chat.activate`, `chat.snapshot`, `chat.send`, `chat.stop`, and `chat.cleanup` — owner-scoped commands for the extension-owned private Question Chat runtime.
+
+## Question Chat turn lifecycle
+
+Question Chat snapshots and events use `ready`, `generating`, `stopping`, `stopped`, and `interrupted` states. A message sent while `ready` starts an ordinary SDK prompt. A message accepted while `generating` uses Pi's `streamingBehavior: "steer"` path and returns `mode: "steer"`; it is not queued as a follow-up turn.
+
+Stop aborts the active SDK operation without disposing the private runtime. Visible partial assistant output remains in the transcript with a `stopped` marker, the lifecycle passes through `stopping` and `stopped`, and the runtime returns to `ready`. A retry-exhausted SDK error similarly preserves the last visible partial with an `interrupted` marker before returning to `ready`; retryable attempts are not marked interrupted prematurely. Replayed send and Stop commands are idempotent by their bounded `clientCommandId`.
 
 ## Ask lifecycle
 

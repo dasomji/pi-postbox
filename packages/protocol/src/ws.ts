@@ -5,6 +5,8 @@ import {
   QuestionChatEventSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatSendResponseSchema,
+  QuestionChatStopPayloadSchema,
+  QuestionChatStopResponseSchema,
   QuestionChatSnapshotSchema,
   QuestionChatSourceSchema
 } from "./chat.js";
@@ -14,6 +16,8 @@ import {
   SessionShutdownPayloadSchema,
   SessionUpdatePayloadSchema
 } from "./session.js";
+
+const WsCorrelationIdSchema = z.string().min(1).max(200);
 
 export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
@@ -74,6 +78,11 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("chat.event"),
     payload: QuestionChatEventSchema
+  }),
+  z.object({
+    type: z.literal("chat.stop.accepted"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({ requestId: WsCorrelationIdSchema, response: QuestionChatStopResponseSchema })
   })
 ]);
 
@@ -130,6 +139,15 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
       requestId: z.string().min(1).max(200),
       ownerSessionId: z.string().min(1).max(200),
       command: QuestionChatSendPayloadSchema
+    })
+  }),
+  z.object({
+    type: z.literal("chat.stop"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({
+      requestId: WsCorrelationIdSchema,
+      ownerSessionId: z.string().min(1).max(200),
+      command: QuestionChatStopPayloadSchema
     })
   }),
   z.object({

@@ -102,6 +102,11 @@ export async function registerExtensionSocket(
         return;
       }
 
+      if (message.type === "chat.stop.accepted") {
+        questionChatRelay?.resolveStop(message.requestId, connectionId, message.payload.requestId, message.payload.response);
+        return;
+      }
+
       if (message.type === "chat.event") {
         questionChatRelay?.publishEvent(connectionId, message.payload);
         return;

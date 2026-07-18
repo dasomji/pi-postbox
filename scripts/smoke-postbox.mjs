@@ -333,10 +333,28 @@ async function main() {
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: sendCommand.requestId,
-      payload: { requestId, response: { status: "accepted", clientCommandId } }
+      payload: { requestId, response: { status: "accepted", clientCommandId, mode: "prompt" } }
     }));
-    assert((await sendResponse).status === 200, "First Chat send was not accepted");
+    const firstSend = await sendResponse;
+    assert(firstSend.status === 200 && (await firstSend.json()).mode === "prompt", "First Chat send was not accepted as an ordinary prompt");
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 1, type: "lifecycle", state: "generating" } }));
+
+    const steerCommandId = `smoke-chat-steer-${randomUUID()}`;
+    const steerResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientCommandId: steerCommandId, message: "Correct that detail." })
+    });
+    const steerCommand = await nextMessage(socket);
+    assert(steerCommand.type === "chat.send" && steerCommand.payload.command.clientCommandId === steerCommandId, "Fake runtime did not receive active Chat steering");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: steerCommand.requestId,
+      payload: { requestId, response: { status: "accepted", clientCommandId: steerCommandId, mode: "steer" } }
+    }));
+    const steered = await steerResponse;
+    assert(steered.status === 200 && (await steered.json()).mode === "steer", "Active Chat message was not accepted as steering");
+
     socket.send(JSON.stringify({
       type: "chat.event",
       payload: { requestId, sequence: 2, type: "message.started", message: { id: "smoke-assistant", role: "assistant", text: "", status: "streaming" } }
@@ -345,11 +363,48 @@ async function main() {
       type: "chat.event",
       payload: { requestId, sequence: 3, type: "assistant.text.delta", messageId: "smoke-assistant", text: "smoke-streamed-private-fork-answer" }
     }));
+
+    const stopCommandId = `smoke-chat-stop-${randomUUID()}`;
+    const stopResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/stop`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientCommandId: stopCommandId })
+    });
+    const stopCommand = await nextMessage(socket);
+    assert(stopCommand.type === "chat.stop" && stopCommand.payload.command.clientCommandId === stopCommandId, "Fake runtime did not receive Chat Stop");
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 4, type: "lifecycle", state: "stopping" } }));
     socket.send(JSON.stringify({
       type: "chat.event",
-      payload: { requestId, sequence: 4, type: "message.finished", messageId: "smoke-assistant", text: "smoke-streamed-private-fork-answer" }
+      payload: { requestId, sequence: 5, type: "message.finished", messageId: "smoke-assistant", text: "smoke-streamed-private-fork-answer", status: "stopped" }
     }));
-    await chatSse.nextJsonMatching((event) => event.type === "assistant.text.delta" && event.text === "smoke-streamed-private-fork-answer", undefined);
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 6, type: "lifecycle", state: "stopped" } }));
+    socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 7, type: "lifecycle", state: "ready" } }));
+    socket.send(JSON.stringify({
+      type: "chat.stop.accepted",
+      requestId: stopCommand.requestId,
+      payload: { requestId, response: { status: "accepted", clientCommandId: stopCommandId } }
+    }));
+    assert((await stopResponse).status === 200, "Chat Stop was not accepted");
+    await chatSse.nextJsonMatching(
+      (event) => event.type === "message.finished" && event.status === "stopped" && event.text === "smoke-streamed-private-fork-answer",
+      undefined
+    );
+
+    const continueCommandId = `smoke-chat-continue-${randomUUID()}`;
+    const continueResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientCommandId: continueCommandId, message: "Continue." })
+    });
+    const continueCommand = await nextMessage(socket);
+    assert(continueCommand.type === "chat.send" && continueCommand.payload.command.clientCommandId === continueCommandId, "Stopped Chat did not accept another prompt");
+    socket.send(JSON.stringify({
+      type: "chat.send.accepted",
+      requestId: continueCommand.requestId,
+      payload: { requestId, response: { status: "accepted", clientCommandId: continueCommandId, mode: "prompt" } }
+    }));
+    const continued = await continueResponse;
+    assert(continued.status === 200 && (await continued.json()).mode === "prompt", "Stopped Chat did not resume with an ordinary prompt");
     chatSse.close();
     chatSse = undefined;
 
@@ -374,7 +429,7 @@ async function main() {
     assert(history.history.some((record) => record.request.requestId === requestId && record.request.result?.status === "answered"), "History endpoint does not include answered request");
     assert(!JSON.stringify(history).includes("smoke-streamed-private-fork-answer"), "History persisted the private Chat transcript");
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, Chat snapshot/send/stream, cleanup, answer, state, and history verified.");
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, Chat prompt/steer/stop/resume, cleanup, answer, state, and history verified.");
   } finally {
     chatSse?.close();
     sse?.close();
