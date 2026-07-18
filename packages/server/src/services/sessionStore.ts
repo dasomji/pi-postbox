@@ -7,6 +7,7 @@ import type {
   SessionUpdatePayload,
   StateSnapshot
 } from "@pi-postbox/protocol";
+import type { QuestionChatSource } from "@pi-postbox/protocol";
 import type { SqliteDatabase } from "../db/database.js";
 
 interface SessionPresenceRow {
@@ -238,10 +239,12 @@ export class SessionStore {
         `UPDATE sessions
          SET title = COALESCE(@title, title),
              cwd = COALESCE(@cwd, cwd),
-             branch = COALESCE(@branch, branch),
-             worktree_path = COALESCE(@worktreePath, worktree_path),
-             semantic_state = COALESCE(@semanticState, semantic_state),
-             updated_at = @nowIso
+               branch = COALESCE(@branch, branch),
+               worktree_path = COALESCE(@worktreePath, worktree_path),
+               semantic_state = COALESCE(@semanticState, semantic_state),
+               agent_session_path = COALESCE(@agentSessionPath, agent_session_path),
+               leaf_id = COALESCE(@leafId, leaf_id),
+               updated_at = @nowIso
          WHERE session_id = @sessionId`
       )
       .run({
@@ -251,6 +254,8 @@ export class SessionStore {
         branch: payload.branch ?? null,
         worktreePath: payload.worktreePath ?? null,
         semanticState: payload.semanticState ?? null,
+        agentSessionPath: payload.agentSessionPath ?? null,
+        leafId: payload.leafId ?? null,
         nowIso
       });
   }
@@ -305,6 +310,28 @@ export class SessionStore {
          WHERE session_id = @sessionId`
       )
       .run({ sessionId, nowIso });
+  }
+
+  questionChatSource(sessionId: string): QuestionChatSource | undefined {
+    const row = this.db
+      .prepare("SELECT agent_session_path, leaf_id, cwd FROM sessions WHERE session_id = ?")
+      .get(sessionId) as { agent_session_path: string | null; leaf_id: string | null; cwd: string } | undefined;
+    if (!row?.agent_session_path || !row.leaf_id) return undefined;
+    return { agentSessionPath: row.agent_session_path, leafId: row.leaf_id, cwd: row.cwd };
+  }
+
+  questionChatCwd(sessionId: string): string | undefined {
+    const row = this.db.prepare("SELECT cwd FROM sessions WHERE session_id = ?").get(sessionId) as
+      | { cwd: string }
+      | undefined;
+    return row?.cwd;
+  }
+
+  getQuestionChatSourceState(sessionId: string): "missing_path" | "missing_leaf" {
+    const row = this.db
+      .prepare("SELECT agent_session_path, leaf_id FROM sessions WHERE session_id = ?")
+      .get(sessionId) as { agent_session_path: string | null; leaf_id: string | null } | undefined;
+    return row?.agent_session_path && !row.leaf_id ? "missing_leaf" : "missing_path";
   }
 
   snapshot(): StateSnapshot {

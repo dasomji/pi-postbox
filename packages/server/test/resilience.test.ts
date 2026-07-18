@@ -67,6 +67,10 @@ function askCreateMessage(requestId: string, expiresAt?: string): ExtensionClien
       mode: "single",
       question: { prompt: "Continue after reconnect?" },
       options: [{ value: "yes", label: "Yes" }],
+      context: {
+        codebaseContext: "WebSocket extension client and Fastify server.",
+        problemContext: "Keep a pending decision stable across reconnects."
+      },
       expiresAt
     }
   };

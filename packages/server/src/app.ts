@@ -3,6 +3,7 @@ import websocket from "@fastify/websocket";
 import {
   createHealthResponse,
   HealthResponseSchema,
+  QuestionChatUnavailableResponseSchema,
   StateSnapshotSchema,
   type ActiveLocalTargetIdentity
 } from "@pi-postbox/protocol";
@@ -23,6 +24,7 @@ import { createFcmSenderFromServiceAccountPath, type FcmSender } from "./service
 import { HistoryService } from "./services/historyService.js";
 import { PushNotifier, type PushSender } from "./services/pushNotifier.js";
 import { PushStore } from "./services/pushStore.js";
+import { QuestionChatRelay } from "./services/questionChatRelay.js";
 import { RequestStore } from "./services/requestStore.js";
 import { SessionStore } from "./services/sessionStore.js";
 import { registerExtensionSocket } from "./ws/extensionSocket.js";
@@ -44,6 +46,11 @@ export interface CreatePostboxAppOptions {
   historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
+  chatCommandTimeoutMs?: number;
+  chatCommandRateLimitMax?: number;
+  chatCommandRateLimitWindowMs?: number;
+  chatCommandDedupeTtlMs?: number;
+  chatCommandDedupeCapacity?: number;
   vapidPublicKey?: string;
   vapidPrivateKey?: string;
   pushSender?: PushSender;
@@ -107,6 +114,25 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     throw error;
   }
   const requestStore = new RequestStore(db, now, { askTimeoutMs: options.askTimeoutMs });
+  const questionChatRelay = new QuestionChatRelay({
+    commandTimeoutMs: options.chatCommandTimeoutMs,
+    commandRateLimitMax: options.chatCommandRateLimitMax,
+    commandRateLimitWindowMs: options.chatCommandRateLimitWindowMs,
+    commandDedupeTtlMs: options.chatCommandDedupeTtlMs,
+    commandDedupeCapacity: options.chatCommandDedupeCapacity,
+    now,
+    authorize: (requestId, ownerSessionId) => {
+      const request = requestStore.get(requestId);
+      if (!request) return { code: "request_missing", message: "This Postbox Question no longer exists." };
+      if (request.sessionId !== ownerSessionId) {
+        return { code: "wrong_owner", message: "Question Chat is not owned by this Pi Session." };
+      }
+      if (request.status !== "pending") {
+        return { code: "request_not_pending", message: "Chat is available only while the Postbox Question is pending." };
+      }
+      return undefined;
+    }
+  });
   const pushStore = new PushStore(db, now, {
     publicKey: options.vapidPublicKey,
     privateKey: options.vapidPrivateKey
@@ -119,6 +145,10 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     void pushNotifier.notifyAskResolved(result).catch((error: unknown) => {
       app.log.warn({ error, requestId: result.requestId }, "failed to send ask resolved push dismissal");
     });
+    const terminalRequest = requestStore.get(result.requestId);
+    if (terminalRequest && result.status !== "unavailable") {
+      questionChatRelay.cleanup(result.requestId, terminalRequest.sessionId, result.status);
+    }
   });
   const historyService = new HistoryService(db, requestStore, now, {
     maxAgeMs: options.historyRetentionMaxAgeMs,
@@ -154,21 +184,24 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     if (expiryTimer) clearInterval(expiryTimer);
     broadcaster.close();
     requestStore.close();
+    questionChatRelay.close();
     sessionStore.close();
     db.close();
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
+    const isQuestionChatControl = /^\/api\/requests\/[^/?]+\/chat(?:[/?]|$)/.test(request.url);
+    if (!isQuestionChatControl && !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
     if (!origin) return;
 
-    try {
-      const originUrl = new URL(origin);
-      const host = request.headers.host;
-      if (host && originUrl.host === host) return;
-    } catch {
-      // Fall through to rejection below.
+    if (isAllowedBrowserOrigin(origin, request.headers.host)) return;
+
+    if (isQuestionChatControl) {
+      return reply.code(403).send(QuestionChatUnavailableResponseSchema.parse({
+        status: "unavailable",
+        error: { code: "forbidden_origin", message: "Question Chat requests must come from this Postbox origin." }
+      }));
     }
 
     return reply.code(403).send({ error: "forbidden_origin", message: "Cross-origin state-changing requests are not allowed." });
@@ -180,9 +213,20 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   await registerMetadataRoutes(app, sessionStore, broadcaster);
   await registerHistoryRoutes(app, historyService, broadcaster, pruneHistory);
   await registerPushRoutes(app, pushStore);
-  await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast);
+  await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast, {
+    relay: questionChatRelay,
+    sessionStore
+  });
   await registerAdminRoutes(app, { onShutdownRequest: options.onShutdownRequest });
-  await registerExtensionSocket(app, sessionStore, requestStore, broadcaster, expireDueAndBroadcast, pushNotifier);
+  await registerExtensionSocket(
+    app,
+    sessionStore,
+    requestStore,
+    broadcaster,
+    expireDueAndBroadcast,
+    pushNotifier,
+    questionChatRelay
+  );
 
   app.get("/healthz", async () => {
     const response = createHealthResponse({
@@ -219,4 +263,16 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   }
 
   return app;
+}
+
+function isAllowedBrowserOrigin(origin: string, host: string | undefined): boolean {
+  if (!host || origin.includes(",")) return false;
+  try {
+    const parsed = new URL(origin);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:")
+      && parsed.origin === origin
+      && parsed.host.toLowerCase() === host.toLowerCase();
+  } catch {
+    return false;
+  }
 }

@@ -7,11 +7,31 @@ import {
   OTHER_OPTION_VALUE,
   type AskResult,
   type ExtensionClientMessage,
+  type ProposeAnswerPayload,
+  type ProposeAnswerResult,
   type SemanticState,
   type ActiveLocalRole,
   type SessionRegisterPayload,
   type SessionShutdownReason
-} from "../../../protocol/src/index.js";
+} from "@pi-postbox/protocol";
+import type {
+  QuestionChatEvent,
+  QuestionChatAvailabilityError,
+  QuestionChatContextSource,
+  QuestionChatSendPayload,
+  QuestionChatSendResponse,
+  QuestionChatSnapshot,
+  QuestionChatSource,
+  QuestionChatStopPayload,
+  QuestionChatStopResponse
+} from "@pi-postbox/protocol";
+import {
+  QuestionChatRuntimeError,
+  type QuestionChatReconciliationDecision,
+  type QuestionChatReconciliationResult,
+  type QuestionChatRecoveryOffer
+} from "../questionChatRuntime.js";
+import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
 import {
@@ -44,12 +64,24 @@ export interface PostboxClientOptions {
   activeLocalPollingEnabled?: boolean;
   activeLocalPollMs?: number;
   targetAffinityTimeoutMs?: number;
+  proposalTimeoutMs?: number;
   targetSource?: string;
   targetRole?: ActiveLocalRole;
   inspectTailscale?: PostboxStatusTailscaleInspector;
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
+  questionChats?: {
+    activate(input: { requestId: string; ownerSessionId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
+    activateContext(input: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
+    getSnapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatSnapshot>;
+    send(requestId: string, ownerSessionId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
+    stop(requestId: string, ownerSessionId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
+    subscribe(requestId: string, listener: (event: QuestionChatEvent) => void): () => void;
+    cleanup(requestId: string): Promise<void>;
+    listRecoveryOffers?(): QuestionChatRecoveryOffer[];
+    reconcile?(ownerSessionId: string, decisions: QuestionChatReconciliationDecision[]): Promise<QuestionChatReconciliationResult[]>;
+  };
 }
 
 export interface PendingAskSnapshot {
@@ -101,10 +133,19 @@ interface PendingAsk {
   targetAffinityTimer?: NodeJS.Timeout;
 }
 
+interface PendingProposal {
+  requestId: string;
+  resolve(result: ProposeAnswerResult): void;
+  timer: NodeJS.Timeout;
+  signal?: AbortSignal;
+  abort?: () => void;
+}
+
 const DEFAULT_UNAVAILABLE_AFTER_MS = 30_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_ACTIVE_LOCAL_POLL_MS = 5_000;
 const DEFAULT_TARGET_AFFINITY_TIMEOUT_MS = 30_000;
+const DEFAULT_PROPOSAL_TIMEOUT_MS = 10_000;
 
 export class PostboxClient {
   private socket: WebSocketLike | undefined;
@@ -129,6 +170,14 @@ export class PostboxClient {
   private activeLocalPollTimer: NodeJS.Timeout | undefined;
   private deferredTargetUrl: string | undefined;
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
+  private readonly questionChatSubscriptions = new Map<string, () => void>();
+  private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
+  private readonly pendingProposals = new Map<string, PendingProposal>();
+  private readonly liveQuestionChats = new Map<string, string>();
+  private readonly terminalQuestionChats = new Map<string, string>();
+  private recoveryOffers: QuestionChatRecoveryOffer[] = [];
+  private recoveryOfferIndex = 0;
+  private recoveryCompleteSent = false;
 
   constructor(private readonly options: PostboxClientOptions) {
     this.heartbeatMs = options.heartbeatMs ?? 15_000;
@@ -165,6 +214,15 @@ export class PostboxClient {
       this.deleteLocalResolution(requestId);
     }
     this.publishLocalFallbackStatus();
+    for (const unsubscribe of this.questionChatSubscriptions.values()) unsubscribe();
+    this.questionChatSubscriptions.clear();
+    this.pendingRecoveryOffers.clear();
+    this.recoveryOffers = [];
+    this.recoveryOfferIndex = 0;
+    this.recoveryCompleteSent = false;
+    this.failPendingProposals("Question Chat proposal stopped before the server responded.");
+    this.liveQuestionChats.clear();
+    this.terminalQuestionChats.clear();
     this.socket?.close();
   }
 
@@ -175,6 +233,44 @@ export class PostboxClient {
       payload: {
         sessionId: this.options.registration.session.sessionId,
         semanticState: state
+      }
+    });
+  }
+
+  updateQuestionSource(source: { cwd: string; agentSessionPath: string; leafId: string }): boolean {
+    this.options.registration = {
+      ...this.options.registration,
+      session: { ...this.options.registration.session, ...source }
+    };
+    return this.send({
+      type: "session.update",
+      payload: {
+        sessionId: this.options.registration.session.sessionId,
+        cwd: source.cwd,
+        agentSessionPath: source.agentSessionPath,
+        leafId: source.leafId
+      }
+    });
+  }
+
+  proposeAnswer(requestId: string, proposal: ProposeAnswerPayload, signal?: AbortSignal): Promise<ProposeAnswerResult> {
+    if (this.terminalQuestionChats.has(requestId)) return Promise.resolve(proposalTerminalError());
+    if (signal?.aborted) return Promise.resolve(proposalTransportError("Question Chat proposal was aborted."));
+    const commandId = `chat_proposal_${randomUUID()}`;
+    return new Promise<ProposeAnswerResult>((resolve) => {
+      const timeoutMs = Math.max(1, Math.min(this.options.proposalTimeoutMs ?? DEFAULT_PROPOSAL_TIMEOUT_MS, 60_000));
+      const timer = setTimeout(() => {
+        this.finishProposal(commandId, proposalTransportError("Question Chat proposal timed out."));
+      }, timeoutMs);
+      timer.unref?.();
+      const abort = signal
+        ? () => this.finishProposal(commandId, proposalTransportError("Question Chat proposal was aborted."))
+        : undefined;
+      const pending: PendingProposal = { requestId, resolve, timer, signal, abort };
+      this.pendingProposals.set(commandId, pending);
+      signal?.addEventListener("abort", abort!, { once: true });
+      if (!this.send({ type: "chat.propose-answer", requestId: commandId, payload: { requestId, proposal } })) {
+        this.finishProposal(commandId, proposalTransportError("Question Chat proposal could not be sent while Postbox is disconnected."));
       }
     });
   }
@@ -343,6 +439,47 @@ export class PostboxClient {
         const text = Buffer.isBuffer(raw) ? raw.toString() : String(raw);
         const parsed = ExtensionServerMessageSchema.safeParse(JSON.parse(text));
         if (!parsed.success) return;
+        if (parsed.data.type === "registered") {
+          this.offerQuestionChatRecovery();
+          return;
+        }
+        if (parsed.data.type === "chat.reconcile") {
+          void this.reconcileQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.activate") {
+          void this.activateQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.activate-context") {
+          void this.activateContextQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.snapshot") {
+          void this.snapshotQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.send") {
+          void this.sendQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.stop") {
+          void this.stopQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.cleanup") {
+          this.markQuestionChatTerminal(parsed.data.payload.requestId);
+          this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
+          this.questionChatSubscriptions.delete(parsed.data.payload.requestId);
+          void this.options.questionChats?.cleanup(parsed.data.payload.requestId);
+          return;
+        }
+        if (parsed.data.type === "chat.propose-answer.result") {
+          const pending = this.pendingProposals.get(parsed.data.requestId);
+          if (!pending || pending.requestId !== parsed.data.payload.requestId) return;
+          this.finishProposal(parsed.data.requestId, parsed.data.payload.result);
+          return;
+        }
         if (parsed.data.type === "error") {
           this.options.onStatus?.(`server-error:${parsed.data.error.code}`);
           if (parsed.data.requestId) {
@@ -350,6 +487,10 @@ export class PostboxClient {
           }
         }
         if (parsed.data.type === "ask.resolved") {
+          this.markQuestionChatTerminal(parsed.data.payload.requestId);
+          this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
+          this.questionChatSubscriptions.delete(parsed.data.payload.requestId);
+          void this.options.questionChats?.cleanup(parsed.data.payload.requestId);
           this.pendingAsks.get(parsed.data.payload.requestId)?.resolve(parsed.data.payload);
         }
       } catch {
@@ -365,6 +506,7 @@ export class PostboxClient {
 
     socket.on("close", () => {
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      this.failPendingProposals("Postbox disconnected before the Question Chat proposal completed.");
       this.connectionState = "disconnected";
       this.recordConnectionDiagnostic("websocket:disconnected");
       if (this.stopped) return;
@@ -373,6 +515,240 @@ export class PostboxClient {
       this.startTargetAffinityTimersForDisconnectedOrigin();
       this.scheduleReconnect();
     });
+  }
+
+  private async activateQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; source: QuestionChatSource }
+  ): Promise<void> {
+    await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activate(input));
+  }
+
+  private async activateContextQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }
+  ): Promise<void> {
+    await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activateContext(input));
+  }
+
+  private async handleQuestionChatActivation<Source extends QuestionChatSource | QuestionChatContextSource>(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; source: Source },
+    activate: (input: { requestId: string; ownerSessionId: string; source: Source }) => Promise<QuestionChatSnapshot>
+  ): Promise<void> {
+    if (payload.ownerSessionId !== this.options.registration.session.sessionId) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "wrong_owner",
+        message: "Question Chat activation was routed to the wrong Pi Session."
+      });
+      return;
+    }
+    if (!this.options.questionChats) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "runtime_failure",
+        message: "Question Chat runtime is not configured."
+      });
+      return;
+    }
+
+    try {
+      if (this.terminalQuestionChats.has(payload.requestId)) return;
+      const snapshot = await activate({ requestId: payload.requestId, ownerSessionId: payload.ownerSessionId, source: payload.source });
+      if (this.terminalQuestionChats.has(payload.requestId)) return;
+      this.liveQuestionChats.set(payload.requestId, payload.ownerSessionId);
+      this.subscribeQuestionChat(payload.requestId);
+      this.send({ type: "chat.ready", requestId: commandId, payload: snapshot });
+    } catch (error) {
+      const runtimeError = error instanceof QuestionChatRuntimeError ? error : undefined;
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: runtimeError?.code ?? "runtime_failure",
+        message: runtimeError?.message ?? (error instanceof Error ? error.message : "Question Chat activation failed.")
+      });
+    }
+  }
+
+  private offerQuestionChatRecovery(): void {
+    this.pendingRecoveryOffers.clear();
+    this.recoveryOffers = this.options.questionChats?.listRecoveryOffers?.() ?? [];
+    this.recoveryOfferIndex = 0;
+    this.recoveryCompleteSent = false;
+    this.sendNextQuestionChatRecoveryOffer();
+  }
+
+  private sendNextQuestionChatRecoveryOffer(): void {
+    if (this.pendingRecoveryOffers.size > 0 || this.recoveryCompleteSent) return;
+    const offer = this.recoveryOffers[this.recoveryOfferIndex];
+    if (offer) {
+      const commandId = `chat_recover_${randomUUID()}`;
+      if (this.send({ type: "chat.recover.offer", requestId: commandId, payload: offer })) {
+        this.pendingRecoveryOffers.set(commandId, offer);
+        this.recoveryOfferIndex += 1;
+      }
+      return;
+    }
+    if (this.send({
+      type: "chat.recover.complete",
+      requestId: `chat_recover_complete_${randomUUID()}`,
+      payload: { ownerSessionId: this.options.registration.session.sessionId }
+    })) this.recoveryCompleteSent = true;
+  }
+
+  private async reconcileQuestionChat(
+    commandId: string,
+    payload: QuestionChatReconciliationDecision
+  ): Promise<void> {
+    const offered = this.pendingRecoveryOffers.get(commandId);
+    if (!offered || offered.requestId !== payload.requestId || offered.forkKind !== payload.forkKind) return;
+    this.pendingRecoveryOffers.delete(commandId);
+    let result: QuestionChatReconciliationResult;
+    try {
+      const [reconciled] = await this.options.questionChats?.reconcile?.(
+        this.options.registration.session.sessionId,
+        [{ requestId: payload.requestId, forkKind: payload.forkKind, action: payload.action }]
+      ) ?? [];
+      result = reconciled ?? { status: "failed", requestId: payload.requestId, message: "Question Chat recovery is not configured." };
+      if (result.status === "recovered" && !this.terminalQuestionChats.has(payload.requestId)) {
+        this.liveQuestionChats.set(payload.requestId, this.options.registration.session.sessionId);
+        this.subscribeQuestionChat(payload.requestId);
+      }
+    } catch (error) {
+      result = {
+        status: "failed",
+        requestId: payload.requestId,
+        message: error instanceof Error ? error.message : "Question Chat recovery failed."
+      };
+    }
+    const wireResult = result.status === "recovered"
+      ? { status: "recovered" as const, snapshot: result.snapshot }
+      : result.status === "deleted"
+        ? { status: "deleted" as const }
+        : { status: "failed" as const, message: result.message.slice(0, 2_000) };
+    const sent = this.send({
+      type: "chat.reconciled",
+      requestId: commandId,
+      payload: { requestId: payload.requestId, forkKind: payload.forkKind, result: wireResult }
+    });
+    if (sent) this.sendNextQuestionChatRecoveryOffer();
+  }
+
+  private subscribeQuestionChat(requestId: string): void {
+    if (this.questionChatSubscriptions.has(requestId) || !this.options.questionChats) return;
+    const unsubscribe = this.options.questionChats.subscribe(requestId, (event) => {
+      if (this.liveQuestionChats.has(requestId) && !this.terminalQuestionChats.has(requestId)) {
+        this.send({ type: "chat.event", payload: event });
+      }
+    });
+    this.questionChatSubscriptions.set(requestId, unsubscribe);
+  }
+
+  private async snapshotQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string }
+  ): Promise<void> {
+    if (!this.validateQuestionChatCommandOwner(commandId, payload, "snapshot")) return;
+    try {
+      const snapshot = await this.options.questionChats!.getSnapshot(payload.requestId, payload.ownerSessionId);
+      if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) return;
+      this.send({ type: "chat.snapshot", requestId: commandId, payload: snapshot });
+    } catch (error) {
+      this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat snapshot failed.");
+    }
+  }
+
+  private async sendQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; command: QuestionChatSendPayload }
+  ): Promise<void> {
+    if (!this.validateQuestionChatCommandOwner(commandId, payload, "send")) return;
+    try {
+      const response = await this.options.questionChats!.send(payload.requestId, payload.ownerSessionId, payload.command);
+      if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) return;
+      this.send({ type: "chat.send.accepted", requestId: commandId, payload: { requestId: payload.requestId, response } });
+    } catch (error) {
+      this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat send failed.");
+    }
+  }
+
+  private async stopQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; command: QuestionChatStopPayload }
+  ): Promise<void> {
+    if (!this.validateQuestionChatCommandOwner(commandId, payload, "stop")) return;
+    try {
+      const response = await this.options.questionChats!.stop(payload.requestId, payload.ownerSessionId, payload.command);
+      if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) return;
+      this.send({ type: "chat.stop.accepted", requestId: commandId, payload: { requestId: payload.requestId, response } });
+    } catch (error) {
+      this.sendRuntimeQuestionChatError(commandId, payload.requestId, error, "Question Chat stop failed.");
+    }
+  }
+
+  private validateQuestionChatCommandOwner(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string },
+    action: string
+  ): boolean {
+    if (payload.ownerSessionId !== this.options.registration.session.sessionId) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "wrong_owner",
+        message: `Question Chat ${action} was routed to the wrong Pi Session.`
+      });
+      return false;
+    }
+    if (this.terminalQuestionChats.has(payload.requestId)) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "request_not_pending",
+        message: "The Postbox Question is already terminal."
+      });
+      return false;
+    }
+    if (!this.isLiveQuestionChat(payload.requestId, payload.ownerSessionId)) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "chat_not_started",
+        message: "Question Chat has not started for this Pi Session."
+      });
+      return false;
+    }
+    if (!this.options.questionChats) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "runtime_failure",
+        message: "Question Chat runtime is not configured."
+      });
+      return false;
+    }
+    return true;
+  }
+
+  private sendRuntimeQuestionChatError(commandId: string, requestId: string, error: unknown, fallback: string): void {
+    const runtimeError = error instanceof QuestionChatRuntimeError ? error : undefined;
+    this.sendQuestionChatError(commandId, requestId, {
+      code: runtimeError?.code ?? "runtime_failure",
+      message: runtimeError?.message ?? (error instanceof Error ? error.message : fallback)
+    });
+  }
+
+  private sendQuestionChatError(
+    commandId: string,
+    requestId: string,
+    error: QuestionChatAvailabilityError
+  ): void {
+    this.send({ type: "chat.error", requestId: commandId, payload: { requestId, error } });
+  }
+
+  private isLiveQuestionChat(requestId: string, ownerSessionId: string): boolean {
+    return this.liveQuestionChats.get(requestId) === ownerSessionId && !this.terminalQuestionChats.has(requestId);
+  }
+
+  private markQuestionChatTerminal(requestId: string): void {
+    const ownerSessionId = this.liveQuestionChats.get(requestId) ?? this.options.registration.session.sessionId;
+    this.liveQuestionChats.delete(requestId);
+    if (!this.terminalQuestionChats.has(requestId) && this.terminalQuestionChats.size >= 256) {
+      this.terminalQuestionChats.delete(this.terminalQuestionChats.keys().next().value!);
+    }
+    this.terminalQuestionChats.set(requestId, ownerSessionId);
+    for (const [commandId, proposal] of this.pendingProposals) {
+      if (proposal.requestId === requestId) this.finishProposal(commandId, proposalTerminalError());
+    }
   }
 
   private startHeartbeat(): void {
@@ -393,6 +769,21 @@ export class PostboxClient {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify(message));
     return true;
+  }
+
+  private finishProposal(commandId: string, result: ProposeAnswerResult): void {
+    const pending = this.pendingProposals.get(commandId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    if (pending.signal && pending.abort) pending.signal.removeEventListener("abort", pending.abort);
+    this.pendingProposals.delete(commandId);
+    pending.resolve(result);
+  }
+
+  private failPendingProposals(message: string): void {
+    for (const commandId of [...this.pendingProposals.keys()]) {
+      this.finishProposal(commandId, proposalTransportError(message));
+    }
   }
 
   private ensureConnection(): void {
@@ -716,6 +1107,17 @@ function expiredResult(requestId: string): AskResult {
     requestId,
     rationale: "Postbox request expired before an answer was submitted.",
     resolvedAt: new Date().toISOString()
+  };
+}
+
+function proposalTransportError(message: string): ProposeAnswerResult {
+  return { status: "error", error: { code: "internal_error", message } };
+}
+
+function proposalTerminalError(): ProposeAnswerResult {
+  return {
+    status: "error",
+    error: { code: "request_terminal", message: "The Postbox Question is already terminal." }
   };
 }
 

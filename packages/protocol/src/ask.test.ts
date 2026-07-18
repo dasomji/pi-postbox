@@ -1,14 +1,130 @@
 import { describe, expect, it } from "vitest";
-import { AskCreatePayloadSchema, AskResultSchema, StateSnapshotSchema } from "./index.js";
+import {
+  AskCreatePayloadSchema,
+  AskOptionSchema,
+  AskResultSchema,
+  ProposeAnswerPayloadSchema,
+  ProposeAnswerResultSchema,
+  StateSnapshotSchema
+} from "./index.js";
 
 describe("ask_postbox protocol", () => {
+  it("keeps Chat provenance authoritative while accepting only bounded proposal fields", () => {
+    const createPayload = {
+      requestId: "ask-provenance",
+      sessionId: "session-1",
+      mode: "single",
+      question: { prompt: "Which path?" },
+      options: [{ value: "ship", label: "Ship", provenance: "chat" }],
+      context: {
+        codebaseContext: "Fastify service.",
+        problemContext: "Choose a release path."
+      }
+    } as const;
+
+    expect(() => AskCreatePayloadSchema.parse(createPayload)).toThrow();
+    expect(AskOptionSchema.parse({ value: "chat_opaque", label: "Stage first", provenance: "chat" })).toEqual({
+      value: "chat_opaque",
+      label: "Stage first",
+      provenance: "chat"
+    });
+    expect(AskOptionSchema.parse({ value: "ship", label: "Ship" })).toEqual({ value: "ship", label: "Ship" });
+
+    expect(
+      ProposeAnswerPayloadSchema.parse({
+        label: "Stage first",
+        description: "Deploy to a small cohort.",
+        meaning: "A reversible rollout.",
+        context: "The release pipeline supports cohorts."
+      })
+    ).toMatchObject({ label: "Stage first", meaning: "A reversible rollout." });
+    expect(() => ProposeAnswerPayloadSchema.parse({ label: "x".repeat(2_001) })).toThrow();
+    expect(() => ProposeAnswerPayloadSchema.parse({ label: "Valid", provenance: "chat" })).toThrow();
+    expect(() => ProposeAnswerPayloadSchema.parse({ label: "Valid", value: "spoofed" })).toThrow();
+    expect(() =>
+      ProposeAnswerResultSchema.parse({ status: "appended", option: { value: "chat_opaque", label: "Stage first" } })
+    ).toThrow();
+    expect(
+      ProposeAnswerResultSchema.parse({
+        status: "appended",
+        option: { value: "chat_opaque", label: "Stage first", provenance: "chat" }
+      })
+    ).toMatchObject({ status: "appended", option: { provenance: "chat" } });
+  });
+
+  it("accepts finite urgency levels and defaults legacy asks to normal urgency", () => {
+    const basePayload = {
+      requestId: "ask-urgency",
+      sessionId: "session-1",
+      mode: "single",
+      question: { prompt: "Which request should be answered first?" },
+      options: [{ value: "this-one", label: "This one" }],
+      context: {
+        codebaseContext: "A Postbox inbox with multiple pending decisions.",
+        problemContext: "Order attention cards consistently by urgency and age."
+      }
+    } as const;
+
+    expect(AskCreatePayloadSchema.parse({ ...basePayload, urgency: "high" }).urgency).toBe("high");
+    expect(AskCreatePayloadSchema.parse(basePayload).urgency).toBe("normal");
+    expect(() => AskCreatePayloadSchema.parse({ ...basePayload, urgency: "immediate" })).toThrow();
+
+    const legacySnapshot = StateSnapshotSchema.parse({
+      sessions: [],
+      requests: [{ ...basePayload, status: "pending", createdAt: "2026-06-03T00:00:00.000Z" }],
+      timestamp: "2026-06-03T00:00:01.000Z"
+    });
+    expect(legacySnapshot.requests[0]?.urgency).toBe("normal");
+  });
+
+  it("requires non-blank interviewer context for newly created asks", () => {
+    const basePayload = {
+      requestId: "ask-context-required",
+      sessionId: "session-1",
+      mode: "single",
+      question: { prompt: "Choose a framework" },
+      options: [{ value: "fastify", label: "Fastify" }]
+    } as const;
+
+    expect(() => AskCreatePayloadSchema.parse(basePayload)).toThrow();
+    expect(() =>
+      AskCreatePayloadSchema.parse({
+        ...basePayload,
+        context: { codebaseContext: "   ", problemContext: "Choose the server framework for v1." }
+      })
+    ).toThrow();
+    expect(() =>
+      AskCreatePayloadSchema.parse({
+        ...basePayload,
+        context: { codebaseContext: "Fastify service.", problemContext: "\n\t" }
+      })
+    ).toThrow();
+
+    expect(
+      AskCreatePayloadSchema.parse({
+        ...basePayload,
+        context: {
+          codebaseContext: "Fastify service with shared Zod schemas.",
+          problemContext: "Choose the server framework for v1."
+        }
+      }).context
+    ).toEqual({
+      codebaseContext: "Fastify service with shared Zod schemas.",
+      problemContext: "Choose the server framework for v1."
+    });
+  });
+
   it("accepts a single-choice ask payload and rejects empty options", () => {
     const payload = AskCreatePayloadSchema.parse({
       requestId: "ask-1",
       sessionId: "session-1",
       mode: "single",
       question: { prompt: "Choose a framework" },
-      options: [{ value: "fastify", label: "Fastify" }]
+      options: [{ value: "fastify", label: "Fastify" }],
+      context: {
+        codebaseContext: "TypeScript workspace with a shared protocol package.",
+        problemContext: "Choose a framework for the Postbox server."
+      }
     });
 
     expect(payload.options[0]?.value).toBe("fastify");
@@ -18,7 +134,11 @@ describe("ask_postbox protocol", () => {
         sessionId: "session-1",
         mode: "multi",
         question: { prompt: "Choose options" },
-        options: []
+        options: [],
+        context: {
+          codebaseContext: "TypeScript workspace with a shared protocol package.",
+          problemContext: "Choose options for the Postbox server."
+        }
       })
     ).toThrow();
   });
@@ -80,6 +200,7 @@ describe("ask_postbox protocol", () => {
     });
 
     expect(snapshot.requests).toHaveLength(1);
+    expect(snapshot.requests[0]?.context).toBeUndefined();
   });
 
   it("preserves rich interviewer handoff context and fork references in request snapshots", () => {

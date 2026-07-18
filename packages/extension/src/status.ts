@@ -1,4 +1,4 @@
-import type { ActiveLocalDiagnostic, ActiveLocalRole } from "../../protocol/src/index.js";
+import type { ActiveLocalDiagnostic, ActiveLocalRole } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import type { ResolveActiveLocalTargetResult } from "./activeLocalTargetResolver.js";

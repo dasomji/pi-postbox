@@ -123,6 +123,10 @@ const LOCAL_TARGET_URL = "http://127.0.0.1:3500/";
 const askInput = {
   requestId: "ask-autostart",
   question: "Proceed with the local Postbox autostart?",
+  context: {
+    codebaseContext: "Pi extension with package-local Postbox Server autostart.",
+    problemContext: "Recover a reachable dashboard before sending a remote decision."
+  },
   options: [{ value: "yes", label: "Yes" }]
 };
 

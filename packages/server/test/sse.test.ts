@@ -130,6 +130,84 @@ class SseClient {
 }
 
 describe("browser state SSE reactivity", () => {
+  it("broadcasts a durable Chat-proposed option without resolving or selecting the Question", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", now: () => 5_000 });
+    apps.push(app);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const port = listenerPort(app);
+    const client = await openSseClient(port);
+    await client.nextStateMatching((snapshot) => snapshot.sessions.length === 0);
+    const socket = await connectAndRegister(port);
+    await client.nextStateMatching((snapshot) => snapshot.sessions.some((session) => session.sessionId === "session-1"));
+
+    const created = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "ask.create",
+      requestId: "wire-proposal-ask",
+      payload: {
+        requestId: "ask-proposal-sse",
+        sessionId: "session-1",
+        mode: "single",
+        question: { prompt: "Which rollout?" },
+        options: [{ value: "ship", label: "Ship now" }],
+        context: {
+          codebaseContext: "Fastify state broadcaster with browser SSE clients.",
+          problemContext: "Append an answer option from Question Chat."
+        }
+      }
+    } satisfies ExtensionClientMessage));
+    await created;
+    await client.nextStateMatching((snapshot) => snapshot.requests.some((request) => request.requestId === "ask-proposal-sse"));
+
+    const activation = app.inject({
+      method: "POST",
+      url: "/api/requests/ask-proposal-sse/chat/context",
+      payload: { confirmed: true }
+    });
+    const command = await nextMessage(socket) as { type: string; requestId: string };
+    expect(command.type).toBe("chat.activate-context");
+    socket.send(JSON.stringify({
+      type: "chat.ready",
+      requestId: command.requestId,
+      payload: {
+        requestId: "ask-proposal-sse",
+        state: "ready",
+        forkKind: "context-only",
+        model: { id: "test/model", source: "originating" },
+        sequence: 0,
+        messages: [],
+        tools: []
+      }
+    } satisfies ExtensionClientMessage));
+    expect((await activation).statusCode).toBe(200);
+
+    const appendedState = client.nextStateMatching((snapshot) =>
+      snapshot.requests.some((request) => request.requestId === "ask-proposal-sse"
+        && request.options.some((option) => option.provenance === "chat"))
+    );
+    const result = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "chat.propose-answer",
+      requestId: "proposal-sse-command",
+      payload: { requestId: "ask-proposal-sse", proposal: { label: "Stage first" } }
+    } satisfies ExtensionClientMessage));
+    await expect(result).resolves.toMatchObject({
+      type: "chat.propose-answer.result",
+      requestId: "proposal-sse-command",
+      payload: { requestId: "ask-proposal-sse", result: { status: "appended" } }
+    });
+    await expect(appendedState).resolves.toMatchObject({
+      requests: [expect.objectContaining({
+        requestId: "ask-proposal-sse",
+        status: "pending",
+        options: [
+          { value: "ship", label: "Ship now" },
+          expect.objectContaining({ label: "Stage first", provenance: "chat" })
+        ]
+      })]
+    });
+  });
+
   it("broadcasts pending and resolved request state to two clients while first answer wins", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 5_000 });
     apps.push(app);
@@ -163,7 +241,11 @@ describe("browser state SSE reactivity", () => {
           options: [
             { value: "first", label: "First browser" },
             { value: "second", label: "Second browser" }
-          ]
+          ],
+          context: {
+            codebaseContext: "Fastify state broadcaster with browser SSE clients.",
+            problemContext: "Broadcast one pending decision consistently to connected clients."
+          }
         }
       } satisfies ExtensionClientMessage)
     );

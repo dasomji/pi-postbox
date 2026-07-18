@@ -46,7 +46,11 @@ function askCreateMessage(requestId: string, prompt: string): ExtensionClientMes
       options: [
         { value: "yes", label: "Yes" },
         { value: "no", label: "No" }
-      ]
+      ],
+      context: {
+        codebaseContext: "Fastify server with Android FCM notifications.",
+        problemContext: "Notify the user about a pending remote decision."
+      }
     }
   };
 }

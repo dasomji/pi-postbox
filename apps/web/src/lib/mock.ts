@@ -12,6 +12,7 @@ export const mockRequest: AskRequestSnapshot = {
   requestId: "mock-request",
   sessionId: "mock-session",
   mode: "single",
+  urgency: "normal",
   status: "pending",
   createdAt,
   question: {

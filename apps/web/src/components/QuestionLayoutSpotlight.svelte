@@ -11,8 +11,16 @@
   let {
     request,
     session,
-    form
-  }: { request: AskRequestSnapshot; session?: SessionSnapshot; form: QuestionForm } = $props();
+    form,
+    chatButtonLabel,
+    onChat
+  }: {
+    request: AskRequestSnapshot;
+    session?: SessionSnapshot;
+    form: QuestionForm;
+    chatButtonLabel?: "Chat";
+    onChat?: () => void;
+  } = $props();
 
   let showContext = $state(false);
   let showNote = $state(false);
@@ -180,8 +188,15 @@
             </span>
             <span class="w-px self-stretch bg-postbox-border" aria-hidden="true"></span>
             <span class="min-w-0">
-              <span class="block font-display text-base font-semibold text-postbox-text">{option.label}</span>
+              <span class="flex flex-wrap items-center gap-2 font-display text-base font-semibold text-postbox-text">
+                <span>{option.label}</span>
+                {#if option.provenance === "chat"}
+                  <span class="rounded-full bg-history/10 px-2 py-0.5 font-sans text-[0.65rem] font-medium uppercase tracking-wide text-history-foreground">Suggested in Chat</span>
+                {/if}
+              </span>
               {#if option.description}<span class="mt-1 block text-sm text-postbox-muted">{option.description}</span>{/if}
+              {#if option.meaning}<span class="mt-2 block text-sm text-attention-foreground/80">Meaning: {option.meaning}</span>{/if}
+              {#if option.context}<span class="mt-1 block text-sm text-postbox-muted">Context: {option.context}</span>{/if}
             </span>
           </button>
         {/each}
@@ -222,9 +237,9 @@
       {#if form.error}<p class="mt-4 rounded-lg bg-danger/10 p-3 text-center text-sm text-danger-foreground">{form.error}</p>{/if}
       {#if form.done && !showStamp}<p class="mt-4 rounded-lg bg-success/10 p-3 text-center text-sm text-success-foreground">{form.done}</p>{/if}
 
-      <div class="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
+      <div class="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:flex-wrap sm:items-center">
         <button
-          class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-attention-foreground bg-attention px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-attention-contrast shadow-postbox-paper ring-2 ring-inset ring-white/25 transition hover:bg-attention-foreground disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+          class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-attention-foreground bg-attention px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-attention-contrast shadow-postbox-paper ring-2 ring-inset ring-white/25 transition hover:bg-attention-foreground disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:shrink-0"
           type="button"
           disabled={!form.canSubmit}
           onclick={submitWithStamp}
@@ -232,15 +247,26 @@
           <svg viewBox="0 0 24 24" fill="currentColor" class="h-4 w-4 shrink-0" aria-hidden="true"><path d="M2 21l21-9L2 3v7l15 2-15 2z" /></svg>
           Submit answer
         </button>
+        {#if chatButtonLabel}
+          <button
+            class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-history-foreground bg-history px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-postbox-elevated shadow-postbox-paper ring-2 ring-inset ring-white/25 transition hover:bg-history-foreground sm:w-auto sm:shrink-0"
+            type="button"
+            onclick={onChat}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4 shrink-0" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" /></svg>
+            {chatButtonLabel}
+          </button>
+        {/if}
         <button
-          class="w-full rounded-full px-4 py-3 text-center text-sm text-postbox-muted transition hover:text-postbox-subtle sm:w-auto"
+          class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-postbox-border-strong bg-postbox-elevated px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-postbox-text shadow-postbox-paper transition hover:border-history-border hover:text-history-foreground sm:w-auto sm:shrink-0"
           type="button"
           onclick={() => (showNote = !showNote)}
         >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4 shrink-0" aria-hidden="true"><path d="M4 4h16v16H4z" /><path d="M8 9h8M8 13h5" /></svg>
           {showNote ? "Hide note" : "+ Add a note"}
         </button>
         <button
-          class="w-full rounded-full px-4 py-3 text-center text-sm text-postbox-muted transition hover:text-danger-foreground disabled:opacity-50 sm:w-auto"
+          class="w-full rounded-full px-4 py-3 text-center text-sm text-postbox-muted transition hover:text-danger-foreground disabled:opacity-50 sm:w-auto sm:shrink-0"
           type="button"
           disabled={form.busy}
           onclick={() => form.cancel()}

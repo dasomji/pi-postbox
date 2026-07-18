@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
-import type { ProjectIcon, ProjectRegistration } from "../../protocol/src/index.js";
+import type { ProjectIcon, ProjectRegistration } from "@pi-postbox/protocol";
 
 const MAX_ICON_BYTES = 64 * 1024;
 const ALLOWED_ICON_MEDIA_TYPES = ["image/svg+xml", "image/png", "image/jpeg", "image/gif", "image/webp"] as const;

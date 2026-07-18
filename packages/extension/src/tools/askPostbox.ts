@@ -3,12 +3,12 @@ import {
   AskCreatePayloadSchema,
   AskResultSchema,
   type AskCreatePayload,
+  type AskCreateHandoffContext,
   type AskOption,
   type AskResult,
-  type ForkReference,
-  type HandoffContext,
-  type RichContextItem
-} from "../../../protocol/src/index.js";
+  type AskUrgency,
+  type ForkReference
+} from "@pi-postbox/protocol";
 import type { PostboxClient } from "../client/PostboxClient.js";
 
 export interface AskPostboxInput {
@@ -17,11 +17,9 @@ export interface AskPostboxInput {
   relevance?: string;
   decisionImpact?: string;
   mode?: "single" | "multi";
+  urgency?: AskUrgency;
   options: AskOption[];
-  codebaseContext?: string;
-  problemContext?: string;
-  additionalInfo?: RichContextItem[];
-  context?: HandoffContext;
+  context: AskCreateHandoffContext;
   forkReference?: ForkReference;
   requestId?: string;
   timeoutMs?: number;
@@ -31,13 +29,18 @@ export interface AskPostboxInput {
 export const askPostboxParameters = {
   type: "object",
   additionalProperties: false,
-  required: ["question", "options"],
+  required: ["question", "options", "context"],
   properties: {
     question: { type: "string", minLength: 1, description: "Decision question to show in Pi Postbox." },
     questionContext: { type: "string", minLength: 1, description: "Concrete context for why this question is being asked." },
     relevance: { type: "string", minLength: 1, description: "Why this question is relevant now." },
     decisionImpact: { type: "string", minLength: 1, description: "What effect this decision will have." },
     mode: { type: "string", enum: ["single", "multi"], description: "Whether one or many options may be selected." },
+    urgency: {
+      type: "string",
+      enum: ["low", "normal", "high"],
+      description: "Attention priority. Higher urgency appears first; defaults to normal."
+    },
     requestId: { type: "string", minLength: 1, description: "Optional stable request id for this ask." },
     timeoutMs: { type: "number", minimum: 1, description: "Optional request expiry timeout in milliseconds." },
     expiresAt: { type: "string", minLength: 1, description: "Optional ISO datetime when this request expires." },
@@ -57,30 +60,16 @@ export const askPostboxParameters = {
         }
       }
     },
-    codebaseContext: { type: "string", minLength: 1, description: "Codebase context for a future interviewer." },
-    problemContext: { type: "string", minLength: 1, description: "Scoped problem context for a future interviewer." },
-    additionalInfo: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["content"],
-        properties: {
-          kind: { type: "string", enum: ["text", "code", "diagram", "link"] },
-          title: { type: "string", minLength: 1 },
-          content: { type: "string", minLength: 1 },
-          language: { type: "string", minLength: 1 }
-        }
-      }
-    },
     context: {
       type: "object",
       additionalProperties: false,
+      required: ["codebaseContext", "problemContext"],
       properties: {
-        codebaseContext: { type: "string", minLength: 1 },
-        problemContext: { type: "string", minLength: 1 },
+        codebaseContext: { type: "string", minLength: 1, description: "Codebase context for a future interviewer." },
+        problemContext: { type: "string", minLength: 1, description: "Scoped problem context for a future interviewer." },
         additionalInfo: {
           type: "array",
+          maxItems: 20,
           items: {
             type: "object",
             additionalProperties: false,
@@ -115,6 +104,7 @@ export function createAskPayload(input: AskPostboxInput, sessionId: string): Ask
     requestId: input.requestId ?? `ask_${randomUUID()}`,
     sessionId,
     mode: input.mode ?? "single",
+    urgency: input.urgency ?? "normal",
     question: {
       prompt: input.question,
       context: input.questionContext,
@@ -128,14 +118,19 @@ export function createAskPayload(input: AskPostboxInput, sessionId: string): Ask
   });
 }
 
-function mergeHandoffContext(input: AskPostboxInput): HandoffContext | undefined {
-  const context: HandoffContext = {
-    ...input.context,
-    codebaseContext: input.codebaseContext ?? input.context?.codebaseContext,
-    problemContext: input.problemContext ?? input.context?.problemContext,
-    additionalInfo: input.additionalInfo ?? input.context?.additionalInfo
+function mergeHandoffContext(input: AskPostboxInput): AskCreateHandoffContext {
+  const context = input.context;
+  if (!context || typeof context.codebaseContext !== "string" || context.codebaseContext.trim().length === 0) {
+    throw new Error("ask_postbox requires non-blank codebaseContext");
+  }
+  if (typeof context.problemContext !== "string" || context.problemContext.trim().length === 0) {
+    throw new Error("ask_postbox requires non-blank problemContext");
+  }
+  return {
+    codebaseContext: context.codebaseContext,
+    problemContext: context.problemContext,
+    additionalInfo: context.additionalInfo
   };
-  return context.codebaseContext || context.problemContext || context.additionalInfo?.length ? context : undefined;
 }
 
 export interface AskPostboxWaitLifecycle {

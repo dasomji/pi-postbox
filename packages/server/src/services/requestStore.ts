@@ -2,20 +2,29 @@ import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
+  ProposeAnswerPayloadSchema,
+  compareAskUrgency,
   OTHER_OPTION_VALUE,
   type AskAnswerPayload,
   type AskCancelPayload,
   type AskCreatePayload,
   type AskRequestSnapshot,
   type AskResult,
-  type AskStatus
+  type AskStatus,
+  type AskUrgency,
+  type AskOption,
+  type ProposeAnswerPayload,
+  type ProposedAnswerOption
 } from "@pi-postbox/protocol";
+import { randomUUID } from "node:crypto";
 import type { SqliteDatabase } from "../db/database.js";
+import { normalizeProposedOptionLabel } from "./proposedOptionPolicy.js";
 
 interface AskRequestRow {
   request_id: string;
   session_id: string;
   mode: "single" | "multi";
+  urgency: AskUrgency;
   prompt: string;
   question_json: string | null;
   options_json: string;
@@ -35,17 +44,26 @@ type ResolutionListener = (result: AskResult) => void;
 
 export interface RequestStoreOptions {
   askTimeoutMs?: number;
+  generateProposedOptionValue?: () => string;
+}
+
+export interface ProposedAnswerAppend {
+  option: ProposedAnswerOption;
+  request: AskRequestSnapshot;
 }
 
 const DEFAULT_ASK_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 const EXPIRED_RATIONALE = "Postbox request expired before an answer was submitted.";
 const SESSION_SHUTDOWN_NOTE = "Originating Pi session shut down.";
+const PROPOSED_OPTION_VALUE_ATTEMPTS = 4;
+const OPTIONS_MAX = 20;
 
 export class RequestStore {
   private readonly listeners = new Map<string, Set<ResolutionListener>>();
   private readonly globalResolutionListeners = new Set<ResolutionListener>();
   private closed = false;
   private readonly askTimeoutMs: number;
+  private readonly generateProposedOptionValue: () => string;
 
   constructor(
     private readonly db: SqliteDatabase,
@@ -53,6 +71,7 @@ export class RequestStore {
     options: RequestStoreOptions = {}
   ) {
     this.askTimeoutMs = options.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    this.generateProposedOptionValue = options.generateProposedOptionValue ?? (() => `chat_${randomUUID()}`);
   }
 
   close(): void {
@@ -78,10 +97,10 @@ export class RequestStore {
     this.db
       .prepare(
         `INSERT INTO ask_requests (
-          request_id, session_id, mode, prompt, question_json, options_json, context_json, fork_reference_json, status,
+          request_id, session_id, mode, urgency, prompt, question_json, options_json, context_json, fork_reference_json, status,
           selected_values_json, note, rationale, created_at, expires_at, resolved_at, updated_at
         ) VALUES (
-          @requestId, @sessionId, @mode, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, 'pending',
+          @requestId, @sessionId, @mode, @urgency, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, 'pending',
           NULL, NULL, NULL, @nowIso, @expiresAt, NULL, @nowIso
         )`
       )
@@ -89,6 +108,7 @@ export class RequestStore {
         requestId: parsed.requestId,
         sessionId: parsed.sessionId,
         mode: parsed.mode,
+        urgency: parsed.urgency,
         prompt: parsed.question.prompt,
         questionJson: JSON.stringify(parsed.question),
         optionsJson: JSON.stringify(parsed.options),
@@ -104,17 +124,88 @@ export class RequestStore {
   }
 
   list(filters: { status?: AskStatus } = {}): AskRequestSnapshot[] {
-    const rows = filters.status
-      ? (this.db
-          .prepare("SELECT * FROM ask_requests WHERE status = ? ORDER BY created_at ASC")
-          .all(filters.status) as AskRequestRow[])
-      : (this.db.prepare("SELECT * FROM ask_requests ORDER BY created_at ASC").all() as AskRequestRow[]);
+    const rows =
+      filters.status === "pending"
+        ? (this.db
+            .prepare("SELECT * FROM ask_requests WHERE status = 'pending' ORDER BY created_at ASC")
+            .all() as AskRequestRow[]).sort((a, b) => compareAskUrgency(a.urgency, b.urgency))
+        : filters.status
+          ? (this.db
+              .prepare("SELECT * FROM ask_requests WHERE status = ? ORDER BY created_at ASC")
+              .all(filters.status) as AskRequestRow[])
+          : (this.db.prepare("SELECT * FROM ask_requests ORDER BY created_at ASC").all() as AskRequestRow[]);
     return rows.map((row) => this.toSnapshot(row));
   }
 
   get(requestId: string): AskRequestSnapshot | undefined {
     const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
     return row ? this.toSnapshot(row) : undefined;
+  }
+
+  proposeAnswer(requestId: string, ownerSessionId: string, payload: ProposeAnswerPayload): ProposedAnswerAppend {
+    if (this.closed) throw new Error("request store is closed");
+    this.expireDue();
+    let appended: ProposedAnswerAppend | undefined;
+
+    const transaction = this.db.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
+      if (!row) throw new RequestStoreError("request_not_found", "Question not found.");
+      if (row.status !== "pending") throw new RequestStoreError("request_terminal", "Question is no longer pending.");
+      if (row.session_id !== ownerSessionId) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
+
+      const parsed = ProposeAnswerPayloadSchema.safeParse(payload);
+      if (!parsed.success || normalizeProposedOptionLabel(parsed.data.label).length === 0) {
+        throw new RequestStoreError("invalid_proposal", "Suggested option is invalid.");
+      }
+
+      const options = JSON.parse(row.options_json) as AskOption[];
+      if (options.length >= OPTIONS_MAX) {
+        throw new RequestStoreError("option_limit_reached", "Question already has the maximum number of options.");
+      }
+
+      const normalizedLabel = normalizeProposedOptionLabel(parsed.data.label);
+      if (options.some((option) => normalizeProposedOptionLabel(option.label) === normalizedLabel)) {
+        throw new RequestStoreError("duplicate_option", "An option with that label already exists.");
+      }
+
+      const usedValues = new Set([...options.map((option) => option.value), OTHER_OPTION_VALUE]);
+      let value: string | undefined;
+      for (let attempt = 0; attempt < PROPOSED_OPTION_VALUE_ATTEMPTS; attempt += 1) {
+        const candidate = this.generateProposedOptionValue();
+        if (typeof candidate === "string" && candidate.length > 0 && candidate.length <= 200 && !usedValues.has(candidate)) {
+          value = candidate;
+          break;
+        }
+      }
+      if (!value) {
+        throw new RequestStoreError("option_value_collision", "Could not allocate a unique option value.");
+      }
+
+      const option: ProposedAnswerOption = { value, ...parsed.data, provenance: "chat" };
+      const updatedAt = new Date(this.now()).toISOString();
+      const changes = this.db.prepare(
+        `UPDATE ask_requests
+         SET options_json = @optionsJson,
+             updated_at = @updatedAt
+         WHERE request_id = @requestId
+           AND session_id = @ownerSessionId
+           AND status = 'pending'`
+      ).run({
+        requestId,
+        ownerSessionId,
+        optionsJson: JSON.stringify([...options, option]),
+        updatedAt
+      }).changes;
+
+      if (changes !== 1) throw new RequestStoreError("request_terminal", "Question is no longer pending.");
+      const request = this.get(requestId);
+      if (!request) throw new Error("updated request could not be loaded");
+      appended = { option, request };
+    });
+
+    transaction();
+    if (!appended) throw new Error("proposal transaction did not produce a result");
+    return appended;
   }
 
   answer(requestId: string, payload: AskAnswerPayload): AskResult {
@@ -311,6 +402,7 @@ export class RequestStore {
       requestId: row.request_id,
       sessionId: row.session_id,
       mode: row.mode,
+      urgency: row.urgency ?? "normal",
       question: this.parseJson(row.question_json, { prompt: row.prompt }) as AskRequestSnapshot["question"],
       options: JSON.parse(row.options_json) as AskRequestSnapshot["options"],
       context: row.context_json ? (this.parseJson(row.context_json, undefined) as AskRequestSnapshot["context"]) : undefined,

@@ -2,7 +2,7 @@
 
 Pi Postbox is a Pi extension and companion web service for remote human decision handoffs.
 
-Instead of streaming every agent chat into a dashboard, Pi Postbox focuses on attention cards: Pi sessions register their presence, report project/branch/machine metadata, and send structured questions when they need input.
+Instead of streaming full Pi Session transcripts into a dashboard, Pi Postbox focuses on Postbox Questions: Pi Sessions register their presence, report project/branch/machine metadata, and send structured questions when they need input.
 
 The product requirements document is in [`docs/prd/pi-postbox.md`](docs/prd/pi-postbox.md).
 
@@ -36,7 +36,7 @@ npm run build     # build server/protocol/extension and Vite UI
 npm run smoke     # packaged-path release smoke test
 ```
 
-The smoke script starts the built CLI with a temporary SQLite database and temporary Postbox config directory, connects a fake extension, verifies `/healthz`, opens `/api/state/events`, registers a session, creates and answers an ask, verifies `/api/state`, and confirms `/api/history` contains the answered request.
+The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration and handoff context, explicit Question Chat activation without an automatic turn, context-only interviewer fallback, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, and absence of the private transcript/evidence from those durable APIs.
 
 ## Packages
 
@@ -77,6 +77,18 @@ pi-postbox-server
 ```
 
 `npm install -g @wienerberliner/pi-postbox` is only needed when you want `pi-postbox-server` on your shell `PATH`; it is distinct from `pi install`.
+
+## Question Chat
+
+For a pending Postbox Question, click **Question Chat** to activate Question Chat explicitly. Activation creates a private runtime on the originating Pi machine, but it does not start an automatic model turn or response. Send a freeform message or choose a starter: **Elaborate**, **Pro–Cons**, or **Teach me**.
+
+Question Chat normally starts from an exact fork of the originating Pi Session at the question's leaf. If that leaf is unavailable but the request contains the required `codebaseContext` and `problemContext`, the dashboard may offer a clearly labeled, explicit **context-only interviewer** fallback; it never silently substitutes that fallback. A `/reload` or process restart aborts the active turn but preserves and recovers the temporary fork through its recovery manifest when possible.
+
+The assistant can use only bounded, read-only repository evidence tools: `repository_read`, `repository_grep`, `repository_find`, and `repository_list`. They are limited to the originating Git worktree, or to the originating cwd subtree outside Git, and expose neither a shell nor file mutation. A proposal made with the answer tool appears as **Suggested in Chat**. It is a server-validated option, not a selected answer; the user must still choose or submit it.
+
+If the extension goes offline, an already-open dashboard retains its rendered messages but disables Question Chat commands and offers **Retry**; commands are not queued. A fresh dashboard cannot load the private Question Chat transcript while the extension is offline. **Stop** aborts only the current turn, preserves already-streamed output, and leaves Question Chat ready for another message.
+
+An answered request, a cancelled request, expiry, or Pi Session replacement through `/new`, `/resume`, `/fork`, or quit aborts the runtime and deletes the temporary private transcript and recovery manifest. Resolved History retains the chosen answer and any proposed option, including **Suggested in Chat**, but contains no Question Chat transcript, hidden reasoning, tool arguments, or tool output.
 
 ## Server configuration
 
@@ -134,6 +146,8 @@ Icon paths are resolved by the extension and uploaded as small data URLs plus ha
 
 Pi Postbox v1 uses a **Tailscale-only** trust boundary with **no app-level authentication**. Anyone who can reach the HTTP service can read cards/history and submit answers. The server still blocks cross-origin browser pivots for state-changing HTTP/WebSocket actions and enforces finite payload/icon limits, but that is CSRF/abuse protection — not user authentication.
 
+Question Chat also spends model tokens and can request tightly scoped, read-only evidence from the originating Git worktree (or cwd subtree outside Git). Its custom read/grep/find/list tools deny ignored, secret-like, out-of-scope, and directory-symlink paths and expose no shell or mutation capability. Tailnet access must therefore be limited to people and devices trusted with both Postbox decisions and this bounded repository-read consequence.
+
 `pi-postbox-server` now performs automatic Tailnet-private Tailscale Serve exposure when the `tailscale` CLI is installed, logged in, and non-conflicting. Startup inspects `tailscale serve status --json` first, then uses a command shaped like `tailscale serve --bg --https 32187 http://127.0.0.1:32187` for the actual bound port. The integration is non-clobbering: if another service already owns that HTTPS port, Postbox reports a conflict and leaves the mapping unchanged.
 
 Disable automatic Serve mutation with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`. Check local/Tailnet state without starting a server with:
@@ -150,7 +164,7 @@ See [`docs/configuration.md`](docs/configuration.md), [`docs/deployment.md`](doc
 
 ## Local fallback commands and status
 
-While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
+While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without starting an automatic model turn:
 
 ```text
 /postbox-status

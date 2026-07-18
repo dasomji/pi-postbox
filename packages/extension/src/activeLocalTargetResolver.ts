@@ -4,7 +4,7 @@ import {
   type ActiveLocalMetadataRecord,
   type ActiveLocalRole,
   type ActiveLocalTargetIdentity
-} from "../../protocol/src/index.js";
+} from "@pi-postbox/protocol";
 import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";

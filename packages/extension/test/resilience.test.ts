@@ -14,7 +14,11 @@ const askPayload: AskCreatePayload = {
   sessionId: "session-1",
   mode: "single",
   question: { prompt: "Reconnect?" },
-  options: [{ value: "yes", label: "Yes" }]
+  options: [{ value: "yes", label: "Yes" }],
+  context: {
+    codebaseContext: "Pi extension WebSocket client with reconnect support.",
+    problemContext: "Keep a pending decision stable across reconnects."
+  }
 };
 
 const LOCAL_POSTBOX_URL = "http://127.0.0.1:32187/";

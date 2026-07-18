@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionRegisterPayload } from "../../protocol/src/index.js";
+import type { SessionRegisterPayload } from "@pi-postbox/protocol";
 import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
@@ -16,6 +16,7 @@ import { collectProjectMetadata } from "./projectMetadata.js";
 import { collectSessionMetadata } from "./sessionMetadata.js";
 import { askPostboxParameters, executeAskPostbox, formatAskResult, type AskPostboxInput } from "./tools/askPostbox.js";
 import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./status.js";
+import { PiQuestionChatRuntimeAdapter, QuestionChatRuntimeRegistry } from "./questionChatRuntime.js";
 
 interface PiLikeApi {
   on(event: string, handler: (event: unknown, ctx: PiLikeContext) => unknown): void;
@@ -69,6 +70,11 @@ interface ActiveSessionRegistrationContext {
 const DEFAULT_SUPERVISOR_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_SUPERVISOR_MAX_DELAY_MS = 30_000;
 const AUTOSTART_RECOVERY_METADATA_TTL_MS = 24 * 60 * 60 * 1_000;
+const RELOAD_FALLBACK_IDENTITY = Symbol.for("@wienerberliner/pi-postbox/reload-fallback-session-identity");
+
+interface ReloadIdentityGlobal {
+  [RELOAD_FALLBACK_IDENTITY]?: string;
+}
 
 let client: PostboxClient | undefined;
 let currentRegistration: SessionRegisterPayload | undefined;
@@ -78,6 +84,14 @@ let activeLocalSupervisor: ActiveLocalSupervisor | undefined;
 let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
 let unavailableRationale = "Pi Postbox is not connected.";
 const registrationWaiters = new Set<() => void>();
+const questionChats = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter({
+  proposeAnswer: (requestId, proposal, signal) => client
+    ? client.proposeAnswer(requestId, proposal, signal)
+    : Promise.resolve({
+        status: "error",
+        error: { code: "internal_error", message: "Postbox is not connected." }
+      })
+}));
 
 export default function postboxExtension(pi: PiLikeApi): void {
   semanticStateController = createSemanticStateController(() => client, pi);
@@ -105,7 +119,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     description: "Send a structured decision question to Pi Postbox and wait for the remote answer.",
     promptSnippet: "Ask the user for a remote decision through Pi Postbox.",
     promptGuidelines: [
-      "Use ask_postbox when you need a human decision and can provide concise options. The tool blocks until the Postbox card is answered or cancelled."
+      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext so a future interviewer can explain the decision. The tool blocks until the Postbox Question is answered or cancelled."
     ],
     parameters: askPostboxParameters,
     async execute(_toolCallId: string, params: AskPostboxInput, signal?: AbortSignal) {
@@ -123,6 +137,19 @@ export default function postboxExtension(pi: PiLikeApi): void {
         return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
       }
 
+      const liveContext = activeSessionRegistrationContext?.ctx;
+      const liveSessionPath = liveContext?.sessionManager?.getSessionFile?.();
+      const liveLeafId = liveContext?.sessionManager?.getLeafId?.();
+      if (liveSessionPath && liveLeafId) {
+        const source = { cwd: liveContext?.cwd ?? currentRegistration.session.cwd, agentSessionPath: liveSessionPath, leafId: liveLeafId };
+        const sourceAwareClient = client as PostboxClient & { updateQuestionSource?: (value: typeof source) => boolean };
+        sourceAwareClient.updateQuestionSource?.(source);
+        currentRegistration = {
+          ...currentRegistration,
+          session: { ...currentRegistration.session, ...source }
+        };
+      }
+
       const result = await executeAskPostbox(params, client, currentRegistration.session.sessionId, signal, semanticStateController);
       return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
     }
@@ -132,13 +159,23 @@ export default function postboxExtension(pi: PiLikeApi): void {
     activeUiScope?.deactivate();
     stopActiveLocalSupervisor();
     activeUiScope = createSessionUiScope(ctx);
-    const fallbackSessionIdentity = randomUUID();
+    const fallbackSessionIdentity = consumeReloadFallbackIdentity() ?? randomUUID();
     const options: StartRegistrationOptions = {};
     activeSessionRegistrationContext = { pi, ctx, uiScope: activeUiScope, fallbackSessionIdentity, options };
     void startRegistration(pi, ctx, process.env, activeUiScope, fallbackSessionIdentity, options);
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    const reason = event && typeof event === "object" && "reason" in event ? (event as { reason?: unknown }).reason : undefined;
+    preserveFallbackIdentityForReload(reason, activeSessionRegistrationContext?.fallbackSessionIdentity);
+    const ownerSessionId = currentRegistration?.session.sessionId ?? collectSessionMetadata(
+      pi,
+      activeSessionRegistrationContext?.ctx ?? ctx,
+      undefined,
+      undefined,
+      activeSessionRegistrationContext?.fallbackSessionIdentity
+    ).sessionId;
+    const chatCleanup = reason === "reload" ? questionChats.suspendAll() : questionChats.cleanupAll(ownerSessionId);
     activeUiScope?.deactivate();
     stopActiveLocalSupervisor();
     activeUiScope = undefined;
@@ -147,7 +184,24 @@ export default function postboxExtension(pi: PiLikeApi): void {
     client = undefined;
     currentRegistration = undefined;
     notifyRegistrationWaiters();
+    await chatCleanup;
   });
+}
+
+function consumeReloadFallbackIdentity(): string | undefined {
+  const reloadState = globalThis as ReloadIdentityGlobal;
+  const identity = reloadState[RELOAD_FALLBACK_IDENTITY];
+  delete reloadState[RELOAD_FALLBACK_IDENTITY];
+  return identity;
+}
+
+function preserveFallbackIdentityForReload(reason: unknown, identity: string | undefined): void {
+  const reloadState = globalThis as ReloadIdentityGlobal;
+  if (reason === "reload" && identity) {
+    reloadState[RELOAD_FALLBACK_IDENTITY] = identity;
+    return;
+  }
+  delete reloadState[RELOAD_FALLBACK_IDENTITY];
 }
 
 async function collectExtensionPostboxStatusSnapshot(env: NodeJS.ProcessEnv) {
@@ -205,7 +259,8 @@ async function registerResolvedTarget(
       onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
       onLocalFallbackStatus: (status) => {
         void renderLocalFallbackStatus(uiScope, status);
-      }
+      },
+      questionChats
     });
     client.start();
     notifyRegistrationWaiters();

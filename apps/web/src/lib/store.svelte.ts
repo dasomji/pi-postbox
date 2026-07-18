@@ -1,4 +1,5 @@
 import {
+  compareAskUrgency,
   StateSnapshotSchema,
   type AskRequestSnapshot,
   type HealthResponse,
@@ -33,6 +34,10 @@ export interface ProjectGroup {
   sessions: SessionSnapshot[];
 }
 
+export function comparePendingRequests(a: AskRequestSnapshot, b: AskRequestSnapshot): number {
+  return compareAskUrgency(a.urgency, b.urgency) || Date.parse(a.createdAt) - Date.parse(b.createdAt);
+}
+
 class PostboxStore {
   /**
    * Requests this tab is resolving itself. Their snapshot transition to a terminal
@@ -57,7 +62,9 @@ class PostboxStore {
 
   sessions = $derived(this.snapshot.status === "ready" ? this.snapshot.data.sessions : []);
   requests = $derived(this.snapshot.status === "ready" ? this.snapshot.data.requests : []);
-  pendingRequests = $derived(this.requests.filter((request) => request.status === "pending"));
+  pendingRequests = $derived(
+    this.requests.filter((request) => request.status === "pending").sort(comparePendingRequests)
+  );
   timestamp = $derived(this.snapshot.status === "ready" ? this.snapshot.data.timestamp : undefined);
 
   requestsBySession = $derived.by(() => {

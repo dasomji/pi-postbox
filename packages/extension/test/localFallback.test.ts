@@ -17,7 +17,11 @@ const askPayload: AskCreatePayload = {
   options: [
     { value: "yes", label: "Yes" },
     { value: "no", label: "No" }
-  ]
+  ],
+  context: {
+    codebaseContext: "Pi extension with local fallback commands.",
+    problemContext: "Resolve a pending remote decision from the terminal."
+  }
 };
 
 class FakeSocket {

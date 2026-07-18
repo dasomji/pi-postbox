@@ -84,7 +84,11 @@ async function createAsk(socket: WebSocket, requestId: string, sessionId = "sess
         options: [
           { value: "yes", label: "Yes" },
           { value: "no", label: "No" }
-        ]
+        ],
+        context: {
+          codebaseContext: "Fastify server with retained session and request records.",
+          problemContext: "Keep sessions referenced by pending or historical decisions."
+        }
       }
     } satisfies ExtensionClientMessage)
   );
