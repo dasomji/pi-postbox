@@ -1,5 +1,6 @@
 import type {
   QuestionChatActivationResponse,
+  QuestionChatAvailabilityError,
   QuestionChatEvent,
   QuestionChatSendPayload,
   QuestionChatSendResponse,
@@ -12,6 +13,7 @@ import { applyQuestionChatEvent } from "./questionChat";
 
 export interface QuestionChatApi {
   activate(requestId: string): Promise<QuestionChatActivationResponse>;
+  activateContext(requestId: string): Promise<QuestionChatActivationResponse>;
   fetchSnapshot(requestId: string): Promise<QuestionChatSnapshot>;
   probeSnapshot(requestId: string): Promise<QuestionChatProbeResult>;
   sendMessage(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
@@ -23,15 +25,15 @@ export type QuestionChatView =
   | { kind: "not-started" }
   | { kind: "starting" }
   | { kind: "ready"; snapshot: QuestionChatSnapshot }
-  | { kind: "unavailable"; message: string };
+  | { kind: "unavailable"; error: QuestionChatAvailabilityError };
 
 interface LifecycleCallbacks {
   started?: () => void;
-  activationFailed?: () => void;
+  activationFailed?: (error: QuestionChatAvailabilityError) => void;
   event?: (event: QuestionChatEvent) => void;
 }
 
-type LifecycleApi = Pick<QuestionChatApi, "activate" | "fetchSnapshot" | "probeSnapshot" | "connectEvents">;
+type LifecycleApi = Pick<QuestionChatApi, "activate" | "activateContext" | "fetchSnapshot" | "probeSnapshot" | "connectEvents">;
 
 export class QuestionChatLifecycle {
   view = $state<QuestionChatView>({ kind: "not-started" });
@@ -61,17 +63,25 @@ export class QuestionChatLifecycle {
   }
 
   async start(): Promise<void> {
+    await this.activateWith((requestId) => this.api.activate(requestId));
+  }
+
+  async startContext(): Promise<void> {
+    await this.activateWith((requestId) => this.api.activateContext(requestId));
+  }
+
+  private async activateWith(activate: (requestId: string) => Promise<QuestionChatActivationResponse>): Promise<void> {
     if (this.view.kind === "starting" || this.view.kind === "ready") return;
     const requestId = this.requestId;
     const generation = this.generation;
     let started = false;
     this.view = { kind: "starting" };
     try {
-      const response = await this.api.activate(requestId);
+      const response = await activate(requestId);
       if (!this.isCurrent(requestId, generation)) return;
       if (response.status === "unavailable") {
-        this.view = { kind: "unavailable", message: response.error.message };
-        this.callbacks.activationFailed?.();
+        this.view = { kind: "unavailable", error: response.error };
+        this.callbacks.activationFailed?.(response.error);
         return;
       }
       this.view = { kind: "ready", snapshot: response.snapshot };
@@ -81,8 +91,12 @@ export class QuestionChatLifecycle {
     } catch (error) {
       if (!this.isCurrent(requestId, generation)) return;
       this.closeEvents();
-      this.view = { kind: "unavailable", message: error instanceof Error ? error.message : "Question Chat is unavailable." };
-      if (!started) this.callbacks.activationFailed?.();
+      const availabilityError: QuestionChatAvailabilityError = {
+        code: "runtime_failure",
+        message: error instanceof Error ? error.message : "Question Chat is unavailable."
+      };
+      this.view = { kind: "unavailable", error: availabilityError };
+      if (!started) this.callbacks.activationFailed?.(availabilityError);
     }
   }
 
@@ -102,7 +116,10 @@ export class QuestionChatLifecycle {
       this.closeEvents();
       this.view = {
         kind: "unavailable",
-        message: error instanceof Error ? error.message : "Question Chat synchronization is unavailable."
+        error: {
+          code: "runtime_failure",
+          message: error instanceof Error ? error.message : "Question Chat synchronization is unavailable."
+        }
       };
     }
   }

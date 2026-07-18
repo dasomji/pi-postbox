@@ -63,6 +63,13 @@ describe("extension Question Chat commands", () => {
         model: { id: "test/source", source: "originating" as const },
         messages: [] as []
       })),
+      activateContext: vi.fn(async ({ requestId }: { requestId: string }) => ({
+        requestId,
+        state: "ready" as const,
+        forkKind: "context-only" as const,
+        model: { id: "test/source", source: "originating" as const },
+        messages: [] as []
+      })),
       getSnapshot: vi.fn(async (requestId: string) => ({
         requestId,
         state: "ready" as const,
@@ -106,6 +113,36 @@ describe("extension Question Chat commands", () => {
         agentSessionPath: "/source-at-question.jsonl",
         leafId: "leaf-at-question"
       }
+    });
+
+    socket.serverMessage({
+      type: "chat.activate-context",
+      requestId: "command-context-1",
+      payload: {
+        requestId: "ask-context",
+        ownerSessionId: "session-chat",
+        source: {
+          cwd: "/repo",
+          model: "anthropic/claude-sonnet-4",
+          mode: "single",
+          question: { prompt: "Which design?" },
+          options: [{ value: "a", label: "A" }],
+          context: { codebaseContext: "The extension client.", problemContext: "Explain the choice." }
+        }
+      }
+    });
+    await vi.waitFor(() => expect(questionChats.activateContext).toHaveBeenCalledWith({
+      requestId: "ask-context",
+      source: expect.objectContaining({
+        cwd: "/repo",
+        model: "anthropic/claude-sonnet-4",
+        question: { prompt: "Which design?" }
+      })
+    }));
+    expect(socket.sent).toContainEqual({
+      type: "chat.ready",
+      requestId: "command-context-1",
+      payload: expect.objectContaining({ requestId: "ask-context", forkKind: "context-only" })
     });
 
     socket.serverMessage({
@@ -182,7 +219,15 @@ describe("extension Question Chat commands", () => {
   });
 
   it("rejects a command routed to a different Postbox Session", async () => {
-    const questionChats = { activate: vi.fn(), cleanup: vi.fn() };
+    const questionChats = {
+      activate: vi.fn(),
+      activateContext: vi.fn(),
+      getSnapshot: vi.fn(),
+      send: vi.fn(),
+      stop: vi.fn(),
+      subscribe: vi.fn(),
+      cleanup: vi.fn()
+    };
     const client = new PostboxClient({
       serverUrl: "http://postbox.local",
       registration,

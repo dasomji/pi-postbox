@@ -320,6 +320,13 @@ export class SessionStore {
     return { agentSessionPath: row.agent_session_path, leafId: row.leaf_id, cwd: row.cwd };
   }
 
+  questionChatCwd(sessionId: string): string | undefined {
+    const row = this.db.prepare("SELECT cwd FROM sessions WHERE session_id = ?").get(sessionId) as
+      | { cwd: string }
+      | undefined;
+    return row?.cwd;
+  }
+
   getQuestionChatSourceState(sessionId: string): "missing_path" | "missing_leaf" {
     const row = this.db
       .prepare("SELECT agent_session_path, leaf_id FROM sessions WHERE session_id = ?")

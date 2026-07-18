@@ -15,6 +15,7 @@ import {
 import type {
   QuestionChatEvent,
   QuestionChatAvailabilityError,
+  QuestionChatContextSource,
   QuestionChatSendPayload,
   QuestionChatSendResponse,
   QuestionChatSnapshot,
@@ -63,6 +64,7 @@ export interface PostboxClientOptions {
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
   questionChats?: {
     activate(input: { requestId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
+    activateContext(input: { requestId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
     getSnapshot(requestId: string): Promise<QuestionChatSnapshot>;
     send(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
     stop(requestId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
@@ -385,6 +387,10 @@ export class PostboxClient {
           void this.activateQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
         }
+        if (parsed.data.type === "chat.activate-context") {
+          void this.activateContextQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
         if (parsed.data.type === "chat.snapshot") {
           void this.snapshotQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
@@ -439,6 +445,21 @@ export class PostboxClient {
     commandId: string,
     payload: { requestId: string; ownerSessionId: string; source: QuestionChatSource }
   ): Promise<void> {
+    await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activate(input));
+  }
+
+  private async activateContextQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }
+  ): Promise<void> {
+    await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activateContext(input));
+  }
+
+  private async handleQuestionChatActivation<Source extends QuestionChatSource | QuestionChatContextSource>(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; source: Source },
+    activate: (input: { requestId: string; source: Source }) => Promise<QuestionChatSnapshot>
+  ): Promise<void> {
     if (payload.ownerSessionId !== this.options.registration.session.sessionId) {
       this.sendQuestionChatError(commandId, payload.requestId, {
         code: "wrong_owner",
@@ -455,7 +476,7 @@ export class PostboxClient {
     }
 
     try {
-      const snapshot = await this.options.questionChats.activate({ requestId: payload.requestId, source: payload.source });
+      const snapshot = await activate({ requestId: payload.requestId, source: payload.source });
       if (!this.questionChatSubscriptions.has(payload.requestId)) {
         const unsubscribe = this.options.questionChats.subscribe(payload.requestId, (event) => {
           this.send({ type: "chat.event", payload: event });

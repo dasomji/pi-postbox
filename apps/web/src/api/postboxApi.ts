@@ -91,6 +91,19 @@ export async function activateQuestionChat(requestId: string): Promise<QuestionC
   return parsed;
 }
 
+export async function activateContextQuestionChat(requestId: string): Promise<QuestionChatActivationResponse> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat/context`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirmed: true })
+  });
+  const parsed = QuestionChatActivationResponseSchema.parse(await response.json());
+  if (!response.ok && parsed.status === "ready") {
+    throw new Error(`Context-only Chat activation failed with ${response.status}`);
+  }
+  return parsed;
+}
+
 export async function fetchQuestionChatSnapshot(requestId: string): Promise<QuestionChatSnapshot> {
   const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat`);
   const body = QuestionChatSnapshotHttpResponseSchema.parse(await response.json());

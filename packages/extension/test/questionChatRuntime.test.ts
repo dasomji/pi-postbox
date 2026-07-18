@@ -53,6 +53,122 @@ function fakeCreateSession(selectedModel = { provider: "test-provider", id: "sou
 }
 
 describe("Pi Question Chat runtime adapter", () => {
+  it("creates an isolated context-only interviewer from authoritative persisted handoff context without inventing source history", async () => {
+    const root = mkdtempSync(join(tmpdir(), "postbox-context-chat-runtime-"));
+    const privateRoot = join(root, "private-chats");
+    const recordedModel = { provider: "anthropic", id: "claude-sonnet-4" } as any;
+    const modelRuntime = {
+      getModel: vi.fn((provider: string, id: string) =>
+        provider === recordedModel.provider && id === recordedModel.id ? recordedModel : undefined),
+      hasConfiguredAuth: vi.fn(() => true)
+    } as any;
+    const fake = fakeCreateSession(recordedModel);
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot,
+      agentDir: join(root, "agent"),
+      createAgentSession: fake.create,
+      createModelRuntime: vi.fn(async () => modelRuntime)
+    });
+    const registry = new QuestionChatRuntimeRegistry(adapter);
+    const source = {
+      cwd: join(root, "repo"),
+      model: "anthropic/claude-sonnet-4",
+      mode: "single" as const,
+      question: {
+        prompt: "Which storage design?",
+        context: "The public API is not final.",
+        relevance: "This blocks implementation.",
+        decisionImpact: "The choice fixes compatibility."
+      },
+      options: [
+        { value: "sqlite", label: "SQLite", description: "One local file.", meaning: "Durable local state." },
+        { value: "memory", label: "Memory", context: "Useful only in tests." }
+      ],
+      context: {
+        codebaseContext: "Fastify server with a request store.",
+        problemContext: "The request must survive restart.",
+        additionalInfo: [
+          { kind: "code" as const, title: "Existing seam", content: "requestStore.create(payload)", language: "ts" },
+          { kind: "link" as const, title: "Design note", content: "https://example.test/design" }
+        ]
+      }
+    };
+
+    const [first, retry] = await Promise.all([
+      registry.activateContext({ requestId: "ask-context", source }),
+      registry.activateContext({ requestId: "ask-context", source })
+    ]);
+    expect(first).toEqual(retry);
+    expect(first).toMatchObject({
+      state: "ready",
+      forkKind: "context-only",
+      messages: [],
+      model: { id: "anthropic/claude-sonnet-4", source: "originating" }
+    });
+    expect(fake.create).toHaveBeenCalledOnce();
+    const options = fake.create.mock.calls[0]![0];
+    expect(options.model).toBe(recordedModel);
+    expect(options.tools).toEqual([]);
+    expect(options.resourceLoader?.getExtensions().extensions).toEqual([]);
+    expect(options.resourceLoader?.getSkills().skills).toEqual([]);
+    expect(options.resourceLoader?.getAgentsFiles().agentsFiles).toEqual([]);
+    expect(options.sessionManager?.buildSessionContext().messages).toEqual([]);
+    const systemPrompt = options.resourceLoader?.getSystemPrompt() ?? "";
+    expect(systemPrompt).toContain("fresh private context-only interviewer session");
+    expect(systemPrompt).toContain("Which storage design?");
+    expect(systemPrompt).toContain("SQLite");
+    expect(systemPrompt).toContain("Memory");
+    expect(systemPrompt).toContain("Fastify server with a request store.");
+    expect(systemPrompt).toContain("The request must survive restart.");
+    expect(systemPrompt).toContain("requestStore.create(payload)");
+    expect(systemPrompt).not.toContain("source transcript");
+    expect(systemPrompt).not.toContain("source answer");
+
+    const runtimeDir = options.sessionManager!.getSessionDir();
+    expect(relative(privateRoot, runtimeDir)).not.toMatch(/^\.\./);
+    expect(statSync(runtimeDir).mode & 0o777).toBe(0o700);
+    await registry.cleanup("ask-context");
+    expect(fake.lifecycle).toEqual(["abort", "dispose"]);
+    expect(existsSync(runtimeDir)).toBe(false);
+  });
+
+  it("discloses Pi-default context-only model fallback and rejects cross-kind replacement", async () => {
+    const fixture = createSourceFixture();
+    const fallback = fakeCreateSession({ provider: "fallback-provider", id: "default-model" });
+    const modelRuntime = {
+      getModel: vi.fn(() => undefined),
+      hasConfiguredAuth: vi.fn(() => false)
+    } as any;
+    const adapter = new PiQuestionChatRuntimeAdapter({
+      privateRoot: join(fixture.root, "private-chats"),
+      agentDir: join(fixture.root, "agent"),
+      createAgentSession: fallback.create,
+      createModelRuntime: vi.fn(async () => modelRuntime)
+    });
+    const registry = new QuestionChatRuntimeRegistry(adapter);
+    const contextSource = {
+      cwd: fixture.cwd,
+      model: "recorded-provider/missing-model",
+      mode: "single" as const,
+      question: { prompt: "Choose." },
+      options: [{ value: "a", label: "A" }],
+      context: { codebaseContext: "Codebase.", problemContext: "Problem." }
+    };
+    const snapshot = await registry.activateContext({ requestId: "ask-context-fallback", source: contextSource });
+    expect(snapshot.model).toMatchObject({
+      id: "fallback-provider/default-model",
+      source: "pi-default",
+      fallbackReason: expect.stringContaining("recorded-provider/missing-model")
+    });
+    expect(fallback.create.mock.calls[0]![0].model).toBeUndefined();
+    await expect(registry.activate({
+      requestId: "ask-context-fallback",
+      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+    })).rejects.toMatchObject({ code: "runtime_busy" });
+    expect(fallback.create).toHaveBeenCalledOnce();
+    await registry.cleanup("ask-context-fallback");
+  });
+
   it("creates one private root-to-leaf fork without changing the source or spending model capacity", async () => {
     const fixture = createSourceFixture();
     const before = readFileSync(fixture.sourcePath);

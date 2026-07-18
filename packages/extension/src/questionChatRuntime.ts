@@ -7,6 +7,7 @@ import {
   type QuestionChatAvailabilityCode,
   type QuestionChatEvent,
   type QuestionChatMessage,
+  type QuestionChatContextSource,
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
   type QuestionChatSnapshot,
@@ -35,6 +36,11 @@ const INTERVIEWER_SYSTEM_PROMPT =
 export interface QuestionChatActivation {
   requestId: string;
   source: QuestionChatSource;
+}
+
+export interface QuestionChatContextActivation {
+  requestId: string;
+  source: QuestionChatContextSource;
 }
 
 interface SessionLifecycle {
@@ -111,15 +117,7 @@ export class PiQuestionChatRuntimeAdapter {
 
   async create(input: QuestionChatActivation): Promise<QuestionChatRuntime> {
     this.assertSourceFile(input.source.agentSessionPath);
-    const runtimeDir = this.runtimeDirectory(input.requestId);
-    let session: SessionLifecycle | undefined;
-
-    try {
-      mkdirSync(this.privateRoot, { recursive: true, mode: 0o700 });
-      chmodSync(this.privateRoot, 0o700);
-      mkdirSync(runtimeDir, { recursive: false, mode: 0o700 });
-      chmodSync(runtimeDir, 0o700);
-
+    return this.createPrivateRuntime(input.requestId, "exact", (runtimeDir) => {
       // Pi 0.80.10 may migrate an opened session in place. Open a private byte
       // snapshot so even older source sessions remain immutable.
       const sourceSnapshotPath = join(runtimeDir, "source-snapshot.jsonl");
@@ -134,9 +132,49 @@ export class PiQuestionChatRuntimeAdapter {
       if (!forkPath) throw new QuestionChatRuntimeError("runtime_failure", "Pi did not create a persistent private fork.");
 
       const recordedModel = sessionManager.buildSessionContext().model;
-      const settingsManager = SettingsManager.create(input.source.cwd, this.agentDir, { projectTrusted: false });
-      const resourceLoader = new DefaultResourceLoader({
+      return {
         cwd: input.source.cwd,
+        sessionManager,
+        systemPrompt: INTERVIEWER_SYSTEM_PROMPT,
+        recordedModelId: recordedModel ? `${recordedModel.provider}/${recordedModel.modelId}` : undefined
+      };
+    });
+  }
+
+  async createContext(input: QuestionChatContextActivation): Promise<QuestionChatRuntime> {
+    return this.createPrivateRuntime(input.requestId, "context-only", (runtimeDir) => ({
+      cwd: input.source.cwd,
+      sessionManager: SessionManager.create(input.source.cwd, runtimeDir),
+      systemPrompt: contextOnlySystemPrompt(input.source),
+      recordedModelId: input.source.model,
+      explicitModelId: input.source.model
+    }));
+  }
+
+  private async createPrivateRuntime(
+    requestId: string,
+    forkKind: QuestionChatSnapshot["forkKind"],
+    prepare: (runtimeDir: string) => {
+      cwd: string;
+      sessionManager: SessionManager;
+      systemPrompt: string;
+      recordedModelId?: string;
+      explicitModelId?: string;
+    }
+  ): Promise<QuestionChatRuntime> {
+    const runtimeDir = this.runtimeDirectory(requestId);
+    let session: SessionLifecycle | undefined;
+
+    try {
+      mkdirSync(this.privateRoot, { recursive: true, mode: 0o700 });
+      chmodSync(this.privateRoot, 0o700);
+      mkdirSync(runtimeDir, { recursive: false, mode: 0o700 });
+      chmodSync(runtimeDir, 0o700);
+
+      const prepared = prepare(runtimeDir);
+      const settingsManager = SettingsManager.create(prepared.cwd, this.agentDir, { projectTrusted: false });
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: prepared.cwd,
         agentDir: this.agentDir,
         settingsManager,
         noExtensions: true,
@@ -144,18 +182,21 @@ export class PiQuestionChatRuntimeAdapter {
         noPromptTemplates: true,
         noThemes: true,
         noContextFiles: true,
-        systemPrompt: INTERVIEWER_SYSTEM_PROMPT,
+        systemPrompt: prepared.systemPrompt,
         appendSystemPrompt: []
       });
       await resourceLoader.reload();
 
+      const modelRuntime = await this.createModelRuntime();
+      const explicitModel = resolveRecordedModel(prepared.explicitModelId, modelRuntime);
       const result = await this.createSession({
-        cwd: input.source.cwd,
+        cwd: prepared.cwd,
         agentDir: this.agentDir,
-        sessionManager,
+        sessionManager: prepared.sessionManager,
         settingsManager,
         resourceLoader,
-        modelRuntime: await this.createModelRuntime(),
+        modelRuntime,
+        ...(explicitModel ? { model: explicitModel } : {}),
         tools: []
       });
       session = result.session;
@@ -165,22 +206,22 @@ export class PiQuestionChatRuntimeAdapter {
       }
 
       const selectedModelId = `${selectedModel.provider}/${selectedModel.id}`;
-      const recordedModelId = recordedModel ? `${recordedModel.provider}/${recordedModel.modelId}` : undefined;
-      const isOriginatingModel = recordedModelId === selectedModelId;
+      const isOriginatingModel = Boolean(
+        prepared.recordedModelId === selectedModelId && (!prepared.explicitModelId || explicitModel)
+      );
       const fallbackReason = isOriginatingModel
         ? undefined
         : result.modelFallbackMessage ??
-          (recordedModelId
-            ? `Originating model ${recordedModelId} is unavailable; using Pi default ${selectedModelId}.`
+          (prepared.recordedModelId
+            ? `Originating model ${prepared.recordedModelId} is unavailable; using Pi default ${selectedModelId}.`
             : `No originating model was recorded; using Pi default ${selectedModelId}.`);
 
-      const privateForkPath = sessionManager.getSessionFile();
-      if (privateForkPath && existsSync(privateForkPath)) chmodSync(privateForkPath, 0o600);
-
+      const privateSessionPath = prepared.sessionManager.getSessionFile();
+      if (privateSessionPath && existsSync(privateSessionPath)) chmodSync(privateSessionPath, 0o600);
       const snapshot: QuestionChatSnapshot = {
-        requestId: input.requestId,
+        requestId,
         state: "ready",
-        forkKind: "exact",
+        forkKind,
         model: {
           id: selectedModelId,
           source: isOriginatingModel ? "originating" : "pi-default",
@@ -189,7 +230,14 @@ export class PiQuestionChatRuntimeAdapter {
         sequence: 0,
         messages: []
       };
-      return new ManagedQuestionChatRuntime(snapshot, session, sessionManager, sessionManager.getLeafId(), runtimeDir, this.privateRoot);
+      return new ManagedQuestionChatRuntime(
+        snapshot,
+        session,
+        prepared.sessionManager,
+        prepared.sessionManager.getLeafId(),
+        runtimeDir,
+        this.privateRoot
+      );
     } catch (error) {
       if (session) {
         try {
@@ -591,29 +639,25 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
 }
 
 export class QuestionChatRuntimeRegistry {
-  private readonly runtimes = new Map<string, Promise<QuestionChatRuntime>>();
+  private readonly runtimes = new Map<string, { kind: "exact" | "context-only"; runtime: Promise<QuestionChatRuntime> }>();
   private readonly terminations = new Map<string, Promise<void>>();
   private readonly completedCommands = new Map<string, Map<string, Promise<QuestionChatSendResponse>>>();
   private readonly completedStopCommands = new Map<string, Map<string, Promise<QuestionChatStopResponse>>>();
 
-  constructor(private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create">) {}
+  constructor(private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create" | "createContext">) {}
 
   async activate(input: QuestionChatActivation): Promise<QuestionChatSnapshot> {
-    let runtime = this.runtimes.get(input.requestId);
-    if (!runtime) {
-      runtime = this.adapter.create(input);
-      this.runtimes.set(input.requestId, runtime);
-      void runtime.catch(() => {
-        if (this.runtimes.get(input.requestId) === runtime) this.runtimes.delete(input.requestId);
-      });
-    }
-    return (await runtime).snapshot;
+    return this.activateKind(input.requestId, "exact", () => this.adapter.create(input));
+  }
+
+  async activateContext(input: QuestionChatContextActivation): Promise<QuestionChatSnapshot> {
+    return this.activateKind(input.requestId, "context-only", () => this.adapter.createContext(input));
   }
 
   async getSnapshot(requestId: string): Promise<QuestionChatSnapshot> {
     const runtime = this.runtimes.get(requestId);
     if (!runtime) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has not started.");
-    return (await runtime).snapshot;
+    return (await runtime.runtime).snapshot;
   }
 
   async send(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse> {
@@ -627,7 +671,7 @@ export class QuestionChatRuntimeRegistry {
     if (completed) return completed;
     const runtime = this.runtimes.get(requestId);
     if (!runtime) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has not started.");
-    const response = runtime.then((active) => active.send(input));
+    const response = runtime.runtime.then((active) => active.send(input));
     commands.set(input.clientCommandId, response);
     if (commands.size > 256) commands.delete(commands.keys().next().value!);
     try {
@@ -649,7 +693,7 @@ export class QuestionChatRuntimeRegistry {
     if (completed) return completed;
     const runtime = this.runtimes.get(requestId);
     if (!runtime) throw new QuestionChatRuntimeError("runtime_failure", "Question Chat has not started.");
-    const response = runtime.then((active) => active.stop(input));
+    const response = runtime.runtime.then((active) => active.stop(input));
     commands.set(input.clientCommandId, response);
     if (commands.size > 256) commands.delete(commands.keys().next().value!);
     try {
@@ -665,7 +709,7 @@ export class QuestionChatRuntimeRegistry {
     if (!runtime) return () => undefined;
     let unsubscribe: () => void = () => undefined;
     let active = true;
-    void runtime.then((resolved) => {
+    void runtime.runtime.then((resolved) => {
       if (active) unsubscribe = resolved.subscribe(listener);
     });
     return () => {
@@ -684,7 +728,7 @@ export class QuestionChatRuntimeRegistry {
     this.completedStopCommands.delete(requestId);
     const termination = (async () => {
       try {
-        await (await runtime).terminate();
+        await (await runtime.runtime).terminate();
       } catch (error) {
         if (!(error instanceof QuestionChatRuntimeError)) throw error;
       }
@@ -703,6 +747,50 @@ export class QuestionChatRuntimeRegistry {
       ...[...this.runtimes.keys()].map((requestId) => this.cleanup(requestId))
     ]);
   }
+
+  private async activateKind(
+    requestId: string,
+    kind: "exact" | "context-only",
+    create: () => Promise<QuestionChatRuntime>
+  ): Promise<QuestionChatSnapshot> {
+    let entry = this.runtimes.get(requestId);
+    if (entry && entry.kind !== kind) {
+      throw new QuestionChatRuntimeError("runtime_busy", `A ${entry.kind} Question Chat is already running.`);
+    }
+    if (!entry) {
+      const runtime = create();
+      entry = { kind, runtime };
+      this.runtimes.set(requestId, entry);
+      void runtime.catch(() => {
+        if (this.runtimes.get(requestId) === entry) this.runtimes.delete(requestId);
+      });
+    }
+    return (await entry.runtime).snapshot;
+  }
+}
+
+function resolveRecordedModel(modelId: string | undefined, modelRuntime: ModelRuntime): ReturnType<ModelRuntime["getModel"]> {
+  if (!modelId) return undefined;
+  const separator = modelId.indexOf("/");
+  if (separator <= 0 || separator === modelId.length - 1) return undefined;
+  const provider = modelId.slice(0, separator);
+  const id = modelId.slice(separator + 1);
+  const model = modelRuntime.getModel(provider, id);
+  return model && modelRuntime.hasConfiguredAuth(provider) ? model : undefined;
+}
+
+function contextOnlySystemPrompt(source: QuestionChatContextSource): string {
+  return `${INTERVIEWER_SYSTEM_PROMPT}
+
+This is a fresh private context-only interviewer session created from persisted handoff context. It is not the exact originating conversation. Treat the following bounded payload as authoritative user-provided context; do not invent prior dialogue, decisions, or implementation history.
+
+<postbox-question>
+${JSON.stringify({ mode: source.mode, question: source.question, options: source.options }, null, 2)}
+</postbox-question>
+
+<postbox-handoff-context>
+${JSON.stringify(source.context, null, 2)}
+</postbox-handoff-context>`;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AskRequestSnapshot, SessionSnapshot } from "@pi-postbox/protocol";
+  import type { AskRequestSnapshot, QuestionChatAvailabilityError, SessionSnapshot } from "@pi-postbox/protocol";
   import { onMount } from "svelte";
   import { layout, type BrowserLayoutState, type QuestionWorkspaceTab } from "../lib/layout.svelte";
   import { createQuestionForm } from "../lib/questionForm.svelte";
@@ -33,6 +33,9 @@
   let mobile = $state(false);
   let chatStarting = $state(false);
   let activationRequest = $state(0);
+  let contextActivationRequest = $state(0);
+  let activationError = $state<QuestionChatAvailabilityError | undefined>();
+  let confirmingContextChat = $state(false);
   const presentation = $derived(layoutState.questionChat(request.requestId));
   const questionPresented = $derived(
     !mobile || (!chatStarting && (!presentation.started || presentation.mobileTab === "question"))
@@ -63,17 +66,44 @@
       layoutState.showQuestionChat(request.requestId);
       return;
     }
+    activationError = undefined;
+    confirmingContextChat = false;
     chatStarting = true;
     activationRequest += 1;
   }
 
   function chatStarted(): void {
     chatStarting = false;
+    activationError = undefined;
+    confirmingContextChat = false;
     layoutState.markQuestionChatStarted(request.requestId);
   }
 
-  function chatActivationFailed(): void {
+  function chatActivationFailed(error: QuestionChatAvailabilityError): void {
     chatStarting = false;
+    activationError = error;
+  }
+
+  function confirmContextChat(): void {
+    confirmingContextChat = false;
+    activationError = undefined;
+    chatStarting = true;
+    contextActivationRequest += 1;
+  }
+
+  function onWorkspaceKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape" && confirmingContextChat) confirmingContextChat = false;
+  }
+
+  function contextUnavailableMessage(error: QuestionChatAvailabilityError): string | undefined {
+    if (error.contextFallback?.status !== "unavailable") return undefined;
+    if (error.contextFallback.reason === "missing_codebase_context") {
+      return "Context-only Chat is unavailable because this legacy Question has no persisted codebase context.";
+    }
+    if (error.contextFallback.reason === "missing_problem_context") {
+      return "Context-only Chat is unavailable because this legacy Question has no persisted problem context.";
+    }
+    return "Context-only Chat is unavailable because this legacy Question has no persisted codebase or problem context.";
   }
 
   function selectTab(tab: QuestionWorkspaceTab): void {
@@ -96,6 +126,8 @@
   }
 </script>
 
+<svelte:window onkeydown={onWorkspaceKeydown} />
+
 <div class="flex h-full min-h-0 flex-1 flex-col md:flex-row">
   <section
     id="question-workspace-panel"
@@ -106,6 +138,35 @@
     class="min-h-0 min-w-0 flex-1 overflow-y-auto bg-postbox-canvas"
     class:pb-24={mobile && presentation.started}
   >
+    {#if activationError && !chatStarting}
+      <div class="mx-4 mt-4 rounded-lg border border-danger-border bg-danger/5 p-4 text-sm sm:mx-6" role="alert">
+        <p class="font-medium text-danger-foreground">{activationError.message}</p>
+        {#if contextUnavailableMessage(activationError)}
+          <p class="mt-2 text-postbox-subtle">{contextUnavailableMessage(activationError)}</p>
+        {/if}
+        {#if activationError.contextFallback?.status === "available"}
+          <button
+            type="button"
+            class="mt-3 rounded-full border border-warning-border px-3 py-1.5 font-medium text-warning-foreground"
+            onclick={() => (confirmingContextChat = true)}
+          >Start context-only Chat</button>
+        {/if}
+      </div>
+    {/if}
+    {#if confirmingContextChat}
+      <div
+        class="mx-4 mt-4 rounded-lg border border-warning-border bg-warning/5 p-4 sm:mx-6"
+        role="group"
+        aria-labelledby="context-chat-confirmation-title"
+      >
+        <h2 id="context-chat-confirmation-title" class="font-display font-semibold text-postbox-text">Start context-only Chat?</h2>
+        <p class="mt-2 text-sm text-postbox-subtle">This starts a fresh private interviewer session from persisted handoff context. It is not the exact source conversation.</p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button type="button" class="rounded-full border border-warning/40 bg-warning/10 px-3 py-1.5 text-sm font-medium text-warning-foreground" onclick={confirmContextChat}>Confirm context-only Chat</button>
+          <button type="button" class="rounded-full border border-postbox-border px-3 py-1.5 text-sm text-postbox-subtle" onclick={() => (confirmingContextChat = false)}>Cancel context-only Chat</button>
+        </div>
+      </div>
+    {/if}
     <QuestionLayoutSpotlight
       {request}
       {session}
@@ -133,6 +194,7 @@
       api={chatApi}
       showActivationButton={false}
       {activationRequest}
+      {contextActivationRequest}
       recoveryRequest={1}
       onStarted={chatStarted}
       onActivationFailed={chatActivationFailed}

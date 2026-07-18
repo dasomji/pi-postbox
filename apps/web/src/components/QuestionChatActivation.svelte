@@ -7,6 +7,7 @@
   import { onDestroy } from "svelte";
   import {
     activateQuestionChat,
+    activateContextQuestionChat,
     connectQuestionChatEvents,
     fetchQuestionChatSnapshot,
     probeQuestionChatSnapshot,
@@ -21,6 +22,7 @@
     api = {},
     showActivationButton = true,
     activationRequest = 0,
+    contextActivationRequest = 0,
     recoveryRequest = 0,
     onStarted,
     onActivationFailed
@@ -31,13 +33,15 @@
     activationRequest?: number;
     recoveryRequest?: number;
     onStarted?: () => void;
-    onActivationFailed?: () => void;
+    contextActivationRequest?: number;
+    onActivationFailed?: (error: import("@pi-postbox/protocol").QuestionChatAvailabilityError) => void;
   } = $props();
 
   // API dependencies are stable for one keyed Chat component instance.
   // svelte-ignore state_referenced_locally
   const chatApi: QuestionChatApi = {
     activate: api.activate ?? activateQuestionChat,
+    activateContext: api.activateContext ?? activateContextQuestionChat,
     fetchSnapshot: api.fetchSnapshot ?? fetchQuestionChatSnapshot,
     probeSnapshot: api.probeSnapshot ?? probeQuestionChatSnapshot,
     sendMessage: api.sendMessage ?? sendQuestionChatMessage,
@@ -52,6 +56,7 @@
   let actionMessage = $state("");
   let commandCounter = 0;
   let observedActivationRequest = 0;
+  let observedContextActivationRequest = 0;
   let observedRecoveryRequest = 0;
 
   $effect(() => {
@@ -61,6 +66,7 @@
     stopping = false;
     actionMessage = "";
     observedActivationRequest = 0;
+    observedContextActivationRequest = 0;
     observedRecoveryRequest = 0;
   });
 
@@ -70,6 +76,12 @@
       activationFailed: onActivationFailed,
       event: handleLifecycleEvent
     });
+  });
+
+  $effect(() => {
+    if (contextActivationRequest <= observedContextActivationRequest) return;
+    observedContextActivationRequest = contextActivationRequest;
+    void lifecycle.startContext();
   });
 
   $effect(() => {
@@ -147,15 +159,23 @@
       <p class="text-sm text-postbox-muted" role="status">Starting Question Chat…</p>
     {:else if view.kind === "unavailable"}
       <h2 class="font-display text-base font-semibold text-postbox-text">Chat unavailable</h2>
-      <p class="mt-2 text-sm text-danger-foreground" role="alert">{view.message}</p>
+      <p class="mt-2 text-sm text-danger-foreground" role="alert">{view.error.message}</p>
       <button type="button" class="mt-3 rounded-full border border-postbox-border px-3 py-1 text-sm text-postbox-subtle" onclick={() => lifecycle.start()}>Retry</button>
     {:else}
       <div class="flex items-start justify-between gap-3">
-        <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat</h2>
+        <div>
+          <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat</h2>
+          {#if view.snapshot.forkKind === "context-only"}
+            <span class="mt-1 inline-flex rounded-full bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning-foreground">Context-only · degraded</span>
+          {/if}
+        </div>
         <div class="flex items-center gap-2">
           <span class="rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success-foreground">{stateLabel(view.snapshot)}</span>
         </div>
       </div>
+      {#if view.snapshot.forkKind === "context-only"}
+        <p class="mt-3 text-xs text-warning-foreground">This fresh private interviewer uses persisted handoff context, not the exact source conversation.</p>
+      {/if}
       <div class="mt-4 min-h-16 space-y-3 rounded-md border border-postbox-border p-3" aria-label="Chat messages" aria-live="polite">
         {#if view.snapshot.messages.length === 0}
           <p class="text-sm text-postbox-muted">Ask what you need to understand this decision.</p>

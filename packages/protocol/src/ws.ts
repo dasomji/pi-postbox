@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AskAnswerPayloadSchema, AskCancelPayloadSchema, AskCreatePayloadSchema, AskResultSchema } from "./ask.js";
 import {
   QuestionChatAvailabilityErrorSchema,
+  QuestionChatContextSourceSchema,
   QuestionChatEventSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatSendResponseSchema,
@@ -114,6 +115,15 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
       requestId: z.string().min(1),
       ownerSessionId: z.string().min(1).max(200),
       source: QuestionChatSourceSchema
+    })
+  }),
+  z.object({
+    type: z.literal("chat.activate-context"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({
+      requestId: WsCorrelationIdSchema,
+      ownerSessionId: z.string().min(1).max(200),
+      source: QuestionChatContextSourceSchema
     })
   }),
   z.object({

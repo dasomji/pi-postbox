@@ -13,7 +13,8 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired`. |
 | `POST /api/requests/:requestId/answer` | Browser/user answer action. First pending answer wins. |
 | `POST /api/requests/:requestId/cancel` | Browser/user cancel action. |
-| `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned private Question Chat fork. |
+| `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned exact private Question Chat fork. Source-path/leaf failures disclose typed context-only fallback availability. |
+| `POST /api/requests/:requestId/chat/context` | Explicitly start or reattach to an eligible context-only Chat. Requires JSON `{ "confirmed": true }`; it is never called automatically. |
 | `GET /api/requests/:requestId/chat` | Fetch the current normalized Question Chat snapshot. |
 | `POST /api/requests/:requestId/chat/messages` | Send an idle prompt or steer the active turn, using a stable browser command id. |
 | `POST /api/requests/:requestId/chat/stop` | Abort only the active Question Chat turn, using a stable browser command id. |
@@ -57,7 +58,22 @@ Server messages:
 - `ask.created` — pending ask card exists.
 - `ask.resolved` — ask reached a terminal `answered`, `cancelled`, `expired`, or `unavailable` result.
 - `error` — validation or transition error.
-- `chat.activate`, `chat.snapshot`, `chat.send`, `chat.stop`, and `chat.cleanup` — owner-scoped commands for the extension-owned private Question Chat runtime.
+- `chat.activate` — activate or reattach to an exact private fork at the recorded source leaf.
+- `chat.activate-context` — distinctly activate or reattach to a fresh private context-only interviewer from authoritative persisted Question, option, and handoff context. It carries cwd and an optional recorded model, but never a source path, leaf, or transcript.
+- `chat.snapshot`, `chat.send`, `chat.stop`, and `chat.cleanup` — owner-scoped commands shared by exact and context-only private Question Chat runtimes.
+
+## Question Chat activation and context-only fallback
+
+Question Chat snapshots identify their runtime with `forkKind: "exact" | "context-only"`. A ready response whose kind does not match the requested activation is rejected. Repeated activation of the same kind reattaches idempotently; an activation of the other kind cannot replace a running runtime.
+
+Exact activation remains the primary path. When it fails with `source_path_missing` or `source_leaf_missing`, the HTTP error includes a finite `contextFallback` object:
+
+- `{ "status": "available" }` means both persisted `codebaseContext` and `problemContext` are present.
+- `{ "status": "unavailable", "reason": "missing_codebase_context" | "missing_problem_context" | "missing_codebase_and_problem_context" }` gives the precise legacy-data reason.
+
+The server never converts an exact activation into context-only activation. The browser must separately disclose that context-only Chat is a fresh private interviewer based on persisted handoff context, obtain confirmation, and then send `{ "confirmed": true }` to the context endpoint. An explicit ineligible start returns `context_fallback_unavailable` with the typed unavailable reason. The server builds the extension command from the stored authoritative Question, every option, required handoff context, bounded optional `additionalInfo`, session cwd, and `forkReference.model` when present; browser-provided context and source conversation history are not accepted.
+
+Historical Questions that lack either required context field remain readable and may still use exact activation while their recorded source exists. They cannot use context-only fallback.
 
 ## Question Chat turn lifecycle
 
@@ -127,5 +143,6 @@ Package-local autostart is a client recovery behavior for `ask_postbox` and the 
 - Treat `requestId`, `sessionId`, `machineId`, and `projectId` as stable protocol identifiers.
 - Handle unknown fields gracefully.
 - Use `/healthz` to confirm service and protocol version before relying on newer fields.
+- `contextFallback`, `forkKind: "context-only"`, `POST .../chat/context`, and `chat.activate-context` are additive Question Chat capabilities that require a server and extension version that both understand them. Older Questions without complete persisted context deliberately report fallback unavailable; they are not migrated by inventing context.
 - V1 has no app-level authentication; restrict network reachability with Tailscale/lizardtail or an external auth proxy.
 - State-changing HTTP actions and extension WebSockets reject cross-origin browser requests unless the `Origin` host matches the Postbox service host. Node/Pi extension clients normally omit `Origin` and are accepted if they can reach the service.

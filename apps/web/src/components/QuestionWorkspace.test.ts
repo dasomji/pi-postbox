@@ -63,6 +63,10 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false) {
   const close = vi.fn();
   return {
     activate: vi.fn(async (): Promise<QuestionChatActivationResponse> => ({ status: "ready", snapshot: active })),
+    activateContext: vi.fn(async (): Promise<QuestionChatActivationResponse> => ({
+      status: "ready",
+      snapshot: { ...active, forkKind: "context-only" }
+    })),
     fetchSnapshot: vi.fn(async () => active),
     probeSnapshot: vi.fn(async () => alreadyRunning
       ? { status: "ready" as const, snapshot: active }
@@ -82,6 +86,82 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false) {
 }
 
 describe("responsive Question Chat workspace", () => {
+  it("offers eligible context-only Chat as a separate disclosed action and waits for inline confirmation", async () => {
+    const media = mediaController(true);
+    const chatApi = chatBoundary();
+    chatApi.activate.mockResolvedValue({
+      status: "unavailable",
+      error: {
+        code: "source_path_missing",
+        message: "The exact source session is unavailable.",
+        contextFallback: { status: "available" }
+      }
+    });
+    chatApi.fetchSnapshot.mockResolvedValue({ ...snapshot(), forkKind: "context-only" });
+    render(QuestionDetail, {
+      props: {
+        request: REQUEST,
+        isMock: true,
+        layoutState: new BrowserLayoutState(),
+        matchMedia: () => media.query,
+        chatApi
+      }
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("exact source session is unavailable");
+    expect(chatApi.activateContext).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start context-only Chat" }));
+    const confirmation = await screen.findByRole("group", { name: "Start context-only Chat?" });
+    expect(confirmation.textContent).toContain("fresh private interviewer session");
+    expect(confirmation.textContent).toContain("persisted handoff context");
+    expect(confirmation.textContent).toContain("not the exact source conversation");
+    expect(chatApi.activateContext).not.toHaveBeenCalled();
+    await fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Start context-only Chat?" })).toBeNull();
+    expect(chatApi.activateContext).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start context-only Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel context-only Chat" }));
+    expect(screen.queryByRole("group", { name: "Start context-only Chat?" })).toBeNull();
+    expect(chatApi.activateContext).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start context-only Chat" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Confirm context-only Chat" }));
+    expect(await screen.findByText("Context-only · degraded")).toBeTruthy();
+    expect(screen.getByText(/fresh private interviewer/i)).toBeTruthy();
+    expect(chatApi.activateContext).toHaveBeenCalledOnce();
+    expect(chatApi.activate).toHaveBeenCalledOnce();
+  });
+
+  it("shows the precise legacy-context ineligibility state without a fallback action", async () => {
+    const media = mediaController(true);
+    const chatApi = chatBoundary();
+    chatApi.activate.mockResolvedValue({
+      status: "unavailable",
+      error: {
+        code: "source_leaf_missing",
+        message: "The exact source leaf is unavailable.",
+        contextFallback: { status: "unavailable", reason: "missing_problem_context" }
+      }
+    });
+    render(QuestionDetail, {
+      props: {
+        request: REQUEST,
+        isMock: true,
+        layoutState: new BrowserLayoutState(),
+        matchMedia: () => media.query,
+        chatApi
+      }
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("persisted problem context");
+    expect(screen.queryByRole("button", { name: "Start context-only Chat" })).toBeNull();
+    expect(chatApi.activateContext).not.toHaveBeenCalled();
+  });
+
   it("adds a fixed responsive desktop sidebar and hide/reopens presentation without lifecycle commands", async () => {
     const media = mediaController(false);
     const chatApi = chatBoundary();

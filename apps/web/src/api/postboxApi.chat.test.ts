@@ -1,6 +1,6 @@
 import type { QuestionChatSnapshot } from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { probeQuestionChatSnapshot } from "./postboxApi";
+import { activateContextQuestionChat, probeQuestionChatSnapshot } from "./postboxApi";
 
 const SNAPSHOT: QuestionChatSnapshot = {
   requestId: "question/probe",
@@ -21,6 +21,22 @@ function jsonResponse(body: unknown, status = 200): Response {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Question Chat snapshot discovery", () => {
+  it("uses a distinct explicit confirmed request for context-only activation", async () => {
+    const contextSnapshot = { ...SNAPSHOT, forkKind: "context-only" as const };
+    const fetchMock = vi.fn(async () => jsonResponse({ status: "ready", snapshot: contextSnapshot }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(activateContextQuestionChat("question/context")).resolves.toEqual({
+      status: "ready",
+      snapshot: contextSnapshot
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/requests/question%2Fcontext/chat/context", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true })
+    });
+  });
+
   it("returns a running snapshot without issuing an activation request", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ status: "ready", snapshot: SNAPSHOT }));
     vi.stubGlobal("fetch", fetchMock);

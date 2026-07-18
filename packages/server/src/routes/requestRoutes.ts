@@ -2,13 +2,17 @@ import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskStatusSchema,
+  QuestionChatActivationResponseSchema,
+  QuestionChatContextActivationPayloadSchema,
+  QuestionChatContextSourceSchema,
   QuestionChatSendHttpResponseSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatSnapshotHttpResponseSchema,
   QuestionChatStopHttpResponseSchema,
   QuestionChatStopPayloadSchema,
   QuestionChatUnavailableResponseSchema,
-  type QuestionChatAvailabilityError
+  type QuestionChatAvailabilityError,
+  type QuestionChatContextFallbackAvailability
 } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import type { StateBroadcaster } from "../services/broadcaster.js";
@@ -84,14 +88,61 @@ export async function registerRequestRoutes(
       });
     }
     const source = questionChat.sessionStore.questionChatSource(snapshot.sessionId);
+    const contextFallback = contextFallbackAvailability(snapshot.context);
     if (!source) {
       const session = questionChat.sessionStore.getQuestionChatSourceState(snapshot.sessionId);
       const code = session === "missing_leaf" ? "source_leaf_missing" : "source_path_missing";
       const message = code === "source_leaf_missing" ? "The originating Pi session leaf is unavailable." : "The originating Pi session file is unavailable.";
-      return reply.code(409).send({ status: "unavailable", error: { code, message } });
+      return reply.code(409).send(QuestionChatActivationResponseSchema.parse({
+        status: "unavailable",
+        error: { code, message, contextFallback }
+      }));
     }
     const response = await questionChat.relay.activate(requestId, snapshot.sessionId, source);
-    return reply.code(response.status === "ready" ? 200 : response.error.code === "extension_offline" ? 503 : 409).send(response);
+    const disclosed = response.status === "unavailable" &&
+      (response.error.code === "source_path_missing" || response.error.code === "source_leaf_missing")
+      ? { ...response, error: { ...response.error, contextFallback } }
+      : response;
+    return reply
+      .code(disclosed.status === "ready" ? 200 : disclosed.error.code === "extension_offline" ? 503 : 409)
+      .send(QuestionChatActivationResponseSchema.parse(disclosed));
+  });
+
+  app.post("/api/requests/:requestId/chat/context", async (request, reply) => {
+    const body = QuestionChatContextActivationPayloadSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send(chatUnavailable({ code: "invalid_command", message: body.error.message }));
+    }
+    const state = pendingChatRequest(request.params as { requestId: string }, requestStore, expireDue, questionChat);
+    if (state.error) return reply.code(state.error.status).send(state.error.body);
+    const snapshot = state.snapshot!;
+    const contextFallback = contextFallbackAvailability(snapshot.context);
+    if (contextFallback.status === "unavailable") {
+      return reply.code(409).send(chatUnavailable({
+        code: "context_fallback_unavailable",
+        message: contextFallbackMessage(contextFallback.reason),
+        contextFallback
+      }));
+    }
+    const cwd = questionChat!.sessionStore.questionChatCwd(snapshot.sessionId);
+    if (!cwd) {
+      return reply.code(409).send(chatUnavailable({
+        code: "runtime_failure",
+        message: "The originating working directory is unavailable."
+      }));
+    }
+    const source = QuestionChatContextSourceSchema.parse({
+      cwd,
+      model: snapshot.forkReference?.model,
+      mode: snapshot.mode,
+      question: snapshot.question,
+      options: snapshot.options,
+      context: snapshot.context
+    });
+    const response = await questionChat!.relay.activateContext(snapshot.requestId, snapshot.sessionId, source);
+    return reply
+      .code(response.status === "ready" ? 200 : chatErrorStatus(response.error.code))
+      .send(QuestionChatActivationResponseSchema.parse(response));
   });
 
   app.get("/api/requests/:requestId/chat", async (request, reply) => {
@@ -168,6 +219,25 @@ function chatErrorStatus(code: string): number {
 
 function chatUnavailable(error: QuestionChatAvailabilityError) {
   return QuestionChatUnavailableResponseSchema.parse({ status: "unavailable", error });
+}
+
+function contextFallbackAvailability(
+  context: { codebaseContext?: string; problemContext?: string } | undefined
+): QuestionChatContextFallbackAvailability {
+  const hasCodebase = Boolean(context?.codebaseContext?.trim());
+  const hasProblem = Boolean(context?.problemContext?.trim());
+  if (hasCodebase && hasProblem) return { status: "available" };
+  if (!hasCodebase && !hasProblem) return { status: "unavailable", reason: "missing_codebase_and_problem_context" };
+  return {
+    status: "unavailable",
+    reason: hasCodebase ? "missing_problem_context" : "missing_codebase_context"
+  };
+}
+
+function contextFallbackMessage(reason: Extract<QuestionChatContextFallbackAvailability, { status: "unavailable" }>["reason"]): string {
+  if (reason === "missing_codebase_context") return "Context-only Chat requires persisted codebase context.";
+  if (reason === "missing_problem_context") return "Context-only Chat requires persisted problem context.";
+  return "Context-only Chat requires persisted codebase and problem context.";
 }
 
 function sendRequestError(reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } }, error: unknown): unknown {

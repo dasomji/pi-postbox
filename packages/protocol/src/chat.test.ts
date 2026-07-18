@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   QUESTION_CHAT_STARTERS,
   QuestionChatActivationResponseSchema,
+  QuestionChatContextActivationPayloadSchema,
+  QuestionChatContextSourceSchema,
   QuestionChatEventSchema,
   QuestionChatSendHttpResponseSchema,
   QuestionChatSendPayloadSchema,
@@ -58,9 +60,94 @@ describe("Question Chat activation protocol", () => {
     expect(
       QuestionChatActivationResponseSchema.parse({
         status: "unavailable",
-        error: { code, message: "Chat is unavailable." }
+        error: {
+          code,
+          message: "Chat is unavailable.",
+          ...((code === "source_path_missing" || code === "source_leaf_missing")
+            ? { contextFallback: { status: "available" } }
+            : {})
+        }
       })
     ).toMatchObject({ status: "unavailable", error: { code } });
+  });
+
+  it("requires finite context-only fallback disclosure on exact source failures", () => {
+    expect(
+      QuestionChatActivationResponseSchema.parse({
+        status: "unavailable",
+        error: {
+          code: "source_path_missing",
+          message: "The source is unavailable.",
+          contextFallback: { status: "available" }
+        }
+      })
+    ).toMatchObject({ error: { contextFallback: { status: "available" } } });
+    expect(
+      QuestionChatActivationResponseSchema.parse({
+        status: "unavailable",
+        error: {
+          code: "source_leaf_missing",
+          message: "The source leaf is unavailable.",
+          contextFallback: { status: "unavailable", reason: "missing_problem_context" }
+        }
+      })
+    ).toMatchObject({ error: { contextFallback: { reason: "missing_problem_context" } } });
+    expect(() =>
+      QuestionChatActivationResponseSchema.parse({
+        status: "unavailable",
+        error: { code: "source_path_missing", message: "Missing disclosure." }
+      })
+    ).toThrow();
+  });
+
+  it("defines a distinct confirmed context-only activation without source transcript coordinates", () => {
+    expect(QuestionChatContextActivationPayloadSchema.parse({ confirmed: true })).toEqual({ confirmed: true });
+    expect(() => QuestionChatContextActivationPayloadSchema.parse({ confirmed: false })).toThrow();
+
+    const source = QuestionChatContextSourceSchema.parse({
+      cwd: "/repo",
+      model: "anthropic/claude-sonnet-4",
+      mode: "single",
+      question: { prompt: "Which design?", decisionImpact: "This selects the public API." },
+      options: [{ value: "a", label: "A", description: "Prefer A." }],
+      context: {
+        codebaseContext: "A real Fastify server.",
+        problemContext: "Choose the design.",
+        additionalInfo: [{ kind: "text", title: "Constraint", content: "Keep it private." }]
+      }
+    });
+    expect(source).not.toHaveProperty("agentSessionPath");
+    expect(source).not.toHaveProperty("leafId");
+    expect(source).not.toHaveProperty("transcript");
+    expect(() => QuestionChatContextSourceSchema.parse({ ...source, context: { ...source.context, problemContext: " " } })).toThrow();
+    expect(() => QuestionChatContextSourceSchema.parse({ ...source, transcript: [{ role: "assistant", text: "invented" }] })).toThrow();
+
+    expect(
+      ExtensionServerMessageSchema.parse({
+        type: "chat.activate-context",
+        requestId: "relay-context-1",
+        payload: { requestId: "ask-29", ownerSessionId: "session-1", source }
+      })
+    ).toMatchObject({ type: "chat.activate-context", payload: { source: { model: "anthropic/claude-sonnet-4" } } });
+    expect(() =>
+      ExtensionServerMessageSchema.parse({
+        type: "chat.activate-context",
+        requestId: "x".repeat(201),
+        payload: { requestId: "ask-29", ownerSessionId: "session-1", source }
+      })
+    ).toThrow();
+    expect(
+      QuestionChatActivationResponseSchema.parse({
+        status: "ready",
+        snapshot: {
+          requestId: "ask-29",
+          state: "ready",
+          forkKind: "context-only",
+          model: { id: "anthropic/claude-sonnet-4", source: "originating" },
+          messages: []
+        }
+      })
+    ).toMatchObject({ snapshot: { forkKind: "context-only" } });
   });
 });
 

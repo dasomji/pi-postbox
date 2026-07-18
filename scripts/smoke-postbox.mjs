@@ -280,7 +280,8 @@ async function main() {
         context: {
           codebaseContext: "Packaged Pi Postbox extension, server, protocol, and web assets.",
           problemContext: "Smoke verifies one remote handoff without full chat transcripts."
-        }
+        },
+        forkReference: { cwd: root, model: "smoke/fake-model" }
       }
     }));
     assert((await created).type === "ask.created", "Ask was not created");
@@ -290,18 +291,51 @@ async function main() {
     const activationCommand = await nextMessage(socket);
     assert(activationCommand.type === "chat.activate", "Fake extension did not receive Chat activation");
     socket.send(JSON.stringify({
-      type: "chat.ready",
+      type: "chat.error",
       requestId: activationCommand.requestId,
       payload: {
         requestId,
+        error: { code: "source_path_missing", message: "The packaged smoke source is intentionally unavailable." }
+      }
+    }));
+    const exactUnavailable = await activationResponse;
+    const exactUnavailableBody = await exactUnavailable.json();
+    assert(
+      exactUnavailable.status === 409 &&
+        exactUnavailableBody.error?.code === "source_path_missing" &&
+        exactUnavailableBody.error?.contextFallback?.status === "available",
+      "Exact Chat failure did not disclose eligible context-only fallback"
+    );
+
+    const contextActivationResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/context`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmed: true })
+    });
+    const contextActivationCommand = await nextMessage(socket);
+    assert(contextActivationCommand.type === "chat.activate-context", "Fake extension did not receive explicit context-only activation");
+    assert(
+      contextActivationCommand.payload.source.question.prompt === "Is the release smoke path healthy?" &&
+        contextActivationCommand.payload.source.context.codebaseContext.includes("Packaged Pi Postbox") &&
+        contextActivationCommand.payload.source.context.problemContext.includes("Smoke verifies") &&
+        contextActivationCommand.payload.source.model === "smoke/fake-model" &&
+        !("agentSessionPath" in contextActivationCommand.payload.source) &&
+        !("leafId" in contextActivationCommand.payload.source),
+      "Context-only activation did not carry only authoritative bounded handoff context"
+    );
+    socket.send(JSON.stringify({
+      type: "chat.ready",
+      requestId: contextActivationCommand.requestId,
+      payload: {
+        requestId,
         state: "ready",
-        forkKind: "exact",
+        forkKind: "context-only",
         model: { id: "smoke/fake-model", source: "originating" },
         sequence: 0,
         messages: []
       }
     }));
-    assert((await activationResponse).status === 200, "Question Chat did not activate");
+    assert((await contextActivationResponse).status === 200, "Context-only Question Chat did not activate explicitly");
 
     chatSse = new SseClient(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/events`);
     await chatSse.open();
@@ -314,7 +348,7 @@ async function main() {
       payload: {
         requestId,
         state: "ready",
-        forkKind: "exact",
+        forkKind: "context-only",
         model: { id: "smoke/fake-model", source: "originating" },
         sequence: 0,
         messages: []

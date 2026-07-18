@@ -7,6 +7,7 @@ import {
   type ExtensionServerMessage,
   type QuestionChatActivationResponse,
   type QuestionChatAvailabilityError,
+  type QuestionChatContextSource,
   type QuestionChatEvent,
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
@@ -23,7 +24,8 @@ interface BoundExtension {
   socket: WebSocket;
 }
 
-type PendingKind = "activate" | "snapshot" | "send" | "stop";
+type PendingKind = "activate-exact" | "activate-context" | "snapshot" | "send" | "stop";
+type ActiveChat = { ownerSessionId: string; forkKind: "exact" | "context-only" };
 interface PendingCommand {
   kind: PendingKind;
   connectionId: string;
@@ -39,7 +41,7 @@ export type QuestionChatTerminalReason = "answered" | "cancelled" | "expired" | 
 export class QuestionChatRelay {
   private readonly extensions = new Map<string, BoundExtension>();
   private readonly pending = new Map<string, PendingCommand>();
-  private readonly activeChats = new Map<string, string>();
+  private readonly activeChats = new Map<string, ActiveChat>();
   private readonly subscribers = new Map<string, Set<(event: QuestionChatEvent) => void>>();
   private readonly deferredCleanup = new Map<string, { requestId: string; reason: QuestionChatTerminalReason }>();
 
@@ -48,7 +50,7 @@ export class QuestionChatRelay {
   bind(sessionId: string, connectionId: string, socket: WebSocket): void {
     this.extensions.set(sessionId, { connectionId, socket });
     for (const [requestId, cleanup] of this.deferredCleanup) {
-      if (this.activeChats.get(requestId) !== sessionId) continue;
+      if (this.activeChats.get(requestId)?.ownerSessionId !== sessionId) continue;
       this.send(socket, { type: "chat.cleanup", payload: cleanup });
       this.deferredCleanup.delete(requestId);
       this.activeChats.delete(requestId);
@@ -62,18 +64,50 @@ export class QuestionChatRelay {
   }
 
   async activate(requestId: string, ownerSessionId: string, source: QuestionChatSource): Promise<QuestionChatActivationResponse> {
-    const previousOwnerSessionId = this.activeChats.get(requestId);
-    this.activeChats.set(requestId, ownerSessionId);
-    const result = await this.dispatch<QuestionChatSnapshot>("activate", requestId, ownerSessionId, {
+    return this.activateKind(requestId, ownerSessionId, "exact", "activate-exact", {
       type: "chat.activate",
       requestId: "",
       payload: { requestId, ownerSessionId, source }
     });
+  }
+
+  async activateContext(
+    requestId: string,
+    ownerSessionId: string,
+    source: QuestionChatContextSource
+  ): Promise<QuestionChatActivationResponse> {
+    return this.activateKind(requestId, ownerSessionId, "context-only", "activate-context", {
+      type: "chat.activate-context",
+      requestId: "",
+      payload: { requestId, ownerSessionId, source }
+    });
+  }
+
+  private async activateKind(
+    requestId: string,
+    ownerSessionId: string,
+    forkKind: ActiveChat["forkKind"],
+    pendingKind: Extract<PendingKind, "activate-exact" | "activate-context">,
+    message: ExtensionServerMessage & { requestId: string }
+  ): Promise<QuestionChatActivationResponse> {
+    const previousOwnerSessionId = this.activeChats.get(requestId);
+    if (
+      previousOwnerSessionId &&
+      (previousOwnerSessionId.ownerSessionId !== ownerSessionId || previousOwnerSessionId.forkKind !== forkKind)
+    ) {
+      return {
+        status: "unavailable",
+        error: { code: "runtime_busy", message: `A ${previousOwnerSessionId.forkKind} Question Chat is already running.` }
+      };
+    }
+    const activeAttempt: ActiveChat = { ownerSessionId, forkKind };
+    this.activeChats.set(requestId, activeAttempt);
+    const result = await this.dispatch<QuestionChatSnapshot>(pendingKind, requestId, ownerSessionId, message);
     if (result.status === "unavailable") {
       // A timeout occurs after a command was sent and the extension may have
       // allocated the fork. Retain cleanup authority for a later terminal
       // transition instead of orphaning that private runtime.
-      if (result.error.code !== "command_timeout") {
+      if (result.error.code !== "command_timeout" && this.activeChats.get(requestId) === activeAttempt) {
         if (previousOwnerSessionId) this.activeChats.set(requestId, previousOwnerSessionId);
         else this.activeChats.delete(requestId);
       }
@@ -83,7 +117,7 @@ export class QuestionChatRelay {
   }
 
   snapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatCommandResult<QuestionChatSnapshot>> {
-    if (this.activeChats.get(requestId) !== ownerSessionId) {
+    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
       return Promise.resolve(unavailableResult("chat_not_started", "Start Question Chat before fetching its snapshot."));
     }
     return this.dispatch("snapshot", requestId, ownerSessionId, {
@@ -98,7 +132,7 @@ export class QuestionChatRelay {
     ownerSessionId: string,
     command: QuestionChatSendPayload
   ): Promise<QuestionChatCommandResult<QuestionChatSendResponse>> {
-    if (this.activeChats.get(requestId) !== ownerSessionId) {
+    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
       return Promise.resolve(unavailableResult("chat_not_started", "Start Question Chat before sending a message."));
     }
     return this.dispatch("send", requestId, ownerSessionId, {
@@ -113,7 +147,7 @@ export class QuestionChatRelay {
     ownerSessionId: string,
     command: QuestionChatStopPayload
   ): Promise<QuestionChatCommandResult<QuestionChatStopResponse>> {
-    if (this.activeChats.get(requestId) !== ownerSessionId) {
+    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) {
       return Promise.resolve(unavailableResult("chat_not_started", "Start Question Chat before stopping a response."));
     }
     return this.dispatch("stop", requestId, ownerSessionId, {
@@ -124,7 +158,18 @@ export class QuestionChatRelay {
   }
 
   resolveReady(commandId: string, connectionId: string, snapshot: QuestionChatSnapshot): void {
-    this.resolve(commandId, connectionId, "activate", snapshot.requestId, QuestionChatSnapshotSchema.parse(snapshot));
+    const pending = this.pending.get(commandId);
+    if (!pending || (pending.kind !== "activate-exact" && pending.kind !== "activate-context")) return;
+    const normalized = QuestionChatSnapshotSchema.parse(snapshot);
+    const expectedKind = pending.kind === "activate-exact" ? "exact" : "context-only";
+    if (normalized.forkKind !== expectedKind) {
+      this.resolveError(commandId, connectionId, normalized.requestId, {
+        code: "runtime_failure",
+        message: `Question Chat returned a ${normalized.forkKind} runtime for a requested ${expectedKind} activation.`
+      });
+      return;
+    }
+    this.resolve(commandId, connectionId, pending.kind, normalized.requestId, normalized);
   }
 
   resolveSnapshot(commandId: string, connectionId: string, snapshot: QuestionChatSnapshot): void {
@@ -142,9 +187,6 @@ export class QuestionChatRelay {
   resolveError(commandId: string, connectionId: string, requestId: string, error: QuestionChatAvailabilityError): void {
     const pending = this.pending.get(commandId);
     if (!pending || pending.connectionId !== connectionId || pending.requestId !== requestId) return;
-    if (pending.kind === "activate" && this.activeChats.get(pending.requestId) === pending.ownerSessionId) {
-      this.activeChats.delete(pending.requestId);
-    }
     clearTimeout(pending.timer);
     this.pending.delete(commandId);
     pending.resolve({ status: "unavailable", error });
@@ -152,7 +194,7 @@ export class QuestionChatRelay {
 
   publishEvent(connectionId: string, event: QuestionChatEvent): void {
     const normalized = QuestionChatEventSchema.parse(event);
-    const ownerSessionId = this.activeChats.get(normalized.requestId);
+    const ownerSessionId = this.activeChats.get(normalized.requestId)?.ownerSessionId;
     const extension = ownerSessionId ? this.extensions.get(ownerSessionId) : undefined;
     if (!extension || extension.connectionId !== connectionId) return;
     for (const listener of this.subscribers.get(normalized.requestId) ?? []) listener(normalized);
@@ -172,7 +214,7 @@ export class QuestionChatRelay {
   }
 
   cleanup(requestId: string, ownerSessionId: string, reason: QuestionChatTerminalReason): void {
-    if (this.activeChats.get(requestId) !== ownerSessionId) return;
+    if (this.activeChats.get(requestId)?.ownerSessionId !== ownerSessionId) return;
     for (const [commandId, pending] of this.pending) {
       if (pending.requestId !== requestId || pending.ownerSessionId !== ownerSessionId) continue;
       clearTimeout(pending.timer);
