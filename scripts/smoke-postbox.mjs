@@ -110,6 +110,62 @@ function nextMessages(socket, count, timeoutMs = 3_000) {
   });
 }
 
+function expectNoMessage(
+  socket,
+  triggerObservedAction,
+  observedAction,
+  triggerBarrier,
+  isBarrier,
+  timeoutMs = 3_000
+) {
+  return new Promise((resolvePromise, reject) => {
+    let observedResult;
+    let barrierArmed = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      cleanup();
+      reject(new Error("Timed out waiting for the no-message ordering barrier"));
+    }, timeoutMs);
+    const onMessage = (raw) => {
+      const message = JSON.parse(raw.toString());
+      if (!barrierArmed || !isBarrier(message)) {
+        settled = true;
+        cleanup();
+        reject(new Error(`Received an unexpected automatic WebSocket message before the ordering barrier: ${raw.toString()}`));
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolvePromise(observedResult);
+    };
+    const onError = (error) => {
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+    };
+    socket.once("message", onMessage);
+    socket.once("error", onError);
+    triggerObservedAction();
+    Promise.resolve(observedAction).then((result) => {
+      if (settled) return;
+      observedResult = result;
+      barrierArmed = true;
+      triggerBarrier();
+    }, (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
 async function connectSocket(wsUrl) {
   const socket = new WebSocket(wsUrl);
   await new Promise((resolvePromise, reject) => {
@@ -231,8 +287,35 @@ async function main() {
     assert(health.ok === true && health.service === "pi-postbox", "Unexpected health response");
     assertCompatibleLocalTarget(health, baseUrl);
 
-    const html = await fetch(`${baseUrl}/`).then((response) => response.text());
+    const htmlResponse = await fetch(`${baseUrl}/`);
+    assert(htmlResponse.status === 200 && htmlResponse.headers.get("content-type")?.includes("text/html"), "Server did not serve the packaged HTML shell");
+    const html = await htmlResponse.text();
     assert(html.includes("Pi Postbox") || html.includes("root"), "Server did not serve the web shell");
+    const assetPaths = [...html.matchAll(/(?:src|href)="(\/assets\/[^\"]+\.(?:js|css))"/g)].map((match) => match[1]);
+    assert(assetPaths.some((path) => path.endsWith(".js")), "Packaged HTML did not reference a hashed JavaScript asset");
+    assert(assetPaths.some((path) => path.endsWith(".css")), "Packaged HTML did not reference a hashed CSS asset");
+    const assets = await Promise.all(assetPaths.map(async (path) => {
+      const response = await fetch(`${baseUrl}${path}`);
+      const expectedType = path.endsWith(".js") ? "javascript" : "text/css";
+      assert(response.status === 200 && response.headers.get("content-type")?.includes(expectedType), `Packaged asset ${path} had the wrong status or content type`);
+      return { path, text: await response.text() };
+    }));
+    const browserJavaScript = assets.filter(({ path }) => path.endsWith(".js")).map(({ text }) => text).join("\n");
+    for (const starter of ["Elaborate", "Pro–Cons", "Teach me"]) {
+      assert(browserJavaScript.includes(starter), `Packaged Question Chat UI is missing the ${starter} starter`);
+    }
+    const manifestResponse = await fetch(`${baseUrl}/manifest.webmanifest`);
+    assert(manifestResponse.status === 200 && manifestResponse.headers.get("content-type")?.includes("manifest"), "Packaged web manifest was unavailable");
+    const manifest = await manifestResponse.json();
+    const serviceWorkerResponse = await fetch(`${baseUrl}/sw.js`);
+    assert(serviceWorkerResponse.status === 200 && serviceWorkerResponse.headers.get("content-type")?.includes("javascript"), "Packaged service worker was unavailable");
+    const iconPaths = manifest.icons?.map((icon) => icon.src) ?? [];
+    assert(iconPaths.some((path) => path.endsWith("postbox-icon-192.png")), "Packaged manifest omitted the 192px icon");
+    assert(iconPaths.some((path) => path.endsWith("postbox-icon-512.png")), "Packaged manifest omitted the 512px icon");
+    for (const iconPath of iconPaths) {
+      const iconResponse = await fetch(new URL(iconPath, `${baseUrl}/`));
+      assert(iconResponse.status === 200 && iconResponse.headers.get("content-type")?.includes("image/png"), `Packaged icon ${iconPath} was unavailable`);
+    }
 
     sse = new SseClient(`${baseUrl}/api/state/events`);
     await sse.open();
@@ -241,6 +324,24 @@ async function main() {
     socket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
     const sessionId = `smoke-session-${randomUUID()}`;
     const requestId = `smoke-ask-${randomUUID()}`;
+    const privateAssistantMessageId = `smoke-private-assistant-id-${randomUUID()}`;
+    const privateAssistantText = `smoke-private-assistant-text-${randomUUID()}`;
+    const privateUserPromptText = `smoke-private-user-prompt-${randomUUID()}`;
+    const privateUserSteerText = `smoke-private-user-steer-${randomUUID()}`;
+    const privateUserContinueText = `smoke-private-user-continue-${randomUUID()}`;
+    const privateToolCallId = `smoke-private-tool-id-${randomUUID()}`;
+    const privateRepositoryTarget = `src/smoke-private-target-${randomUUID()}.ts`;
+    const privateRepositoryDetails = `smoke-private-repository-details-${randomUUID()}`;
+    const privateMarkers = [
+      privateAssistantMessageId,
+      privateAssistantText,
+      privateUserPromptText,
+      privateUserSteerText,
+      privateUserContinueText,
+      privateToolCallId,
+      privateRepositoryTarget,
+      privateRepositoryDetails
+    ];
 
     const registered = nextMessage(socket);
     socket.send(JSON.stringify({
@@ -334,7 +435,7 @@ async function main() {
         !("leafId" in contextActivationCommand.payload.source),
       "Context-only activation did not carry only authoritative bounded handoff context"
     );
-    socket.send(JSON.stringify({
+    const contextReadyMessage = {
       type: "chat.ready",
       requestId: contextActivationCommand.requestId,
       payload: {
@@ -345,8 +446,20 @@ async function main() {
         sequence: 0,
         messages: []
       }
-    }));
-    assert((await contextActivationResponse).status === 200, "Context-only Question Chat did not activate explicitly");
+    };
+    const noAutoPromptBarrierId = `smoke-no-auto-prompt-${randomUUID()}`;
+    const contextActivationResult = await expectNoMessage(
+      socket,
+      () => socket.send(JSON.stringify(contextReadyMessage)),
+      contextActivationResponse,
+      () => socket.send(JSON.stringify({
+          type: "heartbeat",
+          requestId: noAutoPromptBarrierId,
+          payload: { sessionId, semanticState: "working" }
+        })),
+      (message) => message.type === "ack" && message.requestId === noAutoPromptBarrierId
+    );
+    assert(contextActivationResult.status === 200, "Context-only Question Chat did not activate explicitly");
 
     chatSse = new SseClient(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/events`);
     await chatSse.open();
@@ -371,10 +484,10 @@ async function main() {
     const sendResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ clientCommandId, message: "Please elaborate." })
+      body: JSON.stringify({ clientCommandId, message: privateUserPromptText })
     });
     const sendCommand = await nextMessage(socket);
-    assert(sendCommand.type === "chat.send" && sendCommand.payload.command.message === "Please elaborate.", "Fake runtime did not receive the first Chat prompt");
+    assert(sendCommand.type === "chat.send" && sendCommand.payload.command.message === privateUserPromptText, "Fake runtime did not receive the first Chat prompt");
     socket.send(JSON.stringify({
       type: "chat.send.accepted",
       requestId: sendCommand.requestId,
@@ -389,7 +502,7 @@ async function main() {
         requestId,
         sequence: 2,
         type: "tool.started",
-        activity: { id: "smoke-tool", tool: "repository_read", target: "src/smoke.ts", state: "running" }
+        activity: { id: privateToolCallId, tool: "repository_read", target: privateRepositoryTarget, state: "running" }
       }
     }));
     socket.send(JSON.stringify({
@@ -399,16 +512,16 @@ async function main() {
         sequence: 3,
         type: "tool.finished",
         activity: {
-          id: "smoke-tool",
+          id: privateToolCallId,
           tool: "repository_read",
-          target: "src/smoke.ts",
+          target: privateRepositoryTarget,
           state: "success",
-          details: "smoke-private-repository-evidence"
+          details: privateRepositoryDetails
         }
       }
     }));
     await chatSse.nextJsonMatching(
-      (event) => event.type === "tool.finished" && event.activity?.details === "smoke-private-repository-evidence",
+      (event) => event.type === "tool.finished" && event.activity?.details === privateRepositoryDetails,
       undefined
     );
 
@@ -416,7 +529,7 @@ async function main() {
     const steerResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ clientCommandId: steerCommandId, message: "Correct that detail." })
+      body: JSON.stringify({ clientCommandId: steerCommandId, message: privateUserSteerText })
     });
     const steerCommand = await nextMessage(socket);
     assert(steerCommand.type === "chat.send" && steerCommand.payload.command.clientCommandId === steerCommandId, "Fake runtime did not receive active Chat steering");
@@ -430,11 +543,11 @@ async function main() {
 
     socket.send(JSON.stringify({
       type: "chat.event",
-      payload: { requestId, sequence: 4, type: "message.started", message: { id: "smoke-assistant", role: "assistant", text: "", status: "streaming" } }
+      payload: { requestId, sequence: 4, type: "message.started", message: { id: privateAssistantMessageId, role: "assistant", text: "", status: "streaming" } }
     }));
     socket.send(JSON.stringify({
       type: "chat.event",
-      payload: { requestId, sequence: 5, type: "assistant.text.delta", messageId: "smoke-assistant", text: "smoke-streamed-private-fork-answer" }
+      payload: { requestId, sequence: 5, type: "assistant.text.delta", messageId: privateAssistantMessageId, text: privateAssistantText }
     }));
 
     const stopCommandId = `smoke-chat-stop-${randomUUID()}`;
@@ -448,7 +561,7 @@ async function main() {
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 6, type: "lifecycle", state: "stopping" } }));
     socket.send(JSON.stringify({
       type: "chat.event",
-      payload: { requestId, sequence: 7, type: "message.finished", messageId: "smoke-assistant", text: "smoke-streamed-private-fork-answer", status: "stopped" }
+      payload: { requestId, sequence: 7, type: "message.finished", messageId: privateAssistantMessageId, text: privateAssistantText, status: "stopped" }
     }));
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 8, type: "lifecycle", state: "stopped" } }));
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId, sequence: 9, type: "lifecycle", state: "ready" } }));
@@ -459,9 +572,13 @@ async function main() {
     }));
     assert((await stopResponse).status === 200, "Chat Stop was not accepted");
     await chatSse.nextJsonMatching(
-      (event) => event.type === "message.finished" && event.status === "stopped" && event.text === "smoke-streamed-private-fork-answer",
+      (event) => event.type === "message.finished" && event.status === "stopped" && event.text === privateAssistantText,
       undefined
     );
+    const pendingStateJson = JSON.stringify(await fetch(`${baseUrl}/api/state`).then((response) => response.json()));
+    for (const privateMarker of privateMarkers) {
+      assert(!pendingStateJson.includes(privateMarker), `Pending state persisted private Chat marker ${privateMarker}`);
+    }
 
     chatSse.close();
     chatSse = undefined;
@@ -518,8 +635,8 @@ async function main() {
       forkKind: "context-only",
       model: { id: "smoke/fake-model", source: "originating" },
       sequence: 9,
-      messages: [{ id: "smoke-assistant", role: "assistant", text: "smoke-streamed-private-fork-answer", status: "stopped" }],
-      tools: [{ id: "smoke-tool", tool: "repository_read", target: "src/smoke.ts", state: "success", details: "smoke-private-repository-evidence" }]
+      messages: [{ id: privateAssistantMessageId, role: "assistant", text: privateAssistantText, status: "stopped" }],
+      tools: [{ id: privateToolCallId, tool: "repository_read", target: privateRepositoryTarget, state: "success", details: privateRepositoryDetails }]
     };
     const recoveryAccepted = nextMessage(socket);
     socket.send(JSON.stringify({
@@ -543,7 +660,7 @@ async function main() {
       payload: recoveredSnapshot
     }));
     const recoveredBody = await (await recoveredSnapshotResponse).json();
-    assert(recoveredBody.snapshot?.messages?.[0]?.text === "smoke-streamed-private-fork-answer", "Server restart did not restore Chat from the extension fork");
+    assert(recoveredBody.snapshot?.messages?.[0]?.text === privateAssistantText, "Server restart did not restore Chat from the extension fork");
 
     sse = new SseClient(`${baseUrl}/api/state/events`);
     await sse.open();
@@ -585,7 +702,7 @@ async function main() {
     const continueResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ clientCommandId: continueCommandId, message: "Continue." })
+      body: JSON.stringify({ clientCommandId: continueCommandId, message: privateUserContinueText })
     });
     const continueCommand = await nextMessage(socket);
     assert(continueCommand.type === "chat.send" && continueCommand.payload.command.clientCommandId === continueCommandId, "Stopped Chat did not accept another prompt");
@@ -616,7 +733,10 @@ async function main() {
     assert(state.requests.some((request) => request.requestId === requestId && request.options.some((option) =>
       option.value === proposedValue && option.label === "Stage release first" && option.provenance === "chat"
     )), "State endpoint does not retain the Chat-proposed option");
-    assert(!JSON.stringify(state).includes("smoke-private-repository-evidence"), "State persisted private repository evidence");
+    const stateJson = JSON.stringify(state);
+    for (const privateMarker of privateMarkers) {
+      assert(!stateJson.includes(privateMarker), `State persisted private Chat marker ${privateMarker}`);
+    }
 
     const history = await fetch(`${baseUrl}/api/history`).then((response) => response.json());
     assert(history.history.some((record) =>
@@ -625,8 +745,10 @@ async function main() {
         record.request.result.selectedValues?.[0] === proposedValue &&
         record.request.options.some((option) => option.value === proposedValue && option.provenance === "chat")
     ), "History endpoint does not include the answered Chat-proposed option");
-    assert(!JSON.stringify(history).includes("smoke-streamed-private-fork-answer"), "History persisted the private Chat transcript");
-    assert(!JSON.stringify(history).includes("smoke-private-repository-evidence"), "History persisted private repository evidence");
+    const historyJson = JSON.stringify(history);
+    for (const privateMarker of privateMarkers) {
+      assert(!historyJson.includes(privateMarker), `History persisted private Chat marker ${privateMarker}`);
+    }
 
     console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Chat prompt/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, state, and history verified.");
   } finally {

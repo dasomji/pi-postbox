@@ -13,7 +13,7 @@ import {
   type ActiveLocalRole,
   type SessionRegisterPayload,
   type SessionShutdownReason
-} from "../../../protocol/src/index.js";
+} from "@pi-postbox/protocol";
 import type {
   QuestionChatEvent,
   QuestionChatAvailabilityError,
@@ -24,7 +24,7 @@ import type {
   QuestionChatSource,
   QuestionChatStopPayload,
   QuestionChatStopResponse
-} from "../../../protocol/src/index.js";
+} from "@pi-postbox/protocol";
 import {
   QuestionChatRuntimeError,
   type QuestionChatReconciliationDecision,

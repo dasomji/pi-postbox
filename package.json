@@ -68,8 +68,5 @@
     "web-push": "^3.6.7",
     "ws": "^8.21.0",
     "zod": "^3.24.1"
-  },
-  "bundledDependencies": [
-    "@pi-postbox/protocol"
-  ]
+  }
 }

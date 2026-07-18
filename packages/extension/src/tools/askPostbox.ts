@@ -8,7 +8,7 @@ import {
   type AskResult,
   type AskUrgency,
   type ForkReference
-} from "../../../protocol/src/index.js";
+} from "@pi-postbox/protocol";
 import type { PostboxClient } from "../client/PostboxClient.js";
 
 export interface AskPostboxInput {

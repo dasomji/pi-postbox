@@ -1,4 +1,4 @@
-import type { SemanticState } from "../../protocol/src/index.js";
+import type { SemanticState } from "@pi-postbox/protocol";
 import { emitHerdrBlocked } from "./herdrInterop.js";
 
 export interface SemanticStateClient {

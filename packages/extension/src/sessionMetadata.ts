@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SessionRegistration } from "../../protocol/src/index.js";
+import type { SessionRegistration } from "@pi-postbox/protocol";
 
 interface SessionLikeContext {
   cwd?: string;

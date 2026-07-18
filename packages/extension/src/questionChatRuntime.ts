@@ -20,7 +20,7 @@ import {
   type QuestionChatStopPayload,
   type QuestionChatStopResponse,
   type QuestionChatToolActivity
-} from "../../protocol/src/index.js";
+} from "@pi-postbox/protocol";
 import {
   DefaultResourceLoader,
   ModelRuntime,

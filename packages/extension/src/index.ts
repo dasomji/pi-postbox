@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionRegisterPayload } from "../../protocol/src/index.js";
+import type { SessionRegisterPayload } from "@pi-postbox/protocol";
 import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";

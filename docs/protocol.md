@@ -25,6 +25,29 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `POST /api/history/prune` | Apply configured terminal-history retention. |
 | `POST /admin/shutdown` | Gracefully stop the server. Loopback-only: rejected (403) unless the request comes straight from `127.0.0.1`/`::1` with no proxy-forwarding headers, so it is unreachable through Tailscale/lizardtail. Returns `202` then closes the app and exits. Used by `npm run dev` to stop a production server holding the canonical port. |
 
+## Question Chat browser and relay protocol
+
+The browser activates exact Chat with `POST /api/requests/:requestId/chat`, or makes a separate confirmed `POST /api/requests/:requestId/chat/context` request for context-only fallback. Activation and `GET /api/requests/:requestId/chat` return the initial normalized snapshot. The browser then subscribes to `GET /api/requests/:requestId/chat/events` for incremental lifecycle, message, tool, and online/offline transport events. The stream begins with a connection comment; it does not replay a private transcript, so clients resynchronize from a fresh snapshot if a runtime sequence has a gap.
+
+Messages use `POST /api/requests/:requestId/chat/messages` with `{ "clientCommandId": "...", "message": "..." }`; Stop uses `POST /api/requests/:requestId/chat/stop` with the same bounded `clientCommandId` shape. The id makes retries idempotent. An accepted send returns `mode: "prompt" | "steer"`; commands are rejected while the extension is offline rather than queued.
+
+Every correlated server-to-extension request/response command has a relay `requestId`; one-way notifications such as `chat.cleanup` do not require one. The extension response must carry that matching correlation id, and Chat payloads also carry the owning Postbox Question id. The principal command/result pairs are:
+
+| Server command | Extension result |
+| --- | --- |
+| `chat.activate` or `chat.activate-context` | `chat.ready` or `chat.error` |
+| `chat.snapshot` | `chat.snapshot` or `chat.error` |
+| `chat.send` | `chat.send.accepted` or `chat.error` |
+| `chat.stop` | `chat.stop.accepted` or `chat.error` |
+| `chat.propose-answer.result` | Result for extension-originated `chat.propose-answer` |
+| `chat.reconcile` | `chat.reconciled`, followed by `chat.recover.complete` after accepted recovery |
+
+The extension emits sequenced visible `chat.event` frames independently of command acknowledgements. Terminal resolution or authoritative owner reconciliation sends `chat.cleanup`. On reconnect, the extension offers only owner metadata with `chat.recover.offer`; the server answers `chat.reconcile` with a correlated recover/delete disposition. Private snapshots transferred during recovery remain transient.
+
+Public Chat failures use the structured error codes `forbidden_origin`, `rate_limited`, `duplicate_command`, `wrong_owner`, `request_not_pending`, `extension_offline`, and `command_timeout` (along with the source/context/runtime codes defined by `QuestionChatAvailabilityCodeSchema`). HTTP status distinguishes origin, throttling, missing/terminal requests, and unavailable extension/timeout cases; the JSON body remains `{ "status": "unavailable", "error": { "code": "...", "message": "..." } }`, with `retryAfterMs` or `contextFallback` when applicable.
+
+Context-only commands are created only from the stored Question, all options, required non-blank `codebaseContext` and `problemContext`, bounded optional handoff details, owning session cwd, and optional recorded model. Browser-supplied interviewer context is ignored. A successful proposed answer is appended as an option with authoritative `provenance: "chat"`; proposal does not select or resolve the Question.
+
 ## Health active-local identity
 
 `/healthz` always reports basic service health and may include optional `localTarget` when the server has published active-local metadata. That identity contains `role`, `instanceId`, and normalized `url`.

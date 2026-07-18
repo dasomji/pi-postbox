@@ -36,7 +36,7 @@ npm run build     # build server/protocol/extension and Vite UI
 npm run smoke     # packaged-path release smoke test
 ```
 
-The smoke script starts the built CLI with a temporary SQLite database and temporary Postbox config directory, connects a fake extension, verifies `/healthz`, opens `/api/state/events`, registers a session, creates and answers an ask, verifies `/api/state`, and confirms `/api/history` contains the answered request.
+The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration and handoff context, explicit Chat activation without an automatic prompt, context-only fallback, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, and absence of the private transcript/evidence from those durable APIs.
 
 ## Packages
 
@@ -77,6 +77,18 @@ pi-postbox-server
 ```
 
 `npm install -g @wienerberliner/pi-postbox` is only needed when you want `pi-postbox-server` on your shell `PATH`; it is distinct from `pi install`.
+
+## Question Chat
+
+For a pending Postbox Question, click **Chat** to activate Question Chat explicitly. Activation creates a private runtime on the originating Pi machine, but it does not start an automatic model prompt, turn, or response. Send a freeform message or choose a starter: **Elaborate**, **Pro–Cons**, or **Teach me**.
+
+Question Chat normally starts from an exact fork of the source conversation at the question's leaf. If that leaf is unavailable but the request contains the required `codebaseContext` and `problemContext`, the dashboard may offer a clearly labeled, explicit **context-only** fallback; it never silently substitutes that fallback. A `/reload` or process restart aborts the active turn but preserves and recovers the temporary fork when possible.
+
+The assistant can use only bounded, read-only repository evidence tools: `repository_read`, `repository_grep`, `repository_find`, and `repository_list`. They are limited to the originating Git worktree, or to the originating cwd subtree outside Git, and expose neither a shell nor file mutation. A proposal made with the answer tool appears as **Suggested in Chat**. It is a server-validated option, not a selected answer; the user must still choose or submit it.
+
+If the extension goes offline, an already-open dashboard retains its rendered messages but disables Chat commands and offers **Retry**; commands are not queued. A fresh dashboard cannot load the private conversation while the extension is offline. **Stop** aborts only the current turn, preserves already-streamed output, and leaves Chat ready for another message.
+
+An answered request, a cancelled request, expiry, or Pi Session replacement through `/new`, `/resume`, `/fork`, or quit aborts the runtime and deletes the temporary private transcript. Resolved History retains the chosen answer and any proposed option, including **Suggested in Chat**, but contains no Chat transcript, hidden reasoning, tool arguments, or tool output.
 
 ## Server configuration
 
