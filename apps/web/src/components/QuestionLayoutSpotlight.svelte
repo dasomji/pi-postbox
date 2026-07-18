@@ -7,6 +7,7 @@
   import type { QuestionForm } from "../lib/questionForm.svelte";
   import { branchLabel } from "../lib/status";
   import RichContext from "./RichContext.svelte";
+  import QuestionChatActivation from "./QuestionChatActivation.svelte";
 
   let {
     request,
@@ -79,6 +80,10 @@
     >
       ⓘ Context
     </button>
+  </div>
+
+  <div class="mt-3">
+    <QuestionChatActivation requestId={request.requestId} />
   </div>
 
   <div class="flex flex-1 justify-center py-6 sm:py-8">

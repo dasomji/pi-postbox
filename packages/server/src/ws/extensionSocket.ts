@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
 import type { StateBroadcaster } from "../services/broadcaster.js";
 import type { PushNotifier } from "../services/pushNotifier.js";
+import type { QuestionChatRelay } from "../services/questionChatRelay.js";
 import { RequestStoreError, type RequestStore } from "../services/requestStore.js";
 import type { SessionStore } from "../services/sessionStore.js";
 
@@ -40,7 +41,8 @@ export async function registerExtensionSocket(
   requestStore: RequestStore,
   broadcaster: StateBroadcaster,
   expireDue: () => unknown = () => undefined,
-  pushNotifier?: PushNotifier
+  pushNotifier?: PushNotifier,
+  questionChatRelay?: QuestionChatRelay
 ): Promise<void> {
   app.get("/api/extension/ws", { websocket: true }, (socket, request) => {
     const origin = request.headers.origin;
@@ -80,8 +82,19 @@ export async function registerExtensionSocket(
       }
 
       const message = result.data;
+      if (message.type === "chat.ready") {
+        questionChatRelay?.resolveReady(message.requestId, connectionId, message.payload);
+        return;
+      }
+
+      if (message.type === "chat.error") {
+        questionChatRelay?.resolveError(message.requestId, connectionId, message.payload.error);
+        return;
+      }
+
       if (message.type === "session.register") {
         sessionStore.register(connectionId, message.payload);
+        questionChatRelay?.bind(message.payload.session.sessionId, connectionId, socket);
         broadcaster.broadcast();
         send(socket, {
           type: "registered",
@@ -173,6 +186,7 @@ export async function registerExtensionSocket(
       for (const unsubscribe of unsubscribers) unsubscribe();
       unsubscribers.clear();
       sessionStore.disconnectConnection(connectionId);
+      questionChatRelay?.unbind(connectionId);
       broadcaster.broadcast();
     });
   });

@@ -63,6 +63,22 @@ export {
 } from "./health.js";
 export type { CreateHealthResponseOptions, HealthResponse } from "./health.js";
 export {
+  QuestionChatActivationResponseSchema,
+  QuestionChatAvailabilityCodeSchema,
+  QuestionChatAvailabilityErrorSchema,
+  QuestionChatModelSchema,
+  QuestionChatSnapshotSchema,
+  QuestionChatSourceSchema
+} from "./chat.js";
+export type {
+  QuestionChatActivationResponse,
+  QuestionChatAvailabilityCode,
+  QuestionChatAvailabilityError,
+  QuestionChatModel,
+  QuestionChatSnapshot,
+  QuestionChatSource
+} from "./chat.js";
+export {
   HistoryPruneResponseSchema,
   HistoryRecordSchema,
   HistoryResponseSchema,

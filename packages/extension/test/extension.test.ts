@@ -22,6 +22,7 @@ const postboxClientMock = vi.hoisted(() => ({
   started: 0,
   stopped: 0
 }));
+const questionChatMock = vi.hoisted(() => ({ cleanupAll: vi.fn<() => Promise<void>>(async () => undefined) }));
 
 vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/client/PostboxClient.js")>();
@@ -70,6 +71,17 @@ vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
   };
 });
 
+vi.mock("../src/questionChatRuntime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/questionChatRuntime.js")>();
+  return {
+    ...actual,
+    PiQuestionChatRuntimeAdapter: class {},
+    QuestionChatRuntimeRegistry: class {
+      cleanupAll = questionChatMock.cleanupAll;
+    }
+  };
+});
+
 import { toExtensionSocketUrl } from "../src/client/PostboxClient.js";
 import { getMachineIdentity } from "../src/machineIdentity.js";
 import postboxExtension, { startRegistration } from "../src/index.js";
@@ -87,6 +99,8 @@ afterEach(async () => {
   postboxClientMock.options.length = 0;
   postboxClientMock.started = 0;
   postboxClientMock.stopped = 0;
+  questionChatMock.cleanupAll.mockReset();
+  questionChatMock.cleanupAll.mockResolvedValue(undefined);
   await Promise.all(servers.splice(0).map(closeServer));
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -98,6 +112,36 @@ async function tempConfigEnv(extra: NodeJS.ProcessEnv = {}): Promise<NodeJS.Proc
 }
 
 describe("Pi Postbox extension registration", () => {
+  it("does not complete terminal session shutdown before Question Chat abort cleanup", async () => {
+    let finishAbort!: () => void;
+    questionChatMock.cleanupAll.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        finishAbort = resolve;
+      })
+    );
+    const shutdownHandlers: Array<(event: unknown, ctx: Record<string, unknown>) => unknown> = [];
+    postboxExtension({
+      on(event, handler) {
+        if (event === "session_shutdown") shutdownHandlers.push(handler);
+      },
+      registerTool: () => undefined,
+      registerCommand: () => undefined
+    });
+
+    const shutdown = Promise.resolve(shutdownHandlers.at(-1)!({ reason: "quit" }, { cwd: process.cwd() }));
+    let completed = false;
+    void shutdown.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+
+    expect(questionChatMock.cleanupAll).toHaveBeenCalledOnce();
+    expect(completed).toBe(false);
+    finishAbort();
+    await shutdown;
+    expect(completed).toBe(true);
+  });
+
   it("creates and reuses a persistent generated machine id", async () => {
     const env = await tempConfigEnv();
 

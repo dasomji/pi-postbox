@@ -1,13 +1,16 @@
 import { AskAnswerPayloadSchema, AskCancelPayloadSchema, AskStatusSchema } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import type { StateBroadcaster } from "../services/broadcaster.js";
+import type { QuestionChatRelay } from "../services/questionChatRelay.js";
 import { RequestStore, RequestStoreError } from "../services/requestStore.js";
+import type { SessionStore } from "../services/sessionStore.js";
 
 export async function registerRequestRoutes(
   app: FastifyInstance,
   requestStore: RequestStore,
   broadcaster: StateBroadcaster,
-  expireDue: () => unknown = () => undefined
+  expireDue: () => unknown = () => undefined,
+  questionChat?: { relay: QuestionChatRelay; sessionStore: SessionStore }
 ): Promise<void> {
   app.get("/api/requests", async (request, reply) => {
     expireDue();
@@ -45,6 +48,39 @@ export async function registerRequestRoutes(
     } catch (error) {
       return sendRequestError(reply, error);
     }
+  });
+
+  app.post("/api/requests/:requestId/chat", async (request, reply) => {
+    const { requestId } = request.params as { requestId: string };
+    expireDue();
+    const snapshot = requestStore.get(requestId);
+    if (!snapshot) {
+      return reply.code(404).send({
+        status: "unavailable",
+        error: { code: "request_missing", message: "This Postbox Question no longer exists." }
+      });
+    }
+    if (snapshot.status !== "pending") {
+      return reply.code(409).send({
+        status: "unavailable",
+        error: { code: "request_not_pending", message: "Chat is available only while the Postbox Question is pending." }
+      });
+    }
+    if (!questionChat) {
+      return reply.code(503).send({
+        status: "unavailable",
+        error: { code: "extension_offline", message: "The originating Pi extension is unavailable." }
+      });
+    }
+    const source = questionChat.sessionStore.questionChatSource(snapshot.sessionId);
+    if (!source) {
+      const session = questionChat.sessionStore.getQuestionChatSourceState(snapshot.sessionId);
+      const code = session === "missing_leaf" ? "source_leaf_missing" : "source_path_missing";
+      const message = code === "source_leaf_missing" ? "The originating Pi session leaf is unavailable." : "The originating Pi session file is unavailable.";
+      return reply.code(409).send({ status: "unavailable", error: { code, message } });
+    }
+    const response = await questionChat.relay.activate(requestId, snapshot.sessionId, source);
+    return reply.code(response.status === "ready" ? 200 : response.error.code === "extension_offline" ? 503 : 409).send(response);
   });
 }
 

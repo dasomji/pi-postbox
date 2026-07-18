@@ -23,6 +23,7 @@ import { createFcmSenderFromServiceAccountPath, type FcmSender } from "./service
 import { HistoryService } from "./services/historyService.js";
 import { PushNotifier, type PushSender } from "./services/pushNotifier.js";
 import { PushStore } from "./services/pushStore.js";
+import { QuestionChatRelay } from "./services/questionChatRelay.js";
 import { RequestStore } from "./services/requestStore.js";
 import { SessionStore } from "./services/sessionStore.js";
 import { registerExtensionSocket } from "./ws/extensionSocket.js";
@@ -44,6 +45,7 @@ export interface CreatePostboxAppOptions {
   historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
+  chatCommandTimeoutMs?: number;
   vapidPublicKey?: string;
   vapidPrivateKey?: string;
   pushSender?: PushSender;
@@ -107,6 +109,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     throw error;
   }
   const requestStore = new RequestStore(db, now, { askTimeoutMs: options.askTimeoutMs });
+  const questionChatRelay = new QuestionChatRelay(options.chatCommandTimeoutMs);
   const pushStore = new PushStore(db, now, {
     publicKey: options.vapidPublicKey,
     privateKey: options.vapidPrivateKey
@@ -119,6 +122,10 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     void pushNotifier.notifyAskResolved(result).catch((error: unknown) => {
       app.log.warn({ error, requestId: result.requestId }, "failed to send ask resolved push dismissal");
     });
+    const terminalRequest = requestStore.get(result.requestId);
+    if (terminalRequest && result.status !== "unavailable") {
+      questionChatRelay.cleanup(result.requestId, terminalRequest.sessionId, result.status);
+    }
   });
   const historyService = new HistoryService(db, requestStore, now, {
     maxAgeMs: options.historyRetentionMaxAgeMs,
@@ -154,6 +161,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     if (expiryTimer) clearInterval(expiryTimer);
     broadcaster.close();
     requestStore.close();
+    questionChatRelay.close();
     sessionStore.close();
     db.close();
   });
@@ -180,9 +188,20 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   await registerMetadataRoutes(app, sessionStore, broadcaster);
   await registerHistoryRoutes(app, historyService, broadcaster, pruneHistory);
   await registerPushRoutes(app, pushStore);
-  await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast);
+  await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast, {
+    relay: questionChatRelay,
+    sessionStore
+  });
   await registerAdminRoutes(app, { onShutdownRequest: options.onShutdownRequest });
-  await registerExtensionSocket(app, sessionStore, requestStore, broadcaster, expireDueAndBroadcast, pushNotifier);
+  await registerExtensionSocket(
+    app,
+    sessionStore,
+    requestStore,
+    broadcaster,
+    expireDueAndBroadcast,
+    pushNotifier,
+    questionChatRelay
+  );
 
   app.get("/healthz", async () => {
     const response = createHealthResponse({

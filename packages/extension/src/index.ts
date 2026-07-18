@@ -16,6 +16,7 @@ import { collectProjectMetadata } from "./projectMetadata.js";
 import { collectSessionMetadata } from "./sessionMetadata.js";
 import { askPostboxParameters, executeAskPostbox, formatAskResult, type AskPostboxInput } from "./tools/askPostbox.js";
 import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./status.js";
+import { PiQuestionChatRuntimeAdapter, QuestionChatRuntimeRegistry } from "./questionChatRuntime.js";
 
 interface PiLikeApi {
   on(event: string, handler: (event: unknown, ctx: PiLikeContext) => unknown): void;
@@ -78,6 +79,7 @@ let activeLocalSupervisor: ActiveLocalSupervisor | undefined;
 let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
 let unavailableRationale = "Pi Postbox is not connected.";
 const registrationWaiters = new Set<() => void>();
+const questionChats = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter());
 
 export default function postboxExtension(pi: PiLikeApi): void {
   semanticStateController = createSemanticStateController(() => client, pi);
@@ -123,6 +125,19 @@ export default function postboxExtension(pi: PiLikeApi): void {
         return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
       }
 
+      const liveContext = activeSessionRegistrationContext?.ctx;
+      const liveSessionPath = liveContext?.sessionManager?.getSessionFile?.();
+      const liveLeafId = liveContext?.sessionManager?.getLeafId?.();
+      if (liveSessionPath && liveLeafId) {
+        const source = { cwd: liveContext?.cwd ?? currentRegistration.session.cwd, agentSessionPath: liveSessionPath, leafId: liveLeafId };
+        const sourceAwareClient = client as PostboxClient & { updateQuestionSource?: (value: typeof source) => boolean };
+        sourceAwareClient.updateQuestionSource?.(source);
+        currentRegistration = {
+          ...currentRegistration,
+          session: { ...currentRegistration.session, ...source }
+        };
+      }
+
       const result = await executeAskPostbox(params, client, currentRegistration.session.sessionId, signal, semanticStateController);
       return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
     }
@@ -138,7 +153,9 @@ export default function postboxExtension(pi: PiLikeApi): void {
     void startRegistration(pi, ctx, process.env, activeUiScope, fallbackSessionIdentity, options);
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async (event) => {
+    const reason = event && typeof event === "object" && "reason" in event ? (event as { reason?: unknown }).reason : undefined;
+    const chatCleanup = reason !== "reload" ? questionChats.cleanupAll() : undefined;
     activeUiScope?.deactivate();
     stopActiveLocalSupervisor();
     activeUiScope = undefined;
@@ -147,6 +164,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     client = undefined;
     currentRegistration = undefined;
     notifyRegistrationWaiters();
+    await chatCleanup;
   });
 }
 
@@ -205,7 +223,8 @@ async function registerResolvedTarget(
       onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
       onLocalFallbackStatus: (status) => {
         void renderLocalFallbackStatus(uiScope, status);
-      }
+      },
+      questionChats
     });
     client.start();
     notifyRegistrationWaiters();

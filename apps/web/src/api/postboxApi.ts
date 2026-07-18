@@ -9,6 +9,10 @@ import {
   type PushSubscriptionPayload,
   type StateSnapshot
 } from "@pi-postbox/protocol";
+import {
+  QuestionChatActivationResponseSchema,
+  type QuestionChatActivationResponse
+} from "@pi-postbox/protocol";
 
 export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch("/healthz");
@@ -66,4 +70,13 @@ export async function postJson(path: string, payload: unknown): Promise<void> {
     const body = (await response.json().catch(() => undefined)) as { message?: string } | undefined;
     throw new Error(body?.message ?? fallback);
   }
+}
+
+export async function activateQuestionChat(requestId: string): Promise<QuestionChatActivationResponse> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/chat`, { method: "POST" });
+  const parsed = QuestionChatActivationResponseSchema.parse(await response.json());
+  if (!response.ok && parsed.status === "ready") {
+    throw new Error(`Chat activation failed with ${response.status}`);
+  }
+  return parsed;
 }

@@ -65,7 +65,9 @@ export const SessionUpdatePayloadSchema = z.object({
   cwd: z.string().min(1).optional(),
   branch: z.string().min(1).optional(),
   worktreePath: z.string().min(1).optional(),
-  semanticState: SemanticStateSchema.optional()
+  semanticState: SemanticStateSchema.optional(),
+  agentSessionPath: z.string().min(1).max(4_000).optional(),
+  leafId: z.string().min(1).max(2_000).optional()
 });
 
 export const SessionShutdownReasonSchema = z.enum(["quit", "reload", "new", "resume", "fork"]);

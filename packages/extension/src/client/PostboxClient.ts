@@ -12,6 +12,12 @@ import {
   type SessionRegisterPayload,
   type SessionShutdownReason
 } from "../../../protocol/src/index.js";
+import type {
+  QuestionChatAvailabilityError,
+  QuestionChatSnapshot,
+  QuestionChatSource
+} from "../../../protocol/src/index.js";
+import { QuestionChatRuntimeError } from "../questionChatRuntime.js";
 import WebSocket from "ws";
 import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
 import {
@@ -50,6 +56,10 @@ export interface PostboxClientOptions {
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
+  questionChats?: {
+    activate(input: { requestId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
+    cleanup(requestId: string): Promise<void>;
+  };
 }
 
 export interface PendingAskSnapshot {
@@ -175,6 +185,22 @@ export class PostboxClient {
       payload: {
         sessionId: this.options.registration.session.sessionId,
         semanticState: state
+      }
+    });
+  }
+
+  updateQuestionSource(source: { cwd: string; agentSessionPath: string; leafId: string }): boolean {
+    this.options.registration = {
+      ...this.options.registration,
+      session: { ...this.options.registration.session, ...source }
+    };
+    return this.send({
+      type: "session.update",
+      payload: {
+        sessionId: this.options.registration.session.sessionId,
+        cwd: source.cwd,
+        agentSessionPath: source.agentSessionPath,
+        leafId: source.leafId
       }
     });
   }
@@ -343,6 +369,14 @@ export class PostboxClient {
         const text = Buffer.isBuffer(raw) ? raw.toString() : String(raw);
         const parsed = ExtensionServerMessageSchema.safeParse(JSON.parse(text));
         if (!parsed.success) return;
+        if (parsed.data.type === "chat.activate") {
+          void this.activateQuestionChat(parsed.data.requestId, parsed.data.payload);
+          return;
+        }
+        if (parsed.data.type === "chat.cleanup") {
+          void this.options.questionChats?.cleanup(parsed.data.payload.requestId);
+          return;
+        }
         if (parsed.data.type === "error") {
           this.options.onStatus?.(`server-error:${parsed.data.error.code}`);
           if (parsed.data.requestId) {
@@ -373,6 +407,45 @@ export class PostboxClient {
       this.startTargetAffinityTimersForDisconnectedOrigin();
       this.scheduleReconnect();
     });
+  }
+
+  private async activateQuestionChat(
+    commandId: string,
+    payload: { requestId: string; ownerSessionId: string; source: QuestionChatSource }
+  ): Promise<void> {
+    if (payload.ownerSessionId !== this.options.registration.session.sessionId) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "wrong_owner",
+        message: "Question Chat activation was routed to the wrong Pi Session."
+      });
+      return;
+    }
+    if (!this.options.questionChats) {
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: "runtime_failure",
+        message: "Question Chat runtime is not configured."
+      });
+      return;
+    }
+
+    try {
+      const snapshot = await this.options.questionChats.activate({ requestId: payload.requestId, source: payload.source });
+      this.send({ type: "chat.ready", requestId: commandId, payload: snapshot });
+    } catch (error) {
+      const runtimeError = error instanceof QuestionChatRuntimeError ? error : undefined;
+      this.sendQuestionChatError(commandId, payload.requestId, {
+        code: runtimeError?.code ?? "runtime_failure",
+        message: runtimeError?.message ?? (error instanceof Error ? error.message : "Question Chat activation failed.")
+      });
+    }
+  }
+
+  private sendQuestionChatError(
+    commandId: string,
+    requestId: string,
+    error: QuestionChatAvailabilityError
+  ): void {
+    this.send({ type: "chat.error", requestId: commandId, payload: { requestId, error } });
   }
 
   private startHeartbeat(): void {

@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { AskAnswerPayloadSchema, AskCancelPayloadSchema, AskCreatePayloadSchema, AskResultSchema } from "./ask.js";
 import {
+  QuestionChatAvailabilityErrorSchema,
+  QuestionChatSnapshotSchema,
+  QuestionChatSourceSchema
+} from "./chat.js";
+import {
   HeartbeatPayloadSchema,
   SessionRegisterPayloadSchema,
   SessionShutdownPayloadSchema,
@@ -42,6 +47,16 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("ask.cancel"),
     requestId: z.string().min(1).optional(),
     payload: z.object({ requestId: z.string().min(1), cancel: AskCancelPayloadSchema.default({}) })
+  }),
+  z.object({
+    type: z.literal("chat.ready"),
+    requestId: z.string().min(1),
+    payload: QuestionChatSnapshotSchema
+  }),
+  z.object({
+    type: z.literal("chat.error"),
+    requestId: z.string().min(1),
+    payload: z.object({ requestId: z.string().min(1), error: QuestionChatAvailabilityErrorSchema })
   })
 ]);
 
@@ -65,6 +80,23 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("ask.resolved"),
     requestId: z.string().min(1).optional(),
     payload: AskResultSchema
+  }),
+  z.object({
+    type: z.literal("chat.activate"),
+    requestId: z.string().min(1),
+    payload: z.object({
+      requestId: z.string().min(1),
+      ownerSessionId: z.string().min(1).max(200),
+      source: QuestionChatSourceSchema
+    })
+  }),
+  z.object({
+    type: z.literal("chat.cleanup"),
+    requestId: z.string().min(1).optional(),
+    payload: z.object({
+      requestId: z.string().min(1).max(200),
+      reason: z.enum(["answered", "cancelled", "expired", "session_shutdown"])
+    })
   }),
   z.object({
     type: z.literal("error"),

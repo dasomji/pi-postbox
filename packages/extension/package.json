@@ -24,13 +24,14 @@
     "directory": "packages/extension"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.10",
     "@pi-postbox/protocol": "0.1.0",
     "ws": "^8.21.0"
   },
