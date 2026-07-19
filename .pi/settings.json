@@ -1,7 +1,7 @@
 {
   "packages": [
     {
-      "source": "git:github.com/dasomji/pi-postbox",
+      "source": "npm:@wienerberliner/pi-postbox",
       "extensions": [],
       "skills": [],
       "prompts": [],
