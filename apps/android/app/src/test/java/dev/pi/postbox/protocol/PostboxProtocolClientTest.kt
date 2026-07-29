@@ -25,7 +25,11 @@ class PostboxProtocolClientTest {
 
     @Test
     fun fetchStateRequestsApiStateAndDecodesSnapshot() = runTest {
-        server.enqueue(jsonResponse(representativeStateJson()))
+        val responseJson = representativeStateJson(
+            requestUrgency = "high",
+            firstOptionProvenance = "chat"
+        )
+        server.enqueue(jsonResponse(responseJson))
         val client = OkHttpPostboxProtocolClient(baseUrl = server.url("/").toString())
 
         val snapshot = client.fetchState()
@@ -33,7 +37,11 @@ class PostboxProtocolClientTest {
         val request = server.takeRequest(1, TimeUnit.SECONDS) ?: error("Expected /api/state request")
         assertEquals("GET", request.method)
         assertEquals("/api/state", request.path)
-        assertEquals("ask-protocol-1", snapshot.requests.single().requestId)
+        val decodedQuestion = snapshot.requests.single()
+        assertEquals("ask-protocol-1", decodedQuestion.requestId)
+        assertEquals(AskUrgency.HIGH, decodedQuestion.urgency)
+        assertEquals(AskOptionProvenance.CHAT, decodedQuestion.options.first().provenance)
+        assertEquals("Stay idiomatic on Android.", decodedQuestion.options.first().meaning)
         assertEquals(SemanticState.BLOCKED, snapshot.sessions.single().semanticState)
     }
 

@@ -9,8 +9,11 @@ import dev.pi.postbox.notification.PendingQuestionNotificationTracker
 import dev.pi.postbox.protocol.AskAnswerPayload
 import dev.pi.postbox.protocol.AskCancelPayload
 import dev.pi.postbox.protocol.AskMode
+import dev.pi.postbox.protocol.AskOptionProvenance
 import dev.pi.postbox.protocol.AskRequestSnapshot
 import dev.pi.postbox.protocol.AskStatus
+import dev.pi.postbox.protocol.AskUrgency
+import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.protocol.PostboxProtocolClient
 import dev.pi.postbox.protocol.PostboxRequestAlreadyResolvedException
 import dev.pi.postbox.protocol.PostboxStateStream
@@ -365,7 +368,9 @@ class QuestionWorkflowViewModel(
         connectionMessage: String? = state.connectionMessage
     ) {
         latestSnapshot = snapshot
-        val pendingRequests = snapshot.requests.filter { it.status == AskStatus.PENDING }
+        val pendingRequests = snapshot.requests
+            .filter { it.status == AskStatus.PENDING }
+            .sortedWith(askRequestPriorityComparator)
         val pendingQuestions = pendingRequests.map { it.toListItem() }
         // Live state is pending-only. If an explicitly refreshed notification target is absent,
         // it resolved in the meantime and must not fall through to an unrelated pending item.
@@ -560,6 +565,12 @@ enum class QuestionMode {
     MULTI
 }
 
+enum class QuestionUrgency {
+    HIGH,
+    NORMAL,
+    LOW
+}
+
 data class QuestionSessionUiState(
     val sessionId: String,
     val title: String?,
@@ -578,7 +589,8 @@ data class QuestionListItemUiState(
     val prompt: String,
     val mode: QuestionMode,
     val createdAt: String,
-    val expiresAt: String?
+    val expiresAt: String?,
+    val urgency: QuestionUrgency = QuestionUrgency.NORMAL
 )
 
 data class QuestionDetailUiState(
@@ -592,6 +604,7 @@ data class QuestionDetailUiState(
     val options: List<QuestionOptionUiState>,
     val handoffContext: dev.pi.postbox.protocol.HandoffContext?,
     val forkReference: dev.pi.postbox.protocol.ForkReference?,
+    val urgency: QuestionUrgency = QuestionUrgency.NORMAL,
     val selectedValues: List<String> = emptyList(),
     val canSubmit: Boolean = false,
     val isSubmitting: Boolean = false,
@@ -603,8 +616,15 @@ data class QuestionDetailUiState(
 data class QuestionOptionUiState(
     val value: String,
     val label: String,
-    val description: String?
+    val description: String?,
+    val meaning: String? = null,
+    val context: String? = null,
+    val provenance: QuestionOptionProvenance? = null
 )
+
+enum class QuestionOptionProvenance {
+    CHAT
+}
 
 data class QuestionTerminalMessage(
     val requestId: String,
@@ -628,6 +648,7 @@ private fun AskRequestSnapshot.toListItem(): QuestionListItemUiState = QuestionL
     sessionId = sessionId,
     prompt = question.prompt,
     mode = mode.toQuestionMode(),
+    urgency = urgency.toQuestionUrgency(),
     createdAt = createdAt,
     expiresAt = expiresAt
 )
@@ -646,6 +667,7 @@ private fun AskRequestSnapshot.toUiQuestion(
         requestId = requestId,
         sessionId = sessionId,
         mode = mode.toQuestionMode(),
+        urgency = urgency.toQuestionUrgency(),
         prompt = question.prompt,
         questionContext = question.context,
         relevance = question.relevance,
@@ -654,12 +676,24 @@ private fun AskRequestSnapshot.toUiQuestion(
             QuestionOptionUiState(
                 value = option.value,
                 label = option.label,
-                description = option.description ?: option.meaning ?: option.context
+                description = option.description,
+                meaning = option.meaning,
+                context = option.context,
+                provenance = option.provenance?.toQuestionOptionProvenance()
             )
         },
         handoffContext = context,
         forkReference = forkReference,
-        selectedValues = previous?.selectedValues.orEmpty(),
+        selectedValues = previous
+            ?.selectedValues
+            .orEmpty()
+            .filter { selectedValue ->
+                selectedValue == OTHER_OPTION_VALUE ||
+                    options.any { option -> option.value == selectedValue }
+            }
+            .let { selectedValues ->
+                if (mode == AskMode.SINGLE) selectedValues.take(1) else selectedValues
+            },
         submissionError = previous?.submissionError,
         terminalState = terminalState,
         availableActions = actions
@@ -678,6 +712,16 @@ private fun QuestionDetailUiState.withSubmitState(): QuestionDetailUiState {
 private fun AskMode.toQuestionMode(): QuestionMode = when (this) {
     AskMode.SINGLE -> QuestionMode.SINGLE
     AskMode.MULTI -> QuestionMode.MULTI
+}
+
+private fun AskUrgency.toQuestionUrgency(): QuestionUrgency = when (this) {
+    AskUrgency.HIGH -> QuestionUrgency.HIGH
+    AskUrgency.NORMAL -> QuestionUrgency.NORMAL
+    AskUrgency.LOW -> QuestionUrgency.LOW
+}
+
+private fun AskOptionProvenance.toQuestionOptionProvenance(): QuestionOptionProvenance = when (this) {
+    AskOptionProvenance.CHAT -> QuestionOptionProvenance.CHAT
 }
 
 private fun AskStatus.toTerminalState(): QuestionTerminalState? = when (this) {
