@@ -296,7 +296,7 @@ describe("responsive Question Chat workspace", () => {
   it("adds a fixed responsive desktop sidebar and hide/reopens presentation without lifecycle commands", async () => {
     const media = mediaController(false);
     const chatApi = chatBoundary();
-    render(QuestionDetail, {
+    const { container } = render(QuestionDetail, {
       props: {
         request: REQUEST,
         isMock: true,
@@ -308,7 +308,22 @@ describe("responsive Question Chat workspace", () => {
 
     expect(screen.getByRole("region", { name: "Question" })).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Question Chat sidebar" })).toBeNull();
-    const submitAnswer = screen.getByRole("button", { name: "Submit answer" });
+    const sidebarElement = container.querySelector<HTMLElement>("#chat-workspace-panel");
+    expect(sidebarElement?.style.display).toBe("none");
+    const projectLabel = screen.getByText("Project:");
+    const projectMetadata = projectLabel.parentElement;
+    const metadata = projectMetadata?.parentElement;
+    expect(metadata?.className).toContain("font-display");
+    expect(metadata?.className).toContain("text-lg");
+    expect(metadata?.className).toContain("font-bold");
+    expect(metadata?.className).toContain("tracking-wide");
+    expect(projectLabel.className).toContain("text-postbox-subtle");
+    expect(projectLabel.nextElementSibling?.className).toContain("text-attention");
+    const branchLabel = screen.getByText("Branch:");
+    expect(branchLabel.className).toContain("text-postbox-subtle");
+    expect(branchLabel.nextElementSibling?.className).toContain("text-history-foreground");
+    const submitAnswer = screen.getByRole("button", { name: "Submit" });
+    expect(submitAnswer.lastElementChild?.tagName).toBe("svg");
     const chatAction = screen.getByRole("button", { name: "Chat" });
     const noteAction = screen.getByRole("button", { name: "+ Add a note" });
     expect(chatAction.previousElementSibling).toBe(submitAnswer);
@@ -320,7 +335,13 @@ describe("responsive Question Chat workspace", () => {
     await fireEvent.click(chatAction);
 
     const sidebar = await screen.findByRole("complementary", { name: "Question Chat sidebar" });
+    expect(sidebar.style.display).toBe("");
     const chatRegion = screen.getByRole("region", { name: "Question Chat" });
+    expect(chatRegion.className).not.toContain("border-history-border");
+    const chatHeading = screen.getByRole("heading", { name: "Question Chat" });
+    const hideChat = screen.getByRole("button", { name: "Hide Question Chat" });
+    expect(hideChat.textContent?.trim()).toBe("›");
+    expect(hideChat.parentElement?.contains(chatHeading)).toBe(true);
     const messages = screen.getByLabelText("Question Chat messages");
     const composerForm = chatRegion.querySelector("form");
     expect(sidebar.className).toContain("w-[clamp(");
@@ -331,8 +352,9 @@ describe("responsive Question Chat workspace", () => {
     expect(messages.className).toContain("overflow-y-auto");
     expect(composerForm?.className).toContain("shrink-0");
     expect(screen.queryByRole("separator")).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Hide Question Chat" }));
+    await fireEvent.click(hideChat);
     expect(screen.queryByRole("complementary", { name: "Question Chat sidebar" })).toBeNull();
+    expect(sidebar.style.display).toBe("none");
     expect(screen.getByRole("region", { name: "Question" })).toBeTruthy();
 
     await fireEvent.click(screen.getByRole("button", { name: "Chat" }));

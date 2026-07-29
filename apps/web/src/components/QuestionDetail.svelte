@@ -150,6 +150,7 @@
     aria-label={mobile && presentation.started ? undefined : "Question"}
     aria-labelledby={mobile && presentation.started ? "question-workspace-tab" : undefined}
     hidden={!questionPresented}
+    style:display={questionPresented ? undefined : "none"}
     class="min-h-0 min-w-0 flex-1 overflow-y-auto bg-postbox-canvas"
     class:pb-24={mobile && presentation.started}
   >
@@ -197,13 +198,9 @@
     aria-label={mobile && presentation.started ? undefined : "Question Chat sidebar"}
     aria-labelledby={mobile && presentation.started ? "chat-workspace-tab" : undefined}
     hidden={!chatPresented}
+    style:display={chatPresented ? undefined : "none"}
     class="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-t border-postbox-border bg-postbox-surface px-3 pb-24 md:w-[clamp(20rem,30vw,28rem)] md:border-l md:border-t-0 md:pb-3"
   >
-    {#if !mobile && presentation.started}
-      <div class="z-10 flex shrink-0 justify-end bg-postbox-surface py-2">
-        <button type="button" class="rounded-full border border-postbox-border px-2.5 py-1 text-xs text-postbox-subtle" onclick={() => layoutState.hideQuestionChat(request.requestId)}>Hide Question Chat</button>
-      </div>
-    {/if}
     <QuestionChatActivation
       requestId={request.requestId}
       api={chatApi}
@@ -217,6 +214,7 @@
       onRecoveryNotStarted={chatRecoveryNotStarted}
       showQuestionActions={mobile}
       onShowQuestion={() => selectTab("question")}
+      onHideChat={!mobile && presentation.started ? () => layoutState.hideQuestionChat(request.requestId) : undefined}
     />
   </aside>
 

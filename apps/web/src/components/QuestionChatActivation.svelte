@@ -30,7 +30,8 @@
     onRecoveryUnavailable,
     onRecoveryNotStarted,
     showQuestionActions = false,
-    onShowQuestion
+    onShowQuestion,
+    onHideChat
   }: {
     requestId: string;
     api?: Partial<QuestionChatApi>;
@@ -44,6 +45,7 @@
     onRecoveryNotStarted?: () => void;
     showQuestionActions?: boolean;
     onShowQuestion?: (optionValue: string) => void;
+    onHideChat?: () => void;
   } = $props();
 
   // API dependencies are stable for one keyed Question Chat component instance.
@@ -191,20 +193,56 @@
 {#if view.kind === "not-started" && showActivationButton}
   <button type="button" class="rounded-full border border-history-border bg-history/5 px-3 py-1 font-medium text-history-foreground transition hover:bg-history/10" onclick={() => lifecycle.start()}>Question Chat</button>
 {:else if view.kind !== "not-started"}
-  <section class="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-history-border bg-postbox-elevated p-4 shadow-postbox-section" aria-label="Question Chat">
+  <section class="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg bg-postbox-elevated p-4 shadow-postbox-section" aria-label="Question Chat">
     {#if view.kind === "starting"}
-      <p class="text-sm text-postbox-muted" role="status">Starting Question Chat…</p>
+      <div class="flex items-center gap-2">
+        {#if onHideChat}
+          <button
+            type="button"
+            class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-postbox-border bg-postbox-surface text-postbox-subtle shadow-postbox-section transition hover:border-attention-border hover:text-attention-foreground"
+            aria-label="Hide Question Chat"
+            aria-controls="chat-workspace-panel"
+            aria-expanded="true"
+            onclick={onHideChat}
+          >›</button>
+        {/if}
+        <p class="text-sm text-postbox-muted" role="status">Starting Question Chat…</p>
+      </div>
     {:else if view.kind === "unavailable"}
-      <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat unavailable</h2>
+      <div class="flex items-center gap-2">
+        {#if onHideChat}
+          <button
+            type="button"
+            class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-postbox-border bg-postbox-surface text-postbox-subtle shadow-postbox-section transition hover:border-attention-border hover:text-attention-foreground"
+            aria-label="Hide Question Chat"
+            aria-controls="chat-workspace-panel"
+            aria-expanded="true"
+            onclick={onHideChat}
+          >›</button>
+        {/if}
+        <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat unavailable</h2>
+      </div>
       <p class="mt-2 text-sm text-danger-foreground" role="alert">{view.error.message}</p>
       <button type="button" class="mt-3 rounded-full border border-postbox-border px-3 py-1 text-sm text-postbox-subtle" onclick={() => lifecycle.retry()}>Retry</button>
     {:else}
       <div class="flex shrink-0 items-start justify-between gap-3">
-        <div>
-          <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat</h2>
-          {#if view.snapshot.forkKind === "context-only"}
-            <span class="mt-1 inline-flex rounded-full bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning-foreground">Context-only · degraded</span>
+        <div class="flex min-w-0 items-start gap-2">
+          {#if onHideChat}
+            <button
+              type="button"
+              class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-postbox-border bg-postbox-surface text-postbox-subtle shadow-postbox-section transition hover:border-attention-border hover:text-attention-foreground"
+              aria-label="Hide Question Chat"
+              aria-controls="chat-workspace-panel"
+              aria-expanded="true"
+              onclick={onHideChat}
+            >›</button>
           {/if}
+          <div>
+            <h2 class="font-display text-base font-semibold text-postbox-text">Question Chat</h2>
+            {#if view.snapshot.forkKind === "context-only"}
+              <span class="mt-1 inline-flex rounded-full bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning-foreground">Context-only · degraded</span>
+            {/if}
+          </div>
         </div>
         <div class="flex items-center gap-2">
           <span class="rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success-foreground">{stateLabel(view.snapshot)}</span>
