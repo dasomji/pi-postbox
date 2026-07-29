@@ -76,10 +76,10 @@
 
 <div class="flex min-h-full flex-col px-4 py-4 sm:px-6">
   <div class="flex flex-wrap items-center justify-between gap-3 text-xs text-postbox-muted">
-    <span class="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
-      <span><span class="font-medium text-postbox-subtle">Project:</span> {projectLabel}</span>
+    <span class="inline-flex flex-wrap items-center gap-x-2 gap-y-1 font-display text-lg font-bold tracking-wide">
+      <span><span class="text-postbox-subtle">Project:</span> <span class="text-attention">{projectLabel}</span></span>
       <span class="text-attention">•</span>
-      <span><span class="font-medium text-postbox-subtle">Branch:</span> {branch}</span>
+      <span><span class="text-postbox-subtle">Branch:</span> <span class="text-history-foreground">{branch}</span></span>
     </span>
     <button
       class="rounded-full border border-postbox-border bg-postbox-elevated px-3 py-1 font-medium text-postbox-subtle transition hover:border-attention-border hover:text-attention-foreground"
@@ -244,8 +244,8 @@
           disabled={!form.canSubmit}
           onclick={submitWithStamp}
         >
+          <span>Submit</span>
           <svg viewBox="0 0 24 24" fill="currentColor" class="h-4 w-4 shrink-0" aria-hidden="true"><path d="M2 21l21-9L2 3v7l15 2-15 2z" /></svg>
-          Submit answer
         </button>
         {#if chatButtonLabel}
           <button
