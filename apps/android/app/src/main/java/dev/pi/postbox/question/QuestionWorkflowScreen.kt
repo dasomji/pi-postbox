@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +44,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -97,6 +99,7 @@ import java.time.Instant
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuestionWorkflowScreen(
     state: QuestionWorkflowState,
@@ -109,6 +112,7 @@ fun QuestionWorkflowScreen(
     onCancelQuestion: (note: String?) -> Unit,
     onDismissQuestion: (String) -> Unit,
     onEditServerUrl: () -> Unit,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Set when the answer is stamped (submitted); cleared again if the submit errors.
@@ -184,102 +188,131 @@ fun QuestionWorkflowScreen(
                     onOpenNavigation = { coroutineScope.launch { drawerState.open() } }
                 )
 
-                Column(
+                PullToRefreshBox(
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = onRefresh,
                     modifier = Modifier
                         .weight(1f)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        .testTag(QUESTION_PULL_REFRESH_TEST_TAG)
                 ) {
-                    ConnectionNotice(state)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        ConnectionNotice(state)
 
-                    state.terminalMessage?.let { message ->
-                        PostalMessageCard(
-                            title = "Question resolved",
-                            body = message.message
-                        )
-                    }
-                    state.errorMessage?.let { error ->
-                        PostalMessageCard(
-                            title = "Unable to load questions",
-                            body = error,
-                            tone = PostalMessageTone.DANGER
-                        )
-                    }
-
-                    if (state.isLoading) {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Loading Postbox questions…",
-                                color = PostalColors.subtle
+                        state.terminalMessage?.let { message ->
+                            PostalMessageCard(
+                                title = "Question resolved",
+                                body = message.message
                             )
                         }
-                    } else {
-                        when (val selection = state.navigationSelection) {
-                            QuestionNavigationSelection.Queue -> QuestionQueueView(
-                                title = "Questions waiting for you",
-                                subtitle = "All pending Postbox decisions, highest urgency and oldest first.",
-                                questions = state.pendingQuestions,
-                                dismissEnabled = state.dismissingRequestId == null,
-                                isSyncing = state.isSyncing,
-                                onSelectQuestion = onSelectQuestion,
-                                onDismissQuestion = onDismissQuestion,
-                                modifier = Modifier.weight(1f)
+                        state.errorMessage?.let { error ->
+                            PostalMessageCard(
+                                title = "Unable to load questions",
+                                body = error,
+                                tone = PostalMessageTone.DANGER
                             )
-                            is QuestionNavigationSelection.Project -> {
-                                val sessions = visibleSidebarSessions(state.sessions, state.snapshotTimestamp)
-                                    .filter { it.projectId == selection.projectId }
-                                val sessionIds = sessions.mapTo(mutableSetOf()) { it.sessionId }
-                                QuestionQueueView(
-                                    title = sessions.firstOrNull()?.projectName ?: "Project",
-                                    subtitle = "Pending Postbox decisions for this project, highest urgency and oldest first.",
-                                    questions = state.pendingQuestions.filter { it.sessionId in sessionIds },
+                        }
+
+                        if (state.isLoading) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState()),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Loading Postbox questions…",
+                                    color = PostalColors.subtle
+                                )
+                            }
+                        } else {
+                            when (val selection = state.navigationSelection) {
+                                QuestionNavigationSelection.Queue -> QuestionQueueView(
+                                    title = "Questions waiting for you",
+                                    subtitle = "All pending Postbox decisions, highest urgency and oldest first.",
+                                    questions = state.pendingQuestions,
                                     dismissEnabled = state.dismissingRequestId == null,
                                     isSyncing = state.isSyncing,
                                     onSelectQuestion = onSelectQuestion,
                                     onDismissQuestion = onDismissQuestion,
                                     modifier = Modifier.weight(1f)
                                 )
-                            }
-                            is QuestionNavigationSelection.Session -> {
-                                val session = state.sessions.firstOrNull { it.sessionId == selection.sessionId }
-                                if (session == null) {
-                                    PostalMessageCard(
-                                        title = "Session ended",
-                                        body = "This Pi session is no longer registered."
-                                    )
-                                } else {
-                                    SessionDetailView(
-                                        session = session,
-                                        questions = state.pendingQuestions.filter { it.sessionId == session.sessionId },
+                                is QuestionNavigationSelection.Project -> {
+                                    val sessions = visibleSidebarSessions(state.sessions, state.snapshotTimestamp)
+                                        .filter { it.projectId == selection.projectId }
+                                    val sessionIds = sessions.mapTo(mutableSetOf()) { it.sessionId }
+                                    QuestionQueueView(
+                                        title = sessions.firstOrNull()?.projectName ?: "Project",
+                                        subtitle = "Pending Postbox decisions for this project, highest urgency and oldest first.",
+                                        questions = state.pendingQuestions.filter { it.sessionId in sessionIds },
                                         dismissEnabled = state.dismissingRequestId == null,
+                                        isSyncing = state.isSyncing,
                                         onSelectQuestion = onSelectQuestion,
                                         onDismissQuestion = onDismissQuestion,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
-                            }
-                            is QuestionNavigationSelection.Question, null -> {
-                                if (visibleQuestion == null) {
-                                    EmptyQuestionsCard(isSyncing = state.isSyncing)
-                                } else {
-                                    val session = state.sessions.firstOrNull { it.sessionId == visibleQuestion.sessionId }
-                                    val listItem = state.pendingQuestions.firstOrNull { it.requestId == visibleQuestion.requestId }
-                                    QuestionDetailCard(
-                                        question = visibleQuestion,
-                                        projectLabel = session?.projectName ?: "Unknown project",
-                                        branchLabel = session?.branch ?: "Unknown branch",
-                                        askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
-                                        onToggleOption = onToggleOption,
-                                        onSubmitAnswer = { note ->
-                                            stampedRequestId = visibleQuestion.requestId
-                                            onSubmitAnswer(note)
-                                        },
-                                        onCancelQuestion = onCancelQuestion,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                is QuestionNavigationSelection.Session -> {
+                                    val session = state.sessions.firstOrNull { it.sessionId == selection.sessionId }
+                                    if (session == null) {
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxWidth()
+                                                .verticalScroll(rememberScrollState())
+                                        ) {
+                                            PostalMessageCard(
+                                                title = "Session ended",
+                                                body = "This Pi session is no longer registered."
+                                            )
+                                        }
+                                    } else {
+                                        SessionDetailView(
+                                            session = session,
+                                            questions = state.pendingQuestions.filter { it.sessionId == session.sessionId },
+                                            dismissEnabled = state.dismissingRequestId == null,
+                                            onSelectQuestion = onSelectQuestion,
+                                            onDismissQuestion = onDismissQuestion,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                                is QuestionNavigationSelection.Question, null -> {
+                                    if (visibleQuestion == null) {
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxWidth()
+                                                .verticalScroll(rememberScrollState())
+                                        ) {
+                                            EmptyQuestionsCard(isSyncing = state.isSyncing)
+                                        }
+                                    } else {
+                                        val session = state.sessions.firstOrNull {
+                                            it.sessionId == visibleQuestion.sessionId
+                                        }
+                                        val listItem = state.pendingQuestions.firstOrNull {
+                                            it.requestId == visibleQuestion.requestId
+                                        }
+                                        QuestionDetailCard(
+                                            question = visibleQuestion,
+                                            projectLabel = session?.projectName ?: "Unknown project",
+                                            branchLabel = session?.branch ?: "Unknown branch",
+                                            askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
+                                            onToggleOption = onToggleOption,
+                                            onSubmitAnswer = { note ->
+                                                stampedRequestId = visibleQuestion.requestId
+                                                onSubmitAnswer(note)
+                                            },
+                                            onCancelQuestion = onCancelQuestion,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -930,6 +963,7 @@ private fun QuestionListItem(
     }
 }
 
+internal const val QUESTION_PULL_REFRESH_TEST_TAG = "question-pull-refresh"
 internal const val QUESTION_QUEUE_TEST_TAG = "question-queue"
 
 @Composable
@@ -1825,7 +1859,8 @@ private fun QuestionWorkflowScreenPreview() {
             onSubmitAnswer = {},
             onCancelQuestion = {},
             onDismissQuestion = {},
-            onEditServerUrl = {}
+            onEditServerUrl = {},
+            onRefresh = {}
         )
     }
 }

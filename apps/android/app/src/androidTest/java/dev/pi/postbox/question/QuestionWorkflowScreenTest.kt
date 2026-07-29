@@ -12,9 +12,12 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import dev.pi.postbox.ui.theme.PostboxTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -166,6 +169,29 @@ class QuestionWorkflowScreenTest {
     }
 
     @Test
+    fun pullingDownFromTheQueueRequestsOneRefresh() {
+        var refreshRequests = 0
+        setQuestionScreen(
+            stateProvider = {
+                QuestionWorkflowState(
+                    baseUrl = "https://postbox.example/",
+                    isLoading = false,
+                    isSyncing = false,
+                    connectionState = QuestionConnectionState.CONNECTED,
+                    pendingQuestions = listOf(question("normal", QuestionUrgency.NORMAL)),
+                    navigationSelection = QuestionNavigationSelection.Queue
+                )
+            },
+            onRefresh = { refreshRequests += 1 }
+        )
+
+        composeRule.onNodeWithTag(QUESTION_PULL_REFRESH_TEST_TAG)
+            .performTouchInput { swipeDown() }
+
+        composeRule.runOnIdle { assertEquals(1, refreshRequests) }
+    }
+
+    @Test
     fun queueShowsEveryUrgencyLevel() {
         setQuestionScreen(
             stateProvider = {
@@ -197,7 +223,8 @@ class QuestionWorkflowScreenTest {
 
     private fun setQuestionScreen(
         stateProvider: () -> QuestionWorkflowState,
-        onToggleOption: (String) -> Unit = {}
+        onToggleOption: (String) -> Unit = {},
+        onRefresh: () -> Unit = {}
     ) {
         composeRule.setContent {
             PostboxTheme {
@@ -211,7 +238,8 @@ class QuestionWorkflowScreenTest {
                     onSubmitAnswer = {},
                     onCancelQuestion = {},
                     onDismissQuestion = {},
-                    onEditServerUrl = {}
+                    onEditServerUrl = {},
+                    onRefresh = onRefresh
                 )
             }
         }
