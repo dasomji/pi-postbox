@@ -1,4 +1,4 @@
-import { AskResultSchema, StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
+import { AskResultSchema, HistoryResponseSchema, StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
@@ -136,10 +136,12 @@ describe("pending ask resilience", () => {
     });
 
     const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(state.requests.filter((request) => request.requestId === "ask-terminal")).toHaveLength(1);
+    expect(state.requests).toEqual([]);
+    const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
+    expect(history.history.filter((record) => record.request.requestId === "ask-terminal")).toHaveLength(1);
   });
 
-  it("marks expired requests in API state and resolves waiting extension callers with an expired result", async () => {
+  it("moves expired requests from live state to History and resolves waiting extension callers", async () => {
     let now = 30_000;
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => now, askTimeoutMs: 1_000, expirySweepMs: 0 });
     apps.push(app);
@@ -153,9 +155,11 @@ describe("pending ask resilience", () => {
     const expiredMessage = nextMessage(socket);
     now = 31_001;
     const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(state.requests).toHaveLength(1);
-    expect(state.requests[0]).toMatchObject({ status: "expired", result: { status: "expired", requestId: "ask-expire" } });
-    expect(AskResultSchema.parse(state.requests[0].result)).toMatchObject({ status: "expired", requestId: "ask-expire" });
+    expect(state.requests).toEqual([]);
+    const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
+    const expiredRequest = history.history[0]?.request;
+    expect(expiredRequest).toMatchObject({ status: "expired", result: { status: "expired", requestId: "ask-expire" } });
+    expect(AskResultSchema.parse(expiredRequest?.result)).toMatchObject({ status: "expired", requestId: "ask-expire" });
     await expect(expiredMessage).resolves.toMatchObject({ type: "ask.resolved", payload: { status: "expired", requestId: "ask-expire" } });
   });
 });

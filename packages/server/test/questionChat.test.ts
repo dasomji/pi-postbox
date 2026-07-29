@@ -1,4 +1,4 @@
-import type { AskCreatePayload, ExtensionClientMessage, ExtensionServerMessage, QuestionChatSnapshot } from "@pi-postbox/protocol";
+import { HistoryResponseSchema, type AskCreatePayload, type ExtensionClientMessage, type ExtensionServerMessage, type QuestionChatSnapshot } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +20,13 @@ function listenerPort(app: FastifyInstance): number {
   const address = app.server.address();
   if (!address || typeof address === "string") throw new Error("Expected TCP listener");
   return address.port;
+}
+
+async function retainedRequest(app: FastifyInstance, requestId = "ask-chat") {
+  const response = await app.inject({ method: "GET", url: "/api/history" });
+  return HistoryResponseSchema.parse(response.json()).history
+    .find((record) => record.request.requestId === requestId)
+    ?.request;
 }
 
 function nextMessage(socket: WebSocket, label = "extension message"): Promise<ExtensionServerMessage> {
@@ -316,8 +323,8 @@ describe("Question Chat activation relay", () => {
       payload: { requestId: "ask-chat", result: { status: "error", error: { code: "request_terminal" } } }
     });
 
-    const state = (await app.inject({ method: "GET", url: "/api/state" })).json();
-    expect(state.requests[0].options).toEqual([{ value: "a", label: "A" }]);
+    const request = await retainedRequest(app);
+    expect(request?.options).toEqual([{ value: "a", label: "A" }]);
   });
 
   it("rejects a different owning session and the option limit without state mutation or SSE broadcasts", async () => {
@@ -386,7 +393,8 @@ describe("Question Chat activation relay", () => {
     const proposalMessage = messages.find((message) => message.type === "chat.propose-answer.result");
     if (proposalMessage?.type !== "chat.propose-answer.result") throw new Error("Expected proposal race result");
 
-    const request = (await app.inject({ method: "GET", url: "/api/state" })).json().requests[0];
+    const request = await retainedRequest(app);
+    if (!request) throw new Error("Expected answered request in History");
     expect(request).toMatchObject({ status: "answered", result: { selectedValues: ["a"] } });
     if (proposalMessage.payload.result.status === "appended") {
       expect(request.options).toEqual([
@@ -740,6 +748,7 @@ describe("Question Chat activation relay", () => {
 
     const eventResponse = await fetch(`${baseUrl}/api/requests/ask-chat/chat/events`);
     expect(eventResponse.status).toBe(200);
+    expect(eventResponse.headers.get("cache-control")).toContain("no-store");
     const events = createSseReader(eventResponse);
     const sendResponse = fetch(`${baseUrl}/api/requests/ask-chat/chat/messages`, {
       method: "POST",
@@ -1238,10 +1247,10 @@ describe("Question Chat activation relay", () => {
     await events.close();
     await expect(lateEvent).resolves.toBe(false);
 
-    const state = (await app.inject({ method: "GET", url: "/api/state" })).json();
-    expect(state.requests[0]).toMatchObject({ requestId: "ask-chat", status: "answered" });
-    expect(JSON.stringify(state)).not.toContain("late-tool");
-    expect(JSON.stringify(state)).not.toContain("secret.ts");
+    const request = await retainedRequest(app);
+    expect(request).toMatchObject({ requestId: "ask-chat", status: "answered" });
+    expect(JSON.stringify(request)).not.toContain("late-tool");
+    expect(JSON.stringify(request)).not.toContain("secret.ts");
   });
 
   it("returns typed errors for missing, terminal, offline, and incomplete source questions", async () => {
@@ -1317,9 +1326,9 @@ describe("Question Chat activation relay", () => {
     socket.send(
       JSON.stringify({ type: "chat.ready", requestId: command.requestId, payload: readySnapshot() } satisfies ExtensionClientMessage)
     );
-    const state = (await app.inject({ method: "GET", url: "/api/state" })).json();
-    expect(state.requests[0]).toMatchObject({ status: "answered" });
-    expect(state.requests[0]).not.toHaveProperty("chat");
+    const request = await retainedRequest(app);
+    expect(request).toMatchObject({ status: "answered" });
+    expect(request).not.toHaveProperty("chat");
   });
 
   it("retains cleanup authority when activation times out after reaching the extension", async () => {
@@ -1388,7 +1397,8 @@ describe("Question Chat activation relay", () => {
       type: "chat.cleanup",
       payload: { requestId: "ask-chat", reason: "expired" }
     });
-    expect((await expiry).json().requests[0]).toMatchObject({ status: "expired" });
+    expect((await expiry).json().requests).toEqual([]);
+    expect(await retainedRequest(expiredSetup.app)).toMatchObject({ status: "expired" });
 
     const shutdownSetup = await setup();
     await activateChat(shutdownSetup.app, shutdownSetup.socket);

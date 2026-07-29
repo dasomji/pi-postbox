@@ -49,6 +49,36 @@ describe("Pi Postbox server bootstrap", () => {
     expect(HealthResponseSchema.parse(response.json()).localTarget).toEqual(localTarget);
   });
 
+  it("prevents browsers and intermediaries from storing dynamic API responses", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:" });
+    apps.push(app);
+
+    const state = await app.inject({ method: "GET", url: "/api/state" });
+    const history = await app.inject({ method: "GET", url: "/api/history" });
+
+    expect(state.headers["cache-control"]).toBe("no-store");
+    expect(history.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("negotiates compression for eligible dynamic JSON responses", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", compressionThresholdBytes: 0 });
+    apps.push(app);
+
+    const compressed = await app.inject({
+      method: "GET",
+      url: "/api/state",
+      headers: { "accept-encoding": "gzip" }
+    });
+    const identity = await app.inject({
+      method: "GET",
+      url: "/api/state",
+      headers: { "accept-encoding": "identity" }
+    });
+
+    expect(compressed.headers["content-encoding"]).toBe("gzip");
+    expect(identity.headers["content-encoding"]).toBeUndefined();
+  });
+
   it("serves the built UI shell from a static dist directory", async () => {
     const uiDistDir = await mkdtemp(join(tmpdir(), "pi-postbox-ui-"));
     await writeFile(

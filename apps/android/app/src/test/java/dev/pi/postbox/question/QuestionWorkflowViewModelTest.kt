@@ -41,6 +41,7 @@ class QuestionWorkflowViewModelTest {
         )
 
         viewModel.start()
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
         advanceUntilIdle()
 
         val state = viewModel.state
@@ -48,7 +49,7 @@ class QuestionWorkflowViewModelTest {
         assertEquals(VERIFIED_BASE_URL, state.baseUrl)
         assertEquals(QuestionConnectionState.CONNECTED, state.connectionState)
         assertEquals(1, stream.startCount)
-        assertEquals(1, client.fetchStateCalls)
+        assertEquals(0, client.fetchStateCalls)
         assertEquals(listOf("session-live", "session-offline"), state.sessions.map { it.sessionId })
         assertEquals(listOf("ask-single", "ask-multi"), state.pendingQuestions.map { it.requestId })
         assertEquals("Choose one deployment target", state.pendingQuestions.first().prompt)
@@ -158,15 +159,7 @@ class QuestionWorkflowViewModelTest {
         destinations.forEach { (selectDestination, expectedSelection) ->
             val client = RecordingPostboxProtocolClient(questionWorkflowState())
             client.afterCancel = {
-                client.currentState = questionWorkflowState(
-                    requests = listOf(
-                        singlePendingQuestion(
-                            status = AskStatus.CANCELLED,
-                            resolvedAt = "2026-06-25T12:03:00.000Z"
-                        ),
-                        multiPendingQuestion()
-                    )
-                )
+                client.currentState = questionWorkflowState(requests = listOf(multiPendingQuestion()))
             }
             val viewModel = startedViewModel(client)
 
@@ -184,7 +177,7 @@ class QuestionWorkflowViewModelTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
         client.afterAnswer = {
             client.currentState = questionWorkflowState(
-                requests = listOf(answeredSingleQuestion(), multiPendingQuestion())
+                requests = listOf(multiPendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -208,7 +201,7 @@ class QuestionWorkflowViewModelTest {
             listOf(RecordedAnswer("ask-single", listOf("loopback"), "Use emulator for this prototype.")),
             client.answers
         )
-        assertEquals(2, client.fetchStateCalls)
+        assertEquals(1, client.fetchStateCalls)
         assertEquals(listOf("ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
         assertNull(viewModel.state.visibleQuestion?.submissionError)
     }
@@ -220,7 +213,7 @@ class QuestionWorkflowViewModelTest {
         client.beforeAnswerCompletes = { answerMayComplete.await() }
         client.afterAnswer = {
             client.currentState = questionWorkflowState(
-                requests = listOf(answeredSingleQuestion(), multiPendingQuestion())
+                requests = listOf(multiPendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -275,7 +268,7 @@ class QuestionWorkflowViewModelTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
         client.afterCancel = {
             client.currentState = questionWorkflowState(
-                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+                requests = listOf(singlePendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -288,7 +281,7 @@ class QuestionWorkflowViewModelTest {
             listOf(RecordedCancel("ask-multi", "No longer needed.")),
             client.cancellations
         )
-        assertEquals(2, client.fetchStateCalls)
+        assertEquals(1, client.fetchStateCalls)
         assertEquals(listOf("ask-single"), viewModel.state.pendingQuestions.map { it.requestId })
         assertEquals(QuestionTerminalState.CANCELLED, viewModel.state.visibleQuestion?.terminalState)
     }
@@ -300,7 +293,7 @@ class QuestionWorkflowViewModelTest {
         client.beforeCancelCompletes = { cancelMayComplete.await() }
         client.afterCancel = {
             client.currentState = questionWorkflowState(
-                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+                requests = listOf(singlePendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -326,7 +319,7 @@ class QuestionWorkflowViewModelTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
         client.afterAnswer = {
             client.currentState = questionWorkflowState(
-                requests = listOf(answeredSingleQuestion(), multiPendingQuestion())
+                requests = listOf(multiPendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -350,7 +343,7 @@ class QuestionWorkflowViewModelTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
         client.afterCancel = {
             client.currentState = questionWorkflowState(
-                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+                requests = listOf(singlePendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -361,7 +354,7 @@ class QuestionWorkflowViewModelTest {
 
         assertEquals(listOf("ask-multi"), client.cancellations.map { it.requestId })
         assertTrue(client.cancellations.single().note?.contains("Dismissed manually") == true)
-        assertEquals(2, client.fetchStateCalls)
+        assertEquals(1, client.fetchStateCalls)
         assertEquals(listOf("ask-single"), viewModel.state.pendingQuestions.map { it.requestId })
         assertEquals("ask-single", viewModel.state.visibleQuestion?.requestId)
         assertNull(viewModel.state.dismissingRequestId)
@@ -373,10 +366,7 @@ class QuestionWorkflowViewModelTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
         client.afterCancel = {
             client.currentState = questionWorkflowState(
-                requests = listOf(
-                    singlePendingQuestion(status = AskStatus.CANCELLED, resolvedAt = "2026-06-25T12:03:00.000Z"),
-                    multiPendingQuestion()
-                )
+                requests = listOf(multiPendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -397,7 +387,7 @@ class QuestionWorkflowViewModelTest {
         client.beforeCancelCompletes = { cancelMayComplete.await() }
         client.afterCancel = {
             client.currentState = questionWorkflowState(
-                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+                requests = listOf(singlePendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -427,7 +417,7 @@ class QuestionWorkflowViewModelTest {
         assertEquals("network down", viewModel.state.dismissError)
         assertNull(viewModel.state.dismissingRequestId)
         assertEquals(listOf("ask-single", "ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
-        assertEquals("dismiss failure must not refetch state", 1, client.fetchStateCalls)
+        assertEquals("dismiss failure must not refetch state", 0, client.fetchStateCalls)
     }
 
     @Test
@@ -439,7 +429,7 @@ class QuestionWorkflowViewModelTest {
         )
         client.afterCancel = {
             client.currentState = questionWorkflowState(
-                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+                requests = listOf(singlePendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -448,7 +438,7 @@ class QuestionWorkflowViewModelTest {
         advanceUntilIdle()
 
         assertNull(viewModel.state.dismissError)
-        assertEquals(2, client.fetchStateCalls)
+        assertEquals(1, client.fetchStateCalls)
         assertEquals(listOf("ask-single"), viewModel.state.pendingQuestions.map { it.requestId })
     }
 
@@ -462,7 +452,7 @@ class QuestionWorkflowViewModelTest {
         )
         client.afterAnswer = {
             client.currentState = questionWorkflowState(
-                requests = listOf(answeredSingleQuestion(), multiPendingQuestion())
+                requests = listOf(multiPendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -472,7 +462,7 @@ class QuestionWorkflowViewModelTest {
         viewModel.submitAnswer()
         advanceUntilIdle()
 
-        assertEquals(2, client.fetchStateCalls)
+        assertEquals(1, client.fetchStateCalls)
         assertEquals("ask-single", viewModel.state.visibleQuestion?.requestId)
         assertEquals(QuestionTerminalState.ALREADY_RESOLVED, viewModel.state.visibleQuestion?.terminalState)
         assertFalse(viewModel.state.visibleQuestion?.canSubmit ?: true)
@@ -491,7 +481,7 @@ class QuestionWorkflowViewModelTest {
         )
         client.afterCancel = {
             client.currentState = questionWorkflowState(
-                requests = listOf(singlePendingQuestion(), cancelledMultiQuestion())
+                requests = listOf(singlePendingQuestion())
             )
         }
         val viewModel = startedViewModel(client)
@@ -500,7 +490,7 @@ class QuestionWorkflowViewModelTest {
         viewModel.cancelQuestion()
         advanceUntilIdle()
 
-        assertEquals(2, client.fetchStateCalls)
+        assertEquals(1, client.fetchStateCalls)
         assertEquals(listOf("ask-single"), viewModel.state.pendingQuestions.map { it.requestId })
         assertEquals("ask-multi", viewModel.state.visibleQuestion?.requestId)
         assertEquals(QuestionTerminalState.ALREADY_RESOLVED, viewModel.state.visibleQuestion?.terminalState)
@@ -556,9 +546,10 @@ class QuestionWorkflowViewModelTest {
         )
 
         viewModel.start()
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
         advanceUntilIdle()
         assertEquals(
-            "the initial fetched state is a visible baseline and should not notify",
+            "the initial streamed state is a visible baseline and should not notify",
             emptyList<PendingQuestionNotification>(),
             postedNotifications
         )
@@ -584,15 +575,9 @@ class QuestionWorkflowViewModelTest {
 
     @Test
     fun closingWorkflowStopsObservationSuppressesBackgroundNotificationsAndCanRestart() = runTest {
-        val client = RecordingPostboxProtocolClient(
-            questionWorkflowState(
-                requests = listOf(singlePendingQuestion(requestId = "ask-background", prompt = "Background question"))
-            )
-        )
+        val client = RecordingPostboxProtocolClient(questionWorkflowState(requests = emptyList()))
         val stream = FakePostboxStateStream()
-        val fetchMayComplete = CompletableDeferred<Unit>()
         val postedNotifications = mutableListOf<PendingQuestionNotification>()
-        client.beforeFetchCompletes = { fetchMayComplete.await() }
         val viewModel = QuestionWorkflowViewModel(
             baseUrl = VERIFIED_BASE_URL,
             protocolClient = client,
@@ -604,25 +589,29 @@ class QuestionWorkflowViewModelTest {
 
         viewModel.start()
         assertEquals(1, stream.startCount)
-        assertEquals(1, client.fetchStateCalls)
-
         viewModel.close()
-        fetchMayComplete.complete(Unit)
         advanceUntilIdle()
 
         assertEquals(1, stream.closeCount)
-        assertEquals(
-            "state that arrives after the Activity stops must not post local notifications",
-            emptyList<PendingQuestionNotification>(),
-            postedNotifications
-        )
+        assertEquals(emptyList<PendingQuestionNotification>(), postedNotifications)
 
-        client.beforeFetchCompletes = null
         viewModel.start()
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(singlePendingQuestion(requestId = "ask-background", prompt = "Background question"))
+                )
+            )
+        )
         advanceUntilIdle()
 
         assertEquals(2, stream.startCount)
-        assertEquals(2, client.fetchStateCalls)
+        assertEquals(0, client.fetchStateCalls)
+        assertEquals(
+            "the first snapshot after restart is a baseline and must not notify",
+            emptyList<PendingQuestionNotification>(),
+            postedNotifications
+        )
 
         stream.emit(
             PostboxStateStreamStatus.Connected(
@@ -644,7 +633,7 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
-    fun notificationTapSelectsRelevantQuestionWhenItIsStillPresent() = runTest {
+    fun coldNotificationTapSharesTheInitialAuthoritativeStreamSnapshot() = runTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState(requests = emptyList()))
         val stream = FakePostboxStateStream()
         val viewModel = QuestionWorkflowViewModel(
@@ -655,8 +644,12 @@ class QuestionWorkflowViewModelTest {
         )
 
         viewModel.start()
-        advanceUntilIdle()
         viewModel.openQuestionFromNotification("ask-from-notification")
+        advanceUntilIdle()
+
+        assertEquals(0, client.fetchStateCalls)
+        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+        assertTrue(viewModel.state.isSyncing)
 
         stream.emit(
             PostboxStateStreamStatus.Connected(
@@ -675,14 +668,32 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
-    fun prefetchedSnapshotRendersImmediatelyWhileTheFirstFetchIsStillInFlight() = runTest {
-        val fetchGate = CompletableDeferred<Unit>()
+    fun notificationTapSelectsRelevantQuestionWhenItIsStillPresent() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState(requests = emptyList()))
+        val viewModel = startedViewModel(client)
+        client.currentState = questionWorkflowState(
+            requests = listOf(
+                singlePendingQuestion(requestId = "ask-first"),
+                singlePendingQuestion(requestId = "ask-from-notification", prompt = "Open this tapped question")
+            )
+        )
+
+        viewModel.openQuestionFromNotification("ask-from-notification")
+        advanceUntilIdle()
+
+        assertEquals(1, client.fetchStateCalls)
+        assertEquals("ask-from-notification", viewModel.state.visibleQuestion?.requestId)
+        assertEquals("Open this tapped question", viewModel.state.visibleQuestion?.prompt)
+    }
+
+    @Test
+    fun prefetchedSnapshotRendersImmediatelyWhileTheInitialStreamSnapshotIsInFlight() = runTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
-        client.beforeFetchCompletes = { fetchGate.await() }
+        val stream = FakePostboxStateStream()
         val viewModel = QuestionWorkflowViewModel(
             baseUrl = VERIFIED_BASE_URL,
             protocolClient = client,
-            stateStream = FakePostboxStateStream(),
+            stateStream = stream,
             coroutineScope = backgroundScope,
             prefetchedSnapshotProvider = { baseUrl ->
                 if (baseUrl == VERIFIED_BASE_URL) {
@@ -700,29 +711,30 @@ class QuestionWorkflowViewModelTest {
         assertEquals(listOf("ask-prefetched"), viewModel.state.pendingQuestions.map { it.requestId })
         assertFalse(viewModel.state.isSyncing)
         assertFalse(viewModel.state.isLoading)
+        assertEquals(0, client.fetchStateCalls)
 
-        fetchGate.complete(Unit)
-        runCurrent()
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
+        advanceUntilIdle()
 
         assertEquals(listOf("ask-single", "ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
     }
 
     @Test
     fun syncingFlagCoversTheWindowBetweenStartAndTheFirstSnapshot() = runTest {
-        val fetchGate = CompletableDeferred<Unit>()
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
-        client.beforeFetchCompletes = { fetchGate.await() }
+        val stream = FakePostboxStateStream()
         val viewModel = QuestionWorkflowViewModel(
             baseUrl = VERIFIED_BASE_URL,
             protocolClient = client,
-            stateStream = FakePostboxStateStream(),
+            stateStream = stream,
             coroutineScope = backgroundScope
         )
 
         viewModel.start()
         assertTrue(viewModel.state.isSyncing)
+        assertEquals(0, client.fetchStateCalls)
 
-        fetchGate.complete(Unit)
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
         runCurrent()
         assertFalse(viewModel.state.isSyncing)
     }
@@ -739,12 +751,7 @@ class QuestionWorkflowViewModelTest {
 
         stream.emit(
             PostboxStateStreamStatus.Connected(
-                questionWorkflowState(
-                    requests = listOf(
-                        singlePendingQuestion(requestId = "ask-single", status = AskStatus.ANSWERED),
-                        multiPendingQuestion()
-                    )
-                )
+                questionWorkflowState(requests = listOf(multiPendingQuestion()))
             )
         )
         advanceUntilIdle()
@@ -765,12 +772,7 @@ class QuestionWorkflowViewModelTest {
 
         stream.emit(
             PostboxStateStreamStatus.Connected(
-                questionWorkflowState(
-                    requests = listOf(
-                        singlePendingQuestion(requestId = "ask-single", status = AskStatus.CANCELLED),
-                        multiPendingQuestion()
-                    )
-                )
+                questionWorkflowState(requests = listOf(multiPendingQuestion()))
             )
         )
         advanceUntilIdle()
@@ -780,45 +782,38 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
-    fun notificationTapForAlreadyResolvedQuestionShowsQueue() = runTest {
-        val viewModel = startedViewModel(
-            RecordingPostboxProtocolClient(
-                questionWorkflowState(
-                    requests = listOf(
-                        singlePendingQuestion(requestId = "ask-open"),
-                        singlePendingQuestion(requestId = "ask-answered", status = AskStatus.ANSWERED)
-                    )
-                )
-            )
+    fun notificationTapForAbsentQuestionShowsQueueWithoutOpeningAnotherPendingQuestion() = runTest {
+        val client = RecordingPostboxProtocolClient(
+            questionWorkflowState(requests = listOf(singlePendingQuestion(requestId = "ask-open")))
         )
+        val viewModel = startedViewModel(client)
 
         viewModel.openQuestionFromNotification("ask-answered")
+        advanceUntilIdle()
 
+        assertEquals(1, client.fetchStateCalls)
         assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+        assertNull(viewModel.state.visibleQuestion)
     }
 
     @Test
     fun notificationTapRefreshesBeforeOpeningAQuestionFromAStaleWarmSnapshot() = runTest {
-        val fetchGate = CompletableDeferred<Unit>()
         val client = RecordingPostboxProtocolClient(
             questionWorkflowState(requests = listOf(singlePendingQuestion(requestId = "ask-from-notification")))
         )
         val viewModel = startedViewModel(client)
         viewModel.selectQuestion("ask-from-notification")
         client.currentState = questionWorkflowState(
-            requests = listOf(singlePendingQuestion(requestId = "ask-from-notification", status = AskStatus.ANSWERED))
+            requests = listOf(singlePendingQuestion(requestId = "ask-unrelated"))
         )
-        client.beforeFetchCompletes = { fetchGate.await() }
 
         viewModel.openQuestionFromNotification("ask-from-notification")
-
-        assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
-        assertTrue(viewModel.state.isSyncing)
-
-        fetchGate.complete(Unit)
         advanceUntilIdle()
 
         assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+        assertEquals(1, client.fetchStateCalls)
+        assertEquals(listOf("ask-unrelated"), viewModel.state.pendingQuestions.map { it.requestId })
+        assertNull(viewModel.state.visibleQuestion)
     }
 
     @Test
@@ -834,6 +829,7 @@ class QuestionWorkflowViewModelTest {
         )
 
         viewModel.start()
+        stream.emit(PostboxStateStreamStatus.Connected(questionWorkflowState()))
         advanceUntilIdle()
 
         stream.emit(
@@ -852,7 +848,7 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
-    fun notificationTapWhoseQuestionArrivesResolvedShowsQueue() = runTest {
+    fun notificationTapWhoseQuestionDisappearedIsConsumedOnce() = runTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState(requests = emptyList()))
         val stream = FakePostboxStateStream()
         val viewModel = QuestionWorkflowViewModel(
@@ -863,33 +859,18 @@ class QuestionWorkflowViewModelTest {
         )
 
         viewModel.start()
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
         advanceUntilIdle()
-        viewModel.openQuestionFromNotification("ask-from-notification")
-
-        stream.emit(
-            PostboxStateStreamStatus.Connected(
-                questionWorkflowState(
-                    requests = listOf(
-                        singlePendingQuestion(requestId = "ask-first"),
-                        singlePendingQuestion(requestId = "ask-from-notification", status = AskStatus.ANSWERED)
-                    )
-                )
-            )
+        client.currentState = questionWorkflowState(
+            requests = listOf(singlePendingQuestion(requestId = "ask-first"))
         )
+        viewModel.openQuestionFromNotification("ask-from-notification")
         advanceUntilIdle()
 
         assertEquals(QuestionNavigationSelection.Queue, viewModel.state.navigationSelection)
+        assertNull(viewModel.state.visibleQuestion)
 
-        stream.emit(
-            PostboxStateStreamStatus.Connected(
-                questionWorkflowState(
-                    requests = listOf(
-                        singlePendingQuestion(requestId = "ask-first"),
-                        singlePendingQuestion(requestId = "ask-from-notification", status = AskStatus.ANSWERED)
-                    )
-                )
-            )
-        )
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
         advanceUntilIdle()
 
         assertEquals(
@@ -925,6 +906,7 @@ class QuestionWorkflowViewModelTest {
             coroutineScope = backgroundScope
         )
         viewModel.start()
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
         advanceUntilIdle()
         viewModel.selectQuestion("ask-multi")
         viewModel.toggleOption("disconnected")
@@ -953,6 +935,7 @@ class QuestionWorkflowViewModelTest {
             initialNotificationPermissionState = initialNotificationPermissionState
         )
         viewModel.start()
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
         advanceUntilIdle()
         return viewModel
     }

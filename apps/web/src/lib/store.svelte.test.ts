@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AskRequestSnapshot, SessionSnapshot, StateSnapshot } from "@pi-postbox/protocol";
+import type { AskRequestSnapshot, HistoryResponse, SessionSnapshot, StateSnapshot } from "@pi-postbox/protocol";
 import { store } from "./store.svelte";
 
 const SNAPSHOT_TIME = "2026-06-24T12:00:00.000Z";
@@ -219,7 +219,7 @@ describe("store deselection of questions resolved on another device", () => {
     store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending")]));
     store.selectRequest("ask-remote");
 
-    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "answered")]));
+    store.applyStateSnapshot(remoteSnapshot([]));
 
     expect(store.selection).toEqual({ kind: "none" });
   });
@@ -228,7 +228,7 @@ describe("store deselection of questions resolved on another device", () => {
     store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending"), askRequest("ask-other", "pending")]));
     store.selectRequest("ask-remote");
 
-    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "cancelled"), askRequest("ask-other", "pending")]));
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-other", "pending")]));
 
     expect(store.selection).toEqual({ kind: "project", projectId: "remote-project" });
   });
@@ -238,9 +238,10 @@ describe("store deselection of questions resolved on another device", () => {
     store.selectRequest("ask-remote");
     store.beginLocalResolve("ask-remote");
 
-    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "answered")]));
+    store.applyStateSnapshot(remoteSnapshot([]));
 
     expect(store.selection).toEqual({ kind: "request", requestId: "ask-remote" });
+    expect(store.selectedRequest?.requestId).toBe("ask-remote");
     store.endLocalResolve("ask-remote");
   });
 
@@ -310,24 +311,48 @@ describe("store notification navigation", () => {
     expect(store.selection).toEqual({ kind: "none" });
   });
 
-  it("keeps the latest tapped notification selected when an older refresh finishes last", async () => {
+  it("coalesces concurrent notification refreshes and keeps the latest tapped question selected", async () => {
     const secondRequest = { ...askRequest("pending"), requestId: "ask-notification-2" };
-    let releaseFirstFetch!: (snapshot: StateSnapshot) => void;
-    const firstNavigation = store.openRequestFromNotification(
-      "ask-notification",
-      () => new Promise<StateSnapshot>((resolve) => (releaseFirstFetch = resolve))
-    );
+    let releaseFetch!: (snapshot: StateSnapshot) => void;
+    let fetchCalls = 0;
+    const fetchCurrentSnapshot = () => {
+      fetchCalls += 1;
+      return new Promise<StateSnapshot>((resolve) => (releaseFetch = resolve));
+    };
+    const firstNavigation = store.openRequestFromNotification("ask-notification", fetchCurrentSnapshot);
+    const secondNavigation = store.openRequestFromNotification("ask-notification-2", fetchCurrentSnapshot);
     const snapshot = {
       timestamp: SNAPSHOT_TIME,
       sessions: [liveSession],
       requests: [askRequest("pending"), secondRequest]
     };
 
-    await store.openRequestFromNotification("ask-notification-2", async () => snapshot);
-    releaseFirstFetch(snapshot);
-    await firstNavigation;
+    expect(fetchCalls).toBe(1);
+    releaseFetch(snapshot);
+    await Promise.all([firstNavigation, secondNavigation]);
 
     expect(store.selection).toEqual({ kind: "request", requestId: "ask-notification-2" });
+  });
+});
+
+describe("store History loading", () => {
+  it("loads History only when the user opens the History view", async () => {
+    let finishLoading!: (history: HistoryResponse) => void;
+    const fetchCurrentHistory = () => new Promise<HistoryResponse>((resolve) => (finishLoading = resolve));
+
+    const loading = store.showHistory(fetchCurrentHistory);
+
+    expect(store.selection).toEqual({ kind: "history" });
+    expect(store.history).toEqual({ status: "loading" });
+
+    finishLoading({
+      history: [],
+      retention: { maxAgeMs: 1_000, maxRecords: 10 },
+      timestamp: SNAPSHOT_TIME
+    });
+    await loading;
+
+    expect(store.history).toMatchObject({ status: "ready", data: { history: [] } });
   });
 });
 

@@ -260,12 +260,8 @@ describe("browser state SSE reactivity", () => {
     expect(pendingA.requests[0]).toMatchObject({ requestId: "ask-reactive", status: "pending" });
     expect(pendingB.requests[0]).toMatchObject({ requestId: "ask-reactive", status: "pending" });
 
-    const resolvedA = clientA.nextStateMatching((snapshot) =>
-      snapshot.requests.some((request) => request.requestId === "ask-reactive" && request.status === "answered")
-    );
-    const resolvedB = clientB.nextStateMatching((snapshot) =>
-      snapshot.requests.some((request) => request.requestId === "ask-reactive" && request.status === "answered")
-    );
+    const resolvedA = clientA.nextStateMatching((snapshot) => snapshot.requests.length === 0);
+    const resolvedB = clientB.nextStateMatching((snapshot) => snapshot.requests.length === 0);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-reactive/answer",
@@ -273,12 +269,8 @@ describe("browser state SSE reactivity", () => {
     });
     expect(answerResponse.statusCode).toBe(200);
 
-    await expect(resolvedA).resolves.toMatchObject({
-      requests: [expect.objectContaining({ requestId: "ask-reactive", status: "answered" })]
-    });
-    await expect(resolvedB).resolves.toMatchObject({
-      requests: [expect.objectContaining({ requestId: "ask-reactive", status: "answered" })]
-    });
+    await expect(resolvedA).resolves.toMatchObject({ requests: [] });
+    await expect(resolvedB).resolves.toMatchObject({ requests: [] });
 
     const lateAnswerResponse = await app.inject({
       method: "POST",

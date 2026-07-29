@@ -1,4 +1,4 @@
-import { StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
+import { HistoryResponseSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
@@ -89,8 +89,11 @@ describe("extension local fallback reconciliation over WebSocket", () => {
       type: "ask.resolved",
       payload: { status: "answered", requestId: "ask-local-answer", selectedValues: ["yes"], note: "terminal" }
     });
-    const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(state.requests[0]).toMatchObject({ status: "answered", result: { status: "answered", selectedValues: ["yes"] } });
+    const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
+    expect(history.history[0]?.request).toMatchObject({
+      status: "answered",
+      result: { status: "answered", selectedValues: ["yes"] }
+    });
   });
 
   it("accepts local cancel messages and updates server request state", async () => {
@@ -114,7 +117,10 @@ describe("extension local fallback reconciliation over WebSocket", () => {
       type: "ask.resolved",
       payload: { status: "cancelled", requestId: "ask-local-cancel", note: "terminal cancel" }
     });
-    const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(state.requests[0]).toMatchObject({ status: "cancelled", result: { status: "cancelled", note: "terminal cancel" } });
+    const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
+    expect(history.history[0]?.request).toMatchObject({
+      status: "cancelled",
+      result: { status: "cancelled", note: "terminal cancel" }
+    });
   });
 });

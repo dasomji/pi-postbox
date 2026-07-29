@@ -136,8 +136,8 @@ Icon paths are resolved by the extension and uploaded as small data URLs plus ha
 ## Health and status endpoints
 
 - `GET /healthz` — health/status for wrappers and monitors.
-- `GET /api/state` — current sessions and request state snapshot.
-- `GET /api/state/events` — SSE stream of state snapshots.
+- `GET /api/state` — current sessions and pending-question snapshot.
+- `GET /api/state/events` — authoritative SSE bootstrap and live pending-state snapshots.
 - `GET /api/requests?status=pending` — ask request list.
 - `GET /api/history` — recent terminal decision history.
 - `POST /api/history/prune` — apply configured retention.
