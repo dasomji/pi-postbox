@@ -725,14 +725,11 @@ async function main() {
     assert(terminalMessages.some((message) => message.type === "chat.cleanup" && message.payload.requestId === requestId), "Extension did not receive terminal Chat cleanup");
     const resolvedMessage = terminalMessages.find((message) => message.type === "ask.resolved");
     assert(resolvedMessage?.type === "ask.resolved" && resolvedMessage.payload.status === "answered", "Extension did not receive answered result");
-    await sse.nextStateMatching((snapshot) => snapshot.requests.some((request) => request.requestId === requestId && request.status === "answered"));
+    await sse.nextStateMatching((snapshot) => !snapshot.requests.some((request) => request.requestId === requestId));
 
     const state = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
     assert(state.sessions.some((session) => session.sessionId === sessionId), "State endpoint does not include registered session");
-    assert(state.requests.some((request) => request.requestId === requestId && request.status === "answered"), "State endpoint does not include answered request");
-    assert(state.requests.some((request) => request.requestId === requestId && request.options.some((option) =>
-      option.value === proposedValue && option.label === "Stage release first" && option.provenance === "chat"
-    )), "State endpoint does not retain the Chat-proposed option");
+    assert(!state.requests.some((request) => request.requestId === requestId), "Live state still includes the answered request");
     const stateJson = JSON.stringify(state);
     for (const privateMarker of privateMarkers) {
       assert(!stateJson.includes(privateMarker), `State persisted private Chat marker ${privateMarker}`);
@@ -750,7 +747,7 @@ async function main() {
       assert(!historyJson.includes(privateMarker), `History persisted private Chat marker ${privateMarker}`);
     }
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Question Chat turn/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, state, and history verified.");
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Question Chat turn/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, pending-only state, and history verified.");
   } finally {
     chatSse?.close();
     sse?.close();

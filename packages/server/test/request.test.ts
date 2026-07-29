@@ -1,4 +1,4 @@
-import { AskResultSchema, OTHER_OPTION_VALUE, StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
+import { AskResultSchema, HistoryResponseSchema, OTHER_OPTION_VALUE, StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -407,10 +407,14 @@ describe("ask_postbox request loop", () => {
 
     const snapshot = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
     expect(snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", presence: "offline" });
-    expect(snapshot.requests).toEqual([
+    expect(snapshot.requests).toEqual([]);
+
+    const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
+    expect(history.history).toHaveLength(2);
+    expect(history.history.map((record) => record.request)).toEqual(expect.arrayContaining([
       expect.objectContaining({ requestId: "ask-old-1", status: "cancelled", result: expect.objectContaining({ status: "cancelled" }) }),
       expect.objectContaining({ requestId: "ask-old-2", status: "cancelled", result: expect.objectContaining({ status: "cancelled" }) })
-    ]);
+    ]));
   });
 
   it("treats reload shutdown reason as a reconnect path that does not cancel pending asks", async () => {

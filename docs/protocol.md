@@ -8,8 +8,8 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | --- | --- |
 | `GET /healthz` | Health/status check for wrappers, smoke tests, and operators. May include optional `localTarget` identity for active-local routing. |
 | `GET /` | Built Svelte UI shell served by `pi-postbox-server`. |
-| `GET /api/state` | Current state snapshot: sessions plus current/terminal ask request snapshots. |
-| `GET /api/state/events` | SSE stream. Sends an initial `state` event, then validated state snapshots after changes. |
+| `GET /api/state` | Current live-state snapshot: sessions plus pending ask request snapshots only. Terminal requests remain available through History. |
+| `GET /api/state/events` | Authoritative live-state SSE bootstrap. Sends one fresh pending-only `state` event on connection/reconnection, then snapshots after changes. |
 | `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired`. |
 | `POST /api/requests/:requestId/answer` | Browser/user answer action. First pending answer wins. |
 | `POST /api/requests/:requestId/cancel` | Browser/user cancel action. |
@@ -24,6 +24,8 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `GET /api/history` | Recent terminal decision history. |
 | `POST /api/history/prune` | Apply configured terminal-history retention. |
 | `POST /admin/shutdown` | Gracefully stop the server. Loopback-only: rejected (403) unless the request comes straight from `127.0.0.1`/`::1` with no proxy-forwarding headers, so it is unreachable through Tailscale/lizardtail. Returns `202` then closes the app and exits. Used by `npm run dev` to stop a production server holding the canonical port. |
+
+Dynamic `/api/*` responses declare `Cache-Control: no-store`. Eligible non-streaming responses negotiate Brotli or gzip above the server compression threshold; hijacked event streams preserve immediate streaming semantics. Dashboard startup and notification routing use the state event stream's initial snapshot rather than also fetching `/api/state`. A reconnect receives a new authoritative snapshot, replacing state that may have gone stale while disconnected.
 
 ## Question Chat browser and relay protocol
 
@@ -118,7 +120,7 @@ Browser snapshots are extension-backed. A fresh browser sees `extension_offline`
 2. Extension sends `ask.create` with a stable `requestId`.
 3. Server stores a pending request and broadcasts state over SSE.
 4. Browser or local terminal fallback submits an answer/cancel.
-5. Server stores a terminal result and broadcasts state.
+5. Server stores a terminal result in History and broadcasts the pending-only live state, where that request is now absent.
 6. Extension receives `ask.resolved` and returns a concise result to the coding agent.
 
 Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.

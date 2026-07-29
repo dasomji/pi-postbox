@@ -45,6 +45,13 @@ class PostboxStore {
    * confirmation and does its own routing afterwards.
    */
   private readonly locallyResolvingRequestIds = new Set<string>();
+  private locallyRetainedRequest: AskRequestSnapshot | undefined;
+  private historyLoadPromise: Promise<HistoryResponse> | undefined;
+  private snapshotLoadPromise: Promise<StateSnapshot> | undefined;
+  private readonly snapshotWaiters = new Set<{
+    resolve: (snapshot: StateSnapshot) => void;
+    reject: (error: Error) => void;
+  }>();
   private notificationNavigationAttempt = 0;
 
   snapshot = $state<Loadable<StateSnapshot>>({ status: "loading" });
@@ -104,7 +111,8 @@ class PostboxStore {
   selectedRequest = $derived.by<AskRequestSnapshot | undefined>(() => {
     const selection = this.selection;
     if (selection.kind !== "request") return undefined;
-    return this.requests.find((request) => request.requestId === selection.requestId);
+    return this.requests.find((request) => request.requestId === selection.requestId)
+      ?? (this.locallyRetainedRequest?.requestId === selection.requestId ? this.locallyRetainedRequest : undefined);
   });
 
   selectedSession = $derived.by<SessionSnapshot | undefined>(() => {
@@ -113,7 +121,8 @@ class PostboxStore {
       return this.sessions.find((session) => session.sessionId === selection.sessionId);
     }
     if (selection.kind === "request") {
-      const request = this.requests.find((entry) => entry.requestId === selection.requestId);
+      const request = this.requests.find((entry) => entry.requestId === selection.requestId)
+        ?? (this.locallyRetainedRequest?.requestId === selection.requestId ? this.locallyRetainedRequest : undefined);
       return request ? this.sessions.find((session) => session.sessionId === request.sessionId) : undefined;
     }
     return undefined;
@@ -124,22 +133,28 @@ class PostboxStore {
   }
 
   selectSession(sessionId: string): void {
+    this.locallyRetainedRequest = undefined;
     this.selection = { kind: "session", sessionId };
   }
 
   selectRequest(requestId: string): void {
+    if (this.locallyRetainedRequest?.requestId !== requestId) this.locallyRetainedRequest = undefined;
     this.selection = { kind: "request", requestId };
   }
 
   selectProject(projectId: string): void {
+    this.locallyRetainedRequest = undefined;
     this.selection = { kind: "project", projectId };
   }
 
-  showHistory(): void {
+  async showHistory(fetchCurrentHistory: () => Promise<HistoryResponse> = fetchHistory): Promise<void> {
+    this.locallyRetainedRequest = undefined;
     this.selection = { kind: "history" };
+    await this.loadHistory(fetchCurrentHistory);
   }
 
   clearSelection(): void {
+    this.locallyRetainedRequest = undefined;
     this.selection = { kind: "none" };
   }
 
@@ -149,23 +164,25 @@ class PostboxStore {
    */
   async openRequestFromNotification(
     requestId: string,
-    fetchCurrentSnapshot: () => Promise<StateSnapshot> = fetchSnapshot
+    fetchCurrentSnapshot?: () => Promise<StateSnapshot>
   ): Promise<void> {
     const attempt = ++this.notificationNavigationAttempt;
     this.clearSelection();
     this.syncing = true;
 
     try {
-      const next = await fetchCurrentSnapshot();
+      const next = fetchCurrentSnapshot
+        ? await this.requestSnapshot(fetchCurrentSnapshot)
+        : this.snapshot.status === "loading"
+          ? await this.waitForNextSnapshot()
+          : await this.requestSnapshot(fetchSnapshot);
       if (attempt !== this.notificationNavigationAttempt) return;
-      this.applyStateSnapshot(next);
       const request = next.requests.find((candidate) => candidate.requestId === requestId);
       if (request?.status === "pending") this.selectRequest(requestId);
       else this.clearSelection();
     } catch (error) {
       if (attempt !== this.notificationNavigationAttempt) return;
-      this.snapshot = { status: "error", message: messageOf(error, "Unknown state snapshot error") };
-      this.syncing = false;
+      this.failStateSnapshot(error, "Unknown state snapshot error");
       this.clearSelection();
     }
   }
@@ -192,42 +209,90 @@ class PostboxStore {
   }
 
   applyStateSnapshot(next: StateSnapshot): void {
+    const selection = this.selection;
+    const previouslySelectedRequest = selection.kind === "request"
+      ? this.requests.find((entry) => entry.requestId === selection.requestId)
+        ?? (this.locallyRetainedRequest?.requestId === selection.requestId ? this.locallyRetainedRequest : undefined)
+      : undefined;
+
     this.snapshot = { status: "ready", data: next };
     this.syncing = false;
     this.lastSnapshotAtMs = Date.now();
-    this.deselectRemotelyResolvedRequest();
+    this.deselectRemotelyResolvedRequest(previouslySelectedRequest);
+    for (const waiter of this.snapshotWaiters) waiter.resolve(next);
+    this.snapshotWaiters.clear();
   }
 
   /** A question answered or cancelled elsewhere disappears from the device that still had it open. */
-  private deselectRemotelyResolvedRequest(): void {
+  private deselectRemotelyResolvedRequest(previouslySelectedRequest: AskRequestSnapshot | undefined): void {
     const selection = this.selection;
     if (selection.kind !== "request") return;
-    if (this.locallyResolvingRequestIds.has(selection.requestId)) return;
 
-    const request = this.requests.find((entry) => entry.requestId === selection.requestId);
-    if (!request || request.status === "pending") return;
-    this.routeAfterRequestResolved(request.sessionId);
+    const currentRequest = this.requests.find((entry) => entry.requestId === selection.requestId);
+    if (currentRequest?.status === "pending") {
+      this.locallyRetainedRequest = undefined;
+      return;
+    }
+    if (this.locallyResolvingRequestIds.has(selection.requestId)) {
+      this.locallyRetainedRequest = previouslySelectedRequest;
+      return;
+    }
+    if (previouslySelectedRequest) this.routeAfterRequestResolved(previouslySelectedRequest.sessionId);
   }
 
-  async loadSnapshot(): Promise<void> {
+  async loadSnapshot(fetchCurrentSnapshot: () => Promise<StateSnapshot> = fetchSnapshot): Promise<void> {
     try {
-      this.applyStateSnapshot(await fetchSnapshot());
+      await this.requestSnapshot(fetchCurrentSnapshot);
     } catch (error) {
-      this.snapshot = { status: "error", message: messageOf(error, "Unknown state snapshot error") };
-      this.syncing = false;
+      this.failStateSnapshot(error, "Unknown state snapshot error");
     }
   }
 
-  async loadHistory(): Promise<void> {
+  private requestSnapshot(fetchCurrentSnapshot: () => Promise<StateSnapshot>): Promise<StateSnapshot> {
+    if (this.snapshotLoadPromise) return this.snapshotLoadPromise;
+
+    let tracked: Promise<StateSnapshot>;
+    tracked = fetchCurrentSnapshot()
+      .then((next) => {
+        this.applyStateSnapshot(next);
+        return next;
+      })
+      .finally(() => {
+        if (this.snapshotLoadPromise === tracked) this.snapshotLoadPromise = undefined;
+      });
+    this.snapshotLoadPromise = tracked;
+    return tracked;
+  }
+
+  private waitForNextSnapshot(): Promise<StateSnapshot> {
+    return new Promise<StateSnapshot>((resolve, reject) => {
+      this.snapshotWaiters.add({ resolve, reject });
+    });
+  }
+
+  private failStateSnapshot(error: unknown, fallback: string): void {
+    const message = messageOf(error, fallback);
+    this.snapshot = { status: "error", message };
+    this.syncing = false;
+    for (const waiter of this.snapshotWaiters) waiter.reject(new Error(message));
+    this.snapshotWaiters.clear();
+  }
+
+  async loadHistory(fetchCurrentHistory: () => Promise<HistoryResponse> = fetchHistory): Promise<void> {
+    this.history = { status: "loading" };
+    const load = this.historyLoadPromise ?? fetchCurrentHistory();
+    this.historyLoadPromise = load;
     try {
-      this.history = { status: "ready", data: await fetchHistory() };
+      this.history = { status: "ready", data: await load };
     } catch (error) {
       this.history = { status: "error", message: messageOf(error, "Unknown history error") };
+    } finally {
+      if (this.historyLoadPromise === load) this.historyLoadPromise = undefined;
     }
   }
 
   async refresh(): Promise<void> {
-    await Promise.all([this.loadSnapshot(), this.loadHistory()]);
+    await this.loadSnapshot();
   }
 
   /** Begin live updates (health probe, SSE stream, polling fallback). Returns a cleanup function. */
@@ -244,11 +309,6 @@ class PostboxStore {
         if (!cancelled) this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
       });
 
-    void this.loadHistory();
-    // Fetch immediately instead of waiting for the SSE stream's first event, so a fresh open
-    // (e.g. from a push notification) renders real data as fast as one round-trip allows.
-    void this.loadSnapshot();
-
     const applySnapshot = (next: StateSnapshot) => {
       if (!cancelled) this.applyStateSnapshot(next);
     };
@@ -257,7 +317,7 @@ class PostboxStore {
       fetchSnapshot()
         .then(applySnapshot)
         .catch((error: unknown) => {
-          if (!cancelled) this.snapshot = { status: "error", message: messageOf(error, "Unknown state snapshot error") };
+          if (!cancelled) this.failStateSnapshot(error, "Unknown state snapshot error");
         });
     };
 
@@ -274,9 +334,8 @@ class PostboxStore {
       events.addEventListener("state", (event) => {
         try {
           applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
-          void this.loadHistory();
         } catch (error) {
-          if (!cancelled) this.snapshot = { status: "error", message: messageOf(error, "Invalid live state event") };
+          if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
         }
       });
       events.onerror = () => startPollingFallback();
@@ -288,7 +347,6 @@ class PostboxStore {
       if (document.visibilityState !== "visible" || cancelled) return;
       if (Date.now() - this.lastSnapshotAtMs > STALE_AFTER_RESUME_MS) this.syncing = true;
       void this.loadSnapshot();
-      void this.loadHistory();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 

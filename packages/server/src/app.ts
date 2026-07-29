@@ -1,3 +1,4 @@
+import fastifyCompress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import {
@@ -46,6 +47,7 @@ export interface CreatePostboxAppOptions {
   historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
+  compressionThresholdBytes?: number;
   chatCommandTimeoutMs?: number;
   chatCommandRateLimitMax?: number;
   chatCommandRateLimitWindowMs?: number;
@@ -93,6 +95,12 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     logger: options.logger ?? false,
     bodyLimit: options.bodyLimitBytes ?? 2 * 1024 * 1024
   });
+  await app.register(fastifyCompress, {
+    threshold: options.compressionThresholdBytes ?? 1024,
+    encodings: ["br", "gzip"],
+    globalDecompression: false
+  });
+
   const startedAtMs = options.startedAtMs ?? Date.now();
   const now = options.now ?? (() => Date.now());
   let mutableLocalTarget: ActiveLocalTargetIdentity | undefined;
@@ -172,7 +180,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     sessionStore.pruneOfflineSessions();
     return StateSnapshotSchema.parse({
       ...sessionStore.snapshot(),
-      requests: requestStore.list()
+      requests: requestStore.list({ status: "pending" })
     });
   };
   broadcaster = new StateBroadcaster(getSnapshot);
@@ -187,6 +195,11 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     questionChatRelay.close();
     sessionStore.close();
     db.close();
+  });
+
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (request.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
+    return payload;
   });
 
   app.addHook("onRequest", async (request, reply) => {

@@ -192,6 +192,7 @@ describe("question history", () => {
         forkReference: { leafId: "legacy-leaf" }
       });
       expect(pending?.context).toBeUndefined();
+      expect(state.requests.some((request) => request.requestId === "legacy-answered")).toBe(false);
 
       const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
       const answered = history.history.find((record) => record.request.requestId === "legacy-answered")?.request;
