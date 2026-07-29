@@ -60,6 +60,38 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
+    fun manualRefreshFetchesOnceAndPreservesTheVisibleSelection() = runTest {
+        val refreshMayComplete = CompletableDeferred<Unit>()
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        val viewModel = startedViewModel(client)
+        viewModel.selectQuestion("ask-single")
+        viewModel.toggleOption("loopback")
+        client.currentState = questionWorkflowState(
+            requests = listOf(
+                singlePendingQuestion(prompt = "Choose the refreshed deployment target"),
+                multiPendingQuestion()
+            )
+        )
+        client.beforeFetchCompletes = { refreshMayComplete.await() }
+
+        viewModel.refreshQuestions()
+        viewModel.refreshQuestions()
+        runCurrent()
+
+        assertTrue(viewModel.state.isRefreshing)
+        assertTrue(viewModel.state.isSyncing)
+        assertEquals(1, client.fetchStateCalls)
+
+        refreshMayComplete.complete(Unit)
+        runCurrent()
+
+        assertFalse(viewModel.state.isRefreshing)
+        assertFalse(viewModel.state.isSyncing)
+        assertEquals("Choose the refreshed deployment target", viewModel.state.visibleQuestion?.prompt)
+        assertEquals(listOf("loopback"), viewModel.state.visibleQuestion?.selectedValues)
+    }
+
+    @Test
     fun pendingQuestionsAndInitialSelectionPrioritizeUrgencyThenAgeDeterministically() = runTest {
         val requests = listOf(
             singlePendingQuestion(requestId = "low", prompt = "Low priority").copy(

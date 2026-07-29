@@ -329,7 +329,8 @@ private fun ConnectedQuestionWorkflow(
         onSubmitAnswer = workflowViewModel::submitAnswer,
         onCancelQuestion = workflowViewModel::cancelQuestion,
         onDismissQuestion = workflowViewModel::dismissQuestion,
-        onEditServerUrl = onEditServerUrl
+        onEditServerUrl = onEditServerUrl,
+        onRefresh = workflowViewModel::refreshQuestions
     )
 }
 
