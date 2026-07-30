@@ -190,6 +190,16 @@ enum class QuestionChatSendMode {
     }
 }
 
+sealed interface QuestionChatSnapshotResult {
+    data class Ready(val snapshot: QuestionChatSnapshot) : QuestionChatSnapshotResult
+    data class Unavailable(val error: QuestionChatAvailabilityError) : QuestionChatSnapshotResult
+}
+
+sealed interface QuestionChatCommandResult<out T> {
+    data class Accepted<T>(val response: T) : QuestionChatCommandResult<T>
+    data class Unavailable(val error: QuestionChatAvailabilityError) : QuestionChatCommandResult<Nothing>
+}
+
 data class QuestionChatSendResponse(
     val clientCommandId: String,
     val mode: QuestionChatSendMode? = null
@@ -260,6 +270,7 @@ sealed interface QuestionChatEvent {
 sealed interface QuestionChatEventTransportFact {
     data object Open : QuestionChatEventTransportFact
     data class Event(val event: QuestionChatStreamEvent) : QuestionChatEventTransportFact
+    data class Stale(val throwable: Throwable) : QuestionChatEventTransportFact
     data class Failure(val throwable: Throwable) : QuestionChatEventTransportFact
     data object EndOfStream : QuestionChatEventTransportFact
 }

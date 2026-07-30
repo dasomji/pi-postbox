@@ -80,7 +80,95 @@ class QuestionChatTransportTest {
         assertEquals("POST", request.method)
         assertEquals("/api/requests/ask-1/chat/messages", request.path)
         assertTrue(request.body.readUtf8().contains("\"message\":\"Explain this\""))
-        assertEquals(QuestionChatSendMode.TURN, response.mode)
+        assertEquals(
+            QuestionChatCommandResult.Accepted(
+                QuestionChatSendResponse(clientCommandId = "cmd-1", mode = QuestionChatSendMode.TURN)
+            ),
+            response
+        )
+    }
+
+    @Test
+    fun fetchSnapshotReturnsTypedUnavailableResult() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(503)
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody(chatUnavailableResponse(code = "extension_offline", message = "Extension is offline."))
+        )
+        val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
+
+        val response = client.fetchSnapshot("ask-1")
+
+        assertEquals(
+            QuestionChatSnapshotResult.Unavailable(
+                QuestionChatAvailabilityError(
+                    code = QuestionChatAvailabilityCode.EXTENSION_OFFLINE,
+                    message = "Extension is offline.",
+                    contextFallback = QuestionChatContextFallbackAvailability.Available
+                )
+            ),
+            response
+        )
+    }
+
+    @Test
+    fun sendUnavailablePreservesRetryAfterMs() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(429)
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody(
+                    """
+                        {
+                          "status": "unavailable",
+                          "error": {
+                            "code": "rate_limited",
+                            "message": "Slow down.",
+                            "retryAfterMs": 1500
+                          }
+                        }
+                    """.trimIndent()
+                )
+        )
+        val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
+
+        val response = client.sendMessage("ask-1", "cmd-1", "Explain this")
+
+        assertEquals(
+            QuestionChatCommandResult.Unavailable(
+                QuestionChatAvailabilityError(
+                    code = QuestionChatAvailabilityCode.RATE_LIMITED,
+                    message = "Slow down.",
+                    retryAfterMs = 1500L
+                )
+            ),
+            response
+        )
+    }
+
+    @Test
+    fun stopUnavailablePreservesTypedError() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(409)
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody(chatUnavailableResponse(code = "request_not_pending", message = "Already terminal."))
+        )
+        val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
+
+        val response = client.stop("ask-1", "cmd-1")
+
+        assertEquals(
+            QuestionChatCommandResult.Unavailable(
+                QuestionChatAvailabilityError(
+                    code = QuestionChatAvailabilityCode.REQUEST_NOT_PENDING,
+                    message = "Already terminal.",
+                    contextFallback = QuestionChatContextFallbackAvailability.Available
+                )
+            ),
+            response
+        )
     }
 
     @Test
@@ -137,7 +225,7 @@ class QuestionChatTransportTest {
             append("\n\n")
             append("event: ignored\r")
             append("data: {\r")
-            append("data: \"requestId\":\"ask-1\",\"sequence\":2,\"type\":\"assistant.text.delta\",\"messageId\":\"a-1\",\"text\":\"Hello\"}\r\r")
+            append("data: \"requestId\":\"ask-1\",\"sequence\":2,\"type\":\"assistant.text.delta\",\"messageId\":\"a-1\",\"text\":\"안녕하세요 🌍\"}\r\r")
         }
         server.enqueue(
             MockResponse()
@@ -156,7 +244,7 @@ class QuestionChatTransportTest {
         assertTrue(facts.any { it is QuestionChatEventTransportFact.Event && (it.event as QuestionChatStreamEvent.Event).payload is QuestionChatEvent.MessageStarted })
         assertTrue(facts.any {
             it is QuestionChatEventTransportFact.Event &&
-                ((it.event as QuestionChatStreamEvent.Event).payload as? QuestionChatEvent.AssistantTextDelta)?.text == "Hello"
+                ((it.event as QuestionChatStreamEvent.Event).payload as? QuestionChatEvent.AssistantTextDelta)?.text == "안녕하세요 🌍"
         })
         assertTrue(facts.last() is QuestionChatEventTransportFact.EndOfStream)
         val request = server.takeRequest(1, TimeUnit.SECONDS) ?: error("Expected SSE request")
@@ -165,7 +253,31 @@ class QuestionChatTransportTest {
     }
 
     @Test
-    fun oversizedEventLineFailsTheTransport() = runBlocking {
+    fun wrongRequestAndMalformedFramesSurfaceStaleFacts() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                .setBody(
+                    buildString {
+                        append("data: {\"requestId\":\"ask-2\",\"sequence\":1,\"type\":\"message.started\",\"message\":{\"id\":\"a-1\",\"role\":\"assistant\",\"text\":\"\",\"status\":\"streaming\"}}\n\n")
+                        append("data: {not json}\n\n")
+                    }
+                )
+        )
+        val transport = OkHttpQuestionChatEventTransport(server.url("/").toString())
+        val facts = mutableListOf<QuestionChatEventTransportFact>()
+
+        val connection = transport.open("ask-1") { facts += it }
+        connection.ready.await()
+        connection.join()
+
+        assertEquals(2, facts.filterIsInstance<QuestionChatEventTransportFact.Stale>().size)
+        assertFalse(facts.any { it is QuestionChatEventTransportFact.Event })
+    }
+
+    @Test
+    fun oversizedEventLineSurfacesStaleFactInsteadOfFalseOnlineEvent() = runBlocking {
         val oversized = "x".repeat(QuestionChatTransportLimits.SSE_LINE_MAX_BYTES + 1)
         server.enqueue(
             MockResponse()
@@ -180,9 +292,10 @@ class QuestionChatTransportTest {
         connection.ready.await()
         connection.join()
 
-        val error = facts.filterIsInstance<QuestionChatEventTransportFact.Failure>().single()
-        assertTrue(error.throwable.message.orEmpty().contains("line"))
+        val stale = facts.filterIsInstance<QuestionChatEventTransportFact.Stale>().single()
+        assertTrue(stale.throwable.message.orEmpty().contains("line"))
         assertFalse(facts.any { it is QuestionChatEventTransportFact.Event })
+        assertTrue(facts.last() is QuestionChatEventTransportFact.EndOfStream)
     }
 }
 

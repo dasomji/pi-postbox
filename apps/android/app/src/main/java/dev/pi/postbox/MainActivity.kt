@@ -308,7 +308,7 @@ private fun ConnectedQuestionWorkflow(
         }
         onDispose {
             lifecycle.removeObserver(observer)
-            workflowViewModel.close()
+            workflowViewModel.dispose()
         }
     }
     LaunchedEffect(workflowViewModel, notificationPermissionState) {

@@ -5,11 +5,17 @@ enum class QuestionChatWorkspaceTab {
     CHAT
 }
 
+data class QuestionChatSuggestedOptionReview(
+    val optionValue: String,
+    val token: Long
+)
+
 data class QuestionChatWorkspaceShellState(
     val key: QuestionChatBindingKey? = null,
     val tabsVisible: Boolean = false,
     val selectedTab: QuestionChatWorkspaceTab = QuestionChatWorkspaceTab.QUESTION,
-    val questionFocusToken: Long = 0L
+    val questionFocusToken: Long = 0L,
+    val suggestedOptionReview: QuestionChatSuggestedOptionReview? = null
 )
 
 class QuestionChatWorkspaceShell {
@@ -34,6 +40,18 @@ class QuestionChatWorkspaceShell {
     fun selectTab(tab: QuestionChatWorkspaceTab) {
         if (!state.tabsVisible) return
         state = state.copy(selectedTab = tab)
+    }
+
+    fun reviewSuggestedOption(optionValue: String) {
+        if (!state.tabsVisible) return
+        state = state.copy(
+            selectedTab = QuestionChatWorkspaceTab.QUESTION,
+            questionFocusToken = state.questionFocusToken + 1,
+            suggestedOptionReview = QuestionChatSuggestedOptionReview(
+                optionValue = optionValue,
+                token = (state.suggestedOptionReview?.token ?: 0L) + 1L
+            )
+        )
     }
 
     fun handleBack(): Boolean {

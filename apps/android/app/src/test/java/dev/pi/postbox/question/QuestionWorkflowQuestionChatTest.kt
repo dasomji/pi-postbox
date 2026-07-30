@@ -9,9 +9,11 @@ import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatOwner
 import dev.pi.postbox.questionchat.QuestionChatProbeResult
 import dev.pi.postbox.questionchat.QuestionChatActivationResult
+import dev.pi.postbox.questionchat.QuestionChatCommandResult
 import dev.pi.postbox.questionchat.QuestionChatSendMode
 import dev.pi.postbox.questionchat.QuestionChatSendResponse
 import dev.pi.postbox.questionchat.QuestionChatSnapshot
+import dev.pi.postbox.questionchat.QuestionChatSnapshotResult
 import dev.pi.postbox.questionchat.QuestionChatState
 import dev.pi.postbox.questionchat.QuestionChatForkKind
 import dev.pi.postbox.questionchat.QuestionChatStopResponse
@@ -93,6 +95,72 @@ class QuestionWorkflowQuestionChatTest {
         assertFalse(viewModel.handleBack())
     }
 
+    @Test
+    fun reviewSuggestionSelectsQuestionAndPublishesAuthoritativeHighlightToken() = runTest {
+        val snapshot = readyChatSnapshot()
+        val transport = FakeWorkflowQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val owner = QuestionChatOwner(
+            httpClient = FakeWorkflowQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+        val stateStream = FakeWorkflowStateStream()
+        val client = RecordingWorkflowQuestionChatClient(questionWorkflowState())
+        val viewModel = startedViewModel(
+            client = client,
+            stateStream = stateStream,
+            questionChatOwner = owner
+        )
+        viewModel.startQuestionChat()
+        advanceUntilIdle()
+        viewModel.reviewQuestionChatSuggestion("tailnet")
+        advanceUntilIdle()
+
+        val chat = viewModel.state.questionChat ?: error("Expected question chat workspace")
+        assertEquals(QuestionChatWorkspaceTab.QUESTION, chat.selectedTab)
+        assertEquals("tailnet", chat.suggestedOptionReview?.optionValue)
+        assertTrue((chat.suggestedOptionReview?.token ?: 0L) > 0L)
+    }
+
+    @Test
+    fun closeKeepsQuestionChatForResumeButDisposeClearsIt() = runTest {
+        val snapshot = readyChatSnapshot()
+        val transport = FakeWorkflowQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val owner = QuestionChatOwner(
+            httpClient = FakeWorkflowQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+        val stateStream = FakeWorkflowStateStream()
+        val client = RecordingWorkflowQuestionChatClient(questionWorkflowState())
+        val viewModel = startedViewModel(
+            client = client,
+            stateStream = stateStream,
+            questionChatOwner = owner
+        )
+
+        viewModel.close()
+        advanceUntilIdle()
+        assertEquals("ask-single", owner.state.value.key?.requestId)
+        assertEquals(dev.pi.postbox.questionchat.QuestionChatConnectionState.OFFLINE, owner.state.value.session?.connection)
+
+        viewModel.start()
+        stateStream.emit(dev.pi.postbox.protocol.PostboxStateStreamStatus.Connected(client.currentState))
+        advanceUntilIdle()
+        assertEquals(dev.pi.postbox.questionchat.QuestionChatConnectionState.ONLINE, owner.state.value.session?.connection)
+
+        viewModel.dispose()
+        advanceUntilIdle()
+        assertEquals(null, owner.state.value.key)
+        assertEquals(null, owner.state.value.session)
+    }
+
     private suspend fun kotlinx.coroutines.test.TestScope.startedViewModel(
         client: RecordingWorkflowQuestionChatClient,
         stateStream: FakeWorkflowStateStream,
@@ -130,11 +198,11 @@ private class FakeWorkflowQuestionChatHttpClient(
     override suspend fun activateExact(requestId: String): QuestionChatActivationResult = exactActivation
     override suspend fun activateContext(requestId: String): QuestionChatActivationResult = exactActivation
     override suspend fun probeSnapshot(requestId: String): QuestionChatProbeResult = probeResult
-    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshot = snapshot
-    override suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatSendResponse =
-        QuestionChatSendResponse(clientCommandId = clientCommandId, mode = QuestionChatSendMode.TURN)
-    override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatStopResponse =
-        QuestionChatStopResponse(clientCommandId)
+    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshotResult = QuestionChatSnapshotResult.Ready(snapshot)
+    override suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatCommandResult<QuestionChatSendResponse> =
+        QuestionChatCommandResult.Accepted(QuestionChatSendResponse(clientCommandId = clientCommandId, mode = QuestionChatSendMode.TURN))
+    override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatCommandResult<QuestionChatStopResponse> =
+        QuestionChatCommandResult.Accepted(QuestionChatStopResponse(clientCommandId))
 }
 
 private class FakeWorkflowQuestionChatEventTransport : QuestionChatEventTransport {

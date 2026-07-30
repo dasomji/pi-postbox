@@ -2,6 +2,9 @@ package dev.pi.postbox.questionchat
 
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -79,6 +82,7 @@ data class QuestionChatOwnerState(
     val draftText: String = "",
     val pendingSend: QuestionChatPendingSend? = null,
     val pendingStopCommandId: String? = null,
+    val actionUnavailable: QuestionChatAvailabilityError? = null,
     val actionMessage: String? = null,
     val composerFocusToken: Long = 0L,
     val renderedAssistantMessages: Map<String, QuestionChatRenderedAssistantMessage> = emptyMap()
@@ -94,41 +98,48 @@ class QuestionChatOwner(
     private val mutableState = MutableStateFlow(QuestionChatOwnerState())
     private val mutableIdle = MutableStateFlow(true)
     private val activeJobs = linkedSetOf<Job>()
+    private val reducerLock = ReentrantLock()
     private var generation = 0L
     private var eventConnection: QuestionChatEventConnection? = null
 
     val state: StateFlow<QuestionChatOwnerState> = mutableState.asStateFlow()
     val idle: StateFlow<Boolean> = mutableIdle.asStateFlow()
 
-    fun bind(key: QuestionChatBindingKey?) {
-        if (mutableState.value.key == key) return
+    fun bind(key: QuestionChatBindingKey?) = reduce {
+        if (mutableState.value.key == key) return@reduce
+        val isForeground = mutableState.value.isForeground
         generation += 1
         cancelActiveWork()
         mutableState.value = QuestionChatOwnerState(
             key = key,
-            isForeground = mutableState.value.isForeground
+            isForeground = isForeground
         )
-        if (key != null && mutableState.value.isForeground) {
+        if (key != null && isForeground) {
             startProbe(key, generation)
         }
     }
 
-    fun dispatch(intent: QuestionChatIntent) {
+    fun dispatch(intent: QuestionChatIntent) = reduce {
         when (intent) {
             is QuestionChatIntent.SetForeground -> {
-                mutableState.value = mutableState.value.copy(isForeground = intent.foreground)
-                val key = mutableState.value.key
-                if (intent.foreground && key != null) {
+                val current = mutableState.value
+                mutableState.value = current.copy(isForeground = intent.foreground)
+                val key = current.key ?: return@reduce
+                if (intent.foreground) {
                     if (mutableState.value.knownStarted) {
                         startSynchronize(key, generation)
                     } else if (mutableState.value.activation == QuestionChatActivationUiState.Idle) {
                         startProbe(key, generation)
                     }
-                }
-                if (!intent.foreground && mutableState.value.session != null) {
-                    eventConnection?.close()
-                    eventConnection = null
+                } else {
+                    generation += 1
+                    cancelActiveWork()
                     mutableState.value = mutableState.value.copy(
+                        activation = QuestionChatActivationUiState.Idle,
+                        pendingSend = null,
+                        pendingStopCommandId = null,
+                        actionUnavailable = null,
+                        actionMessage = null,
                         session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.OFFLINE)
                     )
                 }
@@ -138,21 +149,27 @@ class QuestionChatOwner(
             QuestionChatIntent.Retry -> mutableState.value.key?.let { key ->
                 if (mutableState.value.knownStarted) startSynchronize(key, generation) else startProbe(key, generation)
             }
-            is QuestionChatIntent.DraftChanged -> mutableState.value = mutableState.value.copy(draftText = intent.text.take(8_000))
+            is QuestionChatIntent.DraftChanged -> mutableState.value = mutableState.value.copy(
+                draftText = intent.text.take(8_000),
+                actionUnavailable = null
+            )
             QuestionChatIntent.SendDraft -> mutableState.value.key?.let { key -> startSend(key, generation, mutableState.value.draftText.trim()) }
             is QuestionChatIntent.SendStarter -> mutableState.value.key?.let { key -> startSend(key, generation, questionChatStarterPrompts.getValue(intent.starter)) }
             QuestionChatIntent.Stop -> mutableState.value.key?.let { key -> startStop(key, generation) }
             QuestionChatIntent.QuestionBecameTerminal -> {
-                eventConnection?.close()
-                eventConnection = null
+                generation += 1
+                cancelActiveWork()
                 mutableState.value = mutableState.value.copy(
+                    pendingSend = null,
+                    pendingStopCommandId = null,
+                    actionUnavailable = null,
                     session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.TERMINAL)
                 )
             }
         }
     }
 
-    override fun close() {
+    override fun close() = reduce {
         generation += 1
         cancelActiveWork()
         mutableState.value = QuestionChatOwnerState()
@@ -161,26 +178,27 @@ class QuestionChatOwner(
     private fun startProbe(key: QuestionChatBindingKey, expectedGeneration: Long) {
         mutableState.value = mutableState.value.copy(
             activation = QuestionChatActivationUiState.Probing,
+            actionUnavailable = null,
             actionMessage = null
         )
         launchTracked {
             try {
                 when (val result = httpClient.probeSnapshot(key.requestId)) {
-                    is QuestionChatProbeResult.NotStarted -> ifCurrent(key, expectedGeneration) {
+                    is QuestionChatProbeResult.NotStarted -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             knownStarted = false,
                             activation = QuestionChatActivationUiState.Idle,
                             session = null
                         )
                     }
-                    is QuestionChatProbeResult.Unavailable -> ifCurrent(key, expectedGeneration) {
+                    is QuestionChatProbeResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             knownStarted = false,
                             activation = QuestionChatActivationUiState.Unavailable(result.error),
                             session = null
                         )
                     }
-                    is QuestionChatProbeResult.Ready -> ifCurrent(key, expectedGeneration) {
+                    is QuestionChatProbeResult.Ready -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             knownStarted = true,
                             activation = QuestionChatActivationUiState.Idle,
@@ -190,8 +208,10 @@ class QuestionChatOwner(
                         scheduleSynchronize(key, expectedGeneration)
                     }
                 }
+            } catch (_: CancellationException) {
+                return@launchTracked
             } catch (error: Exception) {
-                ifCurrent(key, expectedGeneration) {
+                reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error))
                     )
@@ -203,12 +223,13 @@ class QuestionChatOwner(
     private fun startExactActivation(key: QuestionChatBindingKey, expectedGeneration: Long) {
         mutableState.value = mutableState.value.copy(
             activation = QuestionChatActivationUiState.ActivatingExact,
+            actionUnavailable = null,
             actionMessage = null
         )
         launchTracked {
             try {
                 when (val result = httpClient.activateExact(key.requestId)) {
-                    is QuestionChatActivationResult.Ready -> ifCurrent(key, expectedGeneration) {
+                    is QuestionChatActivationResult.Ready -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             knownStarted = true,
                             activation = QuestionChatActivationUiState.Idle,
@@ -217,7 +238,7 @@ class QuestionChatOwner(
                         scheduleRenderedAssistantMessageParses(key, expectedGeneration, result.snapshot)
                         scheduleSynchronize(key, expectedGeneration)
                     }
-                    is QuestionChatActivationResult.Unavailable -> ifCurrent(key, expectedGeneration) {
+                    is QuestionChatActivationResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             activation = if (
                                 (result.error.code == QuestionChatAvailabilityCode.SOURCE_PATH_MISSING ||
@@ -231,8 +252,10 @@ class QuestionChatOwner(
                         )
                     }
                 }
+            } catch (_: CancellationException) {
+                return@launchTracked
             } catch (error: Exception) {
-                ifCurrent(key, expectedGeneration) {
+                reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error))
                     )
@@ -244,12 +267,13 @@ class QuestionChatOwner(
     private fun startContextActivation(key: QuestionChatBindingKey, expectedGeneration: Long) {
         mutableState.value = mutableState.value.copy(
             activation = QuestionChatActivationUiState.ActivatingContextFallback,
+            actionUnavailable = null,
             actionMessage = null
         )
         launchTracked {
             try {
                 when (val result = httpClient.activateContext(key.requestId)) {
-                    is QuestionChatActivationResult.Ready -> ifCurrent(key, expectedGeneration) {
+                    is QuestionChatActivationResult.Ready -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             knownStarted = true,
                             activation = QuestionChatActivationUiState.Idle,
@@ -258,14 +282,16 @@ class QuestionChatOwner(
                         scheduleRenderedAssistantMessageParses(key, expectedGeneration, result.snapshot)
                         scheduleSynchronize(key, expectedGeneration)
                     }
-                    is QuestionChatActivationResult.Unavailable -> ifCurrent(key, expectedGeneration) {
+                    is QuestionChatActivationResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             activation = QuestionChatActivationUiState.Unavailable(result.error)
                         )
                     }
                 }
+            } catch (_: CancellationException) {
+                return@launchTracked
             } catch (error: Exception) {
-                ifCurrent(key, expectedGeneration) {
+                reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error))
                     )
@@ -274,8 +300,8 @@ class QuestionChatOwner(
         }
     }
 
-    private fun scheduleSynchronize(key: QuestionChatBindingKey, expectedGeneration: Long) {
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+    private fun scheduleSynchronize(key: QuestionChatBindingKey, expectedGeneration: Long) = reduce {
+        if (isCurrent(key, expectedGeneration)) {
             startSynchronize(key, expectedGeneration)
         }
     }
@@ -287,25 +313,13 @@ class QuestionChatOwner(
         mutableState.value = mutableState.value.copy(
             knownStarted = true,
             activation = QuestionChatActivationUiState.Idle,
+            actionUnavailable = null,
             session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.SYNCHRONIZING)
         )
-        val buffered = mutableListOf<QuestionChatStreamEvent>()
+        val buffered = BufferedSynchronization()
         val connection = eventTransport.open(key.requestId) { fact ->
-            when (fact) {
-                QuestionChatEventTransportFact.Open -> Unit
-                QuestionChatEventTransportFact.EndOfStream,
-                is QuestionChatEventTransportFact.Failure -> ifCurrent(key, expectedGeneration) {
-                    mutableState.value = mutableState.value.copy(
-                        session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.OFFLINE)
-                    )
-                }
-                is QuestionChatEventTransportFact.Event -> ifCurrent(key, expectedGeneration) {
-                    if (mutableState.value.session?.connection == QuestionChatConnectionState.SYNCHRONIZING) {
-                        buffered += fact.event
-                    } else {
-                        applyLiveEvent(fact.event)
-                    }
-                }
+            reduce {
+                handleTransportFact(key, expectedGeneration, buffered, fact)
             }
         }
         eventConnection = connection
@@ -313,18 +327,32 @@ class QuestionChatOwner(
             try {
                 connection.ready.await()
                 if (!isCurrent(key, expectedGeneration)) return@launchTracked
-                val snapshot = httpClient.fetchSnapshot(key.requestId)
-                if (!isCurrent(key, expectedGeneration)) return@launchTracked
-                val synchronizedSnapshot = applyBufferedSnapshot(snapshot, buffered)
-                mutableState.value = mutableState.value.copy(
-                    session = QuestionChatSessionUiState(
-                        synchronizedSnapshot,
-                        QuestionChatConnectionState.ONLINE
-                    )
-                )
-                scheduleRenderedAssistantMessageParses(key, expectedGeneration, synchronizedSnapshot)
+                when (val result = httpClient.fetchSnapshot(key.requestId)) {
+                    is QuestionChatSnapshotResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
+                        handleSnapshotUnavailable(result.error)
+                    }
+                    is QuestionChatSnapshotResult.Ready -> reduceIfCurrent(key, expectedGeneration) {
+                        val applied = applyBufferedSnapshot(result.snapshot, buffered.events)
+                        val synchronizedSession = QuestionChatSessionUiState(
+                            snapshot = applied.snapshot,
+                            connection = when {
+                                buffered.requiresResync || applied.requiresResync -> QuestionChatConnectionState.SYNCHRONIZING
+                                buffered.streamEnded || buffered.streamFailure != null -> QuestionChatConnectionState.OFFLINE
+                                applied.connection == QuestionChatConnectionState.OFFLINE -> QuestionChatConnectionState.OFFLINE
+                                else -> QuestionChatConnectionState.ONLINE
+                            }
+                        )
+                        mutableState.value = mutableState.value.copy(session = synchronizedSession)
+                        scheduleRenderedAssistantMessageParses(key, expectedGeneration, applied.snapshot)
+                        if (buffered.requiresResync || applied.requiresResync) {
+                            scheduleSynchronize(key, expectedGeneration)
+                        }
+                    }
+                }
+            } catch (_: CancellationException) {
+                return@launchTracked
             } catch (error: Exception) {
-                ifCurrent(key, expectedGeneration) {
+                reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error)),
                         session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.OFFLINE)
@@ -334,6 +362,69 @@ class QuestionChatOwner(
         }
     }
 
+    private fun handleTransportFact(
+        key: QuestionChatBindingKey,
+        expectedGeneration: Long,
+        buffered: BufferedSynchronization,
+        fact: QuestionChatEventTransportFact
+    ) {
+        if (!isCurrent(key, expectedGeneration)) return
+        val buffering = mutableState.value.session?.connection == QuestionChatConnectionState.SYNCHRONIZING
+        when (fact) {
+            QuestionChatEventTransportFact.Open -> Unit
+            QuestionChatEventTransportFact.EndOfStream -> {
+                if (buffering) {
+                    buffered.streamEnded = true
+                } else {
+                    mutableState.value = mutableState.value.copy(
+                        session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.OFFLINE)
+                    )
+                }
+            }
+            is QuestionChatEventTransportFact.Failure -> {
+                if (buffering) {
+                    buffered.streamFailure = fact.throwable
+                } else {
+                    mutableState.value = mutableState.value.copy(
+                        session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.OFFLINE)
+                    )
+                }
+            }
+            is QuestionChatEventTransportFact.Stale -> {
+                if (buffering) {
+                    buffered.requiresResync = true
+                } else {
+                    mutableState.value = mutableState.value.copy(
+                        session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.SYNCHRONIZING)
+                    )
+                    scheduleSynchronize(key, expectedGeneration)
+                }
+            }
+            is QuestionChatEventTransportFact.Event -> {
+                if (buffering) {
+                    buffered.events += fact.event
+                } else {
+                    applyLiveEvent(key, expectedGeneration, fact.event)
+                }
+            }
+        }
+    }
+
+    private fun handleSnapshotUnavailable(error: QuestionChatAvailabilityError) {
+        eventConnection?.close()
+        eventConnection = null
+        mutableState.value = mutableState.value.copy(
+            activation = QuestionChatActivationUiState.Unavailable(error),
+            session = mutableState.value.session?.copy(
+                connection = when (error.code) {
+                    QuestionChatAvailabilityCode.REQUEST_NOT_PENDING,
+                    QuestionChatAvailabilityCode.WRONG_OWNER -> QuestionChatConnectionState.TERMINAL
+                    else -> QuestionChatConnectionState.OFFLINE
+                }
+            )
+        )
+    }
+
     private fun startSend(key: QuestionChatBindingKey, expectedGeneration: Long, message: String) {
         val current = mutableState.value
         val session = current.session ?: return
@@ -341,26 +432,47 @@ class QuestionChatOwner(
         val commandId = "android-chat-${commandCounter.incrementAndGet()}"
         mutableState.value = current.copy(
             pendingSend = QuestionChatPendingSend(commandId, message),
+            actionUnavailable = null,
             actionMessage = null
         )
         launchTracked {
             try {
-                val response = httpClient.sendMessage(key.requestId, commandId, message)
-                ifCurrent(key, expectedGeneration) {
-                    mutableState.value = mutableState.value.copy(
-                        draftText = "",
-                        pendingSend = null,
-                        actionMessage = when (response.mode) {
-                            QuestionChatSendMode.STEER -> "Steering the current answer."
-                            else -> "Question Chat is answering."
-                        },
-                        composerFocusToken = mutableState.value.composerFocusToken + 1
-                    )
+                when (val response = httpClient.sendMessage(key.requestId, commandId, message)) {
+                    is QuestionChatCommandResult.Accepted -> reduceIfCurrent(key, expectedGeneration) {
+                        mutableState.value = mutableState.value.copy(
+                            draftText = "",
+                            pendingSend = null,
+                            actionUnavailable = null,
+                            actionMessage = when (response.response.mode) {
+                                QuestionChatSendMode.STEER -> "Steering the current answer."
+                                else -> "Question Chat is answering."
+                            },
+                            composerFocusToken = mutableState.value.composerFocusToken + 1
+                        )
+                    }
+                    is QuestionChatCommandResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
+                        mutableState.value = mutableState.value.copy(
+                            pendingSend = null,
+                            actionUnavailable = response.error,
+                            actionMessage = response.error.message,
+                            session = mutableState.value.session?.copy(
+                                connection = when (response.error.code) {
+                                    QuestionChatAvailabilityCode.REQUEST_NOT_PENDING,
+                                    QuestionChatAvailabilityCode.WRONG_OWNER -> QuestionChatConnectionState.TERMINAL
+                                    QuestionChatAvailabilityCode.EXTENSION_OFFLINE -> QuestionChatConnectionState.OFFLINE
+                                    else -> mutableState.value.session?.connection ?: QuestionChatConnectionState.OFFLINE
+                                }
+                            )
+                        )
+                    }
                 }
+            } catch (_: CancellationException) {
+                return@launchTracked
             } catch (error: Exception) {
-                ifCurrent(key, expectedGeneration) {
+                reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         pendingSend = null,
+                        actionUnavailable = null,
                         actionMessage = error.message ?: "Unable to send message."
                     )
                 }
@@ -379,21 +491,42 @@ class QuestionChatOwner(
         val commandId = "android-stop-${commandCounter.incrementAndGet()}"
         mutableState.value = current.copy(
             pendingStopCommandId = commandId,
+            actionUnavailable = null,
             actionMessage = null
         )
         launchTracked {
             try {
-                httpClient.stop(key.requestId, commandId)
-                ifCurrent(key, expectedGeneration) {
-                    mutableState.value = mutableState.value.copy(
-                        pendingStopCommandId = null,
-                        actionMessage = "Stopping Question Chat…"
-                    )
+                when (val response = httpClient.stop(key.requestId, commandId)) {
+                    is QuestionChatCommandResult.Accepted -> reduceIfCurrent(key, expectedGeneration) {
+                        mutableState.value = mutableState.value.copy(
+                            pendingStopCommandId = null,
+                            actionUnavailable = null,
+                            actionMessage = "Stopping Question Chat…"
+                        )
+                    }
+                    is QuestionChatCommandResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
+                        mutableState.value = mutableState.value.copy(
+                            pendingStopCommandId = null,
+                            actionUnavailable = response.error,
+                            actionMessage = response.error.message,
+                            session = mutableState.value.session?.copy(
+                                connection = when (response.error.code) {
+                                    QuestionChatAvailabilityCode.REQUEST_NOT_PENDING,
+                                    QuestionChatAvailabilityCode.WRONG_OWNER -> QuestionChatConnectionState.TERMINAL
+                                    QuestionChatAvailabilityCode.EXTENSION_OFFLINE -> QuestionChatConnectionState.OFFLINE
+                                    else -> mutableState.value.session?.connection ?: QuestionChatConnectionState.OFFLINE
+                                }
+                            )
+                        )
+                    }
                 }
+            } catch (_: CancellationException) {
+                return@launchTracked
             } catch (error: Exception) {
-                ifCurrent(key, expectedGeneration) {
+                reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         pendingStopCommandId = null,
+                        actionUnavailable = null,
                         actionMessage = error.message ?: "Unable to stop Question Chat."
                     )
                 }
@@ -401,29 +534,38 @@ class QuestionChatOwner(
         }
     }
 
-    private fun applyLiveEvent(event: QuestionChatStreamEvent) {
+    private fun applyLiveEvent(
+        key: QuestionChatBindingKey,
+        expectedGeneration: Long,
+        event: QuestionChatStreamEvent
+    ) {
         val session = mutableState.value.session ?: return
         when (event) {
             is QuestionChatStreamEvent.Transport -> {
-                mutableState.value = mutableState.value.copy(
-                    session = session.copy(connection = if (event.online) QuestionChatConnectionState.ONLINE else QuestionChatConnectionState.OFFLINE)
-                )
+                if (!event.online) {
+                    mutableState.value = mutableState.value.copy(
+                        session = session.copy(connection = QuestionChatConnectionState.OFFLINE)
+                    )
+                } else if (session.connection != QuestionChatConnectionState.ONLINE) {
+                    mutableState.value = mutableState.value.copy(
+                        session = session.copy(connection = QuestionChatConnectionState.SYNCHRONIZING)
+                    )
+                    scheduleSynchronize(key, expectedGeneration)
+                }
             }
             is QuestionChatStreamEvent.Event -> {
                 if (event.payload.sequence > session.snapshot.sequence + 1) {
                     mutableState.value = mutableState.value.copy(
                         session = session.copy(connection = QuestionChatConnectionState.SYNCHRONIZING)
                     )
-                    mutableState.value.key?.let { key -> startSynchronize(key, generation) }
+                    scheduleSynchronize(key, expectedGeneration)
                     return
                 }
                 val updatedSnapshot = applyQuestionChatEvent(session.snapshot, event.payload)
                 mutableState.value = mutableState.value.copy(
                     session = session.copy(snapshot = updatedSnapshot)
                 )
-                mutableState.value.key?.let { key ->
-                    scheduleRenderedAssistantMessageParses(key, generation, updatedSnapshot)
-                }
+                scheduleRenderedAssistantMessageParses(key, expectedGeneration, updatedSnapshot)
             }
         }
     }
@@ -431,14 +573,22 @@ class QuestionChatOwner(
     private fun applyBufferedSnapshot(
         snapshot: QuestionChatSnapshot,
         buffered: List<QuestionChatStreamEvent>
-    ): QuestionChatSnapshot {
+    ): BufferedSnapshotApplication {
         var current = snapshot
-        buffered.sortedBy { sequenceOf(it) }.forEach { event ->
-            if (event is QuestionChatStreamEvent.Event) {
+        var connection = QuestionChatConnectionState.ONLINE
+        buffered.filterIsInstance<QuestionChatStreamEvent.Transport>().forEach { event ->
+            connection = if (event.online) QuestionChatConnectionState.ONLINE else QuestionChatConnectionState.OFFLINE
+        }
+        buffered.filterIsInstance<QuestionChatStreamEvent.Event>()
+            .sortedBy { it.payload.sequence }
+            .forEach { event ->
+                if (event.payload.sequence <= current.sequence) return@forEach
+                if (event.payload.sequence > current.sequence + 1) {
+                    return BufferedSnapshotApplication(current, connection, true)
+                }
                 current = applyQuestionChatEvent(current, event.payload)
             }
-        }
-        return current
+        return BufferedSnapshotApplication(current, connection, false)
     }
 
     private fun scheduleRenderedAssistantMessageParses(
@@ -458,7 +608,7 @@ class QuestionChatOwner(
             if (existing?.sourceText == message.text) return@forEach
             launchTracked {
                 val rendered = markdownParser.parse(message.text)
-                ifCurrent(key, expectedGeneration) {
+                reduceIfCurrent(key, expectedGeneration) {
                     val currentMessage = mutableState.value.session?.snapshot?.messages
                         ?.filterIsInstance<QuestionChatMessage.Assistant>()
                         ?.firstOrNull { it.id == message.id }
@@ -482,23 +632,36 @@ class QuestionChatOwner(
         error.message ?: "Question Chat unavailable."
     )
 
-    private inline fun ifCurrent(key: QuestionChatBindingKey, expectedGeneration: Long, block: () -> Unit) {
-        if (isCurrent(key, expectedGeneration)) {
-            block()
+    private fun isCurrent(key: QuestionChatBindingKey, expectedGeneration: Long): Boolean =
+        mutableState.value.key == key && generation == expectedGeneration
+
+    private suspend fun reduceIfCurrent(key: QuestionChatBindingKey, expectedGeneration: Long, mutation: () -> Unit) {
+        reducerLock.withLock {
+            if (isCurrent(key, expectedGeneration)) {
+                mutation()
+            }
         }
     }
 
-    private fun isCurrent(key: QuestionChatBindingKey, expectedGeneration: Long): Boolean =
-        mutableState.value.key == key && generation == expectedGeneration
+    private fun reduce(mutation: () -> Unit) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            reducerLock.withLock {
+                mutation()
+            }
+        }
+    }
 
     private fun launchTracked(block: suspend () -> Unit) {
         mutableIdle.value = false
         val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val thisJob = coroutineContext[Job]
             try {
                 block()
             } finally {
-                activeJobs.remove(this.coroutineContext[Job])
-                mutableIdle.value = activeJobs.isEmpty()
+                reduce {
+                    activeJobs.remove(thisJob)
+                    mutableIdle.value = activeJobs.isEmpty()
+                }
             }
         }
         activeJobs += job
@@ -512,6 +675,19 @@ class QuestionChatOwner(
         mutableIdle.value = true
     }
 }
+
+private data class BufferedSynchronization(
+    val events: MutableList<QuestionChatStreamEvent> = mutableListOf(),
+    var requiresResync: Boolean = false,
+    var streamEnded: Boolean = false,
+    var streamFailure: Throwable? = null
+)
+
+private data class BufferedSnapshotApplication(
+    val snapshot: QuestionChatSnapshot,
+    val connection: QuestionChatConnectionState,
+    val requiresResync: Boolean
+)
 
 private const val QUESTION_CHAT_MESSAGE_MAX = 100
 private const val QUESTION_CHAT_ASSISTANT_TEXT_MAX = 32_000

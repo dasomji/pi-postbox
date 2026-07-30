@@ -2,6 +2,7 @@ package dev.pi.postbox.questionchat
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -82,7 +83,9 @@ class QuestionChatOwnerTest {
         val client = FakeQuestionChatHttpClient(
             probeResult = QuestionChatProbeResult.Ready(snapshot),
             snapshot = snapshot,
-            sendResponse = QuestionChatSendResponse(clientCommandId = "android-chat-1", mode = QuestionChatSendMode.TURN)
+            sendResult = QuestionChatCommandResult.Accepted(
+                QuestionChatSendResponse(clientCommandId = "android-chat-1", mode = QuestionChatSendMode.TURN)
+            )
         )
         val owner = QuestionChatOwner(client, transport, backgroundScope)
         owner.dispatch(QuestionChatIntent.SetForeground(true))
@@ -171,6 +174,204 @@ class QuestionChatOwnerTest {
 
         assertEquals(listOf(RecordedStop("ask-1", "android-stop-1")), client.stopCalls)
         assertEquals(QuestionChatState.GENERATING, owner.state.value.session?.snapshot?.state)
+    }
+
+    @Test
+    fun backgroundingCancelsInFlightSendAndMarksRetainedSnapshotOffline() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val snapshot = readySnapshot()
+        val sendEntered = CompletableDeferred<Unit>()
+        val sendCancelled = CompletableDeferred<Unit>()
+        val client = FakeQuestionChatHttpClient(
+            probeResult = QuestionChatProbeResult.Ready(snapshot),
+            snapshot = snapshot,
+            sendBlock = {
+                sendEntered.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    sendCancelled.complete(Unit)
+                }
+            }
+        )
+        val owner = QuestionChatOwner(client, transport, backgroundScope)
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        owner.dispatch(QuestionChatIntent.DraftChanged("Explain this"))
+        owner.dispatch(QuestionChatIntent.SendDraft)
+        sendEntered.await()
+
+        owner.dispatch(QuestionChatIntent.SetForeground(false))
+        sendCancelled.await()
+        advanceUntilIdle()
+
+        assertEquals(QuestionChatConnectionState.OFFLINE, owner.state.value.session?.connection)
+        assertNull(owner.state.value.pendingSend)
+    }
+
+    @Test
+    fun foregroundResumeResynchronizesRetainedSnapshotAfterBackgroundClose() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val snapshot = readySnapshot()
+        val client = FakeQuestionChatHttpClient(
+            probeResult = QuestionChatProbeResult.Ready(snapshot),
+            snapshot = snapshot
+        )
+        val owner = QuestionChatOwner(client, transport, backgroundScope)
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        owner.dispatch(QuestionChatIntent.SetForeground(false))
+        advanceUntilIdle()
+        assertEquals(QuestionChatConnectionState.OFFLINE, owner.state.value.session?.connection)
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        advanceUntilIdle()
+
+        assertEquals(2, transport.openCount)
+        assertEquals(QuestionChatConnectionState.ONLINE, owner.state.value.session?.connection)
+    }
+
+    @Test
+    fun malformedTransportFactDuringSynchronizeForcesFreshResyncBeforeOnline() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val initial = readySnapshot(sequence = 1)
+        var fetches = 0
+        val client = FakeQuestionChatHttpClient(
+            probeResult = QuestionChatProbeResult.Ready(initial),
+            snapshotFactory = {
+                fetches += 1
+                if (fetches == 1) {
+                    transport.emitStale("Malformed Question Chat JSON")
+                }
+                initial.copy(sequence = fetches)
+            }
+        )
+        val owner = QuestionChatOwner(client, transport, backgroundScope)
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        assertTrue(client.fetchSnapshotCalls.size >= 2)
+        assertEquals(QuestionChatConnectionState.ONLINE, owner.state.value.session?.connection)
+        assertEquals(fetches, owner.state.value.session?.snapshot?.sequence)
+    }
+
+    @Test
+    fun bufferedOfflineTransportFactNeverDeclaresFalseOnlineState() = runTest {
+        val transport = FakeQuestionChatEventTransport()
+        val snapshot = readySnapshot(sequence = 3)
+        val snapshotGate = CompletableDeferred<Unit>()
+        val client = FakeQuestionChatHttpClient(
+            probeResult = QuestionChatProbeResult.Ready(snapshot),
+            snapshotFactory = {
+                snapshotGate.await()
+                snapshot
+            }
+        )
+        val owner = QuestionChatOwner(client, transport, backgroundScope)
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        transport.openReady.complete(Unit)
+        runCurrent()
+
+        transport.emitEvent(QuestionChatStreamEvent.Transport(requestId = "ask-1", online = false))
+        snapshotGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(owner.state.value.session?.connection != QuestionChatConnectionState.ONLINE)
+    }
+
+    @Test
+    fun fetchSnapshotUnavailablePreservesTypedOwnerError() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val initial = readySnapshot(sequence = 1)
+        val error = QuestionChatAvailabilityError(
+            code = QuestionChatAvailabilityCode.EXTENSION_OFFLINE,
+            message = "Extension offline."
+        )
+        val owner = QuestionChatOwner(
+            httpClient = FakeQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(initial),
+                snapshotResult = QuestionChatSnapshotResult.Unavailable(error)
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        assertEquals(QuestionChatActivationUiState.Unavailable(error), owner.state.value.activation)
+        assertEquals(QuestionChatConnectionState.OFFLINE, owner.state.value.session?.connection)
+    }
+
+    @Test
+    fun sendUnavailablePreservesTypedOwnerError() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val snapshot = readySnapshot()
+        val error = QuestionChatAvailabilityError(
+            code = QuestionChatAvailabilityCode.RATE_LIMITED,
+            message = "Slow down.",
+            retryAfterMs = 1500
+        )
+        val owner = QuestionChatOwner(
+            httpClient = FakeQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot,
+                sendResult = QuestionChatCommandResult.Unavailable(error)
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+        owner.dispatch(QuestionChatIntent.DraftChanged("Explain this"))
+        owner.dispatch(QuestionChatIntent.SendDraft)
+        advanceUntilIdle()
+
+        assertEquals(error, owner.state.value.actionUnavailable)
+        assertEquals("Slow down.", owner.state.value.actionMessage)
+        assertNull(owner.state.value.pendingSend)
+    }
+
+    @Test
+    fun stopUnavailablePreservesTypedOwnerError() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val snapshot = readySnapshot(state = QuestionChatState.GENERATING)
+        val error = QuestionChatAvailabilityError(
+            code = QuestionChatAvailabilityCode.REQUEST_NOT_PENDING,
+            message = "Already terminal."
+        )
+        val owner = QuestionChatOwner(
+            httpClient = FakeQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot,
+                stopResult = QuestionChatCommandResult.Unavailable(error)
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+        owner.dispatch(QuestionChatIntent.Stop)
+        advanceUntilIdle()
+
+        assertEquals(error, owner.state.value.actionUnavailable)
+        assertEquals(QuestionChatConnectionState.TERMINAL, owner.state.value.session?.connection)
+        assertNull(owner.state.value.pendingStopCommandId)
     }
 
     @Test
@@ -283,9 +484,16 @@ private class FakeQuestionChatHttpClient(
     private val exactActivation: QuestionChatActivationResult = QuestionChatActivationResult.Ready(readySnapshot()),
     private val contextActivation: QuestionChatActivationResult = QuestionChatActivationResult.Ready(readySnapshot()),
     private val snapshot: QuestionChatSnapshot = readySnapshot(),
-    private val sendResponse: QuestionChatSendResponse = QuestionChatSendResponse("android-chat-1", QuestionChatSendMode.TURN),
+    private val snapshotResult: QuestionChatSnapshotResult? = null,
+    private val sendResult: QuestionChatCommandResult<QuestionChatSendResponse> = QuestionChatCommandResult.Accepted(
+        QuestionChatSendResponse("android-chat-1", QuestionChatSendMode.TURN)
+    ),
+    private val stopResult: QuestionChatCommandResult<QuestionChatStopResponse> = QuestionChatCommandResult.Accepted(
+        QuestionChatStopResponse("android-stop-1")
+    ),
     private val probeResultFactory: (suspend (String) -> QuestionChatProbeResult)? = null,
-    private val snapshotFactory: (suspend (String) -> QuestionChatSnapshot)? = null
+    private val snapshotFactory: (suspend (String) -> QuestionChatSnapshot)? = null,
+    private val sendBlock: (suspend () -> Unit)? = null
 ) : QuestionChatHttpClient {
     val probeCalls = mutableListOf<String>()
     val fetchSnapshotCalls = mutableListOf<String>()
@@ -301,27 +509,33 @@ private class FakeQuestionChatHttpClient(
         return probeResultFactory?.invoke(requestId) ?: probeResult
     }
 
-    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshot {
+    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshotResult {
         fetchSnapshotCalls += requestId
-        return snapshotFactory?.invoke(requestId) ?: snapshot
+        return snapshotFactory?.invoke(requestId)?.let(QuestionChatSnapshotResult::Ready)
+            ?: snapshotResult
+            ?: QuestionChatSnapshotResult.Ready(snapshot)
     }
 
-    override suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatSendResponse {
+    override suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatCommandResult<QuestionChatSendResponse> {
         sendCalls += RecordedSend(requestId, clientCommandId, message)
-        return sendResponse
+        sendBlock?.invoke()
+        return sendResult
     }
 
-    override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatStopResponse {
+    override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatCommandResult<QuestionChatStopResponse> {
         stopCalls += RecordedStop(requestId, clientCommandId)
-        return QuestionChatStopResponse(clientCommandId)
+        return stopResult
     }
 }
 
 private class FakeQuestionChatEventTransport : QuestionChatEventTransport {
     val openReady = CompletableDeferred<Unit>()
+    var openCount = 0
+        private set
     private var listener: ((QuestionChatEventTransportFact) -> Unit)? = null
 
     override fun open(requestId: String, onFact: (QuestionChatEventTransportFact) -> Unit): QuestionChatEventConnection {
+        openCount += 1
         listener = onFact
         return object : QuestionChatEventConnection {
             override val ready: CompletableDeferred<Unit> = openReady
@@ -332,5 +546,9 @@ private class FakeQuestionChatEventTransport : QuestionChatEventTransport {
 
     fun emitEvent(event: QuestionChatStreamEvent) {
         listener?.invoke(QuestionChatEventTransportFact.Event(event))
+    }
+
+    fun emitStale(message: String) {
+        listener?.invoke(QuestionChatEventTransportFact.Stale(QuestionChatTransportException(message)))
     }
 }

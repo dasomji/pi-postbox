@@ -39,9 +39,9 @@ interface QuestionChatHttpClient {
     suspend fun activateExact(requestId: String): QuestionChatActivationResult
     suspend fun activateContext(requestId: String): QuestionChatActivationResult
     suspend fun probeSnapshot(requestId: String): QuestionChatProbeResult
-    suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshot
-    suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatSendResponse
-    suspend fun stop(requestId: String, clientCommandId: String): QuestionChatStopResponse
+    suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshotResult
+    suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatCommandResult<QuestionChatSendResponse>
+    suspend fun stop(requestId: String, clientCommandId: String): QuestionChatCommandResult<QuestionChatStopResponse>
 }
 
 class OkHttpQuestionChatHttpClient(
@@ -89,7 +89,7 @@ class OkHttpQuestionChatHttpClient(
             }
         }
 
-    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshot =
+    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshotResult =
         withJsonResponse(
             request = Request.Builder()
                 .url(base.withPathSegments(listOf("api", "requests", requestId, "chat")))
@@ -98,8 +98,8 @@ class OkHttpQuestionChatHttpClient(
             maxBytes = QuestionChatTransportLimits.SNAPSHOT_JSON_BODY_MAX_BYTES
         ) { _, body ->
             when (val parsed = parseSnapshotEnvelope(body)) {
-                is SnapshotEnvelope.Ready -> parsed.snapshot
-                is SnapshotEnvelope.Unavailable -> throw QuestionChatTransportException(parsed.error.message)
+                is SnapshotEnvelope.Ready -> QuestionChatSnapshotResult.Ready(parsed.snapshot)
+                is SnapshotEnvelope.Unavailable -> QuestionChatSnapshotResult.Unavailable(parsed.error)
             }
         }
 
@@ -107,7 +107,7 @@ class OkHttpQuestionChatHttpClient(
         requestId: String,
         clientCommandId: String,
         message: String
-    ): QuestionChatSendResponse = withJsonResponse(
+    ): QuestionChatCommandResult<QuestionChatSendResponse> = withJsonResponse(
         request = Request.Builder()
             .url(base.withPathSegments(listOf("api", "requests", requestId, "chat", "messages")))
             .post(
@@ -118,7 +118,7 @@ class OkHttpQuestionChatHttpClient(
         maxBytes = QuestionChatTransportLimits.SMALL_JSON_BODY_MAX_BYTES
     ) { _, body -> parseSendResponse(body) }
 
-    override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatStopResponse = withJsonResponse(
+    override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatCommandResult<QuestionChatStopResponse> = withJsonResponse(
         request = Request.Builder()
             .url(base.withPathSegments(listOf("api", "requests", requestId, "chat", "stop")))
             .post("{\"clientCommandId\":${JsonPrimitive(clientCommandId)}}".toRequestBody(JSON_MEDIA_TYPE))
@@ -181,21 +181,25 @@ private fun parseSnapshotEnvelope(body: JsonObject): SnapshotEnvelope = when (bo
     else -> throw QuestionChatTransportException("Unknown snapshot status")
 }
 
-private fun parseSendResponse(body: JsonObject): QuestionChatSendResponse {
+private fun parseSendResponse(body: JsonObject): QuestionChatCommandResult<QuestionChatSendResponse> {
     return when (body.requiredString("status")) {
-        "accepted" -> QuestionChatSendResponse(
-            clientCommandId = body.requiredString("clientCommandId"),
-            mode = body["mode"]?.jsonPrimitive?.contentOrNull?.let(QuestionChatSendMode::fromWire)
+        "accepted" -> QuestionChatCommandResult.Accepted(
+            QuestionChatSendResponse(
+                clientCommandId = body.requiredString("clientCommandId"),
+                mode = body["mode"]?.jsonPrimitive?.contentOrNull?.let(QuestionChatSendMode::fromWire)
+            )
         )
-        "unavailable" -> throw QuestionChatTransportException(parseAvailabilityError(body.requiredObject("error")).message)
+        "unavailable" -> QuestionChatCommandResult.Unavailable(parseAvailabilityError(body.requiredObject("error")))
         else -> throw QuestionChatTransportException("Unknown send status")
     }
 }
 
-private fun parseStopResponse(body: JsonObject): QuestionChatStopResponse {
+private fun parseStopResponse(body: JsonObject): QuestionChatCommandResult<QuestionChatStopResponse> {
     return when (body.requiredString("status")) {
-        "accepted" -> QuestionChatStopResponse(clientCommandId = body.requiredString("clientCommandId"))
-        "unavailable" -> throw QuestionChatTransportException(parseAvailabilityError(body.requiredObject("error")).message)
+        "accepted" -> QuestionChatCommandResult.Accepted(
+            QuestionChatStopResponse(clientCommandId = body.requiredString("clientCommandId"))
+        )
+        "unavailable" -> QuestionChatCommandResult.Unavailable(parseAvailabilityError(body.requiredObject("error")))
         else -> throw QuestionChatTransportException("Unknown stop status")
     }
 }

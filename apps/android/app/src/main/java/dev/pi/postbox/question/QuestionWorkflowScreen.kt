@@ -9,6 +9,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,8 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
@@ -60,6 +63,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.compositeOver
@@ -1289,6 +1294,8 @@ private fun QuestionDetailCard(
             )
         }
 
+        val highlightedOptionValue = questionChat?.suggestedOptionReview?.optionValue
+        val reviewHighlightToken = questionChat?.suggestedOptionReview?.token ?: 0L
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             question.options.forEach { option ->
                 BallotOptionRow(
@@ -1296,6 +1303,8 @@ private fun QuestionDetailCard(
                     mode = question.mode,
                     selected = question.selectedValues.contains(option.value),
                     enabled = actionsEnabled,
+                    highlighted = highlightedOptionValue == option.value,
+                    reviewToken = reviewHighlightToken,
                     onToggle = {
                         onToggleOption(option.value)
                         if (option.value == OTHER_OPTION_VALUE) showNote = true
@@ -1499,9 +1508,19 @@ private fun BallotOptionRow(
     selected: Boolean,
     enabled: Boolean,
     onToggle: () -> Unit,
-    dashed: Boolean = false
+    dashed: Boolean = false,
+    highlighted: Boolean = false,
+    reviewToken: Long = 0L
 ) {
     val shape = RoundedCornerShape(8.dp)
+    val focusRequester = remember { FocusRequester() }
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    LaunchedEffect(highlighted, reviewToken) {
+        if (highlighted && reviewToken > 0L) {
+            bringIntoViewRequester.bringIntoView()
+            focusRequester.requestFocus()
+        }
+    }
     val selectionModifier = when (mode) {
         QuestionMode.SINGLE -> Modifier.selectable(
             selected = selected,
@@ -1524,22 +1543,30 @@ private fun BallotOptionRow(
             .clip(shape)
             .background(
                 when {
+                    highlighted -> PostalColors.history.copy(alpha = 0.08f).compositeOver(PostalColors.elevated)
                     selected -> PostalColors.attention.copy(alpha = 0.05f).compositeOver(PostalColors.elevated)
                     dashed -> PostalColors.elevated.copy(alpha = 0.6f).compositeOver(PostalColors.canvas)
                     else -> PostalColors.elevated
                 }
             )
             .then(
-                if (dashed && !selected) {
+                if (dashed && !selected && !highlighted) {
                     Modifier.dashedBorder(PostalColors.borderStrong, cornerRadius = 8.dp)
                 } else {
                     Modifier.border(
-                        width = if (selected) 1.5.dp else 1.dp,
-                        color = if (selected) PostalColors.attention else PostalColors.border,
+                        width = if (selected || highlighted) 1.5.dp else 1.dp,
+                        color = when {
+                            highlighted -> PostalColors.historyForeground
+                            selected -> PostalColors.attention
+                            else -> PostalColors.border
+                        },
                         shape = shape
                     )
                 }
             )
+            .bringIntoViewRequester(bringIntoViewRequester)
+            .focusRequester(focusRequester)
+            .focusable()
             .then(selectionModifier)
             .padding(16.dp)
             .height(IntrinsicSize.Min),
@@ -1590,6 +1617,19 @@ private fun BallotOptionRow(
                         .padding(top = 4.dp)
                         .clip(CircleShape)
                         .background(PostalColors.history.copy(alpha = 0.1f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
+            if (highlighted) {
+                Text(
+                    text = "Ready to review",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = PostalColors.attentionForeground,
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .clip(CircleShape)
+                        .background(PostalColors.attention.copy(alpha = 0.12f))
                         .padding(horizontal = 8.dp, vertical = 2.dp)
                 )
             }

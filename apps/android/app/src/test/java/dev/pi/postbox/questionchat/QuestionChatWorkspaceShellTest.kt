@@ -59,4 +59,18 @@ class QuestionChatWorkspaceShellTest {
         assertTrue(shell.state.questionFocusToken > 0)
         assertFalse(shell.handleBack())
     }
+
+    @Test
+    fun reviewSuggestedOptionSelectsQuestionAndAdvancesReviewHighlightToken() {
+        val shell = QuestionChatWorkspaceShell()
+
+        shell.bind(QuestionChatBindingKey("https://postbox.example/", "ask-1"))
+        shell.onActivatedRuntimeReady()
+        shell.reviewSuggestedOption("ship")
+
+        assertEquals(QuestionChatWorkspaceTab.QUESTION, shell.state.selectedTab)
+        assertEquals("ship", shell.state.suggestedOptionReview?.optionValue)
+        assertTrue((shell.state.suggestedOptionReview?.token ?: 0L) > 0L)
+        assertTrue(shell.state.questionFocusToken > 0L)
+    }
 }

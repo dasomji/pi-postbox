@@ -28,6 +28,7 @@ import dev.pi.postbox.questionchat.QuestionChatIntent
 import dev.pi.postbox.questionchat.QuestionChatOwner
 import dev.pi.postbox.questionchat.QuestionChatOwnerState
 import dev.pi.postbox.questionchat.QuestionChatStarter
+import dev.pi.postbox.questionchat.QuestionChatSuggestedOptionReview
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceShell
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import java.io.IOException
@@ -184,14 +185,16 @@ class QuestionWorkflowViewModel(
     }
 
     fun reviewQuestionChatSuggestion(optionValue: String) {
-        questionChatShell.selectTab(QuestionChatWorkspaceTab.QUESTION)
         val visible = state.visibleQuestion ?: return
         if (visible.options.any { it.value == optionValue }) {
+            questionChatShell.reviewSuggestedOption(optionValue)
             state = state.copy(
                 visibleQuestion = visible.copy(
                     submissionError = null
                 )
             )
+        } else {
+            questionChatShell.selectTab(QuestionChatWorkspaceTab.QUESTION)
         }
         updateQuestionChatState()
     }
@@ -865,6 +868,9 @@ class QuestionWorkflowViewModel(
             }
         }
         val shellState = questionChatShell.state
+        val suggestedOptionReview = shellState.suggestedOptionReview?.takeIf { review ->
+            state.visibleQuestion?.options?.any { option -> option.value == review.optionValue } == true
+        }
         state = state.copy(
             questionChat = shellState.key?.let { key ->
                 QuestionChatWorkflowUiState(
@@ -872,7 +878,8 @@ class QuestionWorkflowViewModel(
                     owner = ownerState,
                     tabsVisible = shellState.tabsVisible,
                     selectedTab = shellState.selectedTab,
-                    questionFocusToken = shellState.questionFocusToken
+                    questionFocusToken = shellState.questionFocusToken,
+                    suggestedOptionReview = suggestedOptionReview
                 )
             }
         )
@@ -906,7 +913,8 @@ data class QuestionChatWorkflowUiState(
     val owner: QuestionChatOwnerState,
     val tabsVisible: Boolean,
     val selectedTab: QuestionChatWorkspaceTab,
-    val questionFocusToken: Long
+    val questionFocusToken: Long,
+    val suggestedOptionReview: QuestionChatSuggestedOptionReview? = null
 )
 
 sealed interface QuestionNavigationSelection {

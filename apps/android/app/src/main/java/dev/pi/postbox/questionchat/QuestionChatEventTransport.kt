@@ -4,6 +4,9 @@ import dev.pi.postbox.protocol.toPostboxBaseUrl
 import dev.pi.postbox.protocol.withPathSegments
 import java.io.Closeable
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -56,14 +59,25 @@ class OkHttpQuestionChatEventTransport(
                     val body = response.body ?: throw QuestionChatTransportException("Missing Question Chat event stream body")
                     val parser = QuestionChatSseParser(body.source())
                     while (true) {
-                        val payload = parser.readNextEventData() ?: break
+                        val payload = try {
+                            parser.readNextEventData()
+                        } catch (error: QuestionChatTransportException) {
+                            onFact(QuestionChatEventTransportFact.Stale(error))
+                            break
+                        } ?: break
                         try {
                             val event = parseQuestionChatStreamEvent(parseJsonObject(payload))
-                            if (event.requestId == requestId) {
-                                onFact(QuestionChatEventTransportFact.Event(event))
+                            if (event.requestId != requestId) {
+                                onFact(
+                                    QuestionChatEventTransportFact.Stale(
+                                        QuestionChatTransportException("Wrong Question Chat request id in SSE frame")
+                                    )
+                                )
+                                continue
                             }
-                        } catch (_: QuestionChatTransportException) {
-                            // malformed or additive-unknown event payloads are ignored; owner will resynchronize.
+                            onFact(QuestionChatEventTransportFact.Event(event))
+                        } catch (error: QuestionChatTransportException) {
+                            onFact(QuestionChatEventTransportFact.Stale(error))
                         }
                     }
                     onFact(QuestionChatEventTransportFact.EndOfStream)
@@ -98,6 +112,10 @@ fun defaultQuestionChatEventHttpClient(): OkHttpClient = OkHttpClient.Builder()
 private class QuestionChatSseParser(
     private val source: BufferedSource
 ) {
+    private val utf8Decoder = Charsets.UTF_8.newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+
     fun readNextEventData(): String? {
         var eventName: String? = null
         val dataLines = mutableListOf<String>()
@@ -144,25 +162,32 @@ private class QuestionChatSseParser(
 
     private fun readLine(): String? {
         if (source.exhausted()) return null
-        val buffer = StringBuilder()
+        val buffer = okio.Buffer()
         var bytes = 0
         while (true) {
-            if (source.exhausted()) return buffer.toString()
+            if (source.exhausted()) return decodeUtf8Line(buffer.readByteArray())
             val byte = source.readByte().toInt()
             bytes += 1
             if (bytes > QuestionChatTransportLimits.SSE_LINE_MAX_BYTES) {
                 throw QuestionChatTransportException("Question Chat SSE line exceeded limit")
             }
             when (byte) {
-                '\n'.code -> return buffer.toString()
+                '\n'.code -> return decodeUtf8Line(buffer.readByteArray())
                 '\r'.code -> {
                     if (!source.exhausted() && source.request(1) && source.buffer[0] == '\n'.code.toByte()) {
                         source.readByte()
                     }
-                    return buffer.toString()
+                    return decodeUtf8Line(buffer.readByteArray())
                 }
-                else -> buffer.append(byte.toChar())
+                else -> buffer.writeByte(byte)
             }
         }
+    }
+
+    private fun decodeUtf8Line(bytes: ByteArray): String = try {
+        utf8Decoder.reset()
+        utf8Decoder.decode(ByteBuffer.wrap(bytes)).toString()
+    } catch (error: CharacterCodingException) {
+        throw QuestionChatTransportException("Malformed UTF-8 in Question Chat SSE line", error)
     }
 }
