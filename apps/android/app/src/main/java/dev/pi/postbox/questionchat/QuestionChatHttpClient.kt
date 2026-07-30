@@ -206,9 +206,14 @@ private fun parseStopResponse(body: JsonObject): QuestionChatCommandResult<Quest
 
 internal fun parseQuestionChatStreamEvent(body: JsonObject): QuestionChatStreamEvent {
     if (body.requiredString("type") == "transport") {
+        val online = when (body.requiredString("state")) {
+            "online" -> true
+            "offline" -> false
+            else -> throw QuestionChatTransportException("Unknown Question Chat transport state")
+        }
         return QuestionChatStreamEvent.Transport(
             requestId = body.requiredString("requestId"),
-            online = body.requiredString("state") == "online"
+            online = online
         )
     }
     return QuestionChatStreamEvent.Event(

@@ -5,19 +5,25 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val questionChatStarterPrompts = mapOf(
     QuestionChatStarter.ELABORATE to "Explain the asking agent's language and intent in this question.",
     QuestionChatStarter.PRO_CONS to "Compare the relevant trade-offs of this decision at my current level.",
     QuestionChatStarter.TEACH_ME to "Teach me the minimum foundational concepts I need to understand this question."
 )
+
+private val defaultQuestionChatMarkdownParserDispatcher: CoroutineDispatcher =
+    Dispatchers.Default.limitedParallelism(1)
 
 data class QuestionChatBindingKey(
     val normalizedServerUrl: String,
@@ -88,11 +94,12 @@ data class QuestionChatOwnerState(
     val renderedAssistantMessages: Map<String, QuestionChatRenderedAssistantMessage> = emptyMap()
 )
 
-class QuestionChatOwner(
+open class QuestionChatOwner(
     private val httpClient: QuestionChatHttpClient,
     private val eventTransport: QuestionChatEventTransport,
     private val scope: CoroutineScope,
-    private val markdownParser: SafeMarkdownParser = SafeMarkdownParser()
+    private val markdownParser: SafeMarkdownParser = SafeMarkdownParser(),
+    private val markdownParserDispatcher: CoroutineDispatcher = defaultQuestionChatMarkdownParserDispatcher
 ) : Closeable {
     private val commandCounter = AtomicLong(0)
     private val mutableState = MutableStateFlow(QuestionChatOwnerState())
@@ -105,7 +112,7 @@ class QuestionChatOwner(
     val state: StateFlow<QuestionChatOwnerState> = mutableState.asStateFlow()
     val idle: StateFlow<Boolean> = mutableIdle.asStateFlow()
 
-    fun bind(key: QuestionChatBindingKey?) = reduce {
+    open fun bind(key: QuestionChatBindingKey?) = reduce {
         if (mutableState.value.key == key) return@reduce
         val isForeground = mutableState.value.isForeground
         generation += 1
@@ -119,7 +126,7 @@ class QuestionChatOwner(
         }
     }
 
-    fun dispatch(intent: QuestionChatIntent) = reduce {
+    open fun dispatch(intent: QuestionChatIntent) = reduce {
         when (intent) {
             is QuestionChatIntent.SetForeground -> {
                 val current = mutableState.value
@@ -169,7 +176,7 @@ class QuestionChatOwner(
         }
     }
 
-    override fun close() = reduce {
+    override open fun close() = reduce {
         generation += 1
         cancelActiveWork()
         mutableState.value = QuestionChatOwnerState()
@@ -607,7 +614,9 @@ class QuestionChatOwner(
             val existing = mutableState.value.renderedAssistantMessages[message.id]
             if (existing?.sourceText == message.text) return@forEach
             launchTracked {
-                val rendered = markdownParser.parse(message.text)
+                val rendered = withContext(markdownParserDispatcher) {
+                    markdownParser.parse(message.text)
+                }
                 reduceIfCurrent(key, expectedGeneration) {
                     val currentMessage = mutableState.value.session?.snapshot?.messages
                         ?.filterIsInstance<QuestionChatMessage.Assistant>()

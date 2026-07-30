@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -205,7 +206,8 @@ internal fun QuestionChatPanel(
     onSendStarter: (QuestionChatStarter) -> Unit,
     onStop: () -> Unit,
     onReviewSuggestion: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    composerInsetModifier: Modifier = Modifier.imePadding().navigationBarsPadding()
 ) {
     val owner = workflow.owner
     val session = owner.session
@@ -290,7 +292,7 @@ internal fun QuestionChatPanel(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding(),
+                .then(composerInsetModifier),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.Bottom
         ) {

@@ -1,11 +1,20 @@
 package dev.pi.postbox.questionchat
 
+import java.util.concurrent.Executors
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.ContinuationInterceptor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -443,7 +452,8 @@ class QuestionChatOwnerTest {
                 snapshot = snapshot
             ),
             eventTransport = transport,
-            scope = backgroundScope
+            scope = backgroundScope,
+            markdownParserDispatcher = backgroundScope.coroutineContext[ContinuationInterceptor] as kotlinx.coroutines.CoroutineDispatcher
         )
 
         owner.dispatch(QuestionChatIntent.SetForeground(true))
@@ -452,6 +462,63 @@ class QuestionChatOwnerTest {
 
         val rendered = owner.state.value.renderedAssistantMessages["assistant-1"]?.rendered
         assertTrue(rendered is SafeMarkdownRenderResult.Rich)
+    }
+
+    @Test
+    fun terminalAssistantMessagesParseOnInjectedMarkdownDispatcher() = runBlocking {
+        val ownerDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "owner-scope-thread")
+        }.asCoroutineDispatcher()
+        val markdownDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "markdown-parser-thread")
+        }.asCoroutineDispatcher()
+        val ownerScope = CoroutineScope(SupervisorJob() + ownerDispatcher)
+        var owner: QuestionChatOwner? = null
+        try {
+            val parseThreadName = CompletableDeferred<String>()
+            val parser = object : SafeMarkdownParser() {
+                override fun parse(source: String): SafeMarkdownRenderResult {
+                    parseThreadName.complete(Thread.currentThread().name)
+                    return super.parse(source)
+                }
+            }
+            val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+            val snapshot = readySnapshot(
+                messages = listOf(
+                    QuestionChatMessage.Assistant(
+                        id = "assistant-1",
+                        text = "**Done** with [link](https://example.com).",
+                        status = QuestionChatMessage.Assistant.Status.FINAL
+                    )
+                )
+            )
+            owner = QuestionChatOwner(
+                httpClient = FakeQuestionChatHttpClient(
+                    probeResult = QuestionChatProbeResult.Ready(snapshot),
+                    snapshot = snapshot
+                ),
+                eventTransport = transport,
+                scope = ownerScope,
+                markdownParser = parser,
+                markdownParserDispatcher = markdownDispatcher
+            )
+
+            owner.dispatch(QuestionChatIntent.SetForeground(true))
+            owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+
+            withTimeout(5_000) {
+                while (owner.state.value.renderedAssistantMessages["assistant-1"] == null) {
+                    delay(10)
+                }
+            }
+
+            assertTrue(parseThreadName.await().startsWith("markdown-parser-thread"))
+        } finally {
+            owner?.close()
+            ownerScope.cancel()
+            ownerDispatcher.close()
+            markdownDispatcher.close()
+        }
     }
 }
 

@@ -849,12 +849,26 @@ class QuestionWorkflowViewModel(
         val key = state.visibleQuestion
             ?.takeIf { it.terminalState == null && it.availableActions.isNotEmpty() }
             ?.let { QuestionChatBindingKey(state.baseUrl, it.requestId) }
+        val previousKey = questionChatOwner.state.value.key
         if (questionChatShell.state.key != key) {
             questionChatActivationRequested = false
+        }
+        if (previousKey != null && previousKey != key && questionChatShouldBecomeTerminal(previousKey)) {
+            questionChatOwner.dispatch(QuestionChatIntent.QuestionBecameTerminal)
         }
         questionChatShell.bind(key)
         questionChatOwner.bind(key)
         updateQuestionChatState()
+    }
+
+    private fun questionChatShouldBecomeTerminal(previousKey: QuestionChatBindingKey): Boolean {
+        val visible = state.visibleQuestion
+        if (visible?.requestId == previousKey.requestId) {
+            return visible.terminalState != null || visible.availableActions.isEmpty()
+        }
+        return latestSnapshot?.requests?.none {
+            it.requestId == previousKey.requestId && it.status == AskStatus.PENDING
+        } ?: false
     }
 
     private fun updateQuestionChatState() {

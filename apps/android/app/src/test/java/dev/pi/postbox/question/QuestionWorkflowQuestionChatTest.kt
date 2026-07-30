@@ -1,21 +1,23 @@
 package dev.pi.postbox.question
 
+import dev.pi.postbox.questionchat.QuestionChatActivationResult
+import dev.pi.postbox.questionchat.QuestionChatBindingKey
+import dev.pi.postbox.questionchat.QuestionChatCommandResult
 import dev.pi.postbox.questionchat.QuestionChatEventConnection
 import dev.pi.postbox.questionchat.QuestionChatEventTransport
 import dev.pi.postbox.questionchat.QuestionChatEventTransportFact
+import dev.pi.postbox.questionchat.QuestionChatForkKind
 import dev.pi.postbox.questionchat.QuestionChatHttpClient
+import dev.pi.postbox.questionchat.QuestionChatIntent
 import dev.pi.postbox.questionchat.QuestionChatModel
 import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatOwner
 import dev.pi.postbox.questionchat.QuestionChatProbeResult
-import dev.pi.postbox.questionchat.QuestionChatActivationResult
-import dev.pi.postbox.questionchat.QuestionChatCommandResult
 import dev.pi.postbox.questionchat.QuestionChatSendMode
 import dev.pi.postbox.questionchat.QuestionChatSendResponse
 import dev.pi.postbox.questionchat.QuestionChatSnapshot
 import dev.pi.postbox.questionchat.QuestionChatSnapshotResult
 import dev.pi.postbox.questionchat.QuestionChatState
-import dev.pi.postbox.questionchat.QuestionChatForkKind
 import dev.pi.postbox.questionchat.QuestionChatStopResponse
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.protocol.AskAnswerPayload
@@ -161,6 +163,110 @@ class QuestionWorkflowQuestionChatTest {
         assertEquals(null, owner.state.value.session)
     }
 
+    @Test
+    fun locallyAnsweredQuestionDispatchesTerminalBeforeRebindingNextQuestionChat() = runTest {
+        val snapshot = readyChatSnapshot(requestId = "ask-single")
+        val transport = FakeWorkflowQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val owner = RecordingQuestionChatOwner(
+            httpClient = FakeWorkflowQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+        val stateStream = FakeWorkflowStateStream()
+        val client = RecordingWorkflowQuestionChatClient(questionWorkflowState()).apply {
+            afterAnswer = {
+                currentState = questionWorkflowState(requests = listOf(multiPendingQuestion()))
+            }
+        }
+        val viewModel = startedViewModel(
+            client = client,
+            stateStream = stateStream,
+            questionChatOwner = owner
+        )
+
+        owner.operations.clear()
+        viewModel.toggleOption("loopback")
+        viewModel.submitAnswer()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(
+                RecordedQuestionChatOwnerOperation.Dispatch(QuestionChatIntent.QuestionBecameTerminal),
+                RecordedQuestionChatOwnerOperation.Bind("ask-multi")
+            ),
+            owner.operations
+        )
+    }
+
+    @Test
+    fun remotelyResolvedQuestionDispatchesTerminalBeforeUnbindingQuestionChat() = runTest {
+        val snapshot = readyChatSnapshot(requestId = "ask-single")
+        val transport = FakeWorkflowQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val owner = RecordingQuestionChatOwner(
+            httpClient = FakeWorkflowQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+        val stateStream = FakeWorkflowStateStream()
+        val client = RecordingWorkflowQuestionChatClient(questionWorkflowState())
+        val viewModel = startedViewModel(
+            client = client,
+            stateStream = stateStream,
+            questionChatOwner = owner
+        )
+
+        viewModel.selectQuestion("ask-single")
+        advanceUntilIdle()
+        owner.operations.clear()
+
+        stateStream.emit(dev.pi.postbox.protocol.PostboxStateStreamStatus.Connected(questionWorkflowState(requests = listOf(multiPendingQuestion()))))
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(
+                RecordedQuestionChatOwnerOperation.Dispatch(QuestionChatIntent.QuestionBecameTerminal),
+                RecordedQuestionChatOwnerOperation.Bind(null)
+            ),
+            owner.operations
+        )
+    }
+
+    @Test
+    fun selectingAnotherPendingQuestionRebindsWithoutTerminalDispatch() = runTest {
+        val snapshot = readyChatSnapshot(requestId = "ask-single")
+        val transport = FakeWorkflowQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val owner = RecordingQuestionChatOwner(
+            httpClient = FakeWorkflowQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+        val stateStream = FakeWorkflowStateStream()
+        val client = RecordingWorkflowQuestionChatClient(questionWorkflowState())
+        val viewModel = startedViewModel(
+            client = client,
+            stateStream = stateStream,
+            questionChatOwner = owner
+        )
+
+        owner.operations.clear()
+        viewModel.selectQuestion("ask-multi")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RecordedQuestionChatOwnerOperation.Bind("ask-multi")),
+            owner.operations
+        )
+    }
+
     private suspend fun kotlinx.coroutines.test.TestScope.startedViewModel(
         client: RecordingWorkflowQuestionChatClient,
         stateStream: FakeWorkflowStateStream,
@@ -218,10 +324,46 @@ private class FakeWorkflowQuestionChatEventTransport : QuestionChatEventTranspor
 private class RecordingWorkflowQuestionChatClient(
     var currentState: StateSnapshot
 ) : dev.pi.postbox.protocol.PostboxProtocolClient {
+    var afterAnswer: (() -> Unit)? = null
+    var afterCancel: (() -> Unit)? = null
+
     override suspend fun fetchHealth(): HealthResponse = healthResponse()
     override suspend fun fetchState(): StateSnapshot = currentState
-    override suspend fun answerRequest(requestId: String, payload: AskAnswerPayload) = Unit
-    override suspend fun cancelRequest(requestId: String, payload: AskCancelPayload) = Unit
+
+    override suspend fun answerRequest(requestId: String, payload: AskAnswerPayload) {
+        afterAnswer?.invoke()
+    }
+
+    override suspend fun cancelRequest(requestId: String, payload: AskCancelPayload) {
+        afterCancel?.invoke()
+    }
+}
+
+private sealed interface RecordedQuestionChatOwnerOperation {
+    data class Dispatch(val intent: QuestionChatIntent) : RecordedQuestionChatOwnerOperation
+    data class Bind(val requestId: String?) : RecordedQuestionChatOwnerOperation
+}
+
+private class RecordingQuestionChatOwner(
+    httpClient: QuestionChatHttpClient,
+    eventTransport: QuestionChatEventTransport,
+    scope: kotlinx.coroutines.CoroutineScope
+) : QuestionChatOwner(
+    httpClient = httpClient,
+    eventTransport = eventTransport,
+    scope = scope
+) {
+    val operations = mutableListOf<RecordedQuestionChatOwnerOperation>()
+
+    override fun dispatch(intent: QuestionChatIntent) {
+        operations += RecordedQuestionChatOwnerOperation.Dispatch(intent)
+        super.dispatch(intent)
+    }
+
+    override fun bind(key: QuestionChatBindingKey?) {
+        operations += RecordedQuestionChatOwnerOperation.Bind(key?.requestId)
+        super.bind(key)
+    }
 }
 
 private class FakeWorkflowStateStream : PostboxStateStream {

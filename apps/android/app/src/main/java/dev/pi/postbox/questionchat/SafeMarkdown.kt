@@ -71,12 +71,12 @@ sealed interface SafeMarkdownInline {
     data class Link(val children: List<SafeMarkdownInline>, val url: String) : SafeMarkdownInline
 }
 
-class SafeMarkdownParser {
+open class SafeMarkdownParser {
     private val parser = Parser.builder()
         .maxOpenBlockParsers(SafeMarkdownLimits.MAX_OPEN_BLOCK_PARSERS)
         .build()
 
-    fun parse(source: String): SafeMarkdownRenderResult {
+    open fun parse(source: String): SafeMarkdownRenderResult {
         val boundedSource = source.take(SafeMarkdownLimits.SOURCE_MAX_CHARS)
         if (source.length > SafeMarkdownLimits.SOURCE_MAX_CHARS) {
             return SafeMarkdownRenderResult.PlainTextFallback(

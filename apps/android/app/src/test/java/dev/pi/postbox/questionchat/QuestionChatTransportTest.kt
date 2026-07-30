@@ -277,6 +277,26 @@ class QuestionChatTransportTest {
     }
 
     @Test
+    fun invalidTransportStateSurfacesStaleFactInsteadOfOfflineEvent() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                .setBody("data: {\"requestId\":\"ask-1\",\"type\":\"transport\",\"state\":\"resuming\"}\n\n")
+        )
+        val transport = OkHttpQuestionChatEventTransport(server.url("/").toString())
+        val facts = mutableListOf<QuestionChatEventTransportFact>()
+
+        val connection = transport.open("ask-1") { facts += it }
+        connection.ready.await()
+        connection.join()
+
+        assertEquals(1, facts.filterIsInstance<QuestionChatEventTransportFact.Stale>().size)
+        assertFalse(facts.any { it is QuestionChatEventTransportFact.Event })
+        assertTrue(facts.last() is QuestionChatEventTransportFact.EndOfStream)
+    }
+
+    @Test
     fun oversizedEventLineSurfacesStaleFactInsteadOfFalseOnlineEvent() = runBlocking {
         val oversized = "x".repeat(QuestionChatTransportLimits.SSE_LINE_MAX_BYTES + 1)
         server.enqueue(
