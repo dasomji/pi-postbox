@@ -107,6 +107,8 @@ open class QuestionChatOwner(
     private val activeJobs = linkedSetOf<Job>()
     private val reducerLock = ReentrantLock()
     private var generation = 0L
+    private var synchronizeAttempt = 0L
+    private var synchronizeJob: Job? = null
     private var eventConnection: QuestionChatEventConnection? = null
 
     val state: StateFlow<QuestionChatOwnerState> = mutableState.asStateFlow()
@@ -315,8 +317,12 @@ open class QuestionChatOwner(
 
     private fun startSynchronize(key: QuestionChatBindingKey, expectedGeneration: Long) {
         if (!mutableState.value.isForeground) return
+        synchronizeJob?.cancel()
+        synchronizeJob = null
         eventConnection?.close()
         eventConnection = null
+        synchronizeAttempt += 1
+        val attemptId = synchronizeAttempt
         mutableState.value = mutableState.value.copy(
             knownStarted = true,
             activation = QuestionChatActivationUiState.Idle,
@@ -326,19 +332,19 @@ open class QuestionChatOwner(
         val buffered = BufferedSynchronization()
         val connection = eventTransport.open(key.requestId) { fact ->
             reduce {
-                handleTransportFact(key, expectedGeneration, buffered, fact)
+                handleTransportFact(key, expectedGeneration, attemptId, buffered, fact)
             }
         }
         eventConnection = connection
-        launchTracked {
+        synchronizeJob = launchTracked {
             try {
                 connection.ready.await()
-                if (!isCurrent(key, expectedGeneration)) return@launchTracked
+                if (!isCurrentSynchronizeAttempt(key, expectedGeneration, attemptId)) return@launchTracked
                 when (val result = httpClient.fetchSnapshot(key.requestId)) {
-                    is QuestionChatSnapshotResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
+                    is QuestionChatSnapshotResult.Unavailable -> reduceIfCurrentSynchronizeAttempt(key, expectedGeneration, attemptId) {
                         handleSnapshotUnavailable(result.error)
                     }
-                    is QuestionChatSnapshotResult.Ready -> reduceIfCurrent(key, expectedGeneration) {
+                    is QuestionChatSnapshotResult.Ready -> reduceIfCurrentSynchronizeAttempt(key, expectedGeneration, attemptId) {
                         val applied = applyBufferedSnapshot(result.snapshot, buffered.events)
                         val synchronizedSession = QuestionChatSessionUiState(
                             snapshot = applied.snapshot,
@@ -359,7 +365,7 @@ open class QuestionChatOwner(
             } catch (_: CancellationException) {
                 return@launchTracked
             } catch (error: Exception) {
-                reduceIfCurrent(key, expectedGeneration) {
+                reduceIfCurrentSynchronizeAttempt(key, expectedGeneration, attemptId) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error)),
                         session = mutableState.value.session?.copy(connection = QuestionChatConnectionState.OFFLINE)
@@ -372,10 +378,11 @@ open class QuestionChatOwner(
     private fun handleTransportFact(
         key: QuestionChatBindingKey,
         expectedGeneration: Long,
+        attemptId: Long,
         buffered: BufferedSynchronization,
         fact: QuestionChatEventTransportFact
     ) {
-        if (!isCurrent(key, expectedGeneration)) return
+        if (!isCurrentSynchronizeAttempt(key, expectedGeneration, attemptId)) return
         val buffering = mutableState.value.session?.connection == QuestionChatConnectionState.SYNCHRONIZING
         when (fact) {
             QuestionChatEventTransportFact.Open -> Unit
@@ -561,6 +568,7 @@ open class QuestionChatOwner(
                 }
             }
             is QuestionChatStreamEvent.Event -> {
+                if (session.connection != QuestionChatConnectionState.ONLINE) return
                 if (event.payload.sequence > session.snapshot.sequence + 1) {
                     mutableState.value = mutableState.value.copy(
                         session = session.copy(connection = QuestionChatConnectionState.SYNCHRONIZING)
@@ -644,9 +652,28 @@ open class QuestionChatOwner(
     private fun isCurrent(key: QuestionChatBindingKey, expectedGeneration: Long): Boolean =
         mutableState.value.key == key && generation == expectedGeneration
 
+    private fun isCurrentSynchronizeAttempt(
+        key: QuestionChatBindingKey,
+        expectedGeneration: Long,
+        expectedAttemptId: Long
+    ): Boolean = isCurrent(key, expectedGeneration) && synchronizeAttempt == expectedAttemptId
+
     private suspend fun reduceIfCurrent(key: QuestionChatBindingKey, expectedGeneration: Long, mutation: () -> Unit) {
         reducerLock.withLock {
             if (isCurrent(key, expectedGeneration)) {
+                mutation()
+            }
+        }
+    }
+
+    private suspend fun reduceIfCurrentSynchronizeAttempt(
+        key: QuestionChatBindingKey,
+        expectedGeneration: Long,
+        expectedAttemptId: Long,
+        mutation: () -> Unit
+    ) {
+        reducerLock.withLock {
+            if (isCurrentSynchronizeAttempt(key, expectedGeneration, expectedAttemptId)) {
                 mutation()
             }
         }
@@ -660,7 +687,7 @@ open class QuestionChatOwner(
         }
     }
 
-    private fun launchTracked(block: suspend () -> Unit) {
+    private fun launchTracked(block: suspend () -> Unit): Job {
         mutableIdle.value = false
         val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val thisJob = coroutineContext[Job]
@@ -674,11 +701,13 @@ open class QuestionChatOwner(
             }
         }
         activeJobs += job
+        return job
     }
 
     private fun cancelActiveWork() {
         activeJobs.forEach { it.cancel() }
         activeJobs.clear()
+        synchronizeJob = null
         eventConnection?.close()
         eventConnection = null
         mutableIdle.value = true

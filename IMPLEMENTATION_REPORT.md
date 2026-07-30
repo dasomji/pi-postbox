@@ -2,40 +2,42 @@
 
 ## Scope completed
 
-This continuation repairs all four findings from `/tmp/android-chat-t1-rereview-report.md` while preserving the existing no-persistence and lifecycle boundaries.
+This continuation repairs all three findings from `/tmp/android-chat-t1-final-review.md` test-first.
 
 Completed in this continuation:
-- Moved terminal assistant Markdown parsing onto an explicit injectable off-main single-lane dispatcher inside `QuestionChatOwner`, with regression coverage proving the injected parser lane is used.
-- Anchored the Question Chat composer/action row with IME + navigation-bar padding (`imePadding().navigationBarsPadding()`) and added a focused Compose regression test seam that verifies bottom controls respect injected inset padding.
-- Tightened transport-state parsing so only `online|offline` are accepted; any other value is now rejected as malformed/stale transport input instead of being misread as `offline`.
-- Dispatched `QuestionBecameTerminal` before authoritative terminal/disappearance unbind/rebind transitions, with workflow tests covering local terminal rebind, remote disappearance unbind, and an explicit non-terminal pending-question switch guard.
+- Rejected post-offline non-transport live events so stale stream deltas cannot mutate the retained offline transcript.
+- Added dedicated synchronization-attempt identity plus cancellation so superseded same-key retries cannot let older snapshot results clobber newer state.
+- Promoted starter actions to native Material buttons with 48dp minimum targets and migrated Markdown links from deprecated `ClickableText`/raw string annotations to current `LinkAnnotation.Url` + `withLink` semantics while preserving explicit confirmation and safe revalidation.
+- Added regressions for offline late-event rejection, same-generation retry supersession, safe `LinkAnnotation` generation/click handling, unsafe-link inert rendering, and starter touch-target/button semantics.
+
+## Research / API verification
+
+- Verified the current Compose link API against Android Developers' current `LinkAnnotation` / `withLink` guidance and the local Compose `ui-text` API surface resolved from this repo's BOM (`androidx.compose:compose-bom:2025.05.01`, `ui-text-android:1.8.2`).
 
 ## Changed files
 
 - `apps/android/app/src/main/java/dev/pi/postbox/question/QuestionChatUi.kt`
-- `apps/android/app/src/main/java/dev/pi/postbox/question/QuestionWorkflowViewModel.kt`
-- `apps/android/app/src/main/java/dev/pi/postbox/questionchat/QuestionChatHttpClient.kt`
 - `apps/android/app/src/main/java/dev/pi/postbox/questionchat/QuestionChatOwner.kt`
-- `apps/android/app/src/main/java/dev/pi/postbox/questionchat/SafeMarkdown.kt`
-- `apps/android/app/src/test/java/dev/pi/postbox/question/QuestionWorkflowQuestionChatTest.kt`
 - `apps/android/app/src/test/java/dev/pi/postbox/questionchat/QuestionChatOwnerTest.kt`
-- `apps/android/app/src/test/java/dev/pi/postbox/questionchat/QuestionChatTransportTest.kt`
+- `apps/android/app/src/test/java/dev/pi/postbox/question/QuestionChatUiMarkdownTest.kt`
 - `apps/android/app/src/androidTest/java/dev/pi/postbox/question/QuestionChatUiTest.kt`
+- `IMPLEMENTATION_REPORT.md`
 
 ## Commands run
 
 - `env | grep '^PI_' | sort`
-- multiple targeted file reads/greps for Android Question Chat code, tests, and docs
-- `cd apps/android && ./gradlew testDebugUnitTest --tests dev.pi.postbox.questionchat.QuestionChatOwnerTest --tests dev.pi.postbox.questionchat.QuestionChatTransportTest --tests dev.pi.postbox.question.QuestionWorkflowQuestionChatTest`
-- `cd apps/android && ./gradlew testDebugUnitTest --tests dev.pi.postbox.questionchat.QuestionChatOwnerTest --tests dev.pi.postbox.questionchat.QuestionChatTransportTest --tests dev.pi.postbox.question.QuestionWorkflowQuestionChatTest assembleDebugAndroidTest`
+- targeted file reads/greps for Question Chat owner/UI/tests/docs
+- Android docs/API verification for `LinkAnnotation` / `withLink`, plus local `javap` inspection of Compose `ui-text`
+- `cd apps/android && ./gradlew testDebugUnitTest --tests dev.pi.postbox.questionchat.QuestionChatOwnerTest --tests dev.pi.postbox.question.QuestionChatUiMarkdownTest`
 - `cd apps/android && adb devices -l`
+- `cd apps/android && ./gradlew assembleDebugAndroidTest`
 - `cd apps/android && ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest`
 
 ## Validation status
 
 Passed:
-- focused Question Chat owner / transport / workflow JVM regressions
-- Android test APK assembly including `QuestionChatUiTest`
+- focused JVM regressions for Question Chat owner synchronization/offline behavior and Markdown link annotations
+- Android instrumentation test APK assembly including `QuestionChatUiTest`
 - `cd apps/android && ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest`
 
 Not run:
@@ -43,8 +45,8 @@ Not run:
 
 ## Residual risks / notes
 
-- `QuestionChatUiTest` currently has compile/assembly coverage only because no device/emulator was available for connected execution.
-- Existing Compose deprecation warnings around clipboard / `ClickableText` remain unchanged in this continuation.
-- Existing CommonMark `startNumber` deprecation warnings remain unchanged.
+- `QuestionChatUiTest` has compile/assembly coverage only because no device/emulator was available for connected execution.
+- Existing Compose clipboard deprecation warnings (`LocalClipboardManager`) remain outside this slice.
+- Existing CommonMark `startNumber` deprecation warnings remain outside this slice.
 - No push performed.
 - No PR opened.

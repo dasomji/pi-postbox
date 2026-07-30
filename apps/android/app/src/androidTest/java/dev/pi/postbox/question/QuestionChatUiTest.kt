@@ -4,6 +4,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -11,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import dev.pi.postbox.questionchat.QuestionChatBindingKey
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
 import dev.pi.postbox.questionchat.QuestionChatForkKind
+import dev.pi.postbox.questionchat.QuestionChatMessage
 import dev.pi.postbox.questionchat.QuestionChatModel
 import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatOwnerState
@@ -33,7 +40,7 @@ class QuestionChatUiTest {
         composeRule.setContent {
             TestTheme {
                 QuestionChatPanel(
-                    workflow = generatingQuestionChatWorkflow(),
+                    workflow = questionChatWorkflow(),
                     onRetry = {},
                     onDraftChanged = {},
                     onSendDraft = {},
@@ -56,6 +63,31 @@ class QuestionChatUiTest {
         assertTrue(rootBottom - stopBottom >= expectedGap - 1f)
         assertTrue(rootBottom - steerBottom >= expectedGap - 1f)
     }
+
+    @Test
+    fun startersExposeButtonSemanticsWithMaterialTouchTargets() {
+        composeRule.setContent {
+            TestTheme {
+                QuestionChatPanel(
+                    workflow = questionChatWorkflow(
+                        messages = listOf(QuestionChatMessage.User(id = "user-1", text = "What changed?"))
+                    ),
+                    onRetry = {},
+                    onDraftChanged = {},
+                    onSendDraft = {},
+                    onSendStarter = {},
+                    onStop = {},
+                    onReviewSuggestion = {},
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Elaborate")
+            .assertHasClickAction()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+            .assertHeightIsAtLeast(48.dp)
+    }
 }
 
 @Composable
@@ -65,7 +97,9 @@ private fun TestTheme(content: @Composable () -> Unit) {
     }
 }
 
-private fun generatingQuestionChatWorkflow(): QuestionChatWorkflowUiState {
+private fun questionChatWorkflow(
+    messages: List<QuestionChatMessage> = emptyList()
+): QuestionChatWorkflowUiState {
     val key = QuestionChatBindingKey("https://postbox.example/", "ask-1")
     return QuestionChatWorkflowUiState(
         key = key,
@@ -81,8 +115,8 @@ private fun generatingQuestionChatWorkflow(): QuestionChatWorkflowUiState {
                         id = "anthropic/claude-sonnet-4",
                         source = QuestionChatModelSource.ORIGINATING
                     ),
-                    sequence = 0,
-                    messages = emptyList(),
+                    sequence = messages.size,
+                    messages = messages,
                     tools = emptyList()
                 ),
                 connection = QuestionChatConnectionState.ONLINE

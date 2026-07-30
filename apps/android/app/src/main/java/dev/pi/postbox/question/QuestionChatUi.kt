@@ -2,7 +2,6 @@ package dev.pi.postbox.question
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -22,12 +21,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -52,11 +51,15 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,7 +82,6 @@ import dev.pi.postbox.ui.theme.PostalDisplayFontFamily
 import java.net.URI
 import kotlinx.coroutines.launch
 
-private const val QUESTION_CHAT_LINK_TAG = "question-chat-link"
 private const val QUESTION_CHAT_CODE_COLLAPSED_LINES = 8
 
 @Composable
@@ -438,16 +440,14 @@ private fun StarterButtons(
             QuestionChatStarter.PRO_CONS to "Pro–Cons",
             QuestionChatStarter.TEACH_ME to "Teach me"
         ).forEach { (starter, label) ->
-            Text(
-                text = label,
-                modifier = Modifier
-                    .border(1.dp, PostalColors.border, RoundedCornerShape(999.dp))
-                    .background(if (enabled) PostalColors.elevated else PostalColors.surface, RoundedCornerShape(999.dp))
-                    .clickable(enabled = enabled) { onSendStarter(starter) }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                color = if (enabled) PostalColors.text else PostalColors.muted,
-                fontSize = 13.sp
-            )
+            OutlinedButton(
+                onClick = { onSendStarter(starter) },
+                enabled = enabled,
+                shape = RoundedCornerShape(999.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) {
+                Text(text = label, fontSize = 13.sp)
+            }
         }
     }
 }
@@ -653,8 +653,10 @@ private fun MarkdownInlineText(
     fontWeight: FontWeight? = null,
     fontSize: androidx.compose.ui.unit.TextUnit = 15.sp
 ) {
-    val annotated = remember(inlines) { buildMarkdownAnnotatedString(inlines) }
-    ClickableText(
+    val annotated = remember(inlines, onLinkClick) {
+        buildQuestionChatMarkdownAnnotatedString(inlines, onLinkClick)
+    }
+    Text(
         text = annotated,
         modifier = modifier,
         style = androidx.compose.ui.text.TextStyle(
@@ -663,14 +665,13 @@ private fun MarkdownInlineText(
             fontSize = fontSize,
             lineHeight = 22.sp
         )
-    ) { offset ->
-        annotated.getStringAnnotations(QUESTION_CHAT_LINK_TAG, offset, offset)
-            .firstOrNull()
-            ?.let { onLinkClick(it.item) }
-    }
+    )
 }
 
-private fun buildMarkdownAnnotatedString(inlines: List<SafeMarkdownInline>): AnnotatedString = buildAnnotatedString {
+internal fun buildQuestionChatMarkdownAnnotatedString(
+    inlines: List<SafeMarkdownInline>,
+    onLinkClick: (String) -> Unit
+): AnnotatedString = buildAnnotatedString {
     fun appendChildren(children: List<SafeMarkdownInline>) {
         children.forEach { inline ->
             when (inline) {
@@ -679,9 +680,24 @@ private fun buildMarkdownAnnotatedString(inlines: List<SafeMarkdownInline>): Ann
                 is SafeMarkdownInline.Emphasis -> withStyle(SpanStyle(fontWeight = FontWeight.Medium)) { appendChildren(inline.children) }
                 is SafeMarkdownInline.Strong -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { appendChildren(inline.children) }
                 is SafeMarkdownInline.Link -> {
-                    pushStringAnnotation(QUESTION_CHAT_LINK_TAG, inline.url)
-                    withStyle(SpanStyle(color = PostalColors.historyForeground)) { appendChildren(inline.children) }
-                    pop()
+                    if (isSafeQuestionChatUrl(inline.url)) {
+                        withLink(
+                            LinkAnnotation.Url(
+                                url = inline.url,
+                                styles = TextLinkStyles(style = SpanStyle(color = PostalColors.historyForeground)),
+                                linkInteractionListener = LinkInteractionListener { annotation ->
+                                    val clickedUrl = (annotation as? LinkAnnotation.Url)?.url ?: return@LinkInteractionListener
+                                    if (isSafeQuestionChatUrl(clickedUrl)) {
+                                        onLinkClick(clickedUrl)
+                                    }
+                                }
+                            )
+                        ) {
+                            appendChildren(inline.children)
+                        }
+                    } else {
+                        appendChildren(inline.children)
+                    }
                 }
             }
         }

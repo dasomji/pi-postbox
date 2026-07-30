@@ -299,6 +299,91 @@ class QuestionChatOwnerTest {
     }
 
     @Test
+    fun lateEventsAfterOfflineTransportAreIgnored() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val snapshot = readySnapshot(sequence = 0)
+        val owner = QuestionChatOwner(
+            httpClient = FakeQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        transport.emitEvent(QuestionChatStreamEvent.Transport(requestId = "ask-1", online = false))
+        transport.emitEvent(
+            QuestionChatStreamEvent.Event(
+                requestId = "ask-1",
+                payload = QuestionChatEvent.MessageStarted(
+                    requestId = "ask-1",
+                    sequence = 1,
+                    message = QuestionChatMessage.User(id = "late-user-1", text = "Late while offline")
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(QuestionChatConnectionState.OFFLINE, owner.state.value.session?.connection)
+        assertEquals(0, owner.state.value.session?.snapshot?.sequence)
+        assertTrue(owner.state.value.session?.snapshot?.messages?.isEmpty() == true)
+    }
+
+    @Test
+    fun retrySupersedesOlderSynchronizeAttemptForSameGeneration() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val initial = readySnapshot(sequence = 0)
+        val older = readySnapshot(
+            sequence = 1,
+            messages = listOf(assistantMessage(text = "Older retry result", status = QuestionChatMessage.Assistant.Status.FINAL))
+        )
+        val newer = readySnapshot(
+            sequence = 2,
+            messages = listOf(assistantMessage(id = "assistant-2", text = "Newer retry result", status = QuestionChatMessage.Assistant.Status.FINAL))
+        )
+        val firstFetchGate = CompletableDeferred<Unit>()
+        var fetches = 0
+        val owner = QuestionChatOwner(
+            httpClient = FakeQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(initial),
+                snapshotFactory = {
+                    fetches += 1
+                    when (fetches) {
+                        1 -> {
+                            firstFetchGate.await()
+                            older
+                        }
+                        2 -> newer
+                        else -> error("Unexpected fetch $fetches")
+                    }
+                }
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        runCurrent()
+
+        owner.dispatch(QuestionChatIntent.Retry)
+        advanceUntilIdle()
+
+        assertEquals(2, owner.state.value.session?.snapshot?.sequence)
+        assertEquals("Newer retry result", (owner.state.value.session?.snapshot?.messages?.single() as? QuestionChatMessage.Assistant)?.text)
+
+        firstFetchGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(2, owner.state.value.session?.snapshot?.sequence)
+        assertEquals("Newer retry result", (owner.state.value.session?.snapshot?.messages?.single() as? QuestionChatMessage.Assistant)?.text)
+    }
+
+    @Test
     fun fetchSnapshotUnavailablePreservesTypedOwnerError() = runTest {
         val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
         val initial = readySnapshot(sequence = 1)
