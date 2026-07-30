@@ -21,6 +21,14 @@ import dev.pi.postbox.protocol.PostboxStateStreamStatus
 import dev.pi.postbox.protocol.SessionSnapshot
 import dev.pi.postbox.protocol.StateSnapshot
 import dev.pi.postbox.push.PrefetchedStateSnapshotCache
+import dev.pi.postbox.questionchat.OkHttpQuestionChatEventTransport
+import dev.pi.postbox.questionchat.OkHttpQuestionChatHttpClient
+import dev.pi.postbox.questionchat.QuestionChatBindingKey
+import dev.pi.postbox.questionchat.QuestionChatIntent
+import dev.pi.postbox.questionchat.QuestionChatOwner
+import dev.pi.postbox.questionchat.QuestionChatOwnerState
+import dev.pi.postbox.questionchat.QuestionChatWorkspaceShell
+import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -41,7 +49,12 @@ class QuestionWorkflowViewModel(
     private val pendingQuestionNotificationTracker: PendingQuestionNotificationTracker? = null,
     private val onPendingQuestionNotifications: (List<PendingQuestionNotification>) -> Unit = {},
     private val onPendingRequestIdsObserved: (Set<String>) -> Unit = {},
-    private val prefetchedSnapshotProvider: (String) -> StateSnapshot? = { PrefetchedStateSnapshotCache.freshSnapshotFor(it) }
+    private val prefetchedSnapshotProvider: (String) -> StateSnapshot? = { PrefetchedStateSnapshotCache.freshSnapshotFor(it) },
+    private val questionChatOwner: QuestionChatOwner = QuestionChatOwner(
+        httpClient = OkHttpQuestionChatHttpClient(baseUrl),
+        eventTransport = OkHttpQuestionChatEventTransport(baseUrl),
+        scope = coroutineScope
+    )
 ) {
     var state: QuestionWorkflowState by mutableStateOf(
         QuestionWorkflowState(
@@ -54,6 +67,8 @@ class QuestionWorkflowViewModel(
     private var latestSnapshot: StateSnapshot? = null
     private var streamJob: Job? = null
     private var started = false
+    private val questionChatShell = QuestionChatWorkspaceShell()
+    private var questionChatActivationRequested = false
     private var hasAuthoritativeSnapshot = false
     @Volatile private var observationActive = false
     private var notificationOpenRequestId: String? = null
@@ -65,10 +80,19 @@ class QuestionWorkflowViewModel(
     private val draftSaveJobs = mutableMapOf<QuestionDraftKey, Job>()
     private val draftReconcileJobs = mutableMapOf<String, Job>()
 
+    init {
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            questionChatOwner.state.collect {
+                updateQuestionChatState()
+            }
+        }
+    }
+
     fun start() {
         if (started) return
         started = true
         observationActive = true
+        questionChatOwner.dispatch(QuestionChatIntent.SetForeground(true))
         state = state.copy(isSyncing = true)
 
         // A push handler may have fetched fresh state moments ago; render it immediately so an
@@ -113,6 +137,29 @@ class QuestionWorkflowViewModel(
             navigationSelection = QuestionNavigationSelection.Queue,
             terminalMessage = null
         )
+    }
+
+    fun startQuestionChat() {
+        questionChatActivationRequested = true
+        questionChatOwner.dispatch(QuestionChatIntent.ActivateExact)
+        promoteActivatedQuestionChatIfReady()
+    }
+
+    fun confirmContextOnlyQuestionChat() {
+        questionChatActivationRequested = true
+        questionChatOwner.dispatch(QuestionChatIntent.ActivateContextFallback)
+        promoteActivatedQuestionChatIfReady()
+    }
+
+    fun selectQuestionChatTab(tab: QuestionChatWorkspaceTab) {
+        questionChatShell.selectTab(tab)
+        updateQuestionChatState()
+    }
+
+    fun handleBack(): Boolean {
+        val handled = questionChatShell.handleBack()
+        if (handled) updateQuestionChatState()
+        return handled
     }
 
     fun refreshQuestions() {
@@ -160,6 +207,7 @@ class QuestionWorkflowViewModel(
             ),
             terminalMessage = null
         )
+        synchronizeQuestionChatBinding()
         restoreDraft(request)
     }
 
@@ -402,10 +450,16 @@ class QuestionWorkflowViewModel(
 
     fun close() {
         observationActive = false
+        questionChatOwner.dispatch(QuestionChatIntent.SetForeground(false))
         streamJob?.cancel()
         streamJob = null
         stateStream.close()
         started = false
+    }
+
+    fun dispose() {
+        close()
+        questionChatOwner.close()
     }
 
     private suspend fun refreshState(
@@ -635,6 +689,7 @@ class QuestionWorkflowViewModel(
             terminalMessage = effectiveTerminalMessage,
             errorMessage = null
         )
+        synchronizeQuestionChatBinding()
         reconcileActiveDraftSelections(pendingRequests)
 
         if (observationActive) {
@@ -743,6 +798,51 @@ class QuestionWorkflowViewModel(
             ).withSubmitState()
         )
     }
+
+    private fun promoteActivatedQuestionChatIfReady() {
+        val ownerState = questionChatOwner.state.value
+        if (questionChatActivationRequested && ownerState.knownStarted && ownerState.session != null && !questionChatShell.state.tabsVisible) {
+            questionChatShell.onActivatedRuntimeReady()
+            questionChatActivationRequested = false
+            updateQuestionChatState()
+        }
+    }
+
+    private fun synchronizeQuestionChatBinding() {
+        val key = state.visibleQuestion
+            ?.takeIf { it.terminalState == null && it.availableActions.isNotEmpty() }
+            ?.let { QuestionChatBindingKey(state.baseUrl, it.requestId) }
+        if (questionChatShell.state.key != key) {
+            questionChatActivationRequested = false
+        }
+        questionChatShell.bind(key)
+        questionChatOwner.bind(key)
+        updateQuestionChatState()
+    }
+
+    private fun updateQuestionChatState() {
+        val ownerState = questionChatOwner.state.value
+        if (ownerState.key != null && ownerState.knownStarted && ownerState.session != null && !questionChatShell.state.tabsVisible) {
+            if (questionChatActivationRequested) {
+                questionChatShell.onActivatedRuntimeReady()
+                questionChatActivationRequested = false
+            } else {
+                questionChatShell.onRecoveredRuntimeDiscovered()
+            }
+        }
+        val shellState = questionChatShell.state
+        state = state.copy(
+            questionChat = shellState.key?.let { key ->
+                QuestionChatWorkflowUiState(
+                    key = key,
+                    owner = ownerState,
+                    tabsVisible = shellState.tabsVisible,
+                    selectedTab = shellState.selectedTab,
+                    questionFocusToken = shellState.questionFocusToken
+                )
+            }
+        )
+    }
 }
 
 data class QuestionWorkflowState(
@@ -759,11 +859,20 @@ data class QuestionWorkflowState(
     val pendingQuestions: List<QuestionListItemUiState> = emptyList(),
     val visibleQuestion: QuestionDetailUiState? = null,
     val navigationSelection: QuestionNavigationSelection? = null,
+    val questionChat: QuestionChatWorkflowUiState? = null,
     val terminalMessage: QuestionTerminalMessage? = null,
     val errorMessage: String? = null,
     val notificationStatusMessage: String? = null,
     val dismissingRequestId: String? = null,
     val dismissError: String? = null
+)
+
+data class QuestionChatWorkflowUiState(
+    val key: QuestionChatBindingKey,
+    val owner: QuestionChatOwnerState,
+    val tabsVisible: Boolean,
+    val selectedTab: QuestionChatWorkspaceTab,
+    val questionFocusToken: Long
 )
 
 sealed interface QuestionNavigationSelection {
