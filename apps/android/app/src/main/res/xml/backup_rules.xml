@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Question answer drafts are sensitive and bound to a device-local Keystore key. -->
+    <exclude domain="root" path="no_backup/question_drafts_v1" />
+</full-backup-content>

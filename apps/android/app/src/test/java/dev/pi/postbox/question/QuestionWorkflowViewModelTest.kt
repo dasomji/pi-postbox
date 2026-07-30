@@ -60,6 +60,494 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
+    fun authoritativeQuestionRestoresAndReconcilesItsPersistedAnswerDraft() = runTest {
+        val draftStore = FakeQuestionDraftStore().apply {
+            drafts[QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")] = QuestionAnswerDraft(
+                selectedValues = listOf("loopback", "removed-option"),
+                note = "Keep the emulator-only path."
+            )
+        }
+
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        assertEquals(listOf("loopback"), viewModel.state.visibleQuestion?.selectedValues)
+        assertEquals("Keep the emulator-only path.", viewModel.state.visibleQuestion?.note)
+        assertEquals(
+            listOf(QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")),
+            draftStore.loadedKeys
+        )
+    }
+
+    @Test
+    fun restoredDraftIsSanitizedToIndependentBoundsAndQuestionOptions() = runTest {
+        val options = (1..21).map { index ->
+            AskOption(value = "option-$index", label = "Option $index")
+        }
+        val oversizedValue = "v".repeat(MAX_QUESTION_DRAFT_VALUE_CHARS + 1)
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-multi")
+        val draftStore = FakeQuestionDraftStore().apply {
+            drafts[key] = QuestionAnswerDraft(
+                selectedValues = listOf(
+                    "option-1",
+                    "option-1",
+                    "removed-option",
+                    oversizedValue,
+                    OTHER_OPTION_VALUE
+                ) + options.drop(1).map { it.value },
+                note = "n".repeat(MAX_QUESTION_DRAFT_NOTE_CHARS + 1)
+            )
+        }
+        val expected = QuestionAnswerDraft(
+            selectedValues = listOf("option-1", OTHER_OPTION_VALUE) +
+                options.drop(1).take(MAX_QUESTION_DRAFT_SELECTED_VALUES - 2).map { it.value },
+            note = "n".repeat(MAX_QUESTION_DRAFT_NOTE_CHARS)
+        )
+        val snapshot = questionWorkflowState(
+            requests = listOf(
+                multiPendingQuestion().copy(
+                    options = options + AskOption(value = oversizedValue, label = "Oversized")
+                )
+            )
+        )
+
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(snapshot),
+            draftStore = draftStore
+        )
+
+        assertEquals(expected.selectedValues, viewModel.state.visibleQuestion?.selectedValues)
+        assertEquals(expected.note, viewModel.state.visibleQuestion?.note)
+        assertEquals(expected, draftStore.drafts[key])
+    }
+
+    @Test
+    fun selectionAndNoteEditsPersistAsOneIndependentAnswerDraft() = runTest {
+        val draftStore = FakeQuestionDraftStore()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        viewModel.updateNote("Keep this note when the choice changes.")
+        viewModel.toggleOption("tailnet")
+        advanceUntilIdle()
+
+        assertEquals(
+            QuestionAnswerDraft(
+                selectedValues = listOf("tailnet"),
+                note = "Keep this note when the choice changes."
+            ),
+            draftStore.drafts[QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")]
+        )
+        assertEquals("Keep this note when the choice changes.", viewModel.state.visibleQuestion?.note)
+    }
+
+    @Test
+    fun navigatingBetweenQuestionsRestoresEachIndependentInMemoryDraft() = runTest {
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = FakeQuestionDraftStore()
+        )
+        viewModel.updateNote("Single-question note")
+        viewModel.toggleOption("tailnet")
+
+        viewModel.selectQuestion("ask-multi")
+        assertEquals("", viewModel.state.visibleQuestion?.note)
+        viewModel.updateNote("Multi-question note")
+        viewModel.toggleOption("loading")
+
+        viewModel.selectQuestion("ask-single")
+
+        assertEquals(listOf("tailnet"), viewModel.state.visibleQuestion?.selectedValues)
+        assertEquals("Single-question note", viewModel.state.visibleQuestion?.note)
+    }
+
+    @Test
+    fun optionRemovedByAuthoritativeSnapshotIsRemovedFromMemoryAndDurableDraft() = runTest {
+        val stream = FakePostboxStateStream()
+        val draftStore = FakeQuestionDraftStore()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            stream = stream,
+            draftStore = draftStore
+        )
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")
+        viewModel.updateNote("Keep this note")
+        viewModel.toggleOption("tailnet")
+        advanceUntilIdle()
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion().copy(
+                            options = listOf(AskOption(value = "loopback", label = "Loopback"))
+                        ),
+                        multiPendingQuestion()
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(QuestionAnswerDraft(note = "Keep this note"), draftStore.drafts[key])
+        viewModel.selectQuestion("ask-multi")
+        viewModel.selectQuestion("ask-single")
+        assertEquals(emptyList<String>(), viewModel.state.visibleQuestion?.selectedValues)
+        assertEquals("Keep this note", viewModel.state.visibleQuestion?.note)
+    }
+
+    @Test
+    fun persistedNoteIsBoundedIndependentlyOfProtocolValidation() = runTest {
+        val draftStore = FakeQuestionDraftStore()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        viewModel.updateNote("n".repeat(128_001))
+        advanceUntilIdle()
+
+        assertEquals(128_000, viewModel.state.visibleQuestion?.note?.length)
+        assertEquals(
+            128_000,
+            draftStore.drafts[QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")]?.note?.length
+        )
+    }
+
+    @Test
+    fun persistedSelectionsAreBoundedIndependentlyOfProtocolValidation() = runTest {
+        val options = (1..21).map { index ->
+            AskOption(value = "option-$index", label = "Option $index")
+        }
+        val snapshot = questionWorkflowState(
+            requests = listOf(multiPendingQuestion().copy(options = options))
+        )
+        val draftStore = FakeQuestionDraftStore()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(snapshot),
+            draftStore = draftStore
+        )
+
+        options.forEach { option -> viewModel.toggleOption(option.value) }
+        advanceUntilIdle()
+
+        assertEquals(20, viewModel.state.visibleQuestion?.selectedValues?.size)
+        assertEquals(
+            options.take(20).map { it.value },
+            draftStore.drafts[QuestionDraftKey(VERIFIED_BASE_URL, "ask-multi")]?.selectedValues
+        )
+    }
+
+    @Test
+    fun aLateDiskLoadCannotOverwriteNewerInMemoryEdits() = runTest {
+        val loadMayComplete = CompletableDeferred<Unit>()
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")
+        val draftStore = FakeQuestionDraftStore().apply {
+            drafts[key] = QuestionAnswerDraft(
+                selectedValues = listOf("loopback"),
+                note = "Older disk note"
+            )
+            beforeLoadCompletes = { loadMayComplete.await() }
+        }
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        viewModel.updateNote("Newer in-memory note")
+        viewModel.toggleOption("tailnet")
+        loadMayComplete.complete(Unit)
+        runCurrent()
+
+        assertEquals(listOf("tailnet"), viewModel.state.visibleQuestion?.selectedValues)
+        assertEquals("Newer in-memory note", viewModel.state.visibleQuestion?.note)
+    }
+
+    @Test
+    fun newerDraftSaveAlwaysWinsWhenAnOlderWriteIsSlow() = runTest {
+        val firstSaveMayComplete = CompletableDeferred<Unit>()
+        var saveCalls = 0
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")
+        val draftStore = FakeQuestionDraftStore().apply {
+            beforeSaveCompletes = { _, _ ->
+                saveCalls += 1
+                if (saveCalls == 1) firstSaveMayComplete.await()
+            }
+        }
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        viewModel.updateNote("Older edit")
+        viewModel.updateNote("Newest edit")
+        firstSaveMayComplete.complete(Unit)
+        runCurrent()
+
+        assertEquals("Newest edit", draftStore.drafts[key]?.note)
+    }
+
+    @Test
+    fun failedSecureSaveKeepsEditsInMemoryAndRetryClearsTheWarning() = runTest {
+        val draftStore = FakeQuestionDraftStore().apply {
+            saveFailure = QuestionDraftStoreFailure.WRITE_FAILED
+        }
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        viewModel.updateNote("Retain this private edit in memory")
+        advanceUntilIdle()
+
+        assertEquals("Retain this private edit in memory", viewModel.state.visibleQuestion?.note)
+        assertEquals(
+            "Secure storage failed. Your draft is kept only in this app session and will not survive an app restart.",
+            viewModel.state.visibleQuestion?.draftPersistenceError
+        )
+        assertFalse(
+            viewModel.state.visibleQuestion?.draftPersistenceError.orEmpty()
+                .contains("Retain this private edit in memory")
+        )
+
+        draftStore.saveFailure = null
+        viewModel.retryDraftSave()
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+        assertEquals(
+            "Retain this private edit in memory",
+            draftStore.drafts[QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")]?.note
+        )
+    }
+
+    @Test
+    fun saveFailureRemainsVisibleAfterNavigatingAwayAndBack() = runTest {
+        val saveMayComplete = CompletableDeferred<Unit>()
+        val draftStore = FakeQuestionDraftStore().apply {
+            saveFailure = QuestionDraftStoreFailure.WRITE_FAILED
+            beforeSaveCompletes = { key, _ ->
+                if (key.requestId == "ask-single") saveMayComplete.await()
+            }
+        }
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        viewModel.updateNote("Current in-memory edit")
+        viewModel.selectQuestion("ask-multi")
+        saveMayComplete.complete(Unit)
+        runCurrent()
+
+        assertNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+        viewModel.selectQuestion("ask-single")
+        assertNotNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+        assertEquals("Current in-memory edit", viewModel.state.visibleQuestion?.note)
+    }
+
+    @Test
+    fun failedSecureLoadRetryReloadsWithoutOverwritingThePersistedDraft() = runTest {
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")
+        val persistedDraft = QuestionAnswerDraft(listOf("loopback"), "Persisted nuance")
+        val draftStore = FakeQuestionDraftStore().apply {
+            drafts[key] = persistedDraft
+            loadFailure = QuestionDraftStoreFailure.READ_FAILED
+        }
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            draftStore = draftStore
+        )
+
+        assertNotNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+        assertFalse(
+            viewModel.state.visibleQuestion?.draftPersistenceError.orEmpty()
+                .contains("READ_FAILED")
+        )
+
+        draftStore.loadFailure = null
+        viewModel.retryDraftSave()
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+        assertEquals(2, draftStore.loadedKeys.count { it == key })
+        assertEquals(persistedDraft, draftStore.drafts[key])
+        assertEquals(persistedDraft.selectedValues, viewModel.state.visibleQuestion?.selectedValues)
+        assertEquals(persistedDraft.note, viewModel.state.visibleQuestion?.note)
+    }
+
+    @Test
+    fun secureStorageFailureDoesNotBlockSubmittingTheCurrentInMemoryAnswer() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState()).apply {
+            afterAnswer = {
+                currentState = questionWorkflowState(requests = listOf(multiPendingQuestion()))
+            }
+        }
+        val viewModel = startedViewModel(
+            client = client,
+            draftStore = FakeQuestionDraftStore().apply {
+                saveFailure = QuestionDraftStoreFailure.WRITE_FAILED
+            }
+        )
+        viewModel.updateNote("Submit from memory")
+        viewModel.toggleOption("loopback")
+        advanceUntilIdle()
+        assertNotNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+
+        viewModel.submitAnswer()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RecordedAnswer("ask-single", listOf("loopback"), "Submit from memory")),
+            client.answers
+        )
+    }
+
+    @Test
+    fun secureStorageFailureDoesNotBlockCancellingWithTheCurrentInMemoryNote() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState()).apply {
+            afterCancel = {
+                currentState = questionWorkflowState(requests = listOf(multiPendingQuestion()))
+            }
+        }
+        val viewModel = startedViewModel(
+            client = client,
+            draftStore = FakeQuestionDraftStore().apply {
+                saveFailure = QuestionDraftStoreFailure.WRITE_FAILED
+            }
+        )
+        viewModel.updateNote("Cancel from memory")
+        advanceUntilIdle()
+        assertNotNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+
+        viewModel.cancelQuestion()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RecordedCancel("ask-single", "Cancel from memory")),
+            client.cancellations
+        )
+        assertNull(viewModel.state.visibleQuestion?.draftPersistenceError)
+    }
+
+    @Test
+    fun successfulAnswerDeletesItsPersistedDraft() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState()).apply {
+            afterAnswer = {
+                currentState = questionWorkflowState(requests = listOf(multiPendingQuestion()))
+            }
+        }
+        val draftStore = FakeQuestionDraftStore()
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")
+        val viewModel = startedViewModel(client = client, draftStore = draftStore)
+        viewModel.updateNote("Delete after success")
+        viewModel.toggleOption("tailnet")
+        advanceUntilIdle()
+        assertNotNull(draftStore.drafts[key])
+
+        viewModel.submitAnswer()
+        advanceUntilIdle()
+
+        assertEquals(listOf(key), draftStore.deletedKeys)
+        assertNull(draftStore.drafts[key])
+    }
+
+    @Test
+    fun successfulCancelDeletesItsPersistedDraft() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState()).apply {
+            afterCancel = {
+                currentState = questionWorkflowState(requests = listOf(multiPendingQuestion()))
+            }
+        }
+        val draftStore = FakeQuestionDraftStore()
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")
+        val viewModel = startedViewModel(client = client, draftStore = draftStore)
+        viewModel.updateNote("Delete after cancel")
+        advanceUntilIdle()
+        assertNotNull(draftStore.drafts[key])
+
+        viewModel.cancelQuestion()
+        advanceUntilIdle()
+
+        assertEquals(listOf(key), draftStore.deletedKeys)
+        assertNull(draftStore.drafts[key])
+    }
+
+    @Test
+    fun successfulDismissDeletesTheDismissedQuestionsPersistedDraft() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState()).apply {
+            afterCancel = {
+                currentState = questionWorkflowState(requests = listOf(singlePendingQuestion()))
+            }
+        }
+        val draftStore = FakeQuestionDraftStore()
+        val key = QuestionDraftKey(VERIFIED_BASE_URL, "ask-multi")
+        val viewModel = startedViewModel(client = client, draftStore = draftStore)
+        viewModel.selectQuestion("ask-multi")
+        viewModel.updateNote("Delete after dismiss")
+        advanceUntilIdle()
+        assertNotNull(draftStore.drafts[key])
+        viewModel.selectQuestion("ask-single")
+
+        viewModel.dismissQuestion("ask-multi")
+        advanceUntilIdle()
+
+        assertEquals(listOf(key), draftStore.deletedKeys)
+        assertNull(draftStore.drafts[key])
+    }
+
+    @Test
+    fun authoritativeSnapshotReconcilesStoreAndDropsTerminalOrAbsentInMemoryDrafts() = runTest {
+        val stream = FakePostboxStateStream()
+        val draftStore = FakeQuestionDraftStore()
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState()),
+            stream = stream,
+            draftStore = draftStore
+        )
+        val staleKey = QuestionDraftKey(VERIFIED_BASE_URL, "ask-single")
+        val terminalKey = QuestionDraftKey(VERIFIED_BASE_URL, "ask-terminal")
+        val absentKey = QuestionDraftKey(VERIFIED_BASE_URL, "ask-absent")
+        val otherServerKey = QuestionDraftKey("https://other.example.test", "ask-absent")
+        viewModel.updateNote("Must not return")
+        advanceUntilIdle()
+        draftStore.drafts[terminalKey] = QuestionAnswerDraft(note = "terminal")
+        draftStore.drafts[absentKey] = QuestionAnswerDraft(note = "absent")
+        draftStore.drafts[otherServerKey] = QuestionAnswerDraft(note = "other server")
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(status = AskStatus.ANSWERED),
+                        multiPendingQuestion(),
+                        singlePendingQuestion(requestId = "ask-terminal", status = AskStatus.CANCELLED)
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(VERIFIED_BASE_URL, draftStore.reconcileCalls.last().first)
+        assertEquals(setOf("ask-multi"), draftStore.reconcileCalls.last().second)
+        assertNull(draftStore.drafts[staleKey])
+        assertNull(draftStore.drafts[terminalKey])
+        assertNull(draftStore.drafts[absentKey])
+        assertNotNull(draftStore.drafts[otherServerKey])
+
+        stream.emit(PostboxStateStreamStatus.Connected(questionWorkflowState()))
+        advanceUntilIdle()
+        viewModel.selectQuestion("ask-multi")
+        viewModel.selectQuestion("ask-single")
+
+        assertEquals("", viewModel.state.visibleQuestion?.note)
+    }
+
+    @Test
     fun manualRefreshFetchesOnceAndPreservesTheVisibleSelection() = runTest {
         val refreshMayComplete = CompletableDeferred<Unit>()
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
@@ -1047,14 +1535,16 @@ class QuestionWorkflowViewModelTest {
     private suspend fun kotlinx.coroutines.test.TestScope.startedViewModel(
         client: RecordingPostboxProtocolClient,
         stream: FakePostboxStateStream = FakePostboxStateStream(),
-        initialNotificationPermissionState: NotificationPermissionState = NotificationPermissionState.Granted
+        initialNotificationPermissionState: NotificationPermissionState = NotificationPermissionState.Granted,
+        draftStore: QuestionDraftStore = NoopQuestionDraftStore
     ): QuestionWorkflowViewModel {
         val viewModel = QuestionWorkflowViewModel(
             baseUrl = VERIFIED_BASE_URL,
             protocolClient = client,
             stateStream = stream,
             coroutineScope = backgroundScope,
-            initialNotificationPermissionState = initialNotificationPermissionState
+            initialNotificationPermissionState = initialNotificationPermissionState,
+            draftStore = draftStore
         )
         viewModel.start()
         stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
@@ -1110,6 +1600,52 @@ private class RecordingPostboxProtocolClient(
         cancelFailure?.let { throw it }
         afterCancel?.invoke()
         cancelError?.let { throw it }
+    }
+}
+
+private class FakeQuestionDraftStore : QuestionDraftStore {
+    val drafts = linkedMapOf<QuestionDraftKey, QuestionAnswerDraft>()
+    val loadedKeys = mutableListOf<QuestionDraftKey>()
+    val deletedKeys = mutableListOf<QuestionDraftKey>()
+    val reconcileCalls = mutableListOf<Pair<String, Set<String>>>()
+    var beforeLoadCompletes: (suspend () -> Unit)? = null
+    var beforeSaveCompletes: (suspend (QuestionDraftKey, QuestionAnswerDraft) -> Unit)? = null
+    var loadFailure: QuestionDraftStoreFailure? = null
+    var saveFailure: QuestionDraftStoreFailure? = null
+
+    override suspend fun load(key: QuestionDraftKey): QuestionDraftStoreResult<QuestionAnswerDraft?> {
+        loadedKeys += key
+        val loadedDraft = drafts[key]
+        beforeLoadCompletes?.invoke()
+        loadFailure?.let { return QuestionDraftStoreResult.Failure(it) }
+        return QuestionDraftStoreResult.Success(loadedDraft)
+    }
+
+    override suspend fun save(
+        key: QuestionDraftKey,
+        draft: QuestionAnswerDraft
+    ): QuestionDraftStoreResult<Unit> {
+        beforeSaveCompletes?.invoke(key, draft)
+        saveFailure?.let { return QuestionDraftStoreResult.Failure(it) }
+        drafts[key] = draft
+        return QuestionDraftStoreResult.Success(Unit)
+    }
+
+    override suspend fun delete(key: QuestionDraftKey): QuestionDraftStoreResult<Unit> {
+        deletedKeys += key
+        drafts.remove(key)
+        return QuestionDraftStoreResult.Success(Unit)
+    }
+
+    override suspend fun reconcileServer(
+        normalizedServerUrl: String,
+        activeRequestIds: Set<String>
+    ): QuestionDraftStoreResult<Unit> {
+        reconcileCalls += normalizedServerUrl to activeRequestIds.toSet()
+        drafts.keys.removeAll { key ->
+            key.normalizedServerUrl == normalizedServerUrl && key.requestId !in activeRequestIds
+        }
+        return QuestionDraftStoreResult.Success(Unit)
     }
 }
 
