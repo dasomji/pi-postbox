@@ -146,6 +146,35 @@ class QuestionChatOwnerTest {
         assertEquals("ask-2", owner.state.value.key?.requestId)
         assertEquals("ask-2", owner.state.value.session?.snapshot?.requestId)
     }
+
+    @Test
+    fun terminalAssistantMessagesReceiveSafeMarkdownRenderings() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val snapshot = readySnapshot(
+            messages = listOf(
+                QuestionChatMessage.Assistant(
+                    id = "assistant-1",
+                    text = "**Done** with [link](https://example.com).",
+                    status = QuestionChatMessage.Assistant.Status.FINAL
+                )
+            )
+        )
+        val owner = QuestionChatOwner(
+            httpClient = FakeQuestionChatHttpClient(
+                probeResult = QuestionChatProbeResult.Ready(snapshot),
+                snapshot = snapshot
+            ),
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        val rendered = owner.state.value.renderedAssistantMessages["assistant-1"]?.rendered
+        assertTrue(rendered is SafeMarkdownRenderResult.Rich)
+    }
 }
 
 private fun readySnapshot(

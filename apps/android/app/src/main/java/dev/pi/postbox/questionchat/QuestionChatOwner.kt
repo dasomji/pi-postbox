@@ -64,6 +64,11 @@ data class QuestionChatPendingSend(
     val message: String
 )
 
+data class QuestionChatRenderedAssistantMessage(
+    val sourceText: String,
+    val rendered: SafeMarkdownRenderResult
+)
+
 data class QuestionChatOwnerState(
     val key: QuestionChatBindingKey? = null,
     val isForeground: Boolean = false,
@@ -73,13 +78,15 @@ data class QuestionChatOwnerState(
     val draftText: String = "",
     val pendingSend: QuestionChatPendingSend? = null,
     val actionMessage: String? = null,
-    val composerFocusToken: Long = 0L
+    val composerFocusToken: Long = 0L,
+    val renderedAssistantMessages: Map<String, QuestionChatRenderedAssistantMessage> = emptyMap()
 )
 
 class QuestionChatOwner(
     private val httpClient: QuestionChatHttpClient,
     private val eventTransport: QuestionChatEventTransport,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val markdownParser: SafeMarkdownParser = SafeMarkdownParser()
 ) : Closeable {
     private val commandCounter = AtomicLong(0)
     private val mutableState = MutableStateFlow(QuestionChatOwnerState())
@@ -176,6 +183,7 @@ class QuestionChatOwner(
                             activation = QuestionChatActivationUiState.Idle,
                             session = QuestionChatSessionUiState(result.snapshot, QuestionChatConnectionState.SYNCHRONIZING)
                         )
+                        scheduleRenderedAssistantMessageParses(key, expectedGeneration, result.snapshot)
                         scheduleSynchronize(key, expectedGeneration)
                     }
                 }
@@ -203,6 +211,7 @@ class QuestionChatOwner(
                             activation = QuestionChatActivationUiState.Idle,
                             session = QuestionChatSessionUiState(result.snapshot, QuestionChatConnectionState.SYNCHRONIZING)
                         )
+                        scheduleRenderedAssistantMessageParses(key, expectedGeneration, result.snapshot)
                         scheduleSynchronize(key, expectedGeneration)
                     }
                     is QuestionChatActivationResult.Unavailable -> ifCurrent(key, expectedGeneration) {
@@ -243,6 +252,7 @@ class QuestionChatOwner(
                             activation = QuestionChatActivationUiState.Idle,
                             session = QuestionChatSessionUiState(result.snapshot, QuestionChatConnectionState.SYNCHRONIZING)
                         )
+                        scheduleRenderedAssistantMessageParses(key, expectedGeneration, result.snapshot)
                         scheduleSynchronize(key, expectedGeneration)
                     }
                     is QuestionChatActivationResult.Unavailable -> ifCurrent(key, expectedGeneration) {
@@ -302,12 +312,14 @@ class QuestionChatOwner(
                 if (!isCurrent(key, expectedGeneration)) return@launchTracked
                 val snapshot = httpClient.fetchSnapshot(key.requestId)
                 if (!isCurrent(key, expectedGeneration)) return@launchTracked
+                val synchronizedSnapshot = applyBufferedSnapshot(snapshot, buffered)
                 mutableState.value = mutableState.value.copy(
                     session = QuestionChatSessionUiState(
-                        applyBufferedSnapshot(snapshot, buffered),
+                        synchronizedSnapshot,
                         QuestionChatConnectionState.ONLINE
                     )
                 )
+                scheduleRenderedAssistantMessageParses(key, expectedGeneration, synchronizedSnapshot)
             } catch (error: Exception) {
                 ifCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
@@ -358,9 +370,13 @@ class QuestionChatOwner(
                 )
             }
             is QuestionChatStreamEvent.Event -> {
+                val updatedSnapshot = applyQuestionChatEvent(session.snapshot, event.payload)
                 mutableState.value = mutableState.value.copy(
-                    session = session.copy(snapshot = applyQuestionChatEvent(session.snapshot, event.payload))
+                    session = session.copy(snapshot = updatedSnapshot)
                 )
+                mutableState.value.key?.let { key ->
+                    scheduleRenderedAssistantMessageParses(key, generation, updatedSnapshot)
+                }
             }
         }
     }
@@ -376,6 +392,42 @@ class QuestionChatOwner(
             }
         }
         return current
+    }
+
+    private fun scheduleRenderedAssistantMessageParses(
+        key: QuestionChatBindingKey,
+        expectedGeneration: Long,
+        snapshot: QuestionChatSnapshot
+    ) {
+        val terminalAssistantMessages = snapshot.messages
+            .filterIsInstance<QuestionChatMessage.Assistant>()
+            .filter { it.status != QuestionChatMessage.Assistant.Status.STREAMING }
+        val retainIds = terminalAssistantMessages.mapTo(linkedSetOf()) { it.id }
+        mutableState.value = mutableState.value.copy(
+            renderedAssistantMessages = mutableState.value.renderedAssistantMessages.filterKeys { it in retainIds }
+        )
+        terminalAssistantMessages.forEach { message ->
+            val existing = mutableState.value.renderedAssistantMessages[message.id]
+            if (existing?.sourceText == message.text) return@forEach
+            launchTracked {
+                val rendered = markdownParser.parse(message.text)
+                ifCurrent(key, expectedGeneration) {
+                    val currentMessage = mutableState.value.session?.snapshot?.messages
+                        ?.filterIsInstance<QuestionChatMessage.Assistant>()
+                        ?.firstOrNull { it.id == message.id }
+                    if (currentMessage != null && currentMessage.status != QuestionChatMessage.Assistant.Status.STREAMING && currentMessage.text == message.text) {
+                        mutableState.value = mutableState.value.copy(
+                            renderedAssistantMessages = mutableState.value.renderedAssistantMessages + (
+                                message.id to QuestionChatRenderedAssistantMessage(
+                                    sourceText = message.text,
+                                    rendered = rendered
+                                )
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private fun runtimeFailure(error: Exception) = QuestionChatAvailabilityError(
