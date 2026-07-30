@@ -1,0 +1,168 @@
+package dev.pi.postbox.questionchat
+
+import dev.pi.postbox.protocol.toPostboxBaseUrl
+import dev.pi.postbox.protocol.withPathSegments
+import java.io.Closeable
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import okhttp3.Call
+import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okio.BufferedSource
+
+interface QuestionChatEventConnection : Closeable {
+    val ready: CompletableDeferred<Unit>
+    suspend fun join()
+}
+
+interface QuestionChatEventTransport {
+    fun open(requestId: String, onFact: (QuestionChatEventTransportFact) -> Unit): QuestionChatEventConnection
+}
+
+class OkHttpQuestionChatEventTransport(
+    baseUrl: String,
+    private val httpClient: OkHttpClient = defaultQuestionChatEventHttpClient()
+) : QuestionChatEventTransport {
+    private val base: HttpUrl = baseUrl.toPostboxBaseUrl()
+
+    override fun open(
+        requestId: String,
+        onFact: (QuestionChatEventTransportFact) -> Unit
+    ): QuestionChatEventConnection {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val ready = CompletableDeferred<Unit>()
+        val request = Request.Builder()
+            .url(base.withPathSegments(listOf("api", "requests", requestId, "chat", "events")))
+            .header("Accept", "text/event-stream")
+            .get()
+            .build()
+        val call = httpClient.newCall(request)
+        val job = scope.launch {
+            try {
+                call.execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw QuestionChatTransportException("Question Chat event stream failed with HTTP ${response.code}")
+                    }
+                    ready.complete(Unit)
+                    onFact(QuestionChatEventTransportFact.Open)
+                    val body = response.body ?: throw QuestionChatTransportException("Missing Question Chat event stream body")
+                    val parser = QuestionChatSseParser(body.source())
+                    while (true) {
+                        val payload = parser.readNextEventData() ?: break
+                        try {
+                            val event = parseQuestionChatStreamEvent(parseJsonObject(payload))
+                            if (event.requestId == requestId) {
+                                onFact(QuestionChatEventTransportFact.Event(event))
+                            }
+                        } catch (_: QuestionChatTransportException) {
+                            // malformed or additive-unknown event payloads are ignored; owner will resynchronize.
+                        }
+                    }
+                    onFact(QuestionChatEventTransportFact.EndOfStream)
+                }
+            } catch (error: Throwable) {
+                if (!ready.isCompleted) ready.completeExceptionally(error)
+                onFact(QuestionChatEventTransportFact.Failure(error))
+            }
+        }
+        return object : QuestionChatEventConnection {
+            override val ready: CompletableDeferred<Unit> = ready
+
+            override fun close() {
+                call.cancel()
+                scope.cancel()
+            }
+
+            override suspend fun join() {
+                job.join()
+            }
+        }
+    }
+}
+
+fun defaultQuestionChatEventHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(5, TimeUnit.SECONDS)
+    .writeTimeout(5, TimeUnit.SECONDS)
+    .readTimeout(0, TimeUnit.SECONDS)
+    .callTimeout(0, TimeUnit.SECONDS)
+    .build()
+
+private class QuestionChatSseParser(
+    private val source: BufferedSource
+) {
+    fun readNextEventData(): String? {
+        var eventName: String? = null
+        val dataLines = mutableListOf<String>()
+        var fieldCount = 0
+        var dataBytes = 0
+        while (true) {
+            val line = readLine() ?: return null
+            if (line.isEmpty()) {
+                if (dataLines.isEmpty()) {
+                    eventName = null
+                    fieldCount = 0
+                    dataBytes = 0
+                    continue
+                }
+                return dataLines.joinToString("\n")
+            }
+            fieldCount += 1
+            if (fieldCount > QuestionChatTransportLimits.SSE_FIELD_COUNT_MAX) {
+                throw QuestionChatTransportException("Question Chat SSE event exceeded field limit")
+            }
+            if (line.startsWith(":")) continue
+            val separator = line.indexOf(':')
+            val field = if (separator >= 0) line.substring(0, separator) else line
+            var value = if (separator >= 0) line.substring(separator + 1) else ""
+            if (value.startsWith(" ")) value = value.removePrefix(" ")
+            when (field) {
+                "event" -> eventName = value
+                "data" -> {
+                    if (eventName == null || eventName == "ignored" || eventName == "message") {
+                        dataLines += value
+                        if (dataLines.size > QuestionChatTransportLimits.SSE_DATA_LINE_COUNT_MAX) {
+                            throw QuestionChatTransportException("Question Chat SSE event exceeded data line limit")
+                        }
+                        dataBytes += value.encodeToByteArray().size
+                        if (dataBytes > QuestionChatTransportLimits.SSE_EVENT_DATA_MAX_BYTES) {
+                            throw QuestionChatTransportException("Question Chat SSE event exceeded data limit")
+                        }
+                    }
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    private fun readLine(): String? {
+        if (source.exhausted()) return null
+        val buffer = StringBuilder()
+        var bytes = 0
+        while (true) {
+            if (source.exhausted()) return buffer.toString()
+            val byte = source.readByte().toInt()
+            bytes += 1
+            if (bytes > QuestionChatTransportLimits.SSE_LINE_MAX_BYTES) {
+                throw QuestionChatTransportException("Question Chat SSE line exceeded limit")
+            }
+            when (byte) {
+                '\n'.code -> return buffer.toString()
+                '\r'.code -> {
+                    if (!source.exhausted() && source.request(1) && source.buffer[0] == '\n'.code.toByte()) {
+                        source.readByte()
+                    }
+                    return buffer.toString()
+                }
+                else -> buffer.append(byte.toChar())
+            }
+        }
+    }
+}
