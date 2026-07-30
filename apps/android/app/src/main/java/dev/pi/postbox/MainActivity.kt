@@ -52,6 +52,7 @@ import dev.pi.postbox.onboarding.SharedPreferencesVerifiedServerUrlStore
 import dev.pi.postbox.protocol.OkHttpPostboxProtocolClient
 import dev.pi.postbox.protocol.OkHttpPostboxStateStream
 import dev.pi.postbox.push.PostboxFcmTokenRegistration
+import dev.pi.postbox.question.AndroidKeystoreQuestionDraftStore
 import dev.pi.postbox.question.QuestionWorkflowScreen
 import dev.pi.postbox.question.QuestionWorkflowViewModel
 import dev.pi.postbox.ui.theme.PostalColors
@@ -276,6 +277,9 @@ private fun ConnectedQuestionWorkflow(
     val notificationPoster = remember(appContext) {
         AndroidPendingQuestionNotifier(appContext)
     }
+    val questionDraftStore = remember(appContext) {
+        AndroidKeystoreQuestionDraftStore(appContext)
+    }
     val workflowViewModel = remember(state.baseUrl) {
         QuestionWorkflowViewModel(
             baseUrl = state.baseUrl,
@@ -283,6 +287,7 @@ private fun ConnectedQuestionWorkflow(
             stateStream = OkHttpPostboxStateStream(state.baseUrl),
             coroutineScope = coroutineScope,
             initialNotificationPermissionState = notificationPermissionState,
+            draftStore = questionDraftStore,
             pendingQuestionNotificationTracker = PendingQuestionNotificationTracker(),
             onPendingQuestionNotifications = notificationPoster::postAll,
             onPendingRequestIdsObserved = notificationPoster::reconcilePendingRequests
@@ -326,6 +331,8 @@ private fun ConnectedQuestionWorkflow(
         onSelectSession = workflowViewModel::selectSession,
         onSelectQuestion = workflowViewModel::selectQuestion,
         onToggleOption = workflowViewModel::toggleOption,
+        onNoteChanged = workflowViewModel::updateNote,
+        onRetryDraftSave = workflowViewModel::retryDraftSave,
         onSubmitAnswer = workflowViewModel::submitAnswer,
         onCancelQuestion = workflowViewModel::cancelQuestion,
         onDismissQuestion = workflowViewModel::dismissQuestion,

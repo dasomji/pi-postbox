@@ -1,10 +1,10 @@
 package dev.pi.postbox.question
 
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertIsNotSelected
-import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import dev.pi.postbox.ui.theme.PostboxTheme
@@ -144,7 +145,14 @@ class QuestionWorkflowScreenTest {
             )
         )
 
-        setQuestionScreen(stateProvider = { screenState.value })
+        setQuestionScreen(
+            stateProvider = { screenState.value },
+            onNoteChanged = { note ->
+                screenState.value = screenState.value.copy(
+                    visibleQuestion = screenState.value.visibleQuestion?.copy(note = note)
+                )
+            }
+        )
 
         composeRule.onNodeWithText("+ Add a note").performClick()
         composeRule.onNode(hasSetTextAction()).performTextInput("Keep my draft")
@@ -163,9 +171,78 @@ class QuestionWorkflowScreenTest {
             )
         }
 
-        composeRule.onNode(hasSetTextAction()).assertTextEquals("Keep my draft")
+        composeRule.onNode(hasSetTextAction()).assert(hasText("Keep my draft"))
         composeRule.onNode(hasText("Ship now", substring = true) and hasClickAction()).assertIsSelected()
         composeRule.onNode(hasText("Stage first", substring = true) and hasClickAction()).assertIsNotSelected()
+    }
+
+    @Test
+    fun restoredStateOwnedNoteIsRevealedAndEditsAreForwarded() {
+        val initialQuestion = QuestionDetailUiState(
+            requestId = "ask-restored-note",
+            sessionId = "session-1",
+            mode = QuestionMode.SINGLE,
+            prompt = "Choose a release path",
+            questionContext = null,
+            relevance = null,
+            decisionImpact = null,
+            options = listOf(QuestionOptionUiState("ship", "Ship now", null)),
+            handoffContext = null,
+            forkReference = null,
+            selectedValues = listOf("ship"),
+            note = "Restored secure note",
+            canSubmit = true,
+            availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
+        )
+        val screenState = mutableStateOf(questionScreenState(initialQuestion))
+        var forwardedNote: String? = null
+
+        setQuestionScreen(
+            stateProvider = { screenState.value },
+            onNoteChanged = { note ->
+                forwardedNote = note
+                screenState.value = screenState.value.copy(
+                    visibleQuestion = screenState.value.visibleQuestion?.copy(note = note)
+                )
+            }
+        )
+
+        composeRule.onNode(hasSetTextAction()).assert(hasText("Restored secure note"))
+        composeRule.onNode(hasSetTextAction()).performTextReplacement("Edited secure note")
+        composeRule.runOnIdle { assertEquals("Edited secure note", forwardedNote) }
+    }
+
+    @Test
+    fun draftPersistenceWarningOffersRetryWithoutShowingDraftContent() {
+        val privateNote = "private draft words"
+        val question = QuestionDetailUiState(
+            requestId = "ask-storage-warning",
+            sessionId = "session-1",
+            mode = QuestionMode.SINGLE,
+            prompt = "Choose a release path",
+            questionContext = null,
+            relevance = null,
+            decisionImpact = null,
+            options = listOf(QuestionOptionUiState("ship", "Ship now", null)),
+            handoffContext = null,
+            forkReference = null,
+            selectedValues = listOf("ship"),
+            note = privateNote,
+            canSubmit = true,
+            draftPersistenceError = "Secure storage failed. Your draft is kept only in this app session and will not survive an app restart.",
+            availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
+        )
+        var retries = 0
+
+        setQuestionScreen(
+            stateProvider = { questionScreenState(question) },
+            onRetryDraftSave = { retries += 1 }
+        )
+
+        composeRule.onNodeWithText("Secure storage failed. Your draft is kept only in this app session and will not survive an app restart.")
+            .assertIsDisplayed()
+        composeRule.onNodeWithText("Retry").assertIsDisplayed().performClick()
+        composeRule.runOnIdle { assertEquals(1, retries) }
     }
 
     @Test
@@ -224,6 +301,8 @@ class QuestionWorkflowScreenTest {
     private fun setQuestionScreen(
         stateProvider: () -> QuestionWorkflowState,
         onToggleOption: (String) -> Unit = {},
+        onNoteChanged: (String) -> Unit = {},
+        onRetryDraftSave: () -> Unit = {},
         onRefresh: () -> Unit = {}
     ) {
         composeRule.setContent {
@@ -235,6 +314,8 @@ class QuestionWorkflowScreenTest {
                     onSelectSession = {},
                     onSelectQuestion = {},
                     onToggleOption = onToggleOption,
+                    onNoteChanged = onNoteChanged,
+                    onRetryDraftSave = onRetryDraftSave,
                     onSubmitAnswer = {},
                     onCancelQuestion = {},
                     onDismissQuestion = {},
@@ -244,6 +325,26 @@ class QuestionWorkflowScreenTest {
             }
         }
     }
+
+    private fun questionScreenState(question: QuestionDetailUiState) = QuestionWorkflowState(
+        baseUrl = "https://postbox.example/",
+        isLoading = false,
+        isSyncing = false,
+        connectionState = QuestionConnectionState.CONNECTED,
+        pendingQuestions = listOf(
+            QuestionListItemUiState(
+                requestId = question.requestId,
+                sessionId = question.sessionId,
+                prompt = question.prompt,
+                mode = question.mode,
+                createdAt = "2026-07-29T10:00:00.000Z",
+                expiresAt = null,
+                urgency = question.urgency
+            )
+        ),
+        visibleQuestion = question,
+        navigationSelection = QuestionNavigationSelection.Question(question.requestId)
+    )
 
     private fun question(requestId: String, urgency: QuestionUrgency) = QuestionListItemUiState(
         requestId = requestId,

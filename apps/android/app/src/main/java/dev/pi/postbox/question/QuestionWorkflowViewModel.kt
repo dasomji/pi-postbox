@@ -28,12 +28,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
+private const val DRAFT_PERSISTENCE_ERROR_MESSAGE =
+    "Secure storage failed. Your draft is kept only in this app session and will not survive an app restart."
+
 class QuestionWorkflowViewModel(
     baseUrl: String,
     private val protocolClient: PostboxProtocolClient,
     private val stateStream: PostboxStateStream,
     private val coroutineScope: CoroutineScope,
     initialNotificationPermissionState: NotificationPermissionState = NotificationPermissionState.Unknown,
+    private val draftStore: QuestionDraftStore = NoopQuestionDraftStore,
     private val pendingQuestionNotificationTracker: PendingQuestionNotificationTracker? = null,
     private val onPendingQuestionNotifications: (List<PendingQuestionNotification>) -> Unit = {},
     private val onPendingRequestIdsObserved: (Set<String>) -> Unit = {},
@@ -53,6 +57,13 @@ class QuestionWorkflowViewModel(
     private var hasAuthoritativeSnapshot = false
     @Volatile private var observationActive = false
     private var notificationOpenRequestId: String? = null
+    private val draftLoadsStarted = mutableSetOf<QuestionDraftKey>()
+    private val draftLoadFailures = mutableSetOf<QuestionDraftKey>()
+    private val draftsInMemory = mutableMapOf<QuestionDraftKey, QuestionAnswerDraft>()
+    private val draftPersistenceErrors = mutableMapOf<QuestionDraftKey, String>()
+    private val draftRevisions = mutableMapOf<QuestionDraftKey, Long>()
+    private val draftSaveJobs = mutableMapOf<QuestionDraftKey, Job>()
+    private val draftReconcileJobs = mutableMapOf<String, Job>()
 
     fun start() {
         if (started) return
@@ -139,26 +150,34 @@ class QuestionWorkflowViewModel(
     fun selectQuestion(requestId: String) {
         val snapshot = latestSnapshot ?: return
         val request = snapshot.requests.firstOrNull { it.requestId == requestId } ?: return
+        val key = QuestionDraftKey(state.baseUrl, requestId)
         state = state.copy(
             navigationSelection = QuestionNavigationSelection.Question(requestId),
             visibleQuestion = request.toUiQuestion(
-                previous = if (state.visibleQuestion?.requestId == requestId) state.visibleQuestion else null
+                previous = if (state.visibleQuestion?.requestId == requestId) state.visibleQuestion else null,
+                draft = draftsInMemory[key],
+                draftPersistenceError = draftPersistenceErrors[key]
             ),
             terminalMessage = null
         )
+        restoreDraft(request)
     }
 
     fun toggleOption(value: String) {
         val visible = state.visibleQuestion ?: return
         if (!visible.availableActions.contains(QuestionAction.SUBMIT)) return
+        if (value.length > MAX_QUESTION_DRAFT_VALUE_CHARS) return
+        if (value != OTHER_OPTION_VALUE && visible.options.none { it.value == value }) return
 
         val selected = when (visible.mode) {
             QuestionMode.SINGLE -> if (visible.selectedValues == listOf(value)) emptyList() else listOf(value)
             QuestionMode.MULTI -> {
                 if (visible.selectedValues.contains(value)) {
                     visible.selectedValues.filterNot { it == value }
-                } else {
+                } else if (visible.selectedValues.size < MAX_QUESTION_DRAFT_SELECTED_VALUES) {
                     visible.selectedValues + value
+                } else {
+                    visible.selectedValues
                 }
             }
         }
@@ -169,6 +188,106 @@ class QuestionWorkflowViewModel(
                 submissionError = null
             ).withSubmitState()
         )
+        persistVisibleDraft()
+    }
+
+    fun updateNote(note: String) {
+        val visible = state.visibleQuestion ?: return
+        if (visible.availableActions.isEmpty()) return
+
+        state = state.copy(
+            visibleQuestion = visible.copy(
+                note = note.take(MAX_QUESTION_DRAFT_NOTE_CHARS),
+                submissionError = null
+            )
+        )
+        persistVisibleDraft()
+    }
+
+    fun retryDraftSave() {
+        val visible = state.visibleQuestion ?: return
+        val key = QuestionDraftKey(state.baseUrl, visible.requestId)
+        val request = latestSnapshot?.requests?.firstOrNull {
+            it.requestId == key.requestId && it.status == AskStatus.PENDING
+        }
+        if (key in draftLoadFailures && key !in draftsInMemory && request != null) {
+            draftLoadFailures.remove(key)
+            draftLoadsStarted.remove(key)
+            restoreDraft(request)
+            return
+        }
+        persistVisibleDraft()
+    }
+
+    private fun persistVisibleDraft() {
+        val visible = state.visibleQuestion ?: return
+        persistDraft(
+            key = QuestionDraftKey(state.baseUrl, visible.requestId),
+            draft = QuestionAnswerDraft(
+                selectedValues = visible.selectedValues,
+                note = visible.note
+            )
+        )
+    }
+
+    private fun persistDraft(key: QuestionDraftKey, draft: QuestionAnswerDraft) {
+        val currentRequest = latestSnapshot?.requests?.firstOrNull { request ->
+            request.requestId == key.requestId && request.status == AskStatus.PENDING
+        }
+        val sanitizedDraft = currentRequest?.sanitizeDraft(draft) ?: draft.sanitizeBounds()
+        draftLoadFailures.remove(key)
+        draftsInMemory[key] = sanitizedDraft
+        val revision = (draftRevisions[key] ?: 0L) + 1L
+        draftRevisions[key] = revision
+        val previousSave = draftSaveJobs[key]
+        draftSaveJobs[key] = coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            previousSave?.join()
+            val result = try {
+                draftStore.save(key, sanitizedDraft)
+            } catch (_: Exception) {
+                QuestionDraftStoreResult.Failure(QuestionDraftStoreFailure.WRITE_FAILED)
+            }
+            if (draftRevisions[key] == revision) {
+                updateDraftPersistenceError(
+                    key = key,
+                    message = if (result is QuestionDraftStoreResult.Failure) {
+                        DRAFT_PERSISTENCE_ERROR_MESSAGE
+                    } else {
+                        null
+                    }
+                )
+            }
+        }
+    }
+
+    private fun updateDraftPersistenceError(key: QuestionDraftKey, message: String?) {
+        if (message == null) {
+            draftPersistenceErrors.remove(key)
+        } else {
+            draftPersistenceErrors[key] = message
+        }
+        val visible = state.visibleQuestion?.takeIf { it.requestId == key.requestId } ?: return
+        if (state.baseUrl != key.normalizedServerUrl) return
+        state = state.copy(
+            visibleQuestion = visible.copy(draftPersistenceError = message)
+        )
+    }
+
+    private fun deleteDraft(requestId: String) {
+        val key = QuestionDraftKey(state.baseUrl, requestId)
+        draftLoadFailures.remove(key)
+        draftsInMemory.remove(key)
+        updateDraftPersistenceError(key, null)
+        draftRevisions[key] = (draftRevisions[key] ?: 0L) + 1L
+        val previousSave = draftSaveJobs[key]
+        draftSaveJobs[key] = coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            previousSave?.join()
+            try {
+                draftStore.delete(key)
+            } catch (_: Exception) {
+                // A cleanup failure must not delay or reverse the server workflow.
+            }
+        }
     }
 
     fun submitAnswer(note: String? = null) {
@@ -184,10 +303,14 @@ class QuestionWorkflowViewModel(
                     requestId = visible.requestId,
                     payload = AskAnswerPayload(
                         selectedValues = visible.selectedValues,
-                        note = note
+                        note = note ?: visible.note.trim().ifBlank { null }
                     )
                 )
-                refreshState(previousVisible = visible, preferFirstPending = true)
+                deleteDraft(visible.requestId)
+                refreshState(
+                    previousVisible = visible.copy(draftPersistenceError = null),
+                    preferFirstPending = true
+                )
             } catch (exception: PostboxRequestAlreadyResolvedException) {
                 refreshState(
                     previousVisible = visible,
@@ -220,6 +343,7 @@ class QuestionWorkflowViewModel(
                     requestId = requestId,
                     payload = AskCancelPayload(note = "Dismissed manually from the Postbox app queue.")
                 )
+                deleteDraft(requestId)
                 refreshState(
                     preferFirstPending = state.navigationSelection ==
                         QuestionNavigationSelection.Question(requestId)
@@ -246,10 +370,11 @@ class QuestionWorkflowViewModel(
             try {
                 protocolClient.cancelRequest(
                     requestId = visible.requestId,
-                    payload = AskCancelPayload(note = note)
+                    payload = AskCancelPayload(note = note ?: visible.note.trim().ifBlank { null })
                 )
+                deleteDraft(visible.requestId)
                 refreshState(
-                    previousVisible = visible,
+                    previousVisible = visible.copy(draftPersistenceError = null),
                     forceVisibleRequestId = visible.requestId,
                     terminalState = QuestionTerminalState.CANCELLED,
                     terminalMessage = QuestionTerminalMessage(
@@ -387,6 +512,7 @@ class QuestionWorkflowViewModel(
         val pendingRequests = snapshot.requests
             .filter { it.status == AskStatus.PENDING }
             .sortedWith(askRequestPriorityComparator)
+        reconcileDraftsForServer(pendingRequests.mapTo(linkedSetOf()) { it.requestId })
         val pendingQuestions = pendingRequests.map { it.toListItem() }
         // Live state is pending-only. If an explicitly refreshed notification target is absent,
         // it resolved in the meantime and must not fall through to an unrelated pending item.
@@ -433,10 +559,15 @@ class QuestionWorkflowViewModel(
             notificationOpenRequestId = null
         }
 
-        val visibleQuestion = visibleRequest?.toUiQuestion(
-            previous = previousVisible?.takeIf { it.requestId == visibleRequest.requestId },
-            forcedTerminalState = forcedTerminalState
-        ) ?: previousVisible
+        val visibleQuestion = visibleRequest?.let { request ->
+            val key = QuestionDraftKey(state.baseUrl, request.requestId)
+            request.toUiQuestion(
+                previous = previousVisible?.takeIf { it.requestId == request.requestId },
+                forcedTerminalState = forcedTerminalState,
+                draft = draftsInMemory[key],
+                draftPersistenceError = draftPersistenceErrors[key]
+            )
+        } ?: previousVisible
             ?.takeIf {
                 forceVisibleRequestId == it.requestId && forcedTerminalState != null
             }
@@ -504,6 +635,7 @@ class QuestionWorkflowViewModel(
             terminalMessage = effectiveTerminalMessage,
             errorMessage = null
         )
+        reconcileActiveDraftSelections(pendingRequests)
 
         if (observationActive) {
             runCatching { onPendingRequestIdsObserved(pendingRequests.mapTo(linkedSetOf()) { it.requestId }) }
@@ -517,6 +649,88 @@ class QuestionWorkflowViewModel(
 
         if (notifications.isNotEmpty() && observationActive) {
             runCatching { onPendingQuestionNotifications(notifications) }
+        }
+
+        visibleRequest?.let(::restoreDraft)
+    }
+
+    private fun reconcileActiveDraftSelections(pendingRequests: List<AskRequestSnapshot>) {
+        pendingRequests.forEach { request ->
+            val key = QuestionDraftKey(state.baseUrl, request.requestId)
+            val existing = draftsInMemory[key] ?: return@forEach
+            val reconciled = request.sanitizeDraft(existing)
+            if (reconciled != existing) {
+                persistDraft(key, reconciled)
+            }
+        }
+    }
+
+    private fun reconcileDraftsForServer(activeRequestIds: Set<String>) {
+        val normalizedServerUrl = state.baseUrl
+        draftsInMemory.keys
+            .filter { key ->
+                key.normalizedServerUrl == normalizedServerUrl && key.requestId !in activeRequestIds
+            }
+            .forEach { staleKey ->
+                draftLoadFailures.remove(staleKey)
+                draftsInMemory.remove(staleKey)
+                draftPersistenceErrors.remove(staleKey)
+                draftRevisions[staleKey] = (draftRevisions[staleKey] ?: 0L) + 1L
+            }
+
+        val previousReconcile = draftReconcileJobs[normalizedServerUrl]
+        val precedingWrites = draftSaveJobs
+            .filterKeys { it.normalizedServerUrl == normalizedServerUrl }
+            .values
+            .toList()
+        draftReconcileJobs[normalizedServerUrl] = coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            previousReconcile?.join()
+            precedingWrites.forEach { it.join() }
+            try {
+                draftStore.reconcileServer(normalizedServerUrl, activeRequestIds)
+            } catch (_: Exception) {
+                // Best-effort cleanup is retried by every later authoritative snapshot.
+            }
+        }
+    }
+
+    private fun restoreDraft(request: AskRequestSnapshot) {
+        val key = QuestionDraftKey(state.baseUrl, request.requestId)
+        if (!draftLoadsStarted.add(key)) return
+        val revisionAtStart = draftRevisions[key] ?: 0L
+
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val result = try {
+                draftStore.load(key)
+            } catch (_: Exception) {
+                QuestionDraftStoreResult.Failure(QuestionDraftStoreFailure.READ_FAILED)
+            }
+            if ((draftRevisions[key] ?: 0L) != revisionAtStart) return@launch
+            if (result is QuestionDraftStoreResult.Failure) {
+                draftLoadFailures.add(key)
+                updateDraftPersistenceError(key, DRAFT_PERSISTENCE_ERROR_MESSAGE)
+                return@launch
+            }
+            draftLoadFailures.remove(key)
+            updateDraftPersistenceError(key, null)
+            val draft = (result as QuestionDraftStoreResult.Success).value ?: return@launch
+            val currentRequest = latestSnapshot?.requests?.firstOrNull {
+                it.requestId == key.requestId && it.status == AskStatus.PENDING
+            } ?: return@launch
+            val sanitizedDraft = currentRequest.sanitizeDraft(draft)
+            if (sanitizedDraft == draft) {
+                draftsInMemory[key] = sanitizedDraft
+            } else {
+                persistDraft(key, sanitizedDraft)
+            }
+            val currentVisible = state.visibleQuestion?.takeIf { it.requestId == key.requestId } ?: return@launch
+            state = state.copy(
+                visibleQuestion = currentRequest.toUiQuestion(
+                    previous = currentVisible,
+                    draft = sanitizedDraft,
+                    draftPersistenceError = draftPersistenceErrors[key]
+                )
+            )
         }
     }
 
@@ -624,9 +838,11 @@ data class QuestionDetailUiState(
     val forkReference: dev.pi.postbox.protocol.ForkReference?,
     val urgency: QuestionUrgency = QuestionUrgency.NORMAL,
     val selectedValues: List<String> = emptyList(),
+    val note: String = "",
     val canSubmit: Boolean = false,
     val isSubmitting: Boolean = false,
     val submissionError: String? = null,
+    val draftPersistenceError: String? = null,
     val terminalState: QuestionTerminalState? = null,
     val availableActions: List<QuestionAction> = emptyList()
 )
@@ -673,7 +889,9 @@ private fun AskRequestSnapshot.toListItem(): QuestionListItemUiState = QuestionL
 
 private fun AskRequestSnapshot.toUiQuestion(
     previous: QuestionDetailUiState? = null,
-    forcedTerminalState: QuestionTerminalState? = null
+    forcedTerminalState: QuestionTerminalState? = null,
+    draft: QuestionAnswerDraft? = null,
+    draftPersistenceError: String? = previous?.draftPersistenceError
 ): QuestionDetailUiState {
     val terminalState = forcedTerminalState ?: status.toTerminalState()
     val actions = if (status == AskStatus.PENDING && terminalState == null) {
@@ -681,6 +899,12 @@ private fun AskRequestSnapshot.toUiQuestion(
     } else {
         emptyList()
     }
+    val sanitizedDraft = sanitizeDraft(
+        QuestionAnswerDraft(
+            selectedValues = draft?.selectedValues ?: previous?.selectedValues.orEmpty(),
+            note = draft?.note ?: previous?.note.orEmpty()
+        )
+    )
     return QuestionDetailUiState(
         requestId = requestId,
         sessionId = sessionId,
@@ -702,21 +926,40 @@ private fun AskRequestSnapshot.toUiQuestion(
         },
         handoffContext = context,
         forkReference = forkReference,
-        selectedValues = previous
-            ?.selectedValues
-            .orEmpty()
-            .filter { selectedValue ->
-                selectedValue == OTHER_OPTION_VALUE ||
-                    options.any { option -> option.value == selectedValue }
-            }
-            .let { selectedValues ->
-                if (mode == AskMode.SINGLE) selectedValues.take(1) else selectedValues
-            },
+        selectedValues = sanitizedDraft.selectedValues,
+        note = sanitizedDraft.note,
         submissionError = previous?.submissionError,
+        draftPersistenceError = draftPersistenceError,
         terminalState = terminalState,
         availableActions = actions
     ).withSubmitState()
 }
+
+private fun AskRequestSnapshot.sanitizeDraft(draft: QuestionAnswerDraft): QuestionAnswerDraft {
+    val validOptionValues = options.mapTo(hashSetOf()) { it.value }
+    return draft.sanitizeBounds().copy(
+        selectedValues = draft.selectedValues
+            .asSequence()
+            .filter { it.length <= MAX_QUESTION_DRAFT_VALUE_CHARS }
+            .filter { it == OTHER_OPTION_VALUE || it in validOptionValues }
+            .distinct()
+            .take(MAX_QUESTION_DRAFT_SELECTED_VALUES)
+            .let { selectedValues ->
+                if (mode == AskMode.SINGLE) selectedValues.take(1) else selectedValues
+            }
+            .toList()
+    )
+}
+
+private fun QuestionAnswerDraft.sanitizeBounds(): QuestionAnswerDraft = copy(
+    selectedValues = selectedValues
+        .asSequence()
+        .filter { it.length <= MAX_QUESTION_DRAFT_VALUE_CHARS }
+        .distinct()
+        .take(MAX_QUESTION_DRAFT_SELECTED_VALUES)
+        .toList(),
+    note = note.take(MAX_QUESTION_DRAFT_NOTE_CHARS)
+)
 
 private fun QuestionDetailUiState.withSubmitState(): QuestionDetailUiState {
     val canSubmit = terminalState == null &&

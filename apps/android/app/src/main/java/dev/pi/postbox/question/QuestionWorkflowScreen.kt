@@ -108,6 +108,8 @@ fun QuestionWorkflowScreen(
     onSelectSession: (String) -> Unit,
     onSelectQuestion: (String) -> Unit,
     onToggleOption: (String) -> Unit,
+    onNoteChanged: (String) -> Unit,
+    onRetryDraftSave: () -> Unit,
     onSubmitAnswer: (note: String?) -> Unit,
     onCancelQuestion: (note: String?) -> Unit,
     onDismissQuestion: (String) -> Unit,
@@ -305,6 +307,8 @@ fun QuestionWorkflowScreen(
                                             branchLabel = session?.branch ?: "Unknown branch",
                                             askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
                                             onToggleOption = onToggleOption,
+                                            onNoteChanged = onNoteChanged,
+                                            onRetryDraftSave = onRetryDraftSave,
                                             onSubmitAnswer = { note ->
                                                 stampedRequestId = visibleQuestion.requestId
                                                 onSubmitAnswer(note)
@@ -1113,14 +1117,19 @@ private fun QuestionDetailCard(
     branchLabel: String,
     askedAgo: String?,
     onToggleOption: (String) -> Unit,
+    onNoteChanged: (String) -> Unit,
+    onRetryDraftSave: () -> Unit,
     onSubmitAnswer: (note: String?) -> Unit,
     onCancelQuestion: (note: String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var note by remember(question.requestId) { mutableStateOf("") }
-    var showNote by remember(question.requestId) { mutableStateOf(false) }
+    var showNote by remember(question.requestId) { mutableStateOf(question.note.isNotBlank()) }
     var showHandoffContext by remember(question.requestId) { mutableStateOf(false) }
     val actionsEnabled = question.terminalState == null && !question.isSubmitting
+
+    LaunchedEffect(question.requestId, question.note) {
+        if (question.note.isNotBlank()) showNote = true
+    }
 
     Column(
         modifier = modifier
@@ -1254,8 +1263,8 @@ private fun QuestionDetailCard(
         if (showNote) {
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
-                value = note,
-                onValueChange = { note = it },
+                value = question.note,
+                onValueChange = onNoteChanged,
                 label = { Text("Add nuance for the coding agent…") },
                 enabled = actionsEnabled,
                 colors = OutlinedTextFieldDefaults.colors(
@@ -1272,6 +1281,30 @@ private fun QuestionDetailCard(
                 ),
                 minLines = 2
             )
+        }
+
+        question.draftPersistenceError?.let { error ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(PostalColors.danger.copy(alpha = 0.1f))
+                    .padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = error,
+                    fontSize = 14.sp,
+                    color = PostalColors.dangerForeground,
+                    textAlign = TextAlign.Center
+                )
+                SubtleTextButton(
+                    text = "Retry",
+                    enabled = true,
+                    onClick = onRetryDraftSave
+                )
+            }
         }
 
         question.submissionError?.let { error ->
@@ -1297,7 +1330,7 @@ private fun QuestionDetailCard(
         ) {
             PostalSubmitButton(
                 enabled = actionsEnabled && question.canSubmit,
-                onClick = { onSubmitAnswer(note.nullIfBlank()) }
+                onClick = { onSubmitAnswer(question.note.nullIfBlank()) }
             )
             SubtleTextButton(
                 text = if (showNote) "Hide note" else "+ Add a note",
@@ -1307,7 +1340,7 @@ private fun QuestionDetailCard(
             SubtleTextButton(
                 text = "Cancel",
                 enabled = actionsEnabled && question.availableActions.contains(QuestionAction.CANCEL),
-                onClick = { onCancelQuestion(note.nullIfBlank()) }
+                onClick = { onCancelQuestion(question.note.nullIfBlank()) }
             )
         }
     }
@@ -1856,6 +1889,8 @@ private fun QuestionWorkflowScreenPreview() {
             onSelectSession = {},
             onSelectQuestion = {},
             onToggleOption = {},
+            onNoteChanged = {},
+            onRetryDraftSave = {},
             onSubmitAnswer = {},
             onCancelQuestion = {},
             onDismissQuestion = {},
