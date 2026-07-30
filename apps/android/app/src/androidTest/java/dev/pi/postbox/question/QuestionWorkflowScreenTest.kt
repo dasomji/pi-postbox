@@ -19,6 +19,22 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import dev.pi.postbox.questionchat.QuestionChatActivationUiState
+import dev.pi.postbox.questionchat.QuestionChatBindingKey
+import dev.pi.postbox.questionchat.QuestionChatConnectionState
+import dev.pi.postbox.questionchat.QuestionChatContextFallbackAvailability
+import dev.pi.postbox.questionchat.QuestionChatAvailabilityCode
+import dev.pi.postbox.questionchat.QuestionChatAvailabilityError
+import dev.pi.postbox.questionchat.QuestionChatForkKind
+import dev.pi.postbox.questionchat.QuestionChatMessage
+import dev.pi.postbox.questionchat.QuestionChatModel
+import dev.pi.postbox.questionchat.QuestionChatModelSource
+import dev.pi.postbox.questionchat.QuestionChatOwnerState
+import dev.pi.postbox.questionchat.QuestionChatSessionUiState
+import dev.pi.postbox.questionchat.QuestionChatSnapshot
+import dev.pi.postbox.questionchat.QuestionChatState
+import dev.pi.postbox.questionchat.QuestionChatToolActivity
+import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.PostboxTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -246,6 +262,147 @@ class QuestionWorkflowScreenTest {
     }
 
     @Test
+    fun pendingQuestionShowsStartQuestionChatEntryAndStartsWhenTapped() {
+        val question = QuestionDetailUiState(
+            requestId = "ask-chat-start",
+            sessionId = "session-1",
+            mode = QuestionMode.SINGLE,
+            prompt = "Choose a deployment target",
+            questionContext = "Need a mobile-safe choice.",
+            relevance = null,
+            decisionImpact = null,
+            options = listOf(QuestionOptionUiState("ship", "Ship", null)),
+            handoffContext = null,
+            forkReference = null,
+            availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
+        )
+        var starts = 0
+
+        setQuestionScreen(
+            stateProvider = {
+                questionScreenState(question).copy(
+                    questionChat = questionChatWorkflowState()
+                )
+            },
+            onStartQuestionChat = { starts += 1 }
+        )
+
+        composeRule.onNodeWithText("Start Question Chat").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Question Chat is temporary and first tries an exact fork of the asking Pi session.")
+            .assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(1, starts) }
+    }
+
+    @Test
+    fun exactForkFailureRequiresExplicitContextOnlyConfirmation() {
+        val question = QuestionDetailUiState(
+            requestId = "ask-context-fallback",
+            sessionId = "session-1",
+            mode = QuestionMode.SINGLE,
+            prompt = "Choose a deployment target",
+            questionContext = null,
+            relevance = null,
+            decisionImpact = null,
+            options = listOf(QuestionOptionUiState("ship", "Ship", null)),
+            handoffContext = null,
+            forkReference = null,
+            availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
+        )
+        var confirms = 0
+
+        setQuestionScreen(
+            stateProvider = {
+                questionScreenState(question).copy(
+                    questionChat = questionChatWorkflowState(
+                        owner = QuestionChatOwnerState(
+                            key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
+                            activation = QuestionChatActivationUiState.AwaitingContextFallbackConfirmation(
+                                QuestionChatAvailabilityError(
+                                    code = QuestionChatAvailabilityCode.SOURCE_LEAF_MISSING,
+                                    message = "The recorded source leaf is unavailable.",
+                                    contextFallback = QuestionChatContextFallbackAvailability.Available
+                                )
+                            )
+                        )
+                    )
+                )
+            },
+            onConfirmContextOnlyQuestionChat = { confirms += 1 }
+        )
+
+        composeRule.onNodeWithText("Consider context-only interviewer").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("A context-only interviewer starts fresh from the persisted question and handoff context.")
+            .assertIsDisplayed()
+        composeRule.onNodeWithText("Start context-only interviewer").performClick()
+        composeRule.runOnIdle { assertEquals(1, confirms) }
+    }
+
+    @Test
+    fun activatedQuestionChatShowsTabsStartersAndComposerCallbacks() {
+        val question = QuestionDetailUiState(
+            requestId = "ask-chat-ready",
+            sessionId = "session-1",
+            mode = QuestionMode.SINGLE,
+            prompt = "Choose a deployment target",
+            questionContext = null,
+            relevance = null,
+            decisionImpact = null,
+            options = listOf(QuestionOptionUiState("ship", "Ship", null)),
+            handoffContext = null,
+            forkReference = null,
+            availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
+        )
+        var selectedTab: QuestionChatWorkspaceTab? = null
+        var sentDrafts = 0
+        var starter: String? = null
+
+        setQuestionScreen(
+            stateProvider = {
+                questionScreenState(question).copy(
+                    questionChat = questionChatWorkflowState(
+                        tabsVisible = true,
+                        selectedTab = QuestionChatWorkspaceTab.CHAT,
+                        owner = QuestionChatOwnerState(
+                            key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
+                            knownStarted = true,
+                            session = QuestionChatSessionUiState(
+                                snapshot = QuestionChatSnapshot(
+                                    requestId = question.requestId,
+                                    state = QuestionChatState.READY,
+                                    forkKind = QuestionChatForkKind.EXACT,
+                                    model = QuestionChatModel(
+                                        id = "anthropic/claude-sonnet-4",
+                                        source = QuestionChatModelSource.ORIGINATING
+                                    ),
+                                    sequence = 0,
+                                    messages = emptyList(),
+                                    tools = emptyList()
+                                ),
+                                connection = QuestionChatConnectionState.ONLINE
+                            )
+                        )
+                    )
+                )
+            },
+            onSelectQuestionChatTab = { selectedTab = it },
+            onQuestionChatDraftChanged = {},
+            onSendQuestionChatDraft = { sentDrafts += 1 },
+            onSendQuestionChatStarter = { starter = it.name }
+        )
+
+        composeRule.onNodeWithText("Question Chat").assertIsSelected()
+        composeRule.onNodeWithText("Question").assertIsDisplayed().performClick()
+        composeRule.runOnIdle { assertEquals(QuestionChatWorkspaceTab.QUESTION, selectedTab) }
+
+        composeRule.onNodeWithText("Question Chat").performClick()
+        composeRule.onNodeWithText("Elaborate").assertIsDisplayed().performClick()
+        composeRule.runOnIdle { assertEquals("ELABORATE", starter) }
+        composeRule.onNode(hasSetTextAction()).performTextInput("Explain this")
+        composeRule.onNodeWithText("Send").performClick()
+        composeRule.runOnIdle { assertEquals(1, sentDrafts) }
+    }
+
+    @Test
     fun pullingDownFromTheQueueRequestsOneRefresh() {
         var refreshRequests = 0
         setQuestionScreen(
@@ -303,7 +460,16 @@ class QuestionWorkflowScreenTest {
         onToggleOption: (String) -> Unit = {},
         onNoteChanged: (String) -> Unit = {},
         onRetryDraftSave: () -> Unit = {},
-        onRefresh: () -> Unit = {}
+        onRefresh: () -> Unit = {},
+        onStartQuestionChat: () -> Unit = {},
+        onConfirmContextOnlyQuestionChat: () -> Unit = {},
+        onRetryQuestionChat: () -> Unit = {},
+        onSelectQuestionChatTab: (QuestionChatWorkspaceTab) -> Unit = {},
+        onQuestionChatDraftChanged: (String) -> Unit = {},
+        onSendQuestionChatDraft: () -> Unit = {},
+        onSendQuestionChatStarter: (dev.pi.postbox.questionchat.QuestionChatStarter) -> Unit = {},
+        onStopQuestionChat: () -> Unit = {},
+        onReviewQuestionChatSuggestion: (String) -> Unit = {}
     ) {
         composeRule.setContent {
             PostboxTheme {
@@ -320,7 +486,17 @@ class QuestionWorkflowScreenTest {
                     onCancelQuestion = {},
                     onDismissQuestion = {},
                     onEditServerUrl = {},
-                    onRefresh = onRefresh
+                    onRefresh = onRefresh,
+                    onStartQuestionChat = onStartQuestionChat,
+                    onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
+                    onRetryQuestionChat = onRetryQuestionChat,
+                    onSelectQuestionChatTab = onSelectQuestionChatTab,
+                    onQuestionChatDraftChanged = onQuestionChatDraftChanged,
+                    onSendQuestionChatDraft = onSendQuestionChatDraft,
+                    onSendQuestionChatStarter = onSendQuestionChatStarter,
+                    onStopQuestionChat = onStopQuestionChat,
+                    onReviewQuestionChatSuggestion = onReviewQuestionChatSuggestion,
+                    onHandleBack = { false }
                 )
             }
         }
@@ -354,5 +530,18 @@ class QuestionWorkflowScreenTest {
         createdAt = "2026-07-29T10:00:00.000Z",
         expiresAt = null,
         urgency = urgency
+    )
+
+    private fun questionChatWorkflowState(
+        key: QuestionChatBindingKey = QuestionChatBindingKey("https://postbox.example/", "ask-chat"),
+        tabsVisible: Boolean = false,
+        selectedTab: QuestionChatWorkspaceTab = QuestionChatWorkspaceTab.QUESTION,
+        owner: QuestionChatOwnerState = QuestionChatOwnerState(key = key)
+    ) = QuestionChatWorkflowUiState(
+        key = key,
+        owner = owner,
+        tabsVisible = tabsVisible,
+        selectedTab = selectedTab,
+        questionFocusToken = 0L
     )
 }

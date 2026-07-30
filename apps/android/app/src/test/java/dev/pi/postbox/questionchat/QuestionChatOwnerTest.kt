@@ -97,6 +97,7 @@ class QuestionChatOwnerTest {
         assertTrue(owner.state.value.session?.snapshot?.messages?.isEmpty() == true)
         assertEquals("", owner.state.value.draftText)
         assertNull(owner.state.value.pendingSend)
+        assertEquals("Question Chat is answering.", owner.state.value.actionMessage)
 
         transport.emitEvent(
             QuestionChatStreamEvent.Event(

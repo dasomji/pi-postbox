@@ -345,11 +345,15 @@ class QuestionChatOwner(
         )
         launchTracked {
             try {
-                httpClient.sendMessage(key.requestId, commandId, message)
+                val response = httpClient.sendMessage(key.requestId, commandId, message)
                 ifCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         draftText = "",
                         pendingSend = null,
+                        actionMessage = when (response.mode) {
+                            QuestionChatSendMode.STEER -> "Steering the current answer."
+                            else -> "Question Chat is answering."
+                        },
                         composerFocusToken = mutableState.value.composerFocusToken + 1
                     )
                 }
@@ -381,7 +385,10 @@ class QuestionChatOwner(
             try {
                 httpClient.stop(key.requestId, commandId)
                 ifCurrent(key, expectedGeneration) {
-                    mutableState.value = mutableState.value.copy(pendingStopCommandId = null)
+                    mutableState.value = mutableState.value.copy(
+                        pendingStopCommandId = null,
+                        actionMessage = "Stopping Question Chat…"
+                    )
                 }
             } catch (error: Exception) {
                 ifCurrent(key, expectedGeneration) {

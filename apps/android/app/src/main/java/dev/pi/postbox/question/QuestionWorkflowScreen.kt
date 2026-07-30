@@ -1,5 +1,6 @@
 package dev.pi.postbox.question
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -82,6 +83,9 @@ import androidx.compose.ui.unit.sp
 import dev.pi.postbox.BuildConfig
 import dev.pi.postbox.R
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
+import dev.pi.postbox.questionchat.QuestionChatActivationUiState
+import dev.pi.postbox.questionchat.QuestionChatStarter
+import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.CrossIcon
 import dev.pi.postbox.ui.theme.EnvelopeIcon
 import dev.pi.postbox.ui.theme.MenuIcon
@@ -115,6 +119,16 @@ fun QuestionWorkflowScreen(
     onDismissQuestion: (String) -> Unit,
     onEditServerUrl: () -> Unit,
     onRefresh: () -> Unit,
+    onStartQuestionChat: () -> Unit,
+    onConfirmContextOnlyQuestionChat: () -> Unit,
+    onRetryQuestionChat: () -> Unit,
+    onSelectQuestionChatTab: (QuestionChatWorkspaceTab) -> Unit,
+    onQuestionChatDraftChanged: (String) -> Unit,
+    onSendQuestionChatDraft: () -> Unit,
+    onSendQuestionChatStarter: (QuestionChatStarter) -> Unit,
+    onStopQuestionChat: () -> Unit,
+    onReviewQuestionChatSuggestion: (String) -> Unit,
+    onHandleBack: () -> Boolean,
     modifier: Modifier = Modifier
 ) {
     // Set when the answer is stamped (submitted); cleared again if the submit errors.
@@ -122,6 +136,11 @@ fun QuestionWorkflowScreen(
     val visibleQuestion = state.visibleQuestion
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    BackHandler(
+        enabled = state.questionChat?.tabsVisible == true && state.questionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT,
+        onBack = { onHandleBack() }
+    )
 
     LaunchedEffect(
         stampedRequestId,
@@ -189,6 +208,18 @@ fun QuestionWorkflowScreen(
                     state = state,
                     onOpenNavigation = { coroutineScope.launch { drawerState.open() } }
                 )
+                state.questionChat
+                    ?.takeIf {
+                        it.tabsVisible &&
+                            state.navigationSelection is QuestionNavigationSelection.Question &&
+                            state.visibleQuestion?.requestId == it.key.requestId
+                    }
+                    ?.let { questionChat ->
+                        QuestionChatTabRow(
+                            selectedTab = questionChat.selectedTab,
+                            onSelectTab = onSelectQuestionChatTab
+                        )
+                    }
 
                 PullToRefreshBox(
                     isRefreshing = state.isRefreshing,
@@ -301,21 +332,39 @@ fun QuestionWorkflowScreen(
                                         val listItem = state.pendingQuestions.firstOrNull {
                                             it.requestId == visibleQuestion.requestId
                                         }
-                                        QuestionDetailCard(
-                                            question = visibleQuestion,
-                                            projectLabel = session?.projectName ?: "Unknown project",
-                                            branchLabel = session?.branch ?: "Unknown branch",
-                                            askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
-                                            onToggleOption = onToggleOption,
-                                            onNoteChanged = onNoteChanged,
-                                            onRetryDraftSave = onRetryDraftSave,
-                                            onSubmitAnswer = { note ->
-                                                stampedRequestId = visibleQuestion.requestId
-                                                onSubmitAnswer(note)
-                                            },
-                                            onCancelQuestion = onCancelQuestion,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                        val questionChat = state.questionChat?.takeIf { it.key.requestId == visibleQuestion.requestId }
+                                        if (questionChat?.tabsVisible == true && questionChat.selectedTab == QuestionChatWorkspaceTab.CHAT) {
+                                            QuestionChatPanel(
+                                                workflow = questionChat,
+                                                onRetry = onRetryQuestionChat,
+                                                onDraftChanged = onQuestionChatDraftChanged,
+                                                onSendDraft = onSendQuestionChatDraft,
+                                                onSendStarter = onSendQuestionChatStarter,
+                                                onStop = onStopQuestionChat,
+                                                onReviewSuggestion = onReviewQuestionChatSuggestion,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        } else {
+                                            QuestionDetailCard(
+                                                question = visibleQuestion,
+                                                projectLabel = session?.projectName ?: "Unknown project",
+                                                branchLabel = session?.branch ?: "Unknown branch",
+                                                askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
+                                                questionChat = questionChat,
+                                                onToggleOption = onToggleOption,
+                                                onNoteChanged = onNoteChanged,
+                                                onRetryDraftSave = onRetryDraftSave,
+                                                onSubmitAnswer = { note ->
+                                                    stampedRequestId = visibleQuestion.requestId
+                                                    onSubmitAnswer(note)
+                                                },
+                                                onCancelQuestion = onCancelQuestion,
+                                                onStartQuestionChat = onStartQuestionChat,
+                                                onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
+                                                onRetryQuestionChat = onRetryQuestionChat,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1116,11 +1165,15 @@ private fun QuestionDetailCard(
     projectLabel: String,
     branchLabel: String,
     askedAgo: String?,
+    questionChat: QuestionChatWorkflowUiState?,
     onToggleOption: (String) -> Unit,
     onNoteChanged: (String) -> Unit,
     onRetryDraftSave: () -> Unit,
     onSubmitAnswer: (note: String?) -> Unit,
     onCancelQuestion: (note: String?) -> Unit,
+    onStartQuestionChat: () -> Unit,
+    onConfirmContextOnlyQuestionChat: () -> Unit,
+    onRetryQuestionChat: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showNote by remember(question.requestId) { mutableStateOf(question.note.isNotBlank()) }
@@ -1226,6 +1279,15 @@ private fun QuestionDetailCard(
                 contentDescription = "Question detail priority: ${question.urgency.displayLabel}"
             }
         )
+
+        questionChat?.let { workflow ->
+            QuestionChatQuestionEntry(
+                workflow = workflow,
+                onStartQuestionChat = onStartQuestionChat,
+                onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
+                onRetryQuestionChat = onRetryQuestionChat
+            )
+        }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             question.options.forEach { option ->
@@ -1895,7 +1957,17 @@ private fun QuestionWorkflowScreenPreview() {
             onCancelQuestion = {},
             onDismissQuestion = {},
             onEditServerUrl = {},
-            onRefresh = {}
+            onRefresh = {},
+            onStartQuestionChat = {},
+            onConfirmContextOnlyQuestionChat = {},
+            onRetryQuestionChat = {},
+            onSelectQuestionChatTab = {},
+            onQuestionChatDraftChanged = {},
+            onSendQuestionChatDraft = {},
+            onSendQuestionChatStarter = {},
+            onStopQuestionChat = {},
+            onReviewQuestionChatSuggestion = {},
+            onHandleBack = { false }
         )
     }
 }

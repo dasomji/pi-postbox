@@ -27,6 +27,7 @@ import dev.pi.postbox.questionchat.QuestionChatBindingKey
 import dev.pi.postbox.questionchat.QuestionChatIntent
 import dev.pi.postbox.questionchat.QuestionChatOwner
 import dev.pi.postbox.questionchat.QuestionChatOwnerState
+import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceShell
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import java.io.IOException
@@ -160,6 +161,39 @@ class QuestionWorkflowViewModel(
         val handled = questionChatShell.handleBack()
         if (handled) updateQuestionChatState()
         return handled
+    }
+
+    fun retryQuestionChat() {
+        questionChatOwner.dispatch(QuestionChatIntent.Retry)
+    }
+
+    fun updateQuestionChatDraft(text: String) {
+        questionChatOwner.dispatch(QuestionChatIntent.DraftChanged(text))
+    }
+
+    fun sendQuestionChatDraft() {
+        questionChatOwner.dispatch(QuestionChatIntent.SendDraft)
+    }
+
+    fun sendQuestionChatStarter(starter: QuestionChatStarter) {
+        questionChatOwner.dispatch(QuestionChatIntent.SendStarter(starter))
+    }
+
+    fun stopQuestionChat() {
+        questionChatOwner.dispatch(QuestionChatIntent.Stop)
+    }
+
+    fun reviewQuestionChatSuggestion(optionValue: String) {
+        questionChatShell.selectTab(QuestionChatWorkspaceTab.QUESTION)
+        val visible = state.visibleQuestion ?: return
+        if (visible.options.any { it.value == optionValue }) {
+            state = state.copy(
+                visibleQuestion = visible.copy(
+                    submissionError = null
+                )
+            )
+        }
+        updateQuestionChatState()
     }
 
     fun refreshQuestions() {
