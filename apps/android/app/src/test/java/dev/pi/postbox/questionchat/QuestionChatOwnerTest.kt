@@ -148,6 +148,82 @@ class QuestionChatOwnerTest {
     }
 
     @Test
+    fun stopUsesOwnerCommandIdAndWaitsForAuthoritativeLifecycle() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val generating = readySnapshot(sequence = 4, state = QuestionChatState.GENERATING)
+        val client = FakeQuestionChatHttpClient(
+            probeResult = QuestionChatProbeResult.Ready(generating),
+            snapshot = generating
+        )
+        val owner = QuestionChatOwner(
+            httpClient = client,
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        owner.dispatch(QuestionChatIntent.Stop)
+        advanceUntilIdle()
+
+        assertEquals(listOf(RecordedStop("ask-1", "android-stop-1")), client.stopCalls)
+        assertEquals(QuestionChatState.GENERATING, owner.state.value.session?.snapshot?.state)
+    }
+
+    @Test
+    fun sequenceGapTriggersFreshSnapshotResynchronization() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val initial = readySnapshot(
+            requestId = "ask-1",
+            sequence = 4,
+            messages = listOf(assistantMessage(text = "Before gap", status = QuestionChatMessage.Assistant.Status.FINAL))
+        )
+        val resynced = readySnapshot(
+            requestId = "ask-1",
+            sequence = 7,
+            messages = listOf(assistantMessage(id = "assistant-2", text = "Recovered after gap", status = QuestionChatMessage.Assistant.Status.FINAL))
+        )
+        var fetches = 0
+        val client = FakeQuestionChatHttpClient(
+            probeResult = QuestionChatProbeResult.Ready(initial),
+            snapshotFactory = { requestId ->
+                if (requestId != "ask-1") error("Unexpected request $requestId")
+                fetches += 1
+                if (fetches == 1) initial else resynced
+            }
+        )
+        val owner = QuestionChatOwner(
+            httpClient = client,
+            eventTransport = transport,
+            scope = backgroundScope
+        )
+
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        transport.emitEvent(
+            QuestionChatStreamEvent.Event(
+                requestId = "ask-1",
+                payload = QuestionChatEvent.MessageFinished(
+                    requestId = "ask-1",
+                    sequence = 7,
+                    messageId = "assistant-2",
+                    text = "Recovered after gap",
+                    status = QuestionChatMessage.Assistant.Status.FINAL
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertTrue(client.fetchSnapshotCalls.size >= 2)
+        assertEquals(7, owner.state.value.session?.snapshot?.sequence)
+        assertEquals("Recovered after gap", (owner.state.value.session?.snapshot?.messages?.single() as? QuestionChatMessage.Assistant)?.text)
+    }
+
+    @Test
     fun terminalAssistantMessagesReceiveSafeMarkdownRenderings() = runTest {
         val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
         val snapshot = readySnapshot(
@@ -199,6 +275,7 @@ private fun assistantMessage(
 ): QuestionChatMessage.Assistant = QuestionChatMessage.Assistant(id = id, text = text, status = status)
 
 private data class RecordedSend(val requestId: String, val clientCommandId: String, val message: String)
+private data class RecordedStop(val requestId: String, val clientCommandId: String)
 
 private class FakeQuestionChatHttpClient(
     private val probeResult: QuestionChatProbeResult = QuestionChatProbeResult.NotStarted,
@@ -210,7 +287,9 @@ private class FakeQuestionChatHttpClient(
     private val snapshotFactory: (suspend (String) -> QuestionChatSnapshot)? = null
 ) : QuestionChatHttpClient {
     val probeCalls = mutableListOf<String>()
+    val fetchSnapshotCalls = mutableListOf<String>()
     val sendCalls = mutableListOf<RecordedSend>()
+    val stopCalls = mutableListOf<RecordedStop>()
 
     override suspend fun activateExact(requestId: String): QuestionChatActivationResult = exactActivation
 
@@ -221,7 +300,10 @@ private class FakeQuestionChatHttpClient(
         return probeResultFactory?.invoke(requestId) ?: probeResult
     }
 
-    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshot = snapshotFactory?.invoke(requestId) ?: snapshot
+    override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshot {
+        fetchSnapshotCalls += requestId
+        return snapshotFactory?.invoke(requestId) ?: snapshot
+    }
 
     override suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatSendResponse {
         sendCalls += RecordedSend(requestId, clientCommandId, message)
@@ -229,7 +311,8 @@ private class FakeQuestionChatHttpClient(
     }
 
     override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatStopResponse {
-        error("Stop is out of scope for this slice")
+        stopCalls += RecordedStop(requestId, clientCommandId)
+        return QuestionChatStopResponse(clientCommandId)
     }
 }
 

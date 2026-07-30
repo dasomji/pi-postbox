@@ -35,6 +35,7 @@ sealed interface QuestionChatIntent {
     data class DraftChanged(val text: String) : QuestionChatIntent
     data object SendDraft : QuestionChatIntent
     data class SendStarter(val starter: QuestionChatStarter) : QuestionChatIntent
+    data object Stop : QuestionChatIntent
     data object QuestionBecameTerminal : QuestionChatIntent
 }
 
@@ -77,6 +78,7 @@ data class QuestionChatOwnerState(
     val session: QuestionChatSessionUiState? = null,
     val draftText: String = "",
     val pendingSend: QuestionChatPendingSend? = null,
+    val pendingStopCommandId: String? = null,
     val actionMessage: String? = null,
     val composerFocusToken: Long = 0L,
     val renderedAssistantMessages: Map<String, QuestionChatRenderedAssistantMessage> = emptyMap()
@@ -139,6 +141,7 @@ class QuestionChatOwner(
             is QuestionChatIntent.DraftChanged -> mutableState.value = mutableState.value.copy(draftText = intent.text.take(8_000))
             QuestionChatIntent.SendDraft -> mutableState.value.key?.let { key -> startSend(key, generation, mutableState.value.draftText.trim()) }
             is QuestionChatIntent.SendStarter -> mutableState.value.key?.let { key -> startSend(key, generation, questionChatStarterPrompts.getValue(intent.starter)) }
+            QuestionChatIntent.Stop -> mutableState.value.key?.let { key -> startStop(key, generation) }
             QuestionChatIntent.QuestionBecameTerminal -> {
                 eventConnection?.close()
                 eventConnection = null
@@ -361,6 +364,36 @@ class QuestionChatOwner(
         }
     }
 
+    private fun startStop(key: QuestionChatBindingKey, expectedGeneration: Long) {
+        val current = mutableState.value
+        val session = current.session ?: return
+        if (
+            session.connection != QuestionChatConnectionState.ONLINE ||
+                current.pendingStopCommandId != null ||
+                session.snapshot.state != QuestionChatState.GENERATING
+        ) return
+        val commandId = "android-stop-${commandCounter.incrementAndGet()}"
+        mutableState.value = current.copy(
+            pendingStopCommandId = commandId,
+            actionMessage = null
+        )
+        launchTracked {
+            try {
+                httpClient.stop(key.requestId, commandId)
+                ifCurrent(key, expectedGeneration) {
+                    mutableState.value = mutableState.value.copy(pendingStopCommandId = null)
+                }
+            } catch (error: Exception) {
+                ifCurrent(key, expectedGeneration) {
+                    mutableState.value = mutableState.value.copy(
+                        pendingStopCommandId = null,
+                        actionMessage = error.message ?: "Unable to stop Question Chat."
+                    )
+                }
+            }
+        }
+    }
+
     private fun applyLiveEvent(event: QuestionChatStreamEvent) {
         val session = mutableState.value.session ?: return
         when (event) {
@@ -370,6 +403,13 @@ class QuestionChatOwner(
                 )
             }
             is QuestionChatStreamEvent.Event -> {
+                if (event.payload.sequence > session.snapshot.sequence + 1) {
+                    mutableState.value = mutableState.value.copy(
+                        session = session.copy(connection = QuestionChatConnectionState.SYNCHRONIZING)
+                    )
+                    mutableState.value.key?.let { key -> startSynchronize(key, generation) }
+                    return
+                }
                 val updatedSnapshot = applyQuestionChatEvent(session.snapshot, event.payload)
                 mutableState.value = mutableState.value.copy(
                     session = session.copy(snapshot = updatedSnapshot)
@@ -466,6 +506,10 @@ class QuestionChatOwner(
     }
 }
 
+private const val QUESTION_CHAT_MESSAGE_MAX = 100
+private const val QUESTION_CHAT_ASSISTANT_TEXT_MAX = 32_000
+private const val QUESTION_CHAT_TOOL_ACTIVITY_MAX = 50
+
 internal fun applyQuestionChatEvent(snapshot: QuestionChatSnapshot, event: QuestionChatEvent): QuestionChatSnapshot {
     if (snapshot.requestId != event.requestId || event.sequence <= snapshot.sequence) return snapshot
     if (event.sequence > snapshot.sequence + 1) return snapshot
@@ -483,14 +527,20 @@ internal fun applyQuestionChatEvent(snapshot: QuestionChatSnapshot, event: Quest
             val existing = messages.indexOfFirst { it.id == event.messageId && it is QuestionChatMessage.Assistant }
             if (existing >= 0) {
                 val assistant = messages[existing] as QuestionChatMessage.Assistant
-                messages[existing] = assistant.copy(text = assistant.text + event.text, status = QuestionChatMessage.Assistant.Status.STREAMING)
+                messages[existing] = assistant.copy(
+                    text = (assistant.text + event.text).take(QUESTION_CHAT_ASSISTANT_TEXT_MAX),
+                    status = QuestionChatMessage.Assistant.Status.STREAMING
+                )
             }
         }
         is QuestionChatEvent.MessageFinished -> {
             val existing = messages.indexOfFirst { it.id == event.messageId && it is QuestionChatMessage.Assistant }
             if (existing >= 0) {
                 val assistant = messages[existing] as QuestionChatMessage.Assistant
-                messages[existing] = assistant.copy(text = event.text, status = event.status)
+                messages[existing] = assistant.copy(
+                    text = event.text.take(QUESTION_CHAT_ASSISTANT_TEXT_MAX),
+                    status = event.status
+                )
             }
         }
         is QuestionChatEvent.ToolStarted -> {
@@ -502,7 +552,11 @@ internal fun applyQuestionChatEvent(snapshot: QuestionChatSnapshot, event: Quest
             if (existing >= 0) tools[existing] = event.activity else tools += event.activity
         }
     }
-    return snapshot.copy(messages = messages, tools = tools, sequence = event.sequence)
+    return snapshot.copy(
+        messages = messages.takeLast(QUESTION_CHAT_MESSAGE_MAX),
+        tools = tools.takeLast(QUESTION_CHAT_TOOL_ACTIVITY_MAX),
+        sequence = event.sequence
+    )
 }
 
 private fun sequenceOf(event: QuestionChatStreamEvent): Int = when (event) {
