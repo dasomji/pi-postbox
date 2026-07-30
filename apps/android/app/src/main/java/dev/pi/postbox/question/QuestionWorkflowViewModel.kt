@@ -104,6 +104,22 @@ class QuestionWorkflowViewModel(
         )
     }
 
+    fun refreshQuestions() {
+        if (state.isRefreshing) return
+        state = state.copy(
+            isRefreshing = true,
+            isSyncing = true,
+            errorMessage = null
+        )
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                refreshState()
+            } finally {
+                state = state.copy(isRefreshing = false)
+            }
+        }
+    }
+
     fun selectProject(projectId: String) {
         if (state.sessions.none { it.projectId == projectId }) return
         state = state.copy(
@@ -518,6 +534,8 @@ class QuestionWorkflowViewModel(
 data class QuestionWorkflowState(
     val baseUrl: String,
     val isLoading: Boolean = true,
+    /** True only while a user-initiated refresh is fetching an authoritative snapshot. */
+    val isRefreshing: Boolean = false,
     /** True from (re)start until a state snapshot arrives; empty views show "checking" instead of "all caught up". */
     val isSyncing: Boolean = true,
     val connectionState: QuestionConnectionState = QuestionConnectionState.CONNECTING,
