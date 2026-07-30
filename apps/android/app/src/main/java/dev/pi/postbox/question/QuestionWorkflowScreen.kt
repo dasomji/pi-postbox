@@ -29,6 +29,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -59,7 +61,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -90,7 +94,6 @@ import dev.pi.postbox.ui.theme.postalStripes
 import dev.pi.postbox.ui.theme.stampEdge
 import java.time.Duration
 import java.time.Instant
-import java.time.OffsetDateTime
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -217,7 +220,7 @@ fun QuestionWorkflowScreen(
                         when (val selection = state.navigationSelection) {
                             QuestionNavigationSelection.Queue -> QuestionQueueView(
                                 title = "Questions waiting for you",
-                                subtitle = "All pending Postbox decisions, oldest first.",
+                                subtitle = "All pending Postbox decisions, highest urgency and oldest first.",
                                 questions = state.pendingQuestions,
                                 dismissEnabled = state.dismissingRequestId == null,
                                 isSyncing = state.isSyncing,
@@ -231,7 +234,7 @@ fun QuestionWorkflowScreen(
                                 val sessionIds = sessions.mapTo(mutableSetOf()) { it.sessionId }
                                 QuestionQueueView(
                                     title = sessions.firstOrNull()?.projectName ?: "Project",
-                                    subtitle = "Pending Postbox decisions for this project, oldest first.",
+                                    subtitle = "Pending Postbox decisions for this project, highest urgency and oldest first.",
                                     questions = state.pendingQuestions.filter { it.sessionId in sessionIds },
                                     dismissEnabled = state.dismissingRequestId == null,
                                     isSyncing = state.isSyncing,
@@ -785,8 +788,8 @@ internal fun isSidebarSessionVisible(
     snapshotTimestamp: String?
 ): Boolean {
     if (session.presence != "offline") return true
-    val snapshotTime = snapshotTimestamp?.let(::parseInstant) ?: return false
-    val disconnectedTime = session.disconnectedAt?.let(::parseInstant) ?: return false
+    val snapshotTime = snapshotTimestamp?.let(::parseQuestionInstant) ?: return false
+    val disconnectedTime = session.disconnectedAt?.let(::parseQuestionInstant) ?: return false
     return Duration.between(disconnectedTime, snapshotTime).toMillis() < SIDEBAR_RECENT_OFFLINE_WINDOW_MS
 }
 
@@ -795,6 +798,13 @@ internal fun visibleSidebarSessions(
     sessions: List<QuestionSessionUiState>,
     snapshotTimestamp: String?
 ): List<QuestionSessionUiState> = sessions.filter { isSidebarSessionVisible(it, snapshotTimestamp) }
+
+private val QuestionUrgency.displayLabel: String
+    get() = when (this) {
+        QuestionUrgency.HIGH -> "High urgency"
+        QuestionUrgency.NORMAL -> "Normal urgency"
+        QuestionUrgency.LOW -> "Low urgency"
+    }
 
 internal fun buildSidebarGroups(
     sessions: List<QuestionSessionUiState>,
@@ -811,7 +821,7 @@ internal fun buildSidebarGroups(
                 sessions = projectSessions.sortedBy { it.branch ?: it.title ?: it.sessionId },
                 questions = questions
                     .filter { it.sessionId in sessionIds }
-                    .sortedBy { parseInstant(it.createdAt) ?: Instant.MAX }
+                    .sortedWith(questionListPriorityComparator)
             )
         }
         .sortedBy { it.projectName }
@@ -824,7 +834,7 @@ internal fun buildSidebarGroups(
             projectId = "__other_questions__",
             projectName = "Other questions",
             sessions = emptyList(),
-            questions = orphans.sortedBy { parseInstant(it.createdAt) ?: Instant.MAX }
+            questions = orphans.sortedWith(questionListPriorityComparator)
         )
     }
 }
@@ -855,7 +865,15 @@ private fun QuestionListItem(
                 )
                 .border(1.dp, if (selected) PostalColors.attentionBorder else PostalColors.elevated, shape)
                 .clickable(onClickLabel = "Open question", onClick = onClick)
-                .semantics { this.selected = selected }
+                .semantics {
+                    this.selected = selected
+                    contentDescription = listOf(
+                        question.prompt,
+                        "Question priority: ${question.urgency.displayLabel}",
+                        if (question.mode == QuestionMode.SINGLE) "Single choice" else "Multiple choice",
+                        "Asked ${formatTimeAgo(question.createdAt)}"
+                    ).joinToString(". ")
+                }
                 .heightIn(min = 56.dp)
                 .padding(10.dp),
             verticalAlignment = Alignment.Top
@@ -878,8 +896,9 @@ private fun QuestionListItem(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = listOfNotNull(
+                    text = listOf(
                         if (question.mode == QuestionMode.SINGLE) "Single choice" else "Multiple choice",
+                        question.urgency.displayLabel,
                         "asked ${formatTimeAgo(question.createdAt)}"
                     ).joinToString(" · "),
                     fontSize = 12.sp,
@@ -911,6 +930,8 @@ private fun QuestionListItem(
     }
 }
 
+internal const val QUESTION_QUEUE_TEST_TAG = "question-queue"
+
 @Composable
 private fun QuestionQueueView(
     title: String,
@@ -924,6 +945,7 @@ private fun QuestionQueueView(
 ) {
     Column(
         modifier = modifier
+            .testTag(QUESTION_QUEUE_TEST_TAG)
             .fillMaxWidth()
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -1153,15 +1175,20 @@ private fun QuestionDetailCard(
         Text(
             text = listOfNotNull(
                 if (question.mode == QuestionMode.SINGLE) "Choose one" else "Choose one or more",
+                question.urgency.displayLabel,
                 askedAgo?.let { "asked $it" }
-            ).joinToString(" · ").uppercase(),
-            style = PostalCaptionStyle
+            ).joinToString(" · "),
+            style = PostalCaptionStyle,
+            modifier = Modifier.semantics {
+                contentDescription = "Question detail priority: ${question.urgency.displayLabel}"
+            }
         )
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             question.options.forEach { option ->
                 BallotOptionRow(
                     option = option,
+                    mode = question.mode,
                     selected = question.selectedValues.contains(option.value),
                     enabled = actionsEnabled,
                     onToggle = {
@@ -1178,6 +1205,7 @@ private fun QuestionDetailCard(
                         label = "Other",
                         description = "Choose this when none of the listed answers fit. A note box will open below."
                     ),
+                    mode = question.mode,
                     selected = question.selectedValues.contains(OTHER_OPTION_VALUE),
                     enabled = actionsEnabled,
                     dashed = true,
@@ -1334,16 +1362,33 @@ private fun DecisionContextBox(
     }
 }
 
-/** Ballot-style option row: round mark, hairline divider, serif label. */
+/** Ballot-style option row with native radio/checkbox selection semantics. */
 @Composable
 private fun BallotOptionRow(
     option: QuestionOptionUiState,
+    mode: QuestionMode,
     selected: Boolean,
     enabled: Boolean,
     onToggle: () -> Unit,
     dashed: Boolean = false
 ) {
     val shape = RoundedCornerShape(8.dp)
+    val selectionModifier = when (mode) {
+        QuestionMode.SINGLE -> Modifier.selectable(
+            selected = selected,
+            enabled = enabled,
+            role = Role.RadioButton,
+            onClick = onToggle
+        )
+        QuestionMode.MULTI -> Modifier.toggleable(
+            value = selected,
+            enabled = enabled,
+            role = Role.Checkbox,
+            onValueChange = { onToggle() }
+        )
+    }
+    val markShape = if (mode == QuestionMode.SINGLE) CircleShape else RoundedCornerShape(4.dp)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1366,7 +1411,7 @@ private fun BallotOptionRow(
                     )
                 }
             )
-            .clickable(enabled = enabled, onClick = onToggle)
+            .then(selectionModifier)
             .padding(16.dp)
             .height(IntrinsicSize.Min),
         verticalAlignment = Alignment.Top
@@ -1378,7 +1423,7 @@ private fun BallotOptionRow(
                 .border(
                     2.dp,
                     if (selected) PostalColors.attention else PostalColors.borderStrong,
-                    CircleShape
+                    markShape
                 ),
             contentAlignment = Alignment.Center
         ) {
@@ -1386,7 +1431,7 @@ private fun BallotOptionRow(
                 Box(
                     modifier = Modifier
                         .size(10.dp)
-                        .background(PostalColors.attention, CircleShape)
+                        .background(PostalColors.attention, markShape)
                 )
             }
         }
@@ -1398,7 +1443,7 @@ private fun BallotOptionRow(
                 .background(PostalColors.border)
         )
         Spacer(modifier = Modifier.width(12.dp))
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = option.label,
                 fontFamily = PostalDisplayFontFamily,
@@ -1406,9 +1451,40 @@ private fun BallotOptionRow(
                 fontSize = 16.sp,
                 color = PostalColors.text
             )
+            if (option.provenance == QuestionOptionProvenance.CHAT) {
+                Text(
+                    text = "Suggested in Chat",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = PostalColors.historyForeground,
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .clip(CircleShape)
+                        .background(PostalColors.history.copy(alpha = 0.1f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
             option.description?.let { description ->
                 Text(
                     text = description,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = PostalColors.muted,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            option.meaning?.let { meaning ->
+                Text(
+                    text = "Meaning: $meaning",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = PostalColors.attentionForeground.copy(alpha = 0.8f),
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+            option.context?.let { context ->
+                Text(
+                    text = "Context: $context",
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     color = PostalColors.muted,
@@ -1678,13 +1754,9 @@ private fun stampAlpha(p: Float): Float = (p / 0.45f).coerceAtMost(1f)
 
 private fun lerp(from: Float, to: Float, fraction: Float): Float = from + (to - from) * fraction
 
-private fun parseInstant(timestamp: String): Instant? =
-    runCatching { Instant.parse(timestamp) }.getOrNull()
-        ?: runCatching { OffsetDateTime.parse(timestamp).toInstant() }.getOrNull()
-
 /** "just now", "5 min ago", "3 h ago", "2 days ago" — question age at a glance. */
 internal fun formatTimeAgo(timestamp: String, now: Instant = Instant.now()): String {
-    val then = parseInstant(timestamp) ?: return "unknown"
+    val then = parseQuestionInstant(timestamp) ?: return "unknown"
     val seconds = Duration.between(then, now).seconds.coerceAtLeast(0)
     if (seconds < 60) return "just now"
     val minutes = seconds / 60

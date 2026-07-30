@@ -5,7 +5,10 @@ import dev.pi.postbox.notification.PendingQuestionNotification
 import dev.pi.postbox.notification.PendingQuestionNotificationTracker
 import dev.pi.postbox.protocol.AskAnswerPayload
 import dev.pi.postbox.protocol.AskCancelPayload
+import dev.pi.postbox.protocol.AskOption
+import dev.pi.postbox.protocol.AskOptionProvenance
 import dev.pi.postbox.protocol.AskStatus
+import dev.pi.postbox.protocol.AskUrgency
 import dev.pi.postbox.protocol.HealthResponse
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.protocol.PostboxProtocolClient
@@ -54,6 +57,46 @@ class QuestionWorkflowViewModelTest {
         assertEquals(listOf("ask-single", "ask-multi"), state.pendingQuestions.map { it.requestId })
         assertEquals("Choose one deployment target", state.pendingQuestions.first().prompt)
         assertEquals("ask-single", state.visibleQuestion?.requestId)
+    }
+
+    @Test
+    fun pendingQuestionsAndInitialSelectionPrioritizeUrgencyThenAgeDeterministically() = runTest {
+        val requests = listOf(
+            singlePendingQuestion(requestId = "low", prompt = "Low priority").copy(
+                urgency = AskUrgency.LOW,
+                createdAt = "2026-06-25T11:00:00.000Z"
+            ),
+            singlePendingQuestion(requestId = "high-new", prompt = "New high priority").copy(
+                urgency = AskUrgency.HIGH,
+                createdAt = "2026-06-25T11:30:00.000Z"
+            ),
+            singlePendingQuestion(requestId = "high-offset-old", prompt = "Offset high priority").copy(
+                urgency = AskUrgency.HIGH,
+                createdAt = "2026-06-25T12:00:00+02:00"
+            ),
+            singlePendingQuestion(requestId = "normal", prompt = "Normal priority").copy(
+                urgency = AskUrgency.NORMAL,
+                createdAt = "2026-06-25T10:00:00.000Z"
+            ),
+            singlePendingQuestion(requestId = "high-old", prompt = "Old high priority").copy(
+                urgency = AskUrgency.HIGH,
+                createdAt = "2026-06-25T11:00:00.000Z"
+            ),
+            singlePendingQuestion(requestId = "high-old-b", prompt = "Tied high priority").copy(
+                urgency = AskUrgency.HIGH,
+                createdAt = "2026-06-25T11:00:00.000Z"
+            )
+        )
+
+        val viewModel = startedViewModel(RecordingPostboxProtocolClient(questionWorkflowState(requests)))
+
+        assertEquals(
+            listOf("high-offset-old", "high-old", "high-old-b", "high-new", "normal", "low"),
+            viewModel.state.pendingQuestions.map { it.requestId }
+        )
+        assertEquals(QuestionUrgency.HIGH, viewModel.state.pendingQuestions.first().urgency)
+        assertEquals("high-offset-old", viewModel.state.visibleQuestion?.requestId)
+        assertEquals(QuestionUrgency.HIGH, viewModel.state.visibleQuestion?.urgency)
     }
 
     @Test
@@ -259,6 +302,53 @@ class QuestionWorkflowViewModelTest {
         assertTrue(viewModel.state.visibleQuestion?.canSubmit ?: false)
 
         viewModel.toggleOption("disconnected")
+        assertEquals(emptyList<String>(), viewModel.state.visibleQuestion?.selectedValues)
+        assertFalse(viewModel.state.visibleQuestion?.canSubmit ?: true)
+    }
+
+    @Test
+    fun liveOptionUpdatesPreserveValidSelectionsExposeRichFieldsAndDropRemovedValues() = runTest {
+        val stream = FakePostboxStateStream()
+        val richOption = AskOption(
+            value = "tailnet",
+            label = "Use Tailnet HTTPS",
+            description = "Use the verified endpoint.",
+            meaning = "Keep traffic inside the tailnet.",
+            context = "The server has already passed its health check."
+        )
+        val initial = singlePendingQuestion().copy(options = listOf(richOption))
+        val viewModel = startedViewModel(
+            client = RecordingPostboxProtocolClient(questionWorkflowState(listOf(initial))),
+            stream = stream
+        )
+        viewModel.toggleOption("tailnet")
+
+        val suggested = AskOption(
+            value = "chat_stage",
+            label = "Stage first",
+            provenance = AskOptionProvenance.CHAT
+        )
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(listOf(initial.copy(options = listOf(richOption, suggested))))
+            )
+        )
+        advanceUntilIdle()
+
+        val updated = viewModel.state.visibleQuestion ?: error("Expected updated question")
+        assertEquals(listOf("tailnet"), updated.selectedValues)
+        assertEquals("Use the verified endpoint.", updated.options.first().description)
+        assertEquals("Keep traffic inside the tailnet.", updated.options.first().meaning)
+        assertEquals("The server has already passed its health check.", updated.options.first().context)
+        assertEquals(QuestionOptionProvenance.CHAT, updated.options.last().provenance)
+
+        stream.emit(
+            PostboxStateStreamStatus.Connected(
+                questionWorkflowState(listOf(initial.copy(options = listOf(suggested))))
+            )
+        )
+        advanceUntilIdle()
+
         assertEquals(emptyList<String>(), viewModel.state.visibleQuestion?.selectedValues)
         assertFalse(viewModel.state.visibleQuestion?.canSubmit ?: true)
     }
