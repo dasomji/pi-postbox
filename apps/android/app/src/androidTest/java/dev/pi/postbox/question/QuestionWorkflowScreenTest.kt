@@ -1,10 +1,10 @@
 package dev.pi.postbox.question
 
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertIsNotSelected
-import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
@@ -171,7 +171,7 @@ class QuestionWorkflowScreenTest {
             )
         }
 
-        composeRule.onNode(hasSetTextAction()).assertTextEquals("Keep my draft")
+        composeRule.onNode(hasSetTextAction()).assert(hasText("Keep my draft"))
         composeRule.onNode(hasText("Ship now", substring = true) and hasClickAction()).assertIsSelected()
         composeRule.onNode(hasText("Stage first", substring = true) and hasClickAction()).assertIsNotSelected()
     }
@@ -207,7 +207,7 @@ class QuestionWorkflowScreenTest {
             }
         )
 
-        composeRule.onNode(hasSetTextAction()).assertTextEquals("Restored secure note")
+        composeRule.onNode(hasSetTextAction()).assert(hasText("Restored secure note"))
         composeRule.onNode(hasSetTextAction()).performTextReplacement("Edited secure note")
         composeRule.runOnIdle { assertEquals("Edited secure note", forwardedNote) }
     }
