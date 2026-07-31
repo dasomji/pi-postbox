@@ -7,13 +7,14 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,7 +27,9 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -65,13 +68,16 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.pi.postbox.questionchat.QuestionChatActivationUiState
+import dev.pi.postbox.questionchat.QuestionChatAvailabilityError
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
+import dev.pi.postbox.questionchat.QuestionChatContextFallbackAvailability
 import dev.pi.postbox.questionchat.QuestionChatForkKind
 import dev.pi.postbox.questionchat.QuestionChatMessage
 import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatRenderedAssistantMessage
-import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatSnapshot
+import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatState
 import dev.pi.postbox.questionchat.QuestionChatToolActivity
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
@@ -79,11 +85,13 @@ import dev.pi.postbox.questionchat.SafeMarkdownBlock
 import dev.pi.postbox.questionchat.SafeMarkdownDocument
 import dev.pi.postbox.questionchat.SafeMarkdownInline
 import dev.pi.postbox.questionchat.SafeMarkdownRenderResult
+import dev.pi.postbox.ui.theme.PaperPlaneIcon
 import dev.pi.postbox.ui.theme.PostalColors
-import dev.pi.postbox.ui.theme.PostalDisplayFontFamily
 import java.net.URI
 
 private const val QUESTION_CHAT_CODE_COLLAPSED_LINES = 8
+internal const val QUESTION_CHAT_WORKSPACE_TEST_TAG = "questionChatWorkspace"
+internal const val QUESTION_CHAT_SEND_BUTTON_TEST_TAG = "questionChatSendButton"
 internal const val QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG = "questionChatWorkspaceQuestionTab"
 internal const val QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG = "questionChatWorkspaceChatTab"
 
@@ -110,7 +118,7 @@ internal fun QuestionChatTabRow(
                 .testTag(QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG)
         )
         QuestionChatWorkspaceTabButton(
-            text = "Question Chat",
+            text = "Chat",
             selected = selectedTab == QuestionChatWorkspaceTab.CHAT,
             onClick = { onSelectTab(QuestionChatWorkspaceTab.CHAT) },
             modifier = Modifier
@@ -156,10 +164,11 @@ internal fun QuestionChatPanel(
     onDraftChanged: (String) -> Unit,
     onSendDraft: () -> Unit,
     onSendStarter: (QuestionChatStarter) -> Unit,
+    onConfirmContextOnlyQuestionChat: () -> Unit,
     onStop: () -> Unit,
     onReviewSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier,
-    composerInsetModifier: Modifier = Modifier.imePadding()
+    composerInsetModifier: Modifier = Modifier
 ) {
     val owner = workflow.owner
     val session = owner.session
@@ -169,7 +178,13 @@ internal fun QuestionChatPanel(
     val clipboard = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
     var pendingLink by remember(workflow.key) { mutableStateOf<String?>(null) }
+    var showContextOnlyConfirmation by remember(workflow.key) { mutableStateOf(false) }
 
+    LaunchedEffect(owner.activation) {
+        if (owner.activation !is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation) {
+            showContextOnlyConfirmation = false
+        }
+    }
     LaunchedEffect(owner.composerFocusToken) {
         if (owner.composerFocusToken > 0L) {
             focusRequester.requestFocus()
@@ -189,122 +204,58 @@ internal fun QuestionChatPanel(
     val showStarters = snapshot?.messages?.isEmpty() != false
 
     Column(modifier = modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
-                .background(PostalColors.elevated, RoundedCornerShape(12.dp))
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        QuestionChatWorkspaceSurface(
+            borderColor = questionChatWorkspaceBorderColor(owner.activation, session?.connection),
+            statusDescription = questionChatWorkspaceStatusDescription(owner.activation, session?.connection),
+            modifier = Modifier.fillMaxSize()
         ) {
-            session?.let {
-                QuestionChatHeader(
-                    snapshot = it.snapshot,
-                    connection = it.connection,
-                    pendingStop = owner.pendingStopCommandId != null,
-                    onRetry = onRetry
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
-                    .background(PostalColors.surface, RoundedCornerShape(12.dp))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState)
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    if (showStarters) {
-                        Text(
-                            text = "Ask what you need to understand this decision.",
-                            fontSize = 14.sp,
-                            color = PostalColors.muted,
-                            lineHeight = 20.sp
-                        )
-                    }
-                    snapshot?.messages?.forEach { message ->
-                        QuestionChatMessageBubble(
-                            message = message,
-                            renderedAssistantMessage = owner.renderedAssistantMessages[message.id],
-                            onLinkClick = { pendingLink = it },
-                            onCopyCode = { clipboard.setText(AnnotatedString(it)) }
-                        )
-                    }
-                    snapshot?.tools?.takeIf { it.isNotEmpty() }?.let { tools ->
-                        QuestionChatToolRows(tools = tools, onReviewSuggestion = onReviewSuggestion)
-                    }
-                }
-            }
-            if (showStarters) {
-                StarterButtons(enabled = canInteract, onSendStarter = onSendStarter)
-            }
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(composerInsetModifier),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    OutlinedTextField(
-                        value = owner.draftText,
-                        onValueChange = onDraftChanged,
-                        modifier = Modifier
-                            .weight(1f)
-                            .focusRequester(focusRequester)
-                            .semantics { contentDescription = "Message Question Chat" },
-                        minLines = 2,
-                        maxLines = 4,
-                        enabled = canInteract,
-                        placeholder = { Text("Ask about this decision…") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = PostalColors.border,
-                            unfocusedBorderColor = PostalColors.border,
-                            focusedContainerColor = PostalColors.elevated,
-                            unfocusedContainerColor = PostalColors.elevated,
-                            disabledContainerColor = PostalColors.surface,
-                            cursorColor = PostalColors.attention,
-                            focusedPlaceholderColor = PostalColors.muted,
-                            unfocusedPlaceholderColor = PostalColors.muted,
-                            focusedTextColor = PostalColors.text,
-                            unfocusedTextColor = PostalColors.text,
-                            disabledTextColor = PostalColors.muted
-                        )
-                    )
-                    Button(
-                        onClick = onSendDraft,
-                        enabled = canSend,
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text("Send")
-                    }
-                }
-                if (showStop) {
-                    OutlinedButton(
-                        onClick = onStop,
-                        enabled = canInteract && owner.pendingStopCommandId == null && snapshot?.state == QuestionChatState.GENERATING,
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text(if (owner.pendingStopCommandId != null || snapshot?.state == QuestionChatState.STOPPING) "Stopping…" else "Stop")
-                    }
-                }
-                owner.actionMessage?.let { message ->
-                    Text(
-                        text = message,
-                        color = if (owner.actionUnavailable != null) PostalColors.dangerForeground else PostalColors.muted,
-                        fontSize = 12.sp,
-                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+            when {
+                session != null -> {
+                    QuestionChatSessionWorkspace(
+                        owner = owner,
+                        snapshot = snapshot ?: return@QuestionChatWorkspaceSurface,
+                        connection = session.connection,
+                        canInteract = canInteract,
+                        canSend = canSend,
+                        showStop = showStop,
+                        showStarters = showStarters,
+                        scrollState = scrollState,
+                        focusRequester = focusRequester,
+                        composerInsetModifier = composerInsetModifier,
+                        onRetry = onRetry,
+                        onDraftChanged = onDraftChanged,
+                        onSendDraft = onSendDraft,
+                        onSendStarter = onSendStarter,
+                        onStop = onStop,
+                        onReviewSuggestion = onReviewSuggestion,
+                        onLinkClick = { pendingLink = it },
+                        onCopyCode = { clipboard.setText(AnnotatedString(it)) }
                     )
                 }
-                snapshot?.let { QuestionChatModelDisclosure(it) }
+                owner.activation is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> {
+                    val activation = owner.activation as QuestionChatActivationUiState.AwaitingContextFallbackConfirmation
+                    QuestionChatAvailabilityWorkspace(
+                        error = activation.error,
+                        contextOnlyConfirmationVisible = showContextOnlyConfirmation,
+                        onShowContextOnlyConfirmation = { showContextOnlyConfirmation = true },
+                        onDismissContextOnlyConfirmation = { showContextOnlyConfirmation = false },
+                        onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat
+                    )
+                }
+                owner.activation is QuestionChatActivationUiState.Unavailable -> {
+                    QuestionChatUnavailableWorkspace(
+                        error = (owner.activation as QuestionChatActivationUiState.Unavailable).error,
+                        onRetry = onRetry
+                    )
+                }
+                owner.activation == QuestionChatActivationUiState.Probing -> {
+                    QuestionChatActivationWorkspace(message = "Checking for an existing Chat…")
+                }
+                owner.activation == QuestionChatActivationUiState.ActivatingExact ||
+                    owner.activation == QuestionChatActivationUiState.ActivatingContextFallback ||
+                    owner.activation == QuestionChatActivationUiState.Idle -> {
+                    QuestionChatActivationWorkspace(message = "Starting Chat…")
+                }
             }
         }
     }
@@ -348,44 +299,59 @@ internal fun QuestionChatPanel(
 }
 
 @Composable
-private fun QuestionChatHeader(
+private fun QuestionChatWorkspaceSurface(
+    borderColor: Color,
+    statusDescription: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier = modifier
+            .testTag(QUESTION_CHAT_WORKSPACE_TEST_TAG)
+            .border(2.dp, borderColor, shape)
+            .padding(16.dp)
+            .semantics {
+                contentDescription = statusDescription
+                liveRegion = LiveRegionMode.Polite
+            },
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        content = content
+    )
+}
+
+@Composable
+private fun QuestionChatSessionWorkspace(
+    owner: dev.pi.postbox.questionchat.QuestionChatOwnerState,
     snapshot: QuestionChatSnapshot,
     connection: QuestionChatConnectionState,
-    pendingStop: Boolean,
-    onRetry: () -> Unit
+    canInteract: Boolean,
+    canSend: Boolean,
+    showStop: Boolean,
+    showStarters: Boolean,
+    scrollState: androidx.compose.foundation.ScrollState,
+    focusRequester: FocusRequester,
+    composerInsetModifier: Modifier,
+    onRetry: () -> Unit,
+    onDraftChanged: (String) -> Unit,
+    onSendDraft: () -> Unit,
+    onSendStarter: (QuestionChatStarter) -> Unit,
+    onStop: () -> Unit,
+    onReviewSuggestion: (String) -> Unit,
+    onLinkClick: (String) -> Unit,
+    onCopyCode: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "Question Chat",
-                    fontFamily = PostalDisplayFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    color = PostalColors.text
-                )
-                if (snapshot.forkKind == QuestionChatForkKind.CONTEXT_ONLY) {
-                    Text(
-                        text = "Context-only · degraded",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = PostalColors.warningForeground,
-                        modifier = Modifier
-                            .background(PostalColors.warning.copy(alpha = 0.1f), RoundedCornerShape(999.dp))
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
-                }
-            }
-            QuestionChatStateChip(label = questionChatStateLabel(snapshot.state, pendingStop))
-        }
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (snapshot.forkKind == QuestionChatForkKind.CONTEXT_ONLY) {
+            Text(
+                text = "Context-only · degraded",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = PostalColors.warningForeground,
+                modifier = Modifier
+                    .background(PostalColors.warning.copy(alpha = 0.1f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            )
             Text(
                 text = "This context-only interviewer uses persisted handoff context, not an exact fork of the originating Pi session.",
                 fontSize = 12.sp,
@@ -393,58 +359,154 @@ private fun QuestionChatHeader(
                 color = PostalColors.warningForeground
             )
         }
-        QuestionChatConnectionBanner(connection = connection, onRetry = onRetry)
+        QuestionChatConnectionStatus(connection = connection, onRetry = onRetry)
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (showStarters) {
+                    Text(
+                        text = "Ask what you need to understand this decision.",
+                        fontSize = 14.sp,
+                        color = PostalColors.muted,
+                        lineHeight = 20.sp
+                    )
+                }
+                snapshot.messages.forEach { message ->
+                    QuestionChatMessageBubble(
+                        message = message,
+                        renderedAssistantMessage = owner.renderedAssistantMessages[message.id],
+                        onLinkClick = onLinkClick,
+                        onCopyCode = onCopyCode
+                    )
+                }
+                snapshot.tools.takeIf { it.isNotEmpty() }?.let { tools ->
+                    QuestionChatToolRows(tools = tools, onReviewSuggestion = onReviewSuggestion)
+                }
+            }
+        }
+        if (showStarters) {
+            StarterButtons(enabled = canInteract, onSendStarter = onSendStarter)
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(composerInsetModifier),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                OutlinedTextField(
+                    value = owner.draftText,
+                    onValueChange = onDraftChanged,
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester)
+                        .semantics { contentDescription = "Message Question Chat" },
+                    minLines = 2,
+                    maxLines = 4,
+                    enabled = canInteract,
+                    placeholder = { Text("Ask about this decision…") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = PostalColors.border,
+                        unfocusedBorderColor = PostalColors.border,
+                        focusedContainerColor = PostalColors.elevated,
+                        unfocusedContainerColor = PostalColors.elevated,
+                        disabledContainerColor = PostalColors.surface,
+                        cursorColor = PostalColors.attention,
+                        focusedPlaceholderColor = PostalColors.muted,
+                        unfocusedPlaceholderColor = PostalColors.muted,
+                        focusedTextColor = PostalColors.text,
+                        unfocusedTextColor = PostalColors.text,
+                        disabledTextColor = PostalColors.muted
+                    )
+                )
+                QuestionChatSendBubble(
+                    label = if (snapshot.state == QuestionChatState.GENERATING) "Steer" else "Send",
+                    enabled = canSend,
+                    onClick = onSendDraft
+                )
+            }
+            if (showStop) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    OutlinedButton(
+                        onClick = onStop,
+                        enabled = canInteract && owner.pendingStopCommandId == null && snapshot.state == QuestionChatState.GENERATING,
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text(if (owner.pendingStopCommandId != null || snapshot.state == QuestionChatState.STOPPING) "Stopping…" else "Stop")
+                    }
+                }
+            }
+            owner.actionMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = if (owner.actionUnavailable != null) PostalColors.dangerForeground else PostalColors.muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                )
+            }
+            QuestionChatModelDisclosure(snapshot)
+        }
     }
 }
 
 @Composable
-private fun QuestionChatStateChip(label: String) {
-    val background = when (label) {
-        "Interrupted" -> PostalColors.danger.copy(alpha = 0.1f)
-        "Stopped", "Stopping…" -> PostalColors.warning.copy(alpha = 0.1f)
-        else -> PostalColors.success.copy(alpha = 0.12f)
-    }
-    val foreground = when (label) {
-        "Interrupted" -> PostalColors.dangerForeground
-        "Stopped", "Stopping…" -> PostalColors.warningForeground
-        else -> PostalColors.successForeground
-    }
-    Text(
-        text = label,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Medium,
-        color = foreground,
+private fun QuestionChatSendBubble(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CircleShape,
+        contentPadding = PaddingValues(0.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = PostalColors.attention,
+            contentColor = PostalColors.attentionContrast,
+            disabledContainerColor = PostalColors.attention.copy(alpha = 0.35f),
+            disabledContentColor = PostalColors.attentionContrast.copy(alpha = 0.8f)
+        ),
         modifier = Modifier
-            .background(background, RoundedCornerShape(999.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp)
-            .semantics { liveRegion = LiveRegionMode.Polite }
-    )
+            .size(52.dp)
+            .testTag(QUESTION_CHAT_SEND_BUTTON_TEST_TAG)
+            .semantics { contentDescription = label }
+    ) {
+        Icon(
+            imageVector = PaperPlaneIcon,
+            contentDescription = null,
+            tint = PostalColors.attentionContrast,
+            modifier = Modifier.size(20.dp)
+        )
+    }
 }
 
 @Composable
-private fun QuestionChatConnectionBanner(
+private fun QuestionChatConnectionStatus(
     connection: QuestionChatConnectionState,
     onRetry: () -> Unit
 ) {
-    if (connection == QuestionChatConnectionState.ONLINE) return
     val label = when (connection) {
-        QuestionChatConnectionState.OFFLINE -> "Question Chat offline · showing last synchronized messages"
-        QuestionChatConnectionState.SYNCHRONIZING -> "Question Chat stale · resynchronizing"
-        QuestionChatConnectionState.TERMINAL -> "Question Chat ended"
-        QuestionChatConnectionState.ONLINE -> return
-    }
+        QuestionChatConnectionState.OFFLINE -> "Chat offline · showing last synchronized messages"
+        QuestionChatConnectionState.SYNCHRONIZING -> "Chat stale · resynchronizing"
+        QuestionChatConnectionState.TERMINAL -> "Chat ended"
+        QuestionChatConnectionState.ONLINE -> null
+    } ?: return
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, PostalColors.warning.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
-            .background(PostalColors.warning.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
-            .padding(12.dp),
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = label,
-            color = PostalColors.warningForeground,
+            color = if (connection == QuestionChatConnectionState.TERMINAL) PostalColors.dangerForeground else PostalColors.warningForeground,
             fontSize = 13.sp,
             modifier = Modifier
                 .weight(1f)
@@ -456,6 +518,143 @@ private fun QuestionChatConnectionBanner(
                 Text("Retry")
             }
         }
+    }
+}
+
+@Composable
+private fun QuestionChatActivationWorkspace(message: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = message,
+            fontSize = 14.sp,
+            color = PostalColors.subtle,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+        )
+    }
+}
+
+@Composable
+private fun QuestionChatUnavailableWorkspace(
+    error: QuestionChatAvailabilityError,
+    onRetry: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = error.message,
+            fontSize = 14.sp,
+            color = PostalColors.dangerForeground
+        )
+        questionChatContextUnavailableMessage(error)?.let { message ->
+            Text(
+                text = message,
+                fontSize = 13.sp,
+                color = PostalColors.subtle,
+                lineHeight = 19.sp
+            )
+        }
+        OutlinedButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) {
+            Text("Retry")
+        }
+    }
+}
+
+@Composable
+private fun QuestionChatAvailabilityWorkspace(
+    error: QuestionChatAvailabilityError,
+    contextOnlyConfirmationVisible: Boolean,
+    onShowContextOnlyConfirmation: () -> Unit,
+    onDismissContextOnlyConfirmation: () -> Unit,
+    onConfirmContextOnlyQuestionChat: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = error.message,
+            fontSize = 14.sp,
+            color = PostalColors.dangerForeground
+        )
+        OutlinedButton(onClick = onShowContextOnlyConfirmation, modifier = Modifier.heightIn(min = 48.dp)) {
+            Text("Start context-only interviewer")
+        }
+        if (contextOnlyConfirmationVisible) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Start context-only interviewer?",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PostalColors.text
+                )
+                Text(
+                    text = "This starts a fresh private interviewer session from persisted handoff context. It is not an exact fork of the originating Pi Session.",
+                    fontSize = 14.sp,
+                    color = PostalColors.subtle,
+                    lineHeight = 20.sp
+                )
+                OutlinedButton(onClick = onConfirmContextOnlyQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Confirm context-only interviewer")
+                }
+                TextButton(onClick = onDismissContextOnlyConfirmation, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Cancel context-only interviewer")
+                }
+            }
+        }
+    }
+}
+
+private fun questionChatContextUnavailableMessage(error: QuestionChatAvailabilityError): String? {
+    val contextFallback = error.contextFallback as? QuestionChatContextFallbackAvailability.Unavailable ?: return null
+    return when (contextFallback.reason) {
+        "missing_codebase_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase context."
+        "missing_problem_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted problem context."
+        else -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase or problem context."
+    }
+}
+
+private fun questionChatWorkspaceBorderColor(
+    activation: QuestionChatActivationUiState,
+    connection: QuestionChatConnectionState?
+): Color = if (connection == QuestionChatConnectionState.ONLINE) {
+    PostalColors.success
+} else {
+    when (activation) {
+        QuestionChatActivationUiState.Probing,
+        QuestionChatActivationUiState.ActivatingExact,
+        QuestionChatActivationUiState.ActivatingContextFallback,
+        QuestionChatActivationUiState.Idle,
+        is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation,
+        is QuestionChatActivationUiState.Unavailable -> PostalColors.danger
+    }
+}
+
+private fun questionChatWorkspaceStatusDescription(
+    activation: QuestionChatActivationUiState,
+    connection: QuestionChatConnectionState?
+): String = when (connection) {
+    QuestionChatConnectionState.ONLINE -> "Chat connected and usable"
+    QuestionChatConnectionState.OFFLINE -> "Chat offline"
+    QuestionChatConnectionState.SYNCHRONIZING -> "Chat stale"
+    QuestionChatConnectionState.TERMINAL -> "Chat ended"
+    null -> when (activation) {
+        QuestionChatActivationUiState.Probing -> "Checking for an existing Chat"
+        QuestionChatActivationUiState.ActivatingExact,
+        QuestionChatActivationUiState.ActivatingContextFallback,
+        QuestionChatActivationUiState.Idle -> "Starting Chat"
+        is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> "Chat exact activation unavailable"
+        is QuestionChatActivationUiState.Unavailable -> "Chat unavailable"
     }
 }
 
@@ -649,14 +848,6 @@ private fun QuestionChatToolRow(
             }
         }
     }
-}
-
-private fun questionChatStateLabel(state: QuestionChatState, pendingStop: Boolean): String = when {
-    pendingStop || state == QuestionChatState.STOPPING -> "Stopping…"
-    state == QuestionChatState.GENERATING -> "Answering…"
-    state == QuestionChatState.STOPPED -> "Stopped"
-    state == QuestionChatState.INTERRUPTED -> "Interrupted"
-    else -> "Ready"
 }
 
 private fun questionChatToolLabel(tool: String): String = when (tool) {

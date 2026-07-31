@@ -115,6 +115,32 @@ val PaperPlaneIcon: ImageVector = ImageVector.Builder(
     }
 }.build()
 
+/** Note outline, matching the web add-note action glyph. */
+val NoteIcon: ImageVector = ImageVector.Builder(
+    name = "Note",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f
+).apply {
+    path(
+        stroke = SolidColor(Color.White),
+        strokeLineWidth = 2f,
+        strokeLineCap = StrokeCap.Round,
+        strokeLineJoin = StrokeJoin.Round
+    ) {
+        moveTo(4f, 4f)
+        lineTo(20f, 4f)
+        lineTo(20f, 20f)
+        lineTo(4f, 20f)
+        close()
+        moveTo(8f, 9f)
+        lineTo(16f, 9f)
+        moveTo(8f, 13f)
+        lineTo(13f, 13f)
+    }
+}.build()
+
 /** Envelope outline, matching the web "Why this decision matters" stamp glyph. */
 val EnvelopeIcon: ImageVector = ImageVector.Builder(
     name = "Envelope",

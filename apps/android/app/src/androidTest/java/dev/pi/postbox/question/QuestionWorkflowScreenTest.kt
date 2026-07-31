@@ -269,7 +269,7 @@ class QuestionWorkflowScreenTest {
     }
 
     @Test
-    fun pendingQuestionShowsChatActionInTheQuestionClusterAndKeepsTabsHiddenBeforeActivation() {
+    fun pendingQuestionShowsBottomTabsBeforeActivationAndChatTabStartsExactActivation() {
         val question = QuestionDetailUiState(
             requestId = "ask-chat-start",
             sessionId = "session-1",
@@ -283,32 +283,40 @@ class QuestionWorkflowScreenTest {
             forkReference = null,
             availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
         )
+        val chatKey = QuestionChatBindingKey("https://postbox.example/", question.requestId)
+        val screenState = mutableStateOf(
+            questionScreenState(question).copy(
+                questionChat = questionChatWorkflowState(key = chatKey)
+            )
+        )
         var starts = 0
 
         setQuestionScreen(
-            stateProvider = {
-                questionScreenState(question).copy(
-                    questionChat = questionChatWorkflowState(
-                        key = QuestionChatBindingKey("https://postbox.example/", question.requestId)
+            stateProvider = { screenState.value },
+            onStartQuestionChat = {
+                starts += 1
+                val current = screenState.value.questionChat ?: error("Expected question chat workflow")
+                screenState.value = screenState.value.copy(
+                    questionChat = current.copy(
+                        selectedTab = QuestionChatWorkspaceTab.CHAT,
+                        owner = current.owner.copy(activation = QuestionChatActivationUiState.ActivatingExact)
                     )
                 )
-            },
-            onStartQuestionChat = { starts += 1 }
+            }
         )
 
-        composeRule.onAllNodesWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).assertCountEquals(0)
-        composeRule.onAllNodesWithText("Start Question Chat").assertCountEquals(0)
-        composeRule.onAllNodesWithText("Question Chat is temporary and first tries an exact fork of the asking Pi session.")
-            .assertCountEquals(0)
+        composeRule.onAllNodesWithTag(QUESTION_DETAIL_CHAT_ACTION_TEST_TAG).assertCountEquals(0)
+        composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG).assertIsDisplayed().assertIsSelected()
+        composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).assertIsDisplayed().performClick()
 
-        composeRule.onNodeWithTag(QUESTION_DETAIL_CHAT_ACTION_TEST_TAG).performScrollTo().assertIsDisplayed().performClick()
-
-        composeRule.onNodeWithText("+ Add a note").performScrollTo().assertIsDisplayed()
         composeRule.runOnIdle { assertEquals(1, starts) }
+        composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).assertIsSelected()
+        composeRule.onNodeWithText("Starting Chat…").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Question Chat").assertCountEquals(0)
     }
 
     @Test
-    fun exactForkFailureKeepsQuestionVisibleAndRequiresExplicitContextOnlyConfirmation() {
+    fun exactForkFailureShowsContextFallbackInTheChatTabAndRequiresExplicitConfirmation() {
         val question = QuestionDetailUiState(
             requestId = "ask-context-fallback",
             sessionId = "session-1",
@@ -322,15 +330,17 @@ class QuestionWorkflowScreenTest {
             forkReference = null,
             availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
         )
+        val chatKey = QuestionChatBindingKey("https://postbox.example/", question.requestId)
         var confirms = 0
 
         setQuestionScreen(
             stateProvider = {
                 questionScreenState(question).copy(
                     questionChat = questionChatWorkflowState(
-                        key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
+                        key = chatKey,
+                        selectedTab = QuestionChatWorkspaceTab.CHAT,
                         owner = QuestionChatOwnerState(
-                            key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
+                            key = chatKey,
                             activation = QuestionChatActivationUiState.AwaitingContextFallbackConfirmation(
                                 QuestionChatAvailabilityError(
                                     code = QuestionChatAvailabilityCode.SOURCE_LEAF_MISSING,
@@ -345,8 +355,8 @@ class QuestionWorkflowScreenTest {
             onConfirmContextOnlyQuestionChat = { confirms += 1 }
         )
 
-        composeRule.onAllNodesWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).assertCountEquals(0)
-        composeRule.onNodeWithTag(QUESTION_DETAIL_CHAT_ACTION_TEST_TAG).performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).assertIsSelected()
+        composeRule.onNodeWithText("The recorded source leaf is unavailable.").assertIsDisplayed()
         composeRule.onNodeWithText("Start context-only interviewer").performScrollTo().assertIsDisplayed().performClick()
         composeRule.onNodeWithText("This starts a fresh private interviewer session from persisted handoff context. It is not an exact fork of the originating Pi Session.")
             .assertIsDisplayed()
@@ -376,7 +386,6 @@ class QuestionWorkflowScreenTest {
             questionScreenState(question).copy(
                 questionChat = questionChatWorkflowState(
                     key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
-                    tabsVisible = true,
                     selectedTab = QuestionChatWorkspaceTab.CHAT,
                     owner = QuestionChatOwnerState(
                         key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
@@ -420,12 +429,13 @@ class QuestionWorkflowScreenTest {
         composeRule.runOnIdle { assertEquals(QuestionChatWorkspaceTab.QUESTION, selectedTab) }
         composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG).assertIsSelected()
         composeRule.onNodeWithText("+ Add a note").assertIsDisplayed()
-        composeRule.onAllNodesWithText("Chat").assertCountEquals(0)
+        composeRule.onAllNodesWithTag(QUESTION_DETAIL_CHAT_ACTION_TEST_TAG).assertCountEquals(0)
+        composeRule.onAllNodesWithText("Question Chat").assertCountEquals(0)
 
         composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).performClick()
         composeRule.onNodeWithText("Elaborate").assertIsDisplayed().performClick()
         composeRule.runOnIdle { assertEquals("ELABORATE", starter) }
-        composeRule.onNodeWithText("Send").performClick()
+        composeRule.onNodeWithTag(QUESTION_CHAT_SEND_BUTTON_TEST_TAG).performClick()
         composeRule.runOnIdle { assertEquals(1, sentDrafts) }
     }
 
@@ -616,7 +626,7 @@ class QuestionWorkflowScreenTest {
 
     private fun questionChatWorkflowState(
         key: QuestionChatBindingKey = QuestionChatBindingKey("https://postbox.example/", "ask-chat"),
-        tabsVisible: Boolean = false,
+        tabsVisible: Boolean = true,
         selectedTab: QuestionChatWorkspaceTab = QuestionChatWorkspaceTab.QUESTION,
         owner: QuestionChatOwnerState = QuestionChatOwnerState(key = key)
     ) = QuestionChatWorkflowUiState(

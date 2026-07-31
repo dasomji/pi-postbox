@@ -7,7 +7,18 @@ import org.junit.Test
 
 class QuestionChatWorkspaceShellTest {
     @Test
-    fun discoveryRevealsTabsButDefaultsToQuestion() {
+    fun bindShowsTabsBeforeActivationAndDefaultsToQuestion() {
+        val shell = QuestionChatWorkspaceShell()
+
+        shell.bind(QuestionChatBindingKey("https://postbox.example/", "ask-1"))
+
+        assertTrue(shell.state.tabsVisible)
+        assertEquals(QuestionChatWorkspaceTab.QUESTION, shell.state.selectedTab)
+        assertFalse(shell.state.runtimeReady)
+    }
+
+    @Test
+    fun discoveryKeepsTabsVisibleAndQuestionSelected() {
         val shell = QuestionChatWorkspaceShell()
 
         shell.bind(QuestionChatBindingKey("https://postbox.example/", "ask-1"))
@@ -15,10 +26,11 @@ class QuestionChatWorkspaceShellTest {
 
         assertTrue(shell.state.tabsVisible)
         assertEquals(QuestionChatWorkspaceTab.QUESTION, shell.state.selectedTab)
+        assertTrue(shell.state.runtimeReady)
     }
 
     @Test
-    fun activationSuccessRevealsTabsAndSelectsChat() {
+    fun activationSuccessKeepsTabsVisibleAndSelectsChat() {
         val shell = QuestionChatWorkspaceShell()
 
         shell.bind(QuestionChatBindingKey("https://postbox.example/", "ask-1"))
@@ -26,10 +38,11 @@ class QuestionChatWorkspaceShellTest {
 
         assertTrue(shell.state.tabsVisible)
         assertEquals(QuestionChatWorkspaceTab.CHAT, shell.state.selectedTab)
+        assertTrue(shell.state.runtimeReady)
     }
 
     @Test
-    fun sameKeyPreservesSelectedTabButNewKeyResetsUntilStarted() {
+    fun sameKeyPreservesSelectedTabButNewKeyResetsToVisibleQuestionTab() {
         val key = QuestionChatBindingKey("https://postbox.example/", "ask-1")
         val shell = QuestionChatWorkspaceShell()
 
@@ -40,11 +53,13 @@ class QuestionChatWorkspaceShellTest {
 
         assertTrue(shell.state.tabsVisible)
         assertEquals(QuestionChatWorkspaceTab.QUESTION, shell.state.selectedTab)
+        assertTrue(shell.state.runtimeReady)
 
         shell.bind(QuestionChatBindingKey("https://postbox.example/", "ask-2"))
 
-        assertFalse(shell.state.tabsVisible)
+        assertTrue(shell.state.tabsVisible)
         assertEquals(QuestionChatWorkspaceTab.QUESTION, shell.state.selectedTab)
+        assertFalse(shell.state.runtimeReady)
     }
 
     @Test

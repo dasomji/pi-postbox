@@ -4,6 +4,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -12,8 +15,11 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performScrollTo
@@ -30,6 +36,7 @@ import dev.pi.postbox.questionchat.QuestionChatSnapshot
 import dev.pi.postbox.questionchat.QuestionChatState
 import dev.pi.postbox.questionchat.QuestionChatToolActivity
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
+import dev.pi.postbox.ui.theme.PostalColors
 import dev.pi.postbox.ui.theme.PostboxTheme
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -50,6 +57,7 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
+                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize(),
@@ -62,7 +70,7 @@ class QuestionChatUiTest {
 
         val rootBottom = composeRule.onRoot().fetchSemanticsNode().boundsInRoot.bottom
         val stopBottom = composeRule.onNodeWithText("Stop").fetchSemanticsNode().boundsInRoot.bottom
-        val sendBottom = composeRule.onNodeWithText("Send").fetchSemanticsNode().boundsInRoot.bottom
+        val sendBottom = composeRule.onNodeWithTag(QUESTION_CHAT_SEND_BUTTON_TEST_TAG).fetchSemanticsNode().boundsInRoot.bottom
 
         val expectedGap = with(composeRule.density) { insetBottom.toPx() }
         assertTrue(rootBottom - stopBottom >= expectedGap - 1f)
@@ -70,7 +78,7 @@ class QuestionChatUiTest {
     }
 
     @Test
-    fun emptyReadyChatShowsTheStarterSetOnlyOnce() {
+    fun readyChatUsesConnectedBorderAndSendBubbleWithoutLegacyHeaderChrome() {
         composeRule.setContent {
             TestTheme {
                 QuestionChatPanel(
@@ -79,6 +87,7 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
+                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -86,15 +95,48 @@ class QuestionChatUiTest {
             }
         }
 
-        composeRule.onAllNodesWithText("Elaborate").assertCountEquals(1)
-        composeRule.onAllNodesWithText("Pro–Cons").assertCountEquals(1)
-        composeRule.onAllNodesWithText("Teach me").assertCountEquals(1)
-        composeRule.onNodeWithText("Send").assertIsDisplayed()
-        composeRule.onAllNodesWithText("Steer").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Question Chat").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Ready").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Send").assertCountEquals(0)
+        composeRule.onNodeWithContentDescription("Send").assertIsDisplayed().assertHasClickAction()
+        assertWorkspaceBorderColor(PostalColors.success)
     }
 
     @Test
-    fun generatingChatMatchesTheWebActionHierarchy() {
+    fun offlineChatUsesDisconnectedBorderAndVisibleStatusCopy() {
+        composeRule.setContent {
+            TestTheme {
+                QuestionChatPanel(
+                    workflow = questionChatWorkflow(
+                        state = QuestionChatState.READY,
+                        connection = QuestionChatConnectionState.OFFLINE,
+                        messages = listOf(
+                            QuestionChatMessage.Assistant(
+                                id = "assistant-1",
+                                text = "Keep this rendered.",
+                                status = QuestionChatMessage.Assistant.Status.FINAL
+                            )
+                        )
+                    ),
+                    onRetry = {},
+                    onDraftChanged = {},
+                    onSendDraft = {},
+                    onSendStarter = {},
+                    onConfirmContextOnlyQuestionChat = {},
+                    onStop = {},
+                    onReviewSuggestion = {},
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Chat offline · showing last synchronized messages").assertIsDisplayed()
+        composeRule.onNodeWithText("Keep this rendered.").assertIsDisplayed()
+        assertWorkspaceBorderColor(PostalColors.danger)
+    }
+
+    @Test
+    fun generatingChatUsesSteerBubbleAndStopWithoutVisibleSendLabel() {
         composeRule.setContent {
             TestTheme {
                 QuestionChatPanel(
@@ -122,6 +164,7 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
+                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -129,13 +172,13 @@ class QuestionChatUiTest {
             }
         }
 
-        composeRule.onNodeWithText("Answering…").assertIsDisplayed()
-        composeRule.onNodeWithText("Send").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Steer").assertIsDisplayed()
         composeRule.onNodeWithText("Stop").assertIsDisplayed()
         composeRule.onNodeWithText("Read").assertIsDisplayed()
-        composeRule.onAllNodesWithText("Question Chat answering").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Send").assertCountEquals(0)
         composeRule.onAllNodesWithText("Steer").assertCountEquals(0)
         composeRule.onAllNodesWithText("Elaborate").assertCountEquals(0)
+        assertWorkspaceBorderColor(PostalColors.success)
     }
 
     @Test
@@ -167,6 +210,7 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
+                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -190,6 +234,7 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
+                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -202,6 +247,22 @@ class QuestionChatUiTest {
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
             .assertHeightIsAtLeast(48.dp)
     }
+
+    private fun assertWorkspaceBorderColor(expected: Color) {
+        val pixels = composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_TEST_TAG).captureToImage().toPixelMap()
+        val sample = pixels[pixels.width / 2, minOf(4, pixels.height - 1)]
+        assertColorNear(expected, sample)
+    }
+
+    private fun assertColorNear(expected: Color, actual: Color, tolerance: Int = 8) {
+        fun channel(value: Int, shift: Int): Int = value shr shift and 0xFF
+        val expectedArgb = expected.toArgb()
+        val actualArgb = actual.toArgb()
+        assertTrue(kotlin.math.abs(channel(expectedArgb, 24) - channel(actualArgb, 24)) <= tolerance)
+        assertTrue(kotlin.math.abs(channel(expectedArgb, 16) - channel(actualArgb, 16)) <= tolerance)
+        assertTrue(kotlin.math.abs(channel(expectedArgb, 8) - channel(actualArgb, 8)) <= tolerance)
+        assertTrue(kotlin.math.abs(channel(expectedArgb, 0) - channel(actualArgb, 0)) <= tolerance)
+    }
 }
 
 @Composable
@@ -213,6 +274,7 @@ private fun TestTheme(content: @Composable () -> Unit) {
 
 private fun questionChatWorkflow(
     state: QuestionChatState = QuestionChatState.GENERATING,
+    connection: QuestionChatConnectionState = QuestionChatConnectionState.ONLINE,
     messages: List<QuestionChatMessage> = emptyList(),
     tools: List<QuestionChatToolActivity> = emptyList()
 ): QuestionChatWorkflowUiState {
@@ -235,7 +297,7 @@ private fun questionChatWorkflow(
                     messages = messages,
                     tools = tools
                 ),
-                connection = QuestionChatConnectionState.ONLINE
+                connection = connection
             ),
             draftText = "Explain this"
         ),

@@ -23,6 +23,7 @@ import dev.pi.postbox.protocol.StateSnapshot
 import dev.pi.postbox.push.PrefetchedStateSnapshotCache
 import dev.pi.postbox.questionchat.OkHttpQuestionChatEventTransport
 import dev.pi.postbox.questionchat.OkHttpQuestionChatHttpClient
+import dev.pi.postbox.questionchat.QuestionChatActivationUiState
 import dev.pi.postbox.questionchat.QuestionChatBindingKey
 import dev.pi.postbox.questionchat.QuestionChatIntent
 import dev.pi.postbox.questionchat.QuestionChatOwner
@@ -142,12 +143,19 @@ class QuestionWorkflowViewModel(
     }
 
     fun startQuestionChat() {
+        questionChatShell.selectTab(QuestionChatWorkspaceTab.CHAT)
+        updateQuestionChatState()
+        val ownerState = questionChatOwner.state.value
+        if (ownerState.knownStarted && ownerState.session != null) return
+        if (questionChatActivationRequested || ownerState.activation == QuestionChatActivationUiState.ActivatingExact) return
         questionChatActivationRequested = true
         questionChatOwner.dispatch(QuestionChatIntent.ActivateExact)
         promoteActivatedQuestionChatIfReady()
     }
 
     fun confirmContextOnlyQuestionChat() {
+        questionChatShell.selectTab(QuestionChatWorkspaceTab.CHAT)
+        updateQuestionChatState()
         questionChatActivationRequested = true
         questionChatOwner.dispatch(QuestionChatIntent.ActivateContextFallback)
         promoteActivatedQuestionChatIfReady()
@@ -838,7 +846,7 @@ class QuestionWorkflowViewModel(
 
     private fun promoteActivatedQuestionChatIfReady() {
         val ownerState = questionChatOwner.state.value
-        if (questionChatActivationRequested && ownerState.knownStarted && ownerState.session != null && !questionChatShell.state.tabsVisible) {
+        if (questionChatActivationRequested && ownerState.knownStarted && ownerState.session != null && !questionChatShell.state.runtimeReady) {
             questionChatShell.onActivatedRuntimeReady()
             questionChatActivationRequested = false
             updateQuestionChatState()
@@ -873,7 +881,7 @@ class QuestionWorkflowViewModel(
 
     private fun updateQuestionChatState() {
         val ownerState = questionChatOwner.state.value
-        if (ownerState.key != null && ownerState.knownStarted && ownerState.session != null && !questionChatShell.state.tabsVisible) {
+        if (ownerState.key != null && ownerState.knownStarted && ownerState.session != null && !questionChatShell.state.runtimeReady) {
             if (questionChatActivationRequested) {
                 questionChatShell.onActivatedRuntimeReady()
                 questionChatActivationRequested = false

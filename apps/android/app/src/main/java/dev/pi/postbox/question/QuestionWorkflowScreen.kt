@@ -89,14 +89,12 @@ import androidx.compose.ui.unit.sp
 import dev.pi.postbox.BuildConfig
 import dev.pi.postbox.R
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
-import dev.pi.postbox.questionchat.QuestionChatActivationUiState
-import dev.pi.postbox.questionchat.QuestionChatAvailabilityError
-import dev.pi.postbox.questionchat.QuestionChatContextFallbackAvailability
 import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.CrossIcon
 import dev.pi.postbox.ui.theme.EnvelopeIcon
 import dev.pi.postbox.ui.theme.MenuIcon
+import dev.pi.postbox.ui.theme.NoteIcon
 import dev.pi.postbox.ui.theme.PaperPlaneIcon
 import dev.pi.postbox.ui.theme.PostalCaptionStyle
 import dev.pi.postbox.ui.theme.PostalColors
@@ -146,7 +144,7 @@ fun QuestionWorkflowScreen(
     val coroutineScope = rememberCoroutineScope()
 
     BackHandler(
-        enabled = state.questionChat?.tabsVisible == true && state.questionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT,
+        enabled = state.questionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT,
         onBack = { onHandleBack() }
     )
 
@@ -212,8 +210,7 @@ fun QuestionWorkflowScreen(
                 .background(PostalColors.canvas)
         ) {
             val activeQuestionChat = state.questionChat?.takeIf {
-                it.tabsVisible &&
-                    state.navigationSelection is QuestionNavigationSelection.Question &&
+                state.navigationSelection is QuestionNavigationSelection.Question &&
                     state.visibleQuestion?.requestId == it.key.requestId
             }
             Column(modifier = Modifier.fillMaxSize()) {
@@ -334,13 +331,14 @@ fun QuestionWorkflowScreen(
                                             it.requestId == visibleQuestion.requestId
                                         }
                                         val questionChat = state.questionChat?.takeIf { it.key.requestId == visibleQuestion.requestId }
-                                        if (questionChat?.tabsVisible == true && questionChat.selectedTab == QuestionChatWorkspaceTab.CHAT) {
+                                        if (questionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT) {
                                             QuestionChatPanel(
                                                 workflow = questionChat,
                                                 onRetry = onRetryQuestionChat,
                                                 onDraftChanged = onQuestionChatDraftChanged,
                                                 onSendDraft = onSendQuestionChatDraft,
                                                 onSendStarter = onSendQuestionChatStarter,
+                                                onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
                                                 onStop = onStopQuestionChat,
                                                 onReviewSuggestion = onReviewQuestionChatSuggestion,
                                                 modifier = Modifier.weight(1f)
@@ -360,8 +358,6 @@ fun QuestionWorkflowScreen(
                                                     onSubmitAnswer(note)
                                                 },
                                                 onCancelQuestion = onCancelQuestion,
-                                                onStartQuestionChat = onStartQuestionChat,
-                                                onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
                                                 modifier = Modifier.weight(1f)
                                             )
                                         }
@@ -375,7 +371,17 @@ fun QuestionWorkflowScreen(
                 activeQuestionChat?.let { questionChat ->
                     QuestionChatTabRow(
                         selectedTab = questionChat.selectedTab,
-                        onSelectTab = onSelectQuestionChatTab
+                        onSelectTab = { tab ->
+                            if (
+                                tab == QuestionChatWorkspaceTab.CHAT &&
+                                    !questionChat.owner.knownStarted &&
+                                    questionChat.owner.session == null
+                            ) {
+                                onStartQuestionChat()
+                            } else {
+                                onSelectQuestionChatTab(tab)
+                            }
+                        }
                     )
                 }
 
@@ -1180,29 +1186,14 @@ private fun QuestionDetailCard(
     onRetryDraftSave: () -> Unit,
     onSubmitAnswer: (note: String?) -> Unit,
     onCancelQuestion: (note: String?) -> Unit,
-    onStartQuestionChat: () -> Unit,
-    onConfirmContextOnlyQuestionChat: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showNote by remember(question.requestId) { mutableStateOf(question.note.isNotBlank()) }
     var showHandoffContext by remember(question.requestId) { mutableStateOf(false) }
-    var showContextOnlyConfirmation by remember(questionChat?.key) { mutableStateOf(false) }
     val actionsEnabled = question.terminalState == null && !question.isSubmitting
-    val questionChatActivation = questionChat?.owner?.activation
-    val showQuestionChatAction =
-        questionChat != null &&
-            !questionChat.tabsVisible &&
-            questionChatActivation !is QuestionChatActivationUiState.Probing &&
-            questionChatActivation !is QuestionChatActivationUiState.ActivatingExact &&
-            questionChatActivation !is QuestionChatActivationUiState.ActivatingContextFallback
 
     LaunchedEffect(question.requestId, question.note) {
         if (question.note.isNotBlank()) showNote = true
-    }
-    LaunchedEffect(questionChat?.key, questionChatActivation) {
-        if (questionChatActivation !is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation) {
-            showContextOnlyConfirmation = false
-        }
     }
 
     Column(
@@ -1300,19 +1291,6 @@ private fun QuestionDetailCard(
                 contentDescription = "Question detail priority: ${question.urgency.displayLabel}"
             }
         )
-
-        questionChat?.let { workflow ->
-            QuestionChatActivationNotice(
-                workflow = workflow,
-                showContextOnlyConfirmation = showContextOnlyConfirmation,
-                onShowContextOnlyConfirmation = { showContextOnlyConfirmation = true },
-                onDismissContextOnlyConfirmation = { showContextOnlyConfirmation = false },
-                onConfirmContextOnlyQuestionChat = {
-                    showContextOnlyConfirmation = false
-                    onConfirmContextOnlyQuestionChat()
-                }
-            )
-        }
 
         val highlightedOptionValue = questionChat?.suggestedOptionReview?.optionValue
         val reviewHighlightToken = questionChat?.suggestedOptionReview?.token ?: 0L
@@ -1424,15 +1402,8 @@ private fun QuestionDetailCard(
                 onClick = { onSubmitAnswer(question.note.nullIfBlank()) },
                 modifier = Modifier.testTag(QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG)
             )
-            if (showQuestionChatAction) {
-                PostalQuestionChatButton(
-                    enabled = actionsEnabled,
-                    onClick = onStartQuestionChat,
-                    modifier = Modifier.testTag(QUESTION_DETAIL_CHAT_ACTION_TEST_TAG)
-                )
-            }
-            SubtleTextButton(
-                text = if (showNote) "Hide note" else "+ Add a note",
+            PostalAddNoteButton(
+                showNote = showNote,
                 enabled = true,
                 onClick = { showNote = !showNote }
             )
@@ -1442,128 +1413,6 @@ private fun QuestionDetailCard(
                 onClick = { onCancelQuestion(question.note.nullIfBlank()) }
             )
         }
-    }
-}
-
-@Composable
-private fun QuestionChatActivationNotice(
-    workflow: QuestionChatWorkflowUiState,
-    showContextOnlyConfirmation: Boolean,
-    onShowContextOnlyConfirmation: () -> Unit,
-    onDismissContextOnlyConfirmation: () -> Unit,
-    onConfirmContextOnlyQuestionChat: () -> Unit
-) {
-    if (workflow.tabsVisible) return
-    when (val activation = workflow.owner.activation) {
-        QuestionChatActivationUiState.Idle -> Unit
-        QuestionChatActivationUiState.Probing -> PostalMessageCard(
-            title = "Question Chat",
-            body = "Checking for an existing Question Chat…"
-        )
-        QuestionChatActivationUiState.ActivatingExact,
-        QuestionChatActivationUiState.ActivatingContextFallback -> PostalMessageCard(
-            title = "Question Chat",
-            body = "Starting Question Chat…"
-        )
-        is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> {
-            QuestionChatActivationErrorPanel(
-                error = activation.error,
-                actionLabel = "Start context-only interviewer",
-                onAction = onShowContextOnlyConfirmation
-            )
-            if (showContextOnlyConfirmation) {
-                QuestionChatContextOnlyConfirmationPanel(
-                    onConfirm = onConfirmContextOnlyQuestionChat,
-                    onCancel = onDismissContextOnlyConfirmation
-                )
-            }
-        }
-        is QuestionChatActivationUiState.Unavailable -> {
-            QuestionChatActivationErrorPanel(error = activation.error)
-        }
-    }
-}
-
-@Composable
-private fun QuestionChatActivationErrorPanel(
-    error: QuestionChatAvailabilityError,
-    actionLabel: String? = null,
-    onAction: (() -> Unit)? = null
-) {
-    PostalPanel(
-        borderColor = PostalColors.warning.copy(alpha = 0.45f),
-        backgroundColor = PostalColors.warning.copy(alpha = 0.08f).compositeOver(PostalColors.elevated)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = error.message,
-                fontSize = 14.sp,
-                color = PostalColors.dangerForeground
-            )
-            questionChatContextUnavailableMessage(error)?.let { message ->
-                Text(
-                    text = message,
-                    fontSize = 13.sp,
-                    color = PostalColors.subtle,
-                    lineHeight = 19.sp
-                )
-            }
-            if (actionLabel != null && onAction != null) {
-                OutlinedButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text(actionLabel)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun QuestionChatContextOnlyConfirmationPanel(
-    onConfirm: () -> Unit,
-    onCancel: () -> Unit
-) {
-    PostalPanel(
-        borderColor = PostalColors.warning.copy(alpha = 0.45f),
-        backgroundColor = PostalColors.warning.copy(alpha = 0.08f).compositeOver(PostalColors.elevated)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "Start context-only interviewer?",
-                fontFamily = PostalDisplayFontFamily,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 16.sp,
-                color = PostalColors.text
-            )
-            Text(
-                text = "This starts a fresh private interviewer session from persisted handoff context. It is not an exact fork of the originating Pi Session.",
-                fontSize = 14.sp,
-                color = PostalColors.subtle,
-                lineHeight = 20.sp
-            )
-            OutlinedButton(onClick = onConfirm, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("Confirm context-only interviewer")
-            }
-            SubtleTextButton(
-                text = "Cancel context-only interviewer",
-                enabled = true,
-                onClick = onCancel
-            )
-        }
-    }
-}
-
-private fun questionChatContextUnavailableMessage(error: QuestionChatAvailabilityError): String? {
-    val contextFallback = error.contextFallback as? QuestionChatContextFallbackAvailability.Unavailable ?: return null
-    return when (contextFallback.reason) {
-        "missing_codebase_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase context."
-        "missing_problem_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted problem context."
-        else -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase or problem context."
     }
 }
 
@@ -1857,7 +1706,8 @@ private fun PostalSubmitButton(
 }
 
 @Composable
-private fun PostalQuestionChatButton(
+private fun PostalAddNoteButton(
+    showNote: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -1866,22 +1716,31 @@ private fun PostalQuestionChatButton(
     Box(
         modifier = modifier
             .alpha(if (enabled) 1f else 0.5f)
-            .shadow(if (enabled) 3.dp else 0.dp, outerShape, ambientColor = PostalColors.shadow, spotColor = PostalColors.shadow)
+            .shadow(if (enabled) 2.dp else 0.dp, outerShape, ambientColor = PostalColors.shadow, spotColor = PostalColors.shadow)
             .clip(outerShape)
-            .background(PostalColors.history)
-            .border(1.dp, PostalColors.historyForeground, outerShape)
+            .background(PostalColors.elevated)
+            .border(1.dp, PostalColors.borderStrong, outerShape)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(2.dp)
-            .border(2.dp, PostalColors.elevated.copy(alpha = 0.25f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 24.dp, vertical = 12.dp)
     ) {
-        Text(
-            text = "Chat",
-            fontFamily = PostalDisplayFontFamily,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp,
-            color = PostalColors.elevated,
-            modifier = Modifier.padding(horizontal = 36.dp, vertical = 12.dp)
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = NoteIcon,
+                contentDescription = null,
+                tint = PostalColors.text,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = if (showNote) "Hide note" else "+ Add a note",
+                fontFamily = PostalDisplayFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = PostalColors.text
+            )
+        }
     }
 }
 

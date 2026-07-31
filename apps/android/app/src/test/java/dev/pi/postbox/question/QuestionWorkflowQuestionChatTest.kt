@@ -67,7 +67,7 @@ class QuestionWorkflowQuestionChatTest {
     }
 
     @Test
-    fun activatingQuestionChatSelectsChatAndBackReturnsToQuestion() = runTest {
+    fun activatingQuestionChatShowsTabsImmediatelySelectsChatAndBackReturnsToQuestion() = runTest {
         val snapshot = readyChatSnapshot()
         val transport = FakeWorkflowQuestionChatEventTransport().apply { openReady.complete(Unit) }
         val owner = QuestionChatOwner(
@@ -86,11 +86,13 @@ class QuestionWorkflowQuestionChatTest {
             questionChatOwner = owner
         )
 
-        assertFalse(viewModel.state.questionChat?.tabsVisible ?: true)
+        assertTrue(viewModel.state.questionChat?.tabsVisible == true)
+        assertEquals(QuestionChatWorkspaceTab.QUESTION, viewModel.state.questionChat?.selectedTab)
 
         viewModel.startQuestionChat()
-        advanceUntilIdle()
 
+        assertEquals(QuestionChatWorkspaceTab.CHAT, viewModel.state.questionChat?.selectedTab)
+        advanceUntilIdle()
         assertEquals(QuestionChatWorkspaceTab.CHAT, viewModel.state.questionChat?.selectedTab)
         assertTrue(viewModel.handleBack())
         assertEquals(QuestionChatWorkspaceTab.QUESTION, viewModel.state.questionChat?.selectedTab)

@@ -14,6 +14,7 @@ data class QuestionChatWorkspaceShellState(
     val key: QuestionChatBindingKey? = null,
     val tabsVisible: Boolean = false,
     val selectedTab: QuestionChatWorkspaceTab = QuestionChatWorkspaceTab.QUESTION,
+    val runtimeReady: Boolean = false,
     val questionFocusToken: Long = 0L,
     val suggestedOptionReview: QuestionChatSuggestedOptionReview? = null
 )
@@ -24,17 +25,28 @@ class QuestionChatWorkspaceShell {
 
     fun bind(key: QuestionChatBindingKey?) {
         if (state.key == key) return
-        state = QuestionChatWorkspaceShellState(key = key)
+        state = QuestionChatWorkspaceShellState(
+            key = key,
+            tabsVisible = key != null
+        )
     }
 
     fun onRecoveredRuntimeDiscovered() {
         if (state.key == null) return
-        state = state.copy(tabsVisible = true, selectedTab = QuestionChatWorkspaceTab.QUESTION)
+        state = state.copy(
+            tabsVisible = true,
+            selectedTab = QuestionChatWorkspaceTab.QUESTION,
+            runtimeReady = true
+        )
     }
 
     fun onActivatedRuntimeReady() {
         if (state.key == null) return
-        state = state.copy(tabsVisible = true, selectedTab = QuestionChatWorkspaceTab.CHAT)
+        state = state.copy(
+            tabsVisible = true,
+            selectedTab = QuestionChatWorkspaceTab.CHAT,
+            runtimeReady = true
+        )
     }
 
     fun selectTab(tab: QuestionChatWorkspaceTab) {
