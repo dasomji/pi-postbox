@@ -1,7 +1,11 @@
 package dev.pi.postbox.question
 
+import android.app.Activity
+import android.content.ContextWrapper
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -12,12 +16,20 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -47,7 +59,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -87,13 +102,23 @@ import dev.pi.postbox.questionchat.SafeMarkdownInline
 import dev.pi.postbox.questionchat.SafeMarkdownRenderResult
 import dev.pi.postbox.ui.theme.PaperPlaneIcon
 import dev.pi.postbox.ui.theme.PostalColors
+import dev.pi.postbox.ui.theme.StopIcon
 import java.net.URI
+import kotlinx.coroutines.delay
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 private const val QUESTION_CHAT_CODE_COLLAPSED_LINES = 8
 internal const val QUESTION_CHAT_WORKSPACE_TEST_TAG = "questionChatWorkspace"
 internal const val QUESTION_CHAT_SEND_BUTTON_TEST_TAG = "questionChatSendButton"
+internal const val QUESTION_CHAT_HISTORY_TEST_TAG = "questionChatHistory"
+internal const val QUESTION_CHAT_COMPOSER_TEST_TAG = "questionChatComposer"
+internal const val QUESTION_CHAT_COMPOSER_ROW_TEST_TAG = "questionChatComposerRow"
 internal const val QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG = "questionChatWorkspaceQuestionTab"
 internal const val QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG = "questionChatWorkspaceChatTab"
+
+internal fun questionChatStarterVisualTestTag(starter: QuestionChatStarter): String =
+    "questionChatStarter${starter.name}Visual"
 
 @Composable
 internal fun QuestionChatTabRow(
@@ -168,15 +193,18 @@ internal fun QuestionChatPanel(
     onStop: () -> Unit,
     onReviewSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier,
-    composerInsetModifier: Modifier = Modifier
+    forceKeyboardVisibleToken: Int = 0
 ) {
     val owner = workflow.owner
     val session = owner.session
     val snapshot = session?.snapshot
-    val scrollState = rememberScrollState()
+    val historyState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val uriHandler = LocalUriHandler.current
+    val view = LocalView.current
     var pendingLink by remember(workflow.key) { mutableStateOf<String?>(null) }
     var showContextOnlyConfirmation by remember(workflow.key) { mutableStateOf(false) }
 
@@ -190,18 +218,35 @@ internal fun QuestionChatPanel(
             focusRequester.requestFocus()
         }
     }
-    LaunchedEffect(workflow.key, snapshot?.sequence, snapshot?.tools?.size) {
-        if (scrollState.maxValue - scrollState.value < 160) {
-            scrollState.scrollTo(scrollState.maxValue)
+    LaunchedEffect(forceKeyboardVisibleToken) {
+        if (forceKeyboardVisibleToken > 0) {
+            delay(250)
+            focusRequester.requestFocus()
+            delay(100)
+            keyboardController?.show()
+            view.requestFocus()
+            val inputMethodManager = context.getSystemService(InputMethodManager::class.java)
+            inputMethodManager?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+            context.findActivity()?.window?.let { window ->
+                WindowCompat.getInsetsController(window, view)?.show(WindowInsetsCompat.Type.ime())
+            }
         }
     }
-
     val canInteract = session?.connection == QuestionChatConnectionState.ONLINE
     val canSend =
         canInteract && owner.pendingSend == null && owner.draftText.isNotBlank() && snapshot?.state != QuestionChatState.STOPPING
     val showStop =
         snapshot?.state == QuestionChatState.GENERATING || snapshot?.state == QuestionChatState.STOPPING || owner.pendingStopCommandId != null
     val showStarters = snapshot?.messages?.isEmpty() != false
+
+    LaunchedEffect(workflow.key, snapshot?.sequence, snapshot?.messages?.size, snapshot?.tools?.size, showStarters) {
+        val totalItems = questionChatContentItemCount(snapshot, showStarters)
+        if (totalItems == 0) return@LaunchedEffect
+        val lastVisibleIndex = historyState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+        if (historyState.layoutInfo.totalItemsCount == 0 || totalItems - lastVisibleIndex <= 3) {
+            historyState.scrollToItem(totalItems - 1)
+        }
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         QuestionChatWorkspaceSurface(
@@ -219,9 +264,8 @@ internal fun QuestionChatPanel(
                         canSend = canSend,
                         showStop = showStop,
                         showStarters = showStarters,
-                        scrollState = scrollState,
+                        historyState = historyState,
                         focusRequester = focusRequester,
-                        composerInsetModifier = composerInsetModifier,
                         onRetry = onRetry,
                         onDraftChanged = onDraftChanged,
                         onSendDraft = onSendDraft,
@@ -329,9 +373,8 @@ private fun QuestionChatSessionWorkspace(
     canSend: Boolean,
     showStop: Boolean,
     showStarters: Boolean,
-    scrollState: androidx.compose.foundation.ScrollState,
+    historyState: LazyListState,
     focusRequester: FocusRequester,
-    composerInsetModifier: Modifier,
     onRetry: () -> Unit,
     onDraftChanged: (String) -> Unit,
     onSendDraft: () -> Unit,
@@ -341,6 +384,17 @@ private fun QuestionChatSessionWorkspace(
     onLinkClick: (String) -> Unit,
     onCopyCode: (String) -> Unit
 ) {
+    val composerActionLabel = when {
+        showStop -> "Stop"
+        snapshot.state == QuestionChatState.GENERATING -> "Steer"
+        else -> "Send"
+    }
+    val composerActionEnabled = if (showStop) {
+        canInteract && owner.pendingStopCommandId == null && snapshot.state == QuestionChatState.GENERATING
+    } else {
+        canSend
+    }
+
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (snapshot.forkKind == QuestionChatForkKind.CONTEXT_ONLY) {
             Text(
@@ -360,14 +414,16 @@ private fun QuestionChatSessionWorkspace(
             )
         }
         QuestionChatConnectionStatus(connection = connection, onRetry = onRetry)
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                if (showStarters) {
+        LazyColumn(
+            state = historyState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .testTag(QUESTION_CHAT_HISTORY_TEST_TAG),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (showStarters) {
+                item {
                     Text(
                         text = "Ask what you need to understand this decision.",
                         fontSize = 14.sp,
@@ -375,7 +431,9 @@ private fun QuestionChatSessionWorkspace(
                         lineHeight = 20.sp
                     )
                 }
-                snapshot.messages.forEach { message ->
+            }
+            snapshot.messages.forEach { message ->
+                item(key = message.id) {
                     QuestionChatMessageBubble(
                         message = message,
                         renderedAssistantMessage = owner.renderedAssistantMessages[message.id],
@@ -383,7 +441,9 @@ private fun QuestionChatSessionWorkspace(
                         onCopyCode = onCopyCode
                     )
                 }
-                snapshot.tools.takeIf { it.isNotEmpty() }?.let { tools ->
+            }
+            snapshot.tools.takeIf { it.isNotEmpty() }?.let { tools ->
+                item(key = "tools") {
                     QuestionChatToolRows(tools = tools, onReviewSuggestion = onReviewSuggestion)
                 }
             }
@@ -394,11 +454,23 @@ private fun QuestionChatSessionWorkspace(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(composerInsetModifier),
+                .testTag(QUESTION_CHAT_COMPOSER_TEST_TAG)
+                .windowInsetsPadding(WindowInsets.ime.only(WindowInsetsSides.Bottom)),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            owner.actionMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = if (owner.actionUnavailable != null) PostalColors.dangerForeground else PostalColors.muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                )
+            }
+            QuestionChatModelDisclosure(snapshot)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag(QUESTION_CHAT_COMPOSER_ROW_TEST_TAG),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
@@ -427,60 +499,52 @@ private fun QuestionChatSessionWorkspace(
                         disabledTextColor = PostalColors.muted
                     )
                 )
-                QuestionChatSendBubble(
-                    label = if (snapshot.state == QuestionChatState.GENERATING) "Steer" else "Send",
-                    enabled = canSend,
-                    onClick = onSendDraft
+                QuestionChatComposerActionBubble(
+                    label = composerActionLabel,
+                    enabled = composerActionEnabled,
+                    showStop = showStop,
+                    onClick = if (showStop) onStop else onSendDraft
                 )
             }
-            if (showStop) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    OutlinedButton(
-                        onClick = onStop,
-                        enabled = canInteract && owner.pendingStopCommandId == null && snapshot.state == QuestionChatState.GENERATING,
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text(if (owner.pendingStopCommandId != null || snapshot.state == QuestionChatState.STOPPING) "Stopping…" else "Stop")
-                    }
-                }
-            }
-            owner.actionMessage?.let { message ->
-                Text(
-                    text = message,
-                    color = if (owner.actionUnavailable != null) PostalColors.dangerForeground else PostalColors.muted,
-                    fontSize = 12.sp,
-                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
-                )
-            }
-            QuestionChatModelDisclosure(snapshot)
         }
     }
 }
 
 @Composable
-private fun QuestionChatSendBubble(
+private fun QuestionChatComposerActionBubble(
     label: String,
     enabled: Boolean,
+    showStop: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = if (showStop) {
+        ButtonDefaults.buttonColors(
+            containerColor = PostalColors.danger,
+            contentColor = PostalColors.attentionContrast,
+            disabledContainerColor = PostalColors.danger.copy(alpha = 0.35f),
+            disabledContentColor = PostalColors.attentionContrast.copy(alpha = 0.8f)
+        )
+    } else {
+        ButtonDefaults.buttonColors(
+            containerColor = PostalColors.attention,
+            contentColor = PostalColors.attentionContrast,
+            disabledContainerColor = PostalColors.attention.copy(alpha = 0.35f),
+            disabledContentColor = PostalColors.attentionContrast.copy(alpha = 0.8f)
+        )
+    }
     Button(
         onClick = onClick,
         enabled = enabled,
         shape = CircleShape,
         contentPadding = PaddingValues(0.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = PostalColors.attention,
-            contentColor = PostalColors.attentionContrast,
-            disabledContainerColor = PostalColors.attention.copy(alpha = 0.35f),
-            disabledContentColor = PostalColors.attentionContrast.copy(alpha = 0.8f)
-        ),
+        colors = colors,
         modifier = Modifier
             .size(52.dp)
             .testTag(QUESTION_CHAT_SEND_BUTTON_TEST_TAG)
             .semantics { contentDescription = label }
     ) {
         Icon(
-            imageVector = PaperPlaneIcon,
+            imageVector = if (showStop) StopIcon else PaperPlaneIcon,
             contentDescription = null,
             tint = PostalColors.attentionContrast,
             modifier = Modifier.size(20.dp)
@@ -658,6 +722,16 @@ private fun questionChatWorkspaceStatusDescription(
     }
 }
 
+private fun questionChatContentItemCount(
+    snapshot: QuestionChatSnapshot?,
+    showStarters: Boolean
+): Int {
+    if (snapshot == null) return 0
+    return snapshot.messages.size +
+        (if (snapshot.tools.isNotEmpty()) 1 else 0) +
+        (if (showStarters) 1 else 0)
+}
+
 @Composable
 private fun QuestionChatModelDisclosure(snapshot: QuestionChatSnapshot) {
     Text(
@@ -685,13 +759,26 @@ private fun StarterButtons(
             QuestionChatStarter.PRO_CONS to "Pro–Cons",
             QuestionChatStarter.TEACH_ME to "Teach me"
         ).forEach { (starter, label) ->
-            OutlinedButton(
-                onClick = { onSendStarter(starter) },
-                enabled = enabled,
-                shape = RoundedCornerShape(999.dp),
-                modifier = Modifier.heightIn(min = 48.dp)
+            Box(
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .semantics(mergeDescendants = true) {}
+                    .clickable(
+                        enabled = enabled,
+                        role = Role.Button,
+                        onClick = { onSendStarter(starter) }
+                    ),
+                contentAlignment = Alignment.Center
             ) {
-                Text(text = label, fontSize = 13.sp)
+                Box(
+                    modifier = Modifier
+                        .testTag(questionChatStarterVisualTestTag(starter))
+                        .border(1.dp, PostalColors.border, RoundedCornerShape(999.dp))
+                        .background(PostalColors.elevated, RoundedCornerShape(999.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(text = label, fontSize = 12.sp, color = if (enabled) PostalColors.text else PostalColors.muted)
+                }
             }
         }
     }
@@ -1049,4 +1136,10 @@ private fun safeQuestionChatHost(url: String): String? = try {
     URI(url).host
 } catch (_: Exception) {
     null
+}
+
+private tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

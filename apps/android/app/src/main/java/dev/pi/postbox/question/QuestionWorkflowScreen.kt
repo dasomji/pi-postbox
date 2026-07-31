@@ -18,11 +18,13 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -70,6 +72,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -213,6 +216,9 @@ fun QuestionWorkflowScreen(
                 state.navigationSelection is QuestionNavigationSelection.Question &&
                     state.visibleQuestion?.requestId == it.key.requestId
             }
+            val hideBottomChatChrome =
+                activeQuestionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT &&
+                    WindowInsets.ime.getBottom(LocalDensity.current) > 0
             Column(modifier = Modifier.fillMaxSize()) {
                 WorkflowTopBar(
                     state = state,
@@ -368,7 +374,7 @@ fun QuestionWorkflowScreen(
                     }
                 }
 
-                activeQuestionChat?.let { questionChat ->
+                activeQuestionChat?.takeIf { !hideBottomChatChrome }?.let { questionChat ->
                     QuestionChatTabRow(
                         selectedTab = questionChat.selectedTab,
                         onSelectTab = { tab ->
@@ -385,16 +391,18 @@ fun QuestionWorkflowScreen(
                     )
                 }
 
-                // Airmail envelope edge pinned along the bottom of the screen,
-                // resting above the gesture navigation area.
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .height(3.dp)
-                        .alpha(0.7f)
-                        .postalStripes()
-                )
+                if (!hideBottomChatChrome) {
+                    // Airmail envelope edge pinned along the bottom of the screen,
+                    // resting above the gesture navigation area.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .height(3.dp)
+                            .alpha(0.7f)
+                            .postalStripes()
+                    )
+                }
             }
 
             if (stampedRequestId != null) {
@@ -1032,6 +1040,7 @@ private fun QuestionListItem(
 internal const val QUESTION_PULL_REFRESH_TEST_TAG = "question-pull-refresh"
 internal const val QUESTION_QUEUE_TEST_TAG = "question-queue"
 internal const val QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG = "question-detail-submit-action"
+internal const val QUESTION_DETAIL_NOTE_ACTION_TEST_TAG = "question-detail-note-action"
 internal const val QUESTION_DETAIL_CHAT_ACTION_TEST_TAG = "question-detail-chat-action"
 
 @Composable
@@ -1394,24 +1403,36 @@ private fun QuestionDetailCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp, bottom = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            PostalSubmitButton(
-                enabled = actionsEnabled && question.canSubmit,
-                onClick = { onSubmitAnswer(question.note.nullIfBlank()) },
-                modifier = Modifier.testTag(QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG)
-            )
-            PostalAddNoteButton(
-                showNote = showNote,
-                enabled = true,
-                onClick = { showNote = !showNote }
-            )
-            SubtleTextButton(
-                text = "Cancel",
-                enabled = actionsEnabled && question.availableActions.contains(QuestionAction.CANCEL),
-                onClick = { onCancelQuestion(question.note.nullIfBlank()) }
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PostalSubmitButton(
+                    enabled = actionsEnabled && question.canSubmit,
+                    onClick = { onSubmitAnswer(question.note.nullIfBlank()) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG)
+                )
+                PostalAddNoteButton(
+                    showNote = showNote,
+                    enabled = true,
+                    onClick = { showNote = !showNote },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(QUESTION_DETAIL_NOTE_ACTION_TEST_TAG)
+                )
+            }
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                SubtleTextButton(
+                    text = "Cancel",
+                    enabled = actionsEnabled && question.availableActions.contains(QuestionAction.CANCEL),
+                    onClick = { onCancelQuestion(question.note.nullIfBlank()) }
+                )
+            }
         }
     }
 }
@@ -1694,7 +1715,7 @@ private fun PostalSubmitButton(
                 modifier = Modifier.size(16.dp)
             )
             Text(
-                text = "Submit answer".uppercase(),
+                text = "Submit",
                 fontFamily = PostalDisplayFontFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp,
@@ -1734,7 +1755,7 @@ private fun PostalAddNoteButton(
                 modifier = Modifier.size(16.dp)
             )
             Text(
-                text = if (showNote) "Hide note" else "+ Add a note",
+                text = "Add note",
                 fontFamily = PostalDisplayFontFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp,

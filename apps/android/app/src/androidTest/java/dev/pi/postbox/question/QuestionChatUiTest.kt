@@ -1,7 +1,6 @@
 package dev.pi.postbox.question
 
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -12,11 +11,12 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
-import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -33,6 +33,7 @@ import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatOwnerState
 import dev.pi.postbox.questionchat.QuestionChatSessionUiState
 import dev.pi.postbox.questionchat.QuestionChatSnapshot
+import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatState
 import dev.pi.postbox.questionchat.QuestionChatToolActivity
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
@@ -45,37 +46,6 @@ import org.junit.Test
 class QuestionChatUiTest {
     @get:Rule
     val composeRule = createComposeRule()
-
-    @Test
-    fun composerControlsRespectProvidedImeAndNavigationInsets() {
-        val insetBottom = 120.dp
-        composeRule.setContent {
-            TestTheme {
-                QuestionChatPanel(
-                    workflow = questionChatWorkflow(),
-                    onRetry = {},
-                    onDraftChanged = {},
-                    onSendDraft = {},
-                    onSendStarter = {},
-                    onConfirmContextOnlyQuestionChat = {},
-                    onStop = {},
-                    onReviewSuggestion = {},
-                    modifier = Modifier.fillMaxSize(),
-                    composerInsetModifier = Modifier.padding(bottom = insetBottom)
-                )
-            }
-        }
-
-        composeRule.waitForIdle()
-
-        val rootBottom = composeRule.onRoot().fetchSemanticsNode().boundsInRoot.bottom
-        val stopBottom = composeRule.onNodeWithText("Stop").fetchSemanticsNode().boundsInRoot.bottom
-        val sendBottom = composeRule.onNodeWithTag(QUESTION_CHAT_SEND_BUTTON_TEST_TAG).fetchSemanticsNode().boundsInRoot.bottom
-
-        val expectedGap = with(composeRule.density) { insetBottom.toPx() }
-        assertTrue(rootBottom - stopBottom >= expectedGap - 1f)
-        assertTrue(rootBottom - sendBottom >= expectedGap - 1f)
-    }
 
     @Test
     fun readyChatUsesConnectedBorderAndSendBubbleWithoutLegacyHeaderChrome() {
@@ -99,6 +69,7 @@ class QuestionChatUiTest {
         composeRule.onAllNodesWithText("Ready").assertCountEquals(0)
         composeRule.onAllNodesWithText("Send").assertCountEquals(0)
         composeRule.onNodeWithContentDescription("Send").assertIsDisplayed().assertHasClickAction()
+        composeRule.onAllNodesWithContentDescription("Stop").assertCountEquals(0)
         assertWorkspaceBorderColor(PostalColors.success)
     }
 
@@ -136,7 +107,7 @@ class QuestionChatUiTest {
     }
 
     @Test
-    fun generatingChatUsesSteerBubbleAndStopWithoutVisibleSendLabel() {
+    fun generatingChatSwapsTheComposerActionToStopWithoutRenderingASeparateStopButton() {
         composeRule.setContent {
             TestTheme {
                 QuestionChatPanel(
@@ -172,11 +143,12 @@ class QuestionChatUiTest {
             }
         }
 
-        composeRule.onNodeWithContentDescription("Steer").assertIsDisplayed()
-        composeRule.onNodeWithText("Stop").assertIsDisplayed()
+        composeRule.onNodeWithTag(QUESTION_CHAT_SEND_BUTTON_TEST_TAG).assertIsDisplayed().assertHasClickAction()
+        composeRule.onNodeWithContentDescription("Stop").assertIsDisplayed().assertHasClickAction()
         composeRule.onNodeWithText("Read").assertIsDisplayed()
-        composeRule.onAllNodesWithText("Send").assertCountEquals(0)
-        composeRule.onAllNodesWithText("Steer").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Stop").assertCountEquals(0)
+        composeRule.onAllNodesWithContentDescription("Send").assertCountEquals(0)
+        composeRule.onAllNodesWithContentDescription("Steer").assertCountEquals(0)
         composeRule.onAllNodesWithText("Elaborate").assertCountEquals(0)
         assertWorkspaceBorderColor(PostalColors.success)
     }
@@ -225,7 +197,7 @@ class QuestionChatUiTest {
     }
 
     @Test
-    fun startersExposeButtonSemanticsWithMaterialTouchTargets() {
+    fun startersUseCompactVisualPillsWhileKeepingMaterialTouchTargets() {
         composeRule.setContent {
             TestTheme {
                 QuestionChatPanel(
@@ -242,10 +214,24 @@ class QuestionChatUiTest {
             }
         }
 
-        composeRule.onNodeWithText("Elaborate")
+        val touchTarget = composeRule.onNodeWithText("Elaborate")
+        touchTarget
             .assertHasClickAction()
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
             .assertHeightIsAtLeast(48.dp)
+
+        val touchTargetHeight = touchTarget.fetchSemanticsNode().boundsInRoot.height
+        val visualHeight = composeRule
+            .onNodeWithTag(
+                questionChatStarterVisualTestTag(QuestionChatStarter.ELABORATE),
+                useUnmergedTree = true
+            )
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .height
+
+        assertTrue(touchTargetHeight >= with(composeRule.density) { 48.dp.toPx() } - 1f)
+        assertTrue(visualHeight <= with(composeRule.density) { 32.dp.toPx() } + 1f)
     }
 
     private fun assertWorkspaceBorderColor(expected: Color) {

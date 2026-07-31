@@ -207,3 +207,20 @@ val CrossIcon: ImageVector = ImageVector.Builder(
         lineTo(6f, 18f)
     }
 }.build()
+
+/** Solid stop square for the in-composer halt action. */
+val StopIcon: ImageVector = ImageVector.Builder(
+    name = "Stop",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f
+).apply {
+    path(fill = SolidColor(Color.White)) {
+        moveTo(7f, 7f)
+        lineTo(17f, 7f)
+        lineTo(17f, 17f)
+        lineTo(7f, 17f)
+        close()
+    }
+}.build()

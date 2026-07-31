@@ -1,6 +1,8 @@
 package dev.pi.postbox.question
 
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -177,7 +179,7 @@ class QuestionWorkflowScreenTest {
             }
         )
 
-        composeRule.onNodeWithText("+ Add a note").performClick()
+        composeRule.onNodeWithText("Add note").performClick()
         composeRule.onNode(hasSetTextAction()).performTextInput("Keep my draft")
 
         composeRule.runOnUiThread {
@@ -266,6 +268,44 @@ class QuestionWorkflowScreenTest {
             .assertIsDisplayed()
         composeRule.onNodeWithText("Retry").assertIsDisplayed().performClick()
         composeRule.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
+    fun questionDetailUsesSubmitAndAddNoteCopyInOneResponsiveRow() {
+        val question = QuestionDetailUiState(
+            requestId = "ask-actions-row",
+            sessionId = "session-1",
+            mode = QuestionMode.SINGLE,
+            prompt = "Choose a deployment target",
+            questionContext = null,
+            relevance = null,
+            decisionImpact = null,
+            options = listOf(QuestionOptionUiState("ship", "Ship", null)),
+            handoffContext = null,
+            forkReference = null,
+            selectedValues = listOf("ship"),
+            canSubmit = true,
+            availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
+        )
+
+        setQuestionScreen(
+            modifier = Modifier.width(320.dp),
+            stateProvider = { questionScreenState(question) }
+        )
+
+        composeRule.onNodeWithText("Submit").assertIsDisplayed()
+        composeRule.onNodeWithText("Add note").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Submit answer").assertCountEquals(0)
+        composeRule.onAllNodesWithText("+ Add a note").assertCountEquals(0)
+
+        val submitBounds = composeRule.onNodeWithTag(QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG).fetchSemanticsNode().boundsInRoot
+        val noteBounds = composeRule.onNodeWithTag(QUESTION_DETAIL_NOTE_ACTION_TEST_TAG).fetchSemanticsNode().boundsInRoot
+        val cancelBounds = composeRule.onNodeWithText("Cancel").fetchSemanticsNode().boundsInRoot
+        val rowTolerance = with(composeRule.density) { 2.dp.toPx() }
+
+        assertTrue(maxOf(submitBounds.top, noteBounds.top) < minOf(submitBounds.bottom, noteBounds.bottom) + rowTolerance)
+        assertTrue(submitBounds.center.x < noteBounds.center.x)
+        assertTrue(cancelBounds.top >= submitBounds.bottom - rowTolerance)
     }
 
     @Test
@@ -428,7 +468,7 @@ class QuestionWorkflowScreenTest {
         composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG).assertIsDisplayed().performClick()
         composeRule.runOnIdle { assertEquals(QuestionChatWorkspaceTab.QUESTION, selectedTab) }
         composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG).assertIsSelected()
-        composeRule.onNodeWithText("+ Add a note").assertIsDisplayed()
+        composeRule.onNodeWithText("Add note").assertIsDisplayed()
         composeRule.onAllNodesWithTag(QUESTION_DETAIL_CHAT_ACTION_TEST_TAG).assertCountEquals(0)
         composeRule.onAllNodesWithText("Question Chat").assertCountEquals(0)
 
@@ -548,6 +588,7 @@ class QuestionWorkflowScreenTest {
     }
 
     private fun setQuestionScreen(
+        modifier: Modifier = Modifier,
         stateProvider: () -> QuestionWorkflowState,
         onToggleOption: (String) -> Unit = {},
         onNoteChanged: (String) -> Unit = {},
@@ -567,6 +608,7 @@ class QuestionWorkflowScreenTest {
             PostboxTheme {
                 QuestionWorkflowScreen(
                     state = stateProvider(),
+                    modifier = modifier,
                     onShowQueue = {},
                     onSelectProject = {},
                     onSelectSession = {},
