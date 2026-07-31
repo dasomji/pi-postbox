@@ -8,9 +8,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
@@ -24,6 +27,7 @@ import dev.pi.postbox.questionchat.QuestionChatOwnerState
 import dev.pi.postbox.questionchat.QuestionChatSessionUiState
 import dev.pi.postbox.questionchat.QuestionChatSnapshot
 import dev.pi.postbox.questionchat.QuestionChatState
+import dev.pi.postbox.questionchat.QuestionChatToolActivity
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.PostboxTheme
 import org.junit.Assert.assertTrue
@@ -57,11 +61,80 @@ class QuestionChatUiTest {
 
         val rootBottom = composeRule.onRoot().fetchSemanticsNode().boundsInRoot.bottom
         val stopBottom = composeRule.onNodeWithText("Stop").fetchSemanticsNode().boundsInRoot.bottom
-        val steerBottom = composeRule.onNodeWithText("Steer").fetchSemanticsNode().boundsInRoot.bottom
+        val sendBottom = composeRule.onNodeWithText("Send").fetchSemanticsNode().boundsInRoot.bottom
 
         val expectedGap = with(composeRule.density) { insetBottom.toPx() }
         assertTrue(rootBottom - stopBottom >= expectedGap - 1f)
-        assertTrue(rootBottom - steerBottom >= expectedGap - 1f)
+        assertTrue(rootBottom - sendBottom >= expectedGap - 1f)
+    }
+
+    @Test
+    fun emptyReadyChatShowsTheStarterSetOnlyOnce() {
+        composeRule.setContent {
+            TestTheme {
+                QuestionChatPanel(
+                    workflow = questionChatWorkflow(state = QuestionChatState.READY),
+                    onRetry = {},
+                    onDraftChanged = {},
+                    onSendDraft = {},
+                    onSendStarter = {},
+                    onStop = {},
+                    onReviewSuggestion = {},
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        composeRule.onAllNodesWithText("Elaborate").assertCountEquals(1)
+        composeRule.onAllNodesWithText("Pro–Cons").assertCountEquals(1)
+        composeRule.onAllNodesWithText("Teach me").assertCountEquals(1)
+        composeRule.onNodeWithText("Send").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Steer").assertCountEquals(0)
+    }
+
+    @Test
+    fun generatingChatMatchesTheWebActionHierarchy() {
+        composeRule.setContent {
+            TestTheme {
+                QuestionChatPanel(
+                    workflow = questionChatWorkflow(
+                        state = QuestionChatState.GENERATING,
+                        messages = listOf(
+                            QuestionChatMessage.User(id = "user-1", text = "What changed?"),
+                            QuestionChatMessage.Assistant(
+                                id = "assistant-1",
+                                text = "Still thinking",
+                                status = QuestionChatMessage.Assistant.Status.STREAMING
+                            )
+                        ),
+                        tools = listOf(
+                            QuestionChatToolActivity(
+                                id = "tool-1",
+                                tool = "repository_read",
+                                target = "apps/android/app/src/main/java/dev/pi/postbox/question/QuestionWorkflowScreen.kt",
+                                state = "running",
+                                details = "Reading the current Question Chat layout."
+                            )
+                        )
+                    ),
+                    onRetry = {},
+                    onDraftChanged = {},
+                    onSendDraft = {},
+                    onSendStarter = {},
+                    onStop = {},
+                    onReviewSuggestion = {},
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Answering…").assertIsDisplayed()
+        composeRule.onNodeWithText("Send").assertIsDisplayed()
+        composeRule.onNodeWithText("Stop").assertIsDisplayed()
+        composeRule.onNodeWithText("Read").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Question Chat answering").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Steer").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Elaborate").assertCountEquals(0)
     }
 
     @Test
@@ -69,9 +142,7 @@ class QuestionChatUiTest {
         composeRule.setContent {
             TestTheme {
                 QuestionChatPanel(
-                    workflow = questionChatWorkflow(
-                        messages = listOf(QuestionChatMessage.User(id = "user-1", text = "What changed?"))
-                    ),
+                    workflow = questionChatWorkflow(state = QuestionChatState.READY),
                     onRetry = {},
                     onDraftChanged = {},
                     onSendDraft = {},
@@ -98,7 +169,9 @@ private fun TestTheme(content: @Composable () -> Unit) {
 }
 
 private fun questionChatWorkflow(
-    messages: List<QuestionChatMessage> = emptyList()
+    state: QuestionChatState = QuestionChatState.GENERATING,
+    messages: List<QuestionChatMessage> = emptyList(),
+    tools: List<QuestionChatToolActivity> = emptyList()
 ): QuestionChatWorkflowUiState {
     val key = QuestionChatBindingKey("https://postbox.example/", "ask-1")
     return QuestionChatWorkflowUiState(
@@ -109,15 +182,15 @@ private fun questionChatWorkflow(
             session = QuestionChatSessionUiState(
                 snapshot = QuestionChatSnapshot(
                     requestId = "ask-1",
-                    state = QuestionChatState.GENERATING,
+                    state = state,
                     forkKind = QuestionChatForkKind.EXACT,
                     model = QuestionChatModel(
                         id = "anthropic/claude-sonnet-4",
                         source = QuestionChatModelSource.ORIGINATING
                     ),
-                    sequence = messages.size,
+                    sequence = messages.size + tools.size,
                     messages = messages,
-                    tools = emptyList()
+                    tools = tools
                 ),
                 connection = QuestionChatConnectionState.ONLINE
             ),

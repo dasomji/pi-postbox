@@ -14,11 +14,14 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.unit.dp
 import dev.pi.postbox.questionchat.QuestionChatActivationUiState
 import dev.pi.postbox.questionchat.QuestionChatBindingKey
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
@@ -37,6 +40,7 @@ import dev.pi.postbox.questionchat.QuestionChatToolActivity
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.PostboxTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -281,14 +285,17 @@ class QuestionWorkflowScreenTest {
         setQuestionScreen(
             stateProvider = {
                 questionScreenState(question).copy(
-                    questionChat = questionChatWorkflowState()
+                    questionChat = questionChatWorkflowState(
+                        key = QuestionChatBindingKey("https://postbox.example/", question.requestId)
+                    )
                 )
             },
             onStartQuestionChat = { starts += 1 }
         )
 
-        composeRule.onNodeWithText("Start Question Chat").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Start Question Chat").performScrollTo().assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Question Chat is temporary and first tries an exact fork of the asking Pi session.")
+            .performScrollTo()
             .assertIsDisplayed()
         composeRule.runOnIdle { assertEquals(1, starts) }
     }
@@ -314,6 +321,7 @@ class QuestionWorkflowScreenTest {
             stateProvider = {
                 questionScreenState(question).copy(
                     questionChat = questionChatWorkflowState(
+                        key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
                         owner = QuestionChatOwnerState(
                             key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
                             activation = QuestionChatActivationUiState.AwaitingContextFallbackConfirmation(
@@ -330,10 +338,10 @@ class QuestionWorkflowScreenTest {
             onConfirmContextOnlyQuestionChat = { confirms += 1 }
         )
 
-        composeRule.onNodeWithText("Consider context-only interviewer").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Consider context-only interviewer").performScrollTo().assertIsDisplayed().performClick()
         composeRule.onNodeWithText("A context-only interviewer starts fresh from the persisted question and handoff context.")
             .assertIsDisplayed()
-        composeRule.onNodeWithText("Start context-only interviewer").performClick()
+        composeRule.onNode(hasText("Start context-only interviewer") and hasClickAction()).performClick()
         composeRule.runOnIdle { assertEquals(1, confirms) }
     }
 
@@ -360,11 +368,13 @@ class QuestionWorkflowScreenTest {
             stateProvider = {
                 questionScreenState(question).copy(
                     questionChat = questionChatWorkflowState(
+                        key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
                         tabsVisible = true,
                         selectedTab = QuestionChatWorkspaceTab.CHAT,
                         owner = QuestionChatOwnerState(
                             key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
                             knownStarted = true,
+                            draftText = "Explain this",
                             session = QuestionChatSessionUiState(
                                 snapshot = QuestionChatSnapshot(
                                     requestId = question.requestId,
@@ -390,16 +400,70 @@ class QuestionWorkflowScreenTest {
             onSendQuestionChatStarter = { starter = it.name }
         )
 
-        composeRule.onNodeWithText("Question Chat").assertIsSelected()
-        composeRule.onNodeWithText("Question").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).assertIsSelected()
+        composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG).assertIsDisplayed().performClick()
         composeRule.runOnIdle { assertEquals(QuestionChatWorkspaceTab.QUESTION, selectedTab) }
 
-        composeRule.onNodeWithText("Question Chat").performClick()
+        composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).performClick()
         composeRule.onNodeWithText("Elaborate").assertIsDisplayed().performClick()
         composeRule.runOnIdle { assertEquals("ELABORATE", starter) }
-        composeRule.onNode(hasSetTextAction()).performTextInput("Explain this")
         composeRule.onNodeWithText("Send").performClick()
         composeRule.runOnIdle { assertEquals(1, sentDrafts) }
+    }
+
+    @Test
+    fun activatedQuestionChatPinsWorkspaceTabsNearTheBottomEdge() {
+        val question = QuestionDetailUiState(
+            requestId = "ask-chat-bottom-tabs",
+            sessionId = "session-1",
+            mode = QuestionMode.SINGLE,
+            prompt = "Choose a deployment target",
+            questionContext = null,
+            relevance = null,
+            decisionImpact = null,
+            options = listOf(QuestionOptionUiState("ship", "Ship", null)),
+            handoffContext = null,
+            forkReference = null,
+            availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
+        )
+
+        setQuestionScreen(
+            stateProvider = {
+                questionScreenState(question).copy(
+                    questionChat = questionChatWorkflowState(
+                        key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
+                        tabsVisible = true,
+                        selectedTab = QuestionChatWorkspaceTab.CHAT,
+                        owner = QuestionChatOwnerState(
+                            key = QuestionChatBindingKey("https://postbox.example/", question.requestId),
+                            knownStarted = true,
+                            session = QuestionChatSessionUiState(
+                                snapshot = QuestionChatSnapshot(
+                                    requestId = question.requestId,
+                                    state = QuestionChatState.READY,
+                                    forkKind = QuestionChatForkKind.EXACT,
+                                    model = QuestionChatModel(
+                                        id = "anthropic/claude-sonnet-4",
+                                        source = QuestionChatModelSource.ORIGINATING
+                                    ),
+                                    sequence = 0,
+                                    messages = emptyList(),
+                                    tools = emptyList()
+                                ),
+                                connection = QuestionChatConnectionState.ONLINE
+                            )
+                        )
+                    )
+                )
+            }
+        )
+
+        composeRule.waitForIdle()
+
+        val rootBottom = composeRule.onRoot().fetchSemanticsNode().boundsInRoot.bottom
+        val tabBottom = composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).fetchSemanticsNode().boundsInRoot.bottom
+        val maxDistanceFromBottom = with(composeRule.density) { 140.dp.toPx() }
+        assertTrue(rootBottom - tabBottom < maxDistanceFromBottom)
     }
 
     @Test

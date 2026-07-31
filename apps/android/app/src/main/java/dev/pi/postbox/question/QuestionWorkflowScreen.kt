@@ -208,23 +208,16 @@ fun QuestionWorkflowScreen(
                 .fillMaxSize()
                 .background(PostalColors.canvas)
         ) {
+            val activeQuestionChat = state.questionChat?.takeIf {
+                it.tabsVisible &&
+                    state.navigationSelection is QuestionNavigationSelection.Question &&
+                    state.visibleQuestion?.requestId == it.key.requestId
+            }
             Column(modifier = Modifier.fillMaxSize()) {
                 WorkflowTopBar(
                     state = state,
                     onOpenNavigation = { coroutineScope.launch { drawerState.open() } }
                 )
-                state.questionChat
-                    ?.takeIf {
-                        it.tabsVisible &&
-                            state.navigationSelection is QuestionNavigationSelection.Question &&
-                            state.visibleQuestion?.requestId == it.key.requestId
-                    }
-                    ?.let { questionChat ->
-                        QuestionChatTabRow(
-                            selectedTab = questionChat.selectedTab,
-                            onSelectTab = onSelectQuestionChatTab
-                        )
-                    }
 
                 PullToRefreshBox(
                     isRefreshing = state.isRefreshing,
@@ -375,6 +368,13 @@ fun QuestionWorkflowScreen(
                             }
                         }
                     }
+                }
+
+                activeQuestionChat?.let { questionChat ->
+                    QuestionChatTabRow(
+                        selectedTab = questionChat.selectedTab,
+                        onSelectTab = onSelectQuestionChatTab
+                    )
                 }
 
                 // Airmail envelope edge pinned along the bottom of the screen,

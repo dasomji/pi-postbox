@@ -14,11 +14,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -28,8 +29,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,7 +46,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -67,6 +70,7 @@ import dev.pi.postbox.questionchat.QuestionChatActivationUiState
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
 import dev.pi.postbox.questionchat.QuestionChatForkKind
 import dev.pi.postbox.questionchat.QuestionChatMessage
+import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatRenderedAssistantMessage
 import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatSnapshot
@@ -83,22 +87,67 @@ import java.net.URI
 import kotlinx.coroutines.launch
 
 private const val QUESTION_CHAT_CODE_COLLAPSED_LINES = 8
+internal const val QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG = "questionChatWorkspaceQuestionTab"
+internal const val QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG = "questionChatWorkspaceChatTab"
 
 @Composable
 internal fun QuestionChatTabRow(
     selectedTab: QuestionChatWorkspaceTab,
     onSelectTab: (QuestionChatWorkspaceTab) -> Unit
 ) {
-    TabRow(selectedTabIndex = if (selectedTab == QuestionChatWorkspaceTab.QUESTION) 0 else 1) {
-        Tab(
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(PostalColors.surface)
+            .border(1.dp, PostalColors.border)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        QuestionChatWorkspaceTabButton(
+            text = "Question",
             selected = selectedTab == QuestionChatWorkspaceTab.QUESTION,
             onClick = { onSelectTab(QuestionChatWorkspaceTab.QUESTION) },
-            text = { Text("Question") }
+            modifier = Modifier
+                .weight(1f)
+                .testTag(QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG)
         )
-        Tab(
+        QuestionChatWorkspaceTabButton(
+            text = "Question Chat",
             selected = selectedTab == QuestionChatWorkspaceTab.CHAT,
             onClick = { onSelectTab(QuestionChatWorkspaceTab.CHAT) },
-            text = { Text("Question Chat") }
+            modifier = Modifier
+                .weight(1f)
+                .testTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG)
+        )
+    }
+}
+
+@Composable
+private fun QuestionChatWorkspaceTabButton(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        modifier = modifier
+            .background(if (selected) PostalColors.attention.copy(alpha = 0.1f) else Color.Transparent, shape)
+            .selectable(
+                selected = selected,
+                role = Role.Tab,
+                onClick = onClick
+            )
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) PostalColors.attentionForeground else PostalColors.muted
         )
     }
 }
@@ -138,7 +187,7 @@ internal fun QuestionChatQuestionEntry(
         )
         when (activation) {
             QuestionChatActivationUiState.Idle -> {
-                Button(onClick = onStartQuestionChat) {
+                Button(onClick = onStartQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Start Question Chat")
                 }
             }
@@ -151,16 +200,16 @@ internal fun QuestionChatQuestionEntry(
             }
             is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> {
                 Text(activation.error.message, color = PostalColors.warningForeground, fontSize = 13.sp)
-                Button(onClick = { showContextConfirmation = true }) {
+                Button(onClick = { showContextConfirmation = true }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Consider context-only interviewer")
                 }
-                TextButton(onClick = onRetryQuestionChat) {
+                TextButton(onClick = onRetryQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Retry")
                 }
             }
             is QuestionChatActivationUiState.Unavailable -> {
                 Text(activation.error.message, color = PostalColors.dangerForeground, fontSize = 13.sp)
-                TextButton(onClick = onRetryQuestionChat) {
+                TextButton(onClick = onRetryQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Retry")
                 }
             }
@@ -185,13 +234,14 @@ internal fun QuestionChatQuestionEntry(
                     onClick = {
                         showContextConfirmation = false
                         onConfirmContextOnlyQuestionChat()
-                    }
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Text("Start context-only interviewer")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showContextConfirmation = false }) {
+                TextButton(onClick = { showContextConfirmation = false }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Cancel")
                 }
             }
@@ -209,10 +259,11 @@ internal fun QuestionChatPanel(
     onStop: () -> Unit,
     onReviewSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier,
-    composerInsetModifier: Modifier = Modifier.imePadding().navigationBarsPadding()
+    composerInsetModifier: Modifier = Modifier.imePadding()
 ) {
     val owner = workflow.owner
     val session = owner.session
+    val snapshot = session?.snapshot
     val scrollState = rememberScrollState()
     val coroutineScope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
@@ -225,102 +276,145 @@ internal fun QuestionChatPanel(
             focusRequester.requestFocus()
         }
     }
-    LaunchedEffect(workflow.key, session?.snapshot?.sequence, session?.snapshot?.tools?.size) {
+    LaunchedEffect(workflow.key, snapshot?.sequence, snapshot?.tools?.size) {
         if (scrollState.maxValue - scrollState.value < 160) {
             scrollState.scrollTo(scrollState.maxValue)
         }
     }
 
     val canInteract = session?.connection == QuestionChatConnectionState.ONLINE
-    val sendLabel = if (session?.snapshot?.state == QuestionChatState.GENERATING) "Steer" else "Send"
+    val canSend =
+        canInteract && owner.pendingSend == null && owner.draftText.isNotBlank() && snapshot?.state != QuestionChatState.STOPPING
+    val showStop =
+        snapshot?.state == QuestionChatState.GENERATING || snapshot?.state == QuestionChatState.STOPPING || owner.pendingStopCommandId != null
+    val showStarters = snapshot?.messages?.isEmpty() != false
     val jumpToLatestVisible = scrollState.maxValue - scrollState.value >= 160
 
-    Column(
-        modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        session?.let { current ->
-            QuestionChatDisclosureCard(snapshot = current.snapshot)
-            QuestionChatStatusBanner(connection = current.connection, state = current.snapshot.state, onRetry = onRetry)
-        }
-        owner.actionMessage?.let { message ->
-            Text(message, color = PostalColors.dangerForeground, fontSize = 13.sp)
-        }
-        Box(
+    Column(modifier = modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
+                .fillMaxSize()
                 .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
                 .background(PostalColors.elevated, RoundedCornerShape(12.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                if (session == null || session.snapshot.messages.isEmpty()) {
-                    Text(
-                        text = "Question Chat can help you understand this decision, but it cannot answer the Postbox Question for you.",
-                        fontSize = 14.sp,
-                        color = PostalColors.subtle,
-                        lineHeight = 20.sp
-                    )
-                    StarterButtons(enabled = canInteract, onSendStarter = onSendStarter)
-                }
-                session?.snapshot?.messages?.forEach { message ->
-                    QuestionChatMessageCard(
-                        message = message,
-                        renderedAssistantMessage = owner.renderedAssistantMessages[message.id],
-                        onLinkClick = { pendingLink = it },
-                        onCopyCode = { clipboard.setText(AnnotatedString(it)) }
-                    )
-                }
-                session?.snapshot?.tools?.takeIf { it.isNotEmpty() }?.let { tools ->
-                    QuestionChatToolSection(tools = tools, onReviewSuggestion = onReviewSuggestion)
-                }
+            session?.let {
+                QuestionChatHeader(
+                    snapshot = it.snapshot,
+                    connection = it.connection,
+                    pendingStop = owner.pendingStopCommandId != null,
+                    onRetry = onRetry
+                )
             }
-            if (jumpToLatestVisible) {
-                TextButton(
-                    onClick = { coroutineScope.launch { scrollState.animateScrollTo(scrollState.maxValue) } },
-                    modifier = Modifier.align(Alignment.BottomEnd)
-                ) {
-                    Text("Jump to latest")
-                }
-            }
-        }
-        StarterButtons(enabled = canInteract, onSendStarter = onSendStarter)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(composerInsetModifier),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.Bottom
-        ) {
-            OutlinedTextField(
-                value = owner.draftText,
-                onValueChange = onDraftChanged,
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .focusRequester(focusRequester),
-                minLines = 2,
-                maxLines = 4,
-                enabled = canInteract,
-                label = { Text("Ask Question Chat") }
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (session?.snapshot?.state == QuestionChatState.GENERATING || session?.snapshot?.state == QuestionChatState.STOPPING) {
-                    Button(onClick = onStop, enabled = canInteract && owner.pendingStopCommandId == null) {
-                        Text("Stop")
+                    .fillMaxWidth()
+                    .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
+                    .background(PostalColors.surface, RoundedCornerShape(12.dp))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (showStarters) {
+                        Text(
+                            text = "Ask what you need to understand this decision.",
+                            fontSize = 14.sp,
+                            color = PostalColors.muted,
+                            lineHeight = 20.sp
+                        )
+                    }
+                    snapshot?.messages?.forEach { message ->
+                        QuestionChatMessageBubble(
+                            message = message,
+                            renderedAssistantMessage = owner.renderedAssistantMessages[message.id],
+                            onLinkClick = { pendingLink = it },
+                            onCopyCode = { clipboard.setText(AnnotatedString(it)) }
+                        )
+                    }
+                    snapshot?.tools?.takeIf { it.isNotEmpty() }?.let { tools ->
+                        QuestionChatToolRows(tools = tools, onReviewSuggestion = onReviewSuggestion)
                     }
                 }
-                Button(
-                    onClick = onSendDraft,
-                    enabled = canInteract && owner.pendingSend == null && owner.draftText.isNotBlank()
-                ) {
-                    Text(sendLabel)
+                if (jumpToLatestVisible) {
+                    TextButton(
+                        onClick = { coroutineScope.launch { scrollState.animateScrollTo(scrollState.maxValue) } },
+                        modifier = Modifier.align(Alignment.BottomEnd)
+                    ) {
+                        Text("Jump to latest")
+                    }
                 }
+            }
+            if (showStarters) {
+                StarterButtons(enabled = canInteract, onSendStarter = onSendStarter)
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(composerInsetModifier),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    OutlinedTextField(
+                        value = owner.draftText,
+                        onValueChange = onDraftChanged,
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester)
+                            .semantics { contentDescription = "Message Question Chat" },
+                        minLines = 2,
+                        maxLines = 4,
+                        enabled = canInteract,
+                        placeholder = { Text("Ask about this decision…") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PostalColors.border,
+                            unfocusedBorderColor = PostalColors.border,
+                            focusedContainerColor = PostalColors.elevated,
+                            unfocusedContainerColor = PostalColors.elevated,
+                            disabledContainerColor = PostalColors.surface,
+                            cursorColor = PostalColors.attention,
+                            focusedPlaceholderColor = PostalColors.muted,
+                            unfocusedPlaceholderColor = PostalColors.muted,
+                            focusedTextColor = PostalColors.text,
+                            unfocusedTextColor = PostalColors.text,
+                            disabledTextColor = PostalColors.muted
+                        )
+                    )
+                    Button(
+                        onClick = onSendDraft,
+                        enabled = canSend,
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text("Send")
+                    }
+                }
+                if (showStop) {
+                    OutlinedButton(
+                        onClick = onStop,
+                        enabled = canInteract && owner.pendingStopCommandId == null && snapshot?.state == QuestionChatState.GENERATING,
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text(if (owner.pendingStopCommandId != null || snapshot?.state == QuestionChatState.STOPPING) "Stopping…" else "Stop")
+                    }
+                }
+                owner.actionMessage?.let { message ->
+                    Text(
+                        text = message,
+                        color = if (owner.actionUnavailable != null) PostalColors.dangerForeground else PostalColors.muted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
+                }
+                snapshot?.let { QuestionChatModelDisclosure(it) }
             }
         }
     }
@@ -364,68 +458,130 @@ internal fun QuestionChatPanel(
 }
 
 @Composable
-private fun QuestionChatDisclosureCard(snapshot: QuestionChatSnapshot) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
-            .background(PostalColors.elevated, RoundedCornerShape(12.dp))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Text(
-            text = if (snapshot.forkKind == QuestionChatForkKind.EXACT) "Exact fork" else "Context-only interviewer",
-            fontWeight = FontWeight.SemiBold,
-            color = if (snapshot.forkKind == QuestionChatForkKind.EXACT) PostalColors.text else PostalColors.warningForeground
-        )
+private fun QuestionChatHeader(
+    snapshot: QuestionChatSnapshot,
+    connection: QuestionChatConnectionState,
+    pendingStop: Boolean,
+    onRetry: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Question Chat",
+                    fontFamily = PostalDisplayFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = PostalColors.text
+                )
+                if (snapshot.forkKind == QuestionChatForkKind.CONTEXT_ONLY) {
+                    Text(
+                        text = "Context-only · degraded",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = PostalColors.warningForeground,
+                        modifier = Modifier
+                            .background(PostalColors.warning.copy(alpha = 0.1f), RoundedCornerShape(999.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+            QuestionChatStateChip(label = questionChatStateLabel(snapshot.state, pendingStop))
+        }
         if (snapshot.forkKind == QuestionChatForkKind.CONTEXT_ONLY) {
             Text(
-                text = "This interviewer starts from persisted handoff context and is not an exact fork of the Pi session.",
-                fontSize = 13.sp,
+                text = "This context-only interviewer uses persisted handoff context, not an exact fork of the originating Pi session.",
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
                 color = PostalColors.warningForeground
             )
         }
-        Text("Model: ${snapshot.model.id}", fontSize = 13.sp, color = PostalColors.subtle)
-        snapshot.model.fallbackReason?.let {
-            Text("Using Pi's default model: $it", fontSize = 13.sp, color = PostalColors.warningForeground)
+        QuestionChatConnectionBanner(connection = connection, onRetry = onRetry)
+    }
+}
+
+@Composable
+private fun QuestionChatStateChip(label: String) {
+    val background = when (label) {
+        "Interrupted" -> PostalColors.danger.copy(alpha = 0.1f)
+        "Stopped", "Stopping…" -> PostalColors.warning.copy(alpha = 0.1f)
+        else -> PostalColors.success.copy(alpha = 0.12f)
+    }
+    val foreground = when (label) {
+        "Interrupted" -> PostalColors.dangerForeground
+        "Stopped", "Stopping…" -> PostalColors.warningForeground
+        else -> PostalColors.successForeground
+    }
+    Text(
+        text = label,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
+        color = foreground,
+        modifier = Modifier
+            .background(background, RoundedCornerShape(999.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite }
+    )
+}
+
+@Composable
+private fun QuestionChatConnectionBanner(
+    connection: QuestionChatConnectionState,
+    onRetry: () -> Unit
+) {
+    if (connection == QuestionChatConnectionState.ONLINE) return
+    val label = when (connection) {
+        QuestionChatConnectionState.OFFLINE -> "Question Chat offline · showing last synchronized messages"
+        QuestionChatConnectionState.SYNCHRONIZING -> "Question Chat stale · resynchronizing"
+        QuestionChatConnectionState.TERMINAL -> "Question Chat ended"
+        QuestionChatConnectionState.ONLINE -> return
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, PostalColors.warning.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+            .background(PostalColors.warning.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            color = PostalColors.warningForeground,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .weight(1f)
+                .semantics { liveRegion = LiveRegionMode.Polite }
+        )
+        if (connection != QuestionChatConnectionState.TERMINAL) {
+            Spacer(modifier = Modifier.width(8.dp))
+            TextButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Retry")
+            }
         }
     }
 }
 
 @Composable
-private fun QuestionChatStatusBanner(
-    connection: QuestionChatConnectionState,
-    state: QuestionChatState,
-    onRetry: () -> Unit
-) {
-    val label = when (connection) {
-        QuestionChatConnectionState.SYNCHRONIZING -> "Question Chat synchronizing"
-        QuestionChatConnectionState.OFFLINE -> "Question Chat offline"
-        QuestionChatConnectionState.TERMINAL -> "Question Chat ended"
-        QuestionChatConnectionState.ONLINE -> when (state) {
-            QuestionChatState.READY -> "Question Chat ready"
-            QuestionChatState.GENERATING -> "Question Chat answering"
-            QuestionChatState.STOPPING -> "Question Chat stopping"
-            QuestionChatState.STOPPED -> "Question Chat stopped"
-            QuestionChatState.INTERRUPTED -> "Question Chat interrupted"
-        }
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
-            .background(PostalColors.surface, RoundedCornerShape(12.dp))
-            .padding(12.dp)
-            .semantics { liveRegion = LiveRegionMode.Polite },
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, color = PostalColors.subtle)
-        if (connection != QuestionChatConnectionState.ONLINE) {
-            TextButton(onClick = onRetry) {
-                Text("Retry")
-            }
-        }
+private fun QuestionChatModelDisclosure(snapshot: QuestionChatSnapshot) {
+    Text(
+        text = buildString {
+            append("Model: ")
+            append(snapshot.model.id)
+            if (snapshot.model.source == QuestionChatModelSource.PI_DEFAULT) append(" · Pi default fallback")
+        },
+        fontSize = 12.sp,
+        color = PostalColors.muted
+    )
+    snapshot.model.fallbackReason?.let {
+        Text(it, fontSize = 12.sp, color = PostalColors.warningForeground)
     }
 }
 
@@ -453,59 +609,65 @@ private fun StarterButtons(
 }
 
 @Composable
-private fun QuestionChatMessageCard(
+private fun QuestionChatMessageBubble(
     message: QuestionChatMessage,
     renderedAssistantMessage: QuestionChatRenderedAssistantMessage?,
     onLinkClick: (String) -> Unit,
     onCopyCode: (String) -> Unit
 ) {
-    val bubbleColor = if (message is QuestionChatMessage.User) PostalColors.surface else PostalColors.elevated
+    val isUser = message is QuestionChatMessage.User
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
-            .background(bubbleColor, RoundedCornerShape(12.dp))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
-        Text(
-            text = if (message is QuestionChatMessage.User) "You" else "Question Chat",
-            fontWeight = FontWeight.SemiBold,
-            color = PostalColors.subtle,
-            fontSize = 13.sp
-        )
-        when (message) {
-            is QuestionChatMessage.User -> SelectionContainer { Text(message.text) }
-            is QuestionChatMessage.Assistant -> {
-                val rich = renderedAssistantMessage?.rendered
-                if (message.status == QuestionChatMessage.Assistant.Status.STREAMING || rich == null) {
-                    SelectionContainer { Text(message.text) }
-                } else {
-                    when (rich) {
-                        is SafeMarkdownRenderResult.PlainTextFallback -> {
-                            if (rich.formattingUnavailable) {
-                                Text("Formatting unavailable", color = PostalColors.muted, fontSize = 12.sp)
-                            }
-                            SelectionContainer { Text(rich.text) }
-                        }
-                        is SafeMarkdownRenderResult.Rich -> SafeMarkdownDocumentView(
-                            document = rich.document,
-                            onLinkClick = onLinkClick,
-                            onCopyCode = onCopyCode
-                        )
-                    }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(if (isUser) 0.86f else 0.92f)
+                .background(
+                    if (isUser) PostalColors.attention.copy(alpha = 0.1f) else PostalColors.elevated,
+                    RoundedCornerShape(12.dp)
+                )
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            when (message) {
+                is QuestionChatMessage.User -> SelectionContainer {
+                    Text(text = message.text, color = PostalColors.text, lineHeight = 21.sp)
                 }
-                if (message.status != QuestionChatMessage.Assistant.Status.FINAL) {
-                    Text(
-                        text = when (message.status) {
-                            QuestionChatMessage.Assistant.Status.STREAMING -> "Answering"
-                            QuestionChatMessage.Assistant.Status.STOPPED -> "Stopped"
-                            QuestionChatMessage.Assistant.Status.INTERRUPTED -> "Interrupted"
-                            QuestionChatMessage.Assistant.Status.FINAL -> ""
-                        },
-                        color = PostalColors.muted,
-                        fontSize = 12.sp
-                    )
+                is QuestionChatMessage.Assistant -> {
+                    val rich = renderedAssistantMessage?.rendered
+                    if (message.status == QuestionChatMessage.Assistant.Status.STREAMING || rich == null) {
+                        SelectionContainer { Text(text = message.text, color = PostalColors.subtle, lineHeight = 21.sp) }
+                    } else {
+                        when (rich) {
+                            is SafeMarkdownRenderResult.PlainTextFallback -> {
+                                if (rich.formattingUnavailable) {
+                                    Text("Formatting unavailable", color = PostalColors.muted, fontSize = 12.sp)
+                                }
+                                SelectionContainer { Text(text = rich.text, color = PostalColors.subtle, lineHeight = 21.sp) }
+                            }
+                            is SafeMarkdownRenderResult.Rich -> SafeMarkdownDocumentView(
+                                document = rich.document,
+                                onLinkClick = onLinkClick,
+                                onCopyCode = onCopyCode
+                            )
+                        }
+                    }
+                    when (message.status) {
+                        QuestionChatMessage.Assistant.Status.STOPPED -> Text(
+                            text = "Stopped",
+                            color = PostalColors.warningForeground,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        QuestionChatMessage.Assistant.Status.INTERRUPTED -> Text(
+                            text = "Interrupted",
+                            color = PostalColors.dangerForeground,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        else -> Unit
+                    }
                 }
             }
         }
@@ -513,74 +675,113 @@ private fun QuestionChatMessageCard(
 }
 
 @Composable
-private fun QuestionChatToolSection(
+private fun QuestionChatToolRows(
     tools: List<QuestionChatToolActivity>,
     onReviewSuggestion: (String) -> Unit
 ) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        tools.forEach { tool ->
+            QuestionChatToolRow(tool = tool, onReviewSuggestion = onReviewSuggestion)
+        }
+    }
+}
+
+@Composable
+private fun QuestionChatToolRow(
+    tool: QuestionChatToolActivity,
+    onReviewSuggestion: (String) -> Unit
+) {
+    var expanded by remember(tool.id) { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
-            .background(PostalColors.surface, RoundedCornerShape(12.dp))
+            .border(1.dp, PostalColors.border, RoundedCornerShape(10.dp))
+            .background(PostalColors.elevated, RoundedCornerShape(10.dp))
             .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text("Tool activity", fontWeight = FontWeight.SemiBold, color = PostalColors.subtle)
-        tools.forEach { tool ->
-            var expanded by remember(tool.id) { mutableStateOf(false) }
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(
-                                when (tool.state) {
-                                    "running" -> PostalColors.warning
-                                    "success" -> PostalColors.success
-                                    "error" -> PostalColors.danger
-                                    else -> PostalColors.borderStrong
-                                },
-                                CircleShape
-                            )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(
+                        when (tool.state) {
+                            "running" -> PostalColors.warning
+                            "success" -> PostalColors.success
+                            "error" -> PostalColors.danger
+                            else -> PostalColors.borderStrong
+                        },
+                        CircleShape
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "${tool.tool} · ${tool.target}",
-                        modifier = Modifier.weight(1f),
-                        fontSize = 13.sp,
-                        color = PostalColors.text,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (tool.details != null) {
-                        TextButton(onClick = { expanded = !expanded }) {
-                            Text(if (expanded) "Hide details" else "Details")
-                        }
-                    }
-                }
-                if (expanded && tool.details != null) {
-                    SelectionContainer {
-                        Text(
-                            text = tool.details,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = PostalColors.subtle,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.White.copy(alpha = 0.04f), RoundedCornerShape(8.dp))
-                                .padding(8.dp)
-                        )
-                    }
-                }
-                tool.actionOptionValue?.takeIf { tool.state == "success" }?.let { optionValue ->
-                    Button(onClick = { onReviewSuggestion(optionValue) }) {
-                        Text("Review in Question")
-                    }
-                }
-                HorizontalDivider(color = PostalColors.border)
+            )
+            Text(
+                text = questionChatToolLabel(tool.tool),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = PostalColors.text
+            )
+            Text(
+                text = questionChatToolStateLabel(tool.state),
+                fontSize = 12.sp,
+                color = PostalColors.muted
+            )
+        }
+        Text(
+            text = tool.target,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            color = PostalColors.subtle,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (tool.details != null) {
+            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(if (expanded) "Hide details" else "Details")
+            }
+        }
+        if (expanded && tool.details != null) {
+            SelectionContainer {
+                Text(
+                    text = tool.details,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    color = PostalColors.subtle,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(PostalColors.surface, RoundedCornerShape(8.dp))
+                        .padding(8.dp)
+                )
+            }
+        }
+        tool.actionOptionValue?.takeIf { tool.state == "success" }?.let { optionValue ->
+            OutlinedButton(onClick = { onReviewSuggestion(optionValue) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Review in Question")
             }
         }
     }
+}
+
+private fun questionChatStateLabel(state: QuestionChatState, pendingStop: Boolean): String = when {
+    pendingStop || state == QuestionChatState.STOPPING -> "Stopping…"
+    state == QuestionChatState.GENERATING -> "Answering…"
+    state == QuestionChatState.STOPPED -> "Stopped"
+    state == QuestionChatState.INTERRUPTED -> "Interrupted"
+    else -> "Ready"
+}
+
+private fun questionChatToolLabel(tool: String): String = when (tool) {
+    "repository_read" -> "Read"
+    "repository_grep" -> "Grep"
+    "repository_find" -> "Find"
+    "repository_list" -> "List"
+    else -> "Suggested in Chat"
+}
+
+private fun questionChatToolStateLabel(state: String): String = when (state) {
+    "running" -> "Running"
+    "success" -> "Success"
+    "error" -> "Error"
+    else -> "Interrupted"
 }
 
 @Composable
