@@ -37,7 +37,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,7 +65,6 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.pi.postbox.questionchat.QuestionChatActivationUiState
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
 import dev.pi.postbox.questionchat.QuestionChatForkKind
 import dev.pi.postbox.questionchat.QuestionChatMessage
@@ -84,7 +82,6 @@ import dev.pi.postbox.questionchat.SafeMarkdownRenderResult
 import dev.pi.postbox.ui.theme.PostalColors
 import dev.pi.postbox.ui.theme.PostalDisplayFontFamily
 import java.net.URI
-import kotlinx.coroutines.launch
 
 private const val QUESTION_CHAT_CODE_COLLAPSED_LINES = 8
 internal const val QUESTION_CHAT_WORKSPACE_QUESTION_TAB_TEST_TAG = "questionChatWorkspaceQuestionTab"
@@ -153,103 +150,6 @@ private fun QuestionChatWorkspaceTabButton(
 }
 
 @Composable
-internal fun QuestionChatQuestionEntry(
-    workflow: QuestionChatWorkflowUiState,
-    onStartQuestionChat: () -> Unit,
-    onConfirmContextOnlyQuestionChat: () -> Unit,
-    onRetryQuestionChat: () -> Unit
-) {
-    if (workflow.tabsVisible) return
-    val owner = workflow.owner
-    val activation = owner.activation
-    var showContextConfirmation by remember(workflow.key) { mutableStateOf(false) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, PostalColors.border, RoundedCornerShape(12.dp))
-            .background(PostalColors.elevated, RoundedCornerShape(12.dp))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text(
-            text = "Question Chat",
-            fontFamily = PostalDisplayFontFamily,
-            fontWeight = FontWeight.Bold,
-            fontSize = 18.sp,
-            color = PostalColors.text
-        )
-        Text(
-            text = "Question Chat is temporary and first tries an exact fork of the asking Pi session.",
-            fontSize = 14.sp,
-            color = PostalColors.subtle,
-            lineHeight = 20.sp
-        )
-        when (activation) {
-            QuestionChatActivationUiState.Idle -> {
-                Button(onClick = onStartQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Start Question Chat")
-                }
-            }
-            QuestionChatActivationUiState.Probing -> {
-                Text("Checking for an existing Question Chat…", color = PostalColors.muted, fontSize = 13.sp)
-            }
-            QuestionChatActivationUiState.ActivatingExact,
-            QuestionChatActivationUiState.ActivatingContextFallback -> {
-                Text("Starting Question Chat…", color = PostalColors.muted, fontSize = 13.sp)
-            }
-            is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> {
-                Text(activation.error.message, color = PostalColors.warningForeground, fontSize = 13.sp)
-                Button(onClick = { showContextConfirmation = true }, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Consider context-only interviewer")
-                }
-                TextButton(onClick = onRetryQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Retry")
-                }
-            }
-            is QuestionChatActivationUiState.Unavailable -> {
-                Text(activation.error.message, color = PostalColors.dangerForeground, fontSize = 13.sp)
-                TextButton(onClick = onRetryQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Retry")
-                }
-            }
-        }
-        owner.actionMessage?.let { message ->
-            Text(message, color = PostalColors.dangerForeground, fontSize = 13.sp)
-        }
-    }
-
-    if (showContextConfirmation && activation is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation) {
-        AlertDialog(
-            onDismissRequest = { showContextConfirmation = false },
-            title = { Text("Start context-only interviewer") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("A context-only interviewer starts fresh from the persisted question and handoff context.")
-                    Text("It is not an exact fork of the originating Pi session.")
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showContextConfirmation = false
-                        onConfirmContextOnlyQuestionChat()
-                    },
-                    modifier = Modifier.heightIn(min = 48.dp)
-                ) {
-                    Text("Start context-only interviewer")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showContextConfirmation = false }, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-}
-
-@Composable
 internal fun QuestionChatPanel(
     workflow: QuestionChatWorkflowUiState,
     onRetry: () -> Unit,
@@ -265,7 +165,6 @@ internal fun QuestionChatPanel(
     val session = owner.session
     val snapshot = session?.snapshot
     val scrollState = rememberScrollState()
-    val coroutineScope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
     val clipboard = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
@@ -288,7 +187,6 @@ internal fun QuestionChatPanel(
     val showStop =
         snapshot?.state == QuestionChatState.GENERATING || snapshot?.state == QuestionChatState.STOPPING || owner.pendingStopCommandId != null
     val showStarters = snapshot?.messages?.isEmpty() != false
-    val jumpToLatestVisible = scrollState.maxValue - scrollState.value >= 160
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -339,14 +237,6 @@ internal fun QuestionChatPanel(
                     }
                     snapshot?.tools?.takeIf { it.isNotEmpty() }?.let { tools ->
                         QuestionChatToolRows(tools = tools, onReviewSuggestion = onReviewSuggestion)
-                    }
-                }
-                if (jumpToLatestVisible) {
-                    TextButton(
-                        onClick = { coroutineScope.launch { scrollState.animateScrollTo(scrollState.maxValue) } },
-                        modifier = Modifier.align(Alignment.BottomEnd)
-                    ) {
-                        Text("Jump to latest")
                     }
                 }
             }
@@ -755,7 +645,7 @@ private fun QuestionChatToolRow(
         }
         tool.actionOptionValue?.takeIf { tool.state == "success" }?.let { optionValue ->
             OutlinedButton(onClick = { onReviewSuggestion(optionValue) }, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("Review in Question")
+                Text("View in Question")
             }
         }
     }

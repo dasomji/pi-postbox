@@ -45,6 +45,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -89,6 +90,8 @@ import dev.pi.postbox.BuildConfig
 import dev.pi.postbox.R
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.questionchat.QuestionChatActivationUiState
+import dev.pi.postbox.questionchat.QuestionChatAvailabilityError
+import dev.pi.postbox.questionchat.QuestionChatContextFallbackAvailability
 import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.CrossIcon
@@ -359,7 +362,6 @@ fun QuestionWorkflowScreen(
                                                 onCancelQuestion = onCancelQuestion,
                                                 onStartQuestionChat = onStartQuestionChat,
                                                 onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
-                                                onRetryQuestionChat = onRetryQuestionChat,
                                                 modifier = Modifier.weight(1f)
                                             )
                                         }
@@ -1023,6 +1025,8 @@ private fun QuestionListItem(
 
 internal const val QUESTION_PULL_REFRESH_TEST_TAG = "question-pull-refresh"
 internal const val QUESTION_QUEUE_TEST_TAG = "question-queue"
+internal const val QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG = "question-detail-submit-action"
+internal const val QUESTION_DETAIL_CHAT_ACTION_TEST_TAG = "question-detail-chat-action"
 
 @Composable
 private fun QuestionQueueView(
@@ -1178,15 +1182,27 @@ private fun QuestionDetailCard(
     onCancelQuestion: (note: String?) -> Unit,
     onStartQuestionChat: () -> Unit,
     onConfirmContextOnlyQuestionChat: () -> Unit,
-    onRetryQuestionChat: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showNote by remember(question.requestId) { mutableStateOf(question.note.isNotBlank()) }
     var showHandoffContext by remember(question.requestId) { mutableStateOf(false) }
+    var showContextOnlyConfirmation by remember(questionChat?.key) { mutableStateOf(false) }
     val actionsEnabled = question.terminalState == null && !question.isSubmitting
+    val questionChatActivation = questionChat?.owner?.activation
+    val showQuestionChatAction =
+        questionChat != null &&
+            !questionChat.tabsVisible &&
+            questionChatActivation !is QuestionChatActivationUiState.Probing &&
+            questionChatActivation !is QuestionChatActivationUiState.ActivatingExact &&
+            questionChatActivation !is QuestionChatActivationUiState.ActivatingContextFallback
 
     LaunchedEffect(question.requestId, question.note) {
         if (question.note.isNotBlank()) showNote = true
+    }
+    LaunchedEffect(questionChat?.key, questionChatActivation) {
+        if (questionChatActivation !is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation) {
+            showContextOnlyConfirmation = false
+        }
     }
 
     Column(
@@ -1286,11 +1302,15 @@ private fun QuestionDetailCard(
         )
 
         questionChat?.let { workflow ->
-            QuestionChatQuestionEntry(
+            QuestionChatActivationNotice(
                 workflow = workflow,
-                onStartQuestionChat = onStartQuestionChat,
-                onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
-                onRetryQuestionChat = onRetryQuestionChat
+                showContextOnlyConfirmation = showContextOnlyConfirmation,
+                onShowContextOnlyConfirmation = { showContextOnlyConfirmation = true },
+                onDismissContextOnlyConfirmation = { showContextOnlyConfirmation = false },
+                onConfirmContextOnlyQuestionChat = {
+                    showContextOnlyConfirmation = false
+                    onConfirmContextOnlyQuestionChat()
+                }
             )
         }
 
@@ -1401,8 +1421,16 @@ private fun QuestionDetailCard(
         ) {
             PostalSubmitButton(
                 enabled = actionsEnabled && question.canSubmit,
-                onClick = { onSubmitAnswer(question.note.nullIfBlank()) }
+                onClick = { onSubmitAnswer(question.note.nullIfBlank()) },
+                modifier = Modifier.testTag(QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG)
             )
+            if (showQuestionChatAction) {
+                PostalQuestionChatButton(
+                    enabled = actionsEnabled,
+                    onClick = onStartQuestionChat,
+                    modifier = Modifier.testTag(QUESTION_DETAIL_CHAT_ACTION_TEST_TAG)
+                )
+            }
             SubtleTextButton(
                 text = if (showNote) "Hide note" else "+ Add a note",
                 enabled = true,
@@ -1414,6 +1442,128 @@ private fun QuestionDetailCard(
                 onClick = { onCancelQuestion(question.note.nullIfBlank()) }
             )
         }
+    }
+}
+
+@Composable
+private fun QuestionChatActivationNotice(
+    workflow: QuestionChatWorkflowUiState,
+    showContextOnlyConfirmation: Boolean,
+    onShowContextOnlyConfirmation: () -> Unit,
+    onDismissContextOnlyConfirmation: () -> Unit,
+    onConfirmContextOnlyQuestionChat: () -> Unit
+) {
+    if (workflow.tabsVisible) return
+    when (val activation = workflow.owner.activation) {
+        QuestionChatActivationUiState.Idle -> Unit
+        QuestionChatActivationUiState.Probing -> PostalMessageCard(
+            title = "Question Chat",
+            body = "Checking for an existing Question Chat…"
+        )
+        QuestionChatActivationUiState.ActivatingExact,
+        QuestionChatActivationUiState.ActivatingContextFallback -> PostalMessageCard(
+            title = "Question Chat",
+            body = "Starting Question Chat…"
+        )
+        is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> {
+            QuestionChatActivationErrorPanel(
+                error = activation.error,
+                actionLabel = "Start context-only interviewer",
+                onAction = onShowContextOnlyConfirmation
+            )
+            if (showContextOnlyConfirmation) {
+                QuestionChatContextOnlyConfirmationPanel(
+                    onConfirm = onConfirmContextOnlyQuestionChat,
+                    onCancel = onDismissContextOnlyConfirmation
+                )
+            }
+        }
+        is QuestionChatActivationUiState.Unavailable -> {
+            QuestionChatActivationErrorPanel(error = activation.error)
+        }
+    }
+}
+
+@Composable
+private fun QuestionChatActivationErrorPanel(
+    error: QuestionChatAvailabilityError,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
+) {
+    PostalPanel(
+        borderColor = PostalColors.warning.copy(alpha = 0.45f),
+        backgroundColor = PostalColors.warning.copy(alpha = 0.08f).compositeOver(PostalColors.elevated)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = error.message,
+                fontSize = 14.sp,
+                color = PostalColors.dangerForeground
+            )
+            questionChatContextUnavailableMessage(error)?.let { message ->
+                Text(
+                    text = message,
+                    fontSize = 13.sp,
+                    color = PostalColors.subtle,
+                    lineHeight = 19.sp
+                )
+            }
+            if (actionLabel != null && onAction != null) {
+                OutlinedButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(actionLabel)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuestionChatContextOnlyConfirmationPanel(
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    PostalPanel(
+        borderColor = PostalColors.warning.copy(alpha = 0.45f),
+        backgroundColor = PostalColors.warning.copy(alpha = 0.08f).compositeOver(PostalColors.elevated)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Start context-only interviewer?",
+                fontFamily = PostalDisplayFontFamily,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
+                color = PostalColors.text
+            )
+            Text(
+                text = "This starts a fresh private interviewer session from persisted handoff context. It is not an exact fork of the originating Pi Session.",
+                fontSize = 14.sp,
+                color = PostalColors.subtle,
+                lineHeight = 20.sp
+            )
+            OutlinedButton(onClick = onConfirm, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Confirm context-only interviewer")
+            }
+            SubtleTextButton(
+                text = "Cancel context-only interviewer",
+                enabled = true,
+                onClick = onCancel
+            )
+        }
+    }
+}
+
+private fun questionChatContextUnavailableMessage(error: QuestionChatAvailabilityError): String? {
+    val contextFallback = error.contextFallback as? QuestionChatContextFallbackAvailability.Unavailable ?: return null
+    return when (contextFallback.reason) {
+        "missing_codebase_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase context."
+        "missing_problem_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted problem context."
+        else -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase or problem context."
     }
 }
 
@@ -1668,11 +1818,12 @@ private fun BallotOptionRow(
 @Composable
 private fun PostalSubmitButton(
     enabled: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val outerShape = RoundedCornerShape(6.dp)
     Box(
-        modifier = Modifier
+        modifier = modifier
             .alpha(if (enabled) 1f else 0.5f)
             .shadow(if (enabled) 3.dp else 0.dp, outerShape, ambientColor = PostalColors.shadow, spotColor = PostalColors.shadow)
             .clip(outerShape)
@@ -1702,6 +1853,35 @@ private fun PostalSubmitButton(
                 color = PostalColors.attentionContrast
             )
         }
+    }
+}
+
+@Composable
+private fun PostalQuestionChatButton(
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val outerShape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = modifier
+            .alpha(if (enabled) 1f else 0.5f)
+            .shadow(if (enabled) 3.dp else 0.dp, outerShape, ambientColor = PostalColors.shadow, spotColor = PostalColors.shadow)
+            .clip(outerShape)
+            .background(PostalColors.history)
+            .border(1.dp, PostalColors.historyForeground, outerShape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(2.dp)
+            .border(2.dp, PostalColors.elevated.copy(alpha = 0.25f), RoundedCornerShape(4.dp))
+    ) {
+        Text(
+            text = "Chat",
+            fontFamily = PostalDisplayFontFamily,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            color = PostalColors.elevated,
+            modifier = Modifier.padding(horizontal = 36.dp, vertical = 12.dp)
+        )
     }
 }
 

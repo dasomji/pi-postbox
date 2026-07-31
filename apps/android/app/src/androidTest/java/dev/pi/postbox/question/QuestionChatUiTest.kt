@@ -16,6 +16,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import dev.pi.postbox.questionchat.QuestionChatBindingKey
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
@@ -135,6 +136,48 @@ class QuestionChatUiTest {
         composeRule.onAllNodesWithText("Question Chat answering").assertCountEquals(0)
         composeRule.onAllNodesWithText("Steer").assertCountEquals(0)
         composeRule.onAllNodesWithText("Elaborate").assertCountEquals(0)
+    }
+
+    @Test
+    fun proposalActionsUseWebCopyAndTranscriptOverflowShowsNoJumpAffordance() {
+        val longAssistantText = List(24) { "Answer line ${it + 1}" }.joinToString("\n")
+        composeRule.setContent {
+            TestTheme {
+                QuestionChatPanel(
+                    workflow = questionChatWorkflow(
+                        state = QuestionChatState.READY,
+                        messages = List(8) { index ->
+                            QuestionChatMessage.Assistant(
+                                id = "assistant-$index",
+                                text = longAssistantText,
+                                status = QuestionChatMessage.Assistant.Status.FINAL
+                            )
+                        },
+                        tools = listOf(
+                            QuestionChatToolActivity(
+                                id = "tool-1",
+                                tool = "propose_answer",
+                                target = "Ship now",
+                                state = "success",
+                                actionOptionValue = "ship"
+                            )
+                        )
+                    ),
+                    onRetry = {},
+                    onDraftChanged = {},
+                    onSendDraft = {},
+                    onSendStarter = {},
+                    onStop = {},
+                    onReviewSuggestion = {},
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("View in Question").performScrollTo().assertIsDisplayed()
+        composeRule.onAllNodesWithText("Review in Question").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Jump to latest").assertCountEquals(0)
     }
 
     @Test
