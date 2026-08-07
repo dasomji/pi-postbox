@@ -1,5 +1,6 @@
 package dev.pi.postbox.question
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -8,6 +9,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,11 +18,13 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -28,6 +32,8 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
@@ -41,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -59,10 +66,13 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -82,9 +92,12 @@ import androidx.compose.ui.unit.sp
 import dev.pi.postbox.BuildConfig
 import dev.pi.postbox.R
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
+import dev.pi.postbox.questionchat.QuestionChatStarter
+import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.CrossIcon
 import dev.pi.postbox.ui.theme.EnvelopeIcon
 import dev.pi.postbox.ui.theme.MenuIcon
+import dev.pi.postbox.ui.theme.NoteIcon
 import dev.pi.postbox.ui.theme.PaperPlaneIcon
 import dev.pi.postbox.ui.theme.PostalCaptionStyle
 import dev.pi.postbox.ui.theme.PostalColors
@@ -115,6 +128,16 @@ fun QuestionWorkflowScreen(
     onDismissQuestion: (String) -> Unit,
     onEditServerUrl: () -> Unit,
     onRefresh: () -> Unit,
+    onStartQuestionChat: () -> Unit,
+    onConfirmContextOnlyQuestionChat: () -> Unit,
+    onRetryQuestionChat: () -> Unit,
+    onSelectQuestionChatTab: (QuestionChatWorkspaceTab) -> Unit,
+    onQuestionChatDraftChanged: (String) -> Unit,
+    onSendQuestionChatDraft: () -> Unit,
+    onSendQuestionChatStarter: (QuestionChatStarter) -> Unit,
+    onStopQuestionChat: () -> Unit,
+    onReviewQuestionChatSuggestion: (String) -> Unit,
+    onHandleBack: () -> Boolean,
     modifier: Modifier = Modifier
 ) {
     // Set when the answer is stamped (submitted); cleared again if the submit errors.
@@ -122,6 +145,11 @@ fun QuestionWorkflowScreen(
     val visibleQuestion = state.visibleQuestion
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    BackHandler(
+        enabled = state.questionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT,
+        onBack = { onHandleBack() }
+    )
 
     LaunchedEffect(
         stampedRequestId,
@@ -184,6 +212,13 @@ fun QuestionWorkflowScreen(
                 .fillMaxSize()
                 .background(PostalColors.canvas)
         ) {
+            val activeQuestionChat = state.questionChat?.takeIf {
+                state.navigationSelection is QuestionNavigationSelection.Question &&
+                    state.visibleQuestion?.requestId == it.key.requestId
+            }
+            val hideBottomChatChrome =
+                activeQuestionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT &&
+                    WindowInsets.ime.getBottom(LocalDensity.current) > 0
             Column(modifier = Modifier.fillMaxSize()) {
                 WorkflowTopBar(
                     state = state,
@@ -301,21 +336,37 @@ fun QuestionWorkflowScreen(
                                         val listItem = state.pendingQuestions.firstOrNull {
                                             it.requestId == visibleQuestion.requestId
                                         }
-                                        QuestionDetailCard(
-                                            question = visibleQuestion,
-                                            projectLabel = session?.projectName ?: "Unknown project",
-                                            branchLabel = session?.branch ?: "Unknown branch",
-                                            askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
-                                            onToggleOption = onToggleOption,
-                                            onNoteChanged = onNoteChanged,
-                                            onRetryDraftSave = onRetryDraftSave,
-                                            onSubmitAnswer = { note ->
-                                                stampedRequestId = visibleQuestion.requestId
-                                                onSubmitAnswer(note)
-                                            },
-                                            onCancelQuestion = onCancelQuestion,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                        val questionChat = state.questionChat?.takeIf { it.key.requestId == visibleQuestion.requestId }
+                                        if (questionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT) {
+                                            QuestionChatPanel(
+                                                workflow = questionChat,
+                                                onRetry = onRetryQuestionChat,
+                                                onDraftChanged = onQuestionChatDraftChanged,
+                                                onSendDraft = onSendQuestionChatDraft,
+                                                onSendStarter = onSendQuestionChatStarter,
+                                                onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
+                                                onStop = onStopQuestionChat,
+                                                onReviewSuggestion = onReviewQuestionChatSuggestion,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        } else {
+                                            QuestionDetailCard(
+                                                question = visibleQuestion,
+                                                projectLabel = session?.projectName ?: "Unknown project",
+                                                branchLabel = session?.branch ?: "Unknown branch",
+                                                askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
+                                                questionChat = questionChat,
+                                                onToggleOption = onToggleOption,
+                                                onNoteChanged = onNoteChanged,
+                                                onRetryDraftSave = onRetryDraftSave,
+                                                onSubmitAnswer = { note ->
+                                                    stampedRequestId = visibleQuestion.requestId
+                                                    onSubmitAnswer(note)
+                                                },
+                                                onCancelQuestion = onCancelQuestion,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -323,16 +374,35 @@ fun QuestionWorkflowScreen(
                     }
                 }
 
-                // Airmail envelope edge pinned along the bottom of the screen,
-                // resting above the gesture navigation area.
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .height(3.dp)
-                        .alpha(0.7f)
-                        .postalStripes()
-                )
+                activeQuestionChat?.takeIf { !hideBottomChatChrome }?.let { questionChat ->
+                    QuestionChatTabRow(
+                        selectedTab = questionChat.selectedTab,
+                        onSelectTab = { tab ->
+                            if (
+                                tab == QuestionChatWorkspaceTab.CHAT &&
+                                    !questionChat.owner.knownStarted &&
+                                    questionChat.owner.session == null
+                            ) {
+                                onStartQuestionChat()
+                            } else {
+                                onSelectQuestionChatTab(tab)
+                            }
+                        }
+                    )
+                }
+
+                if (!hideBottomChatChrome) {
+                    // Airmail envelope edge pinned along the bottom of the screen,
+                    // resting above the gesture navigation area.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .height(3.dp)
+                            .alpha(0.7f)
+                            .postalStripes()
+                    )
+                }
             }
 
             if (stampedRequestId != null) {
@@ -969,6 +1039,9 @@ private fun QuestionListItem(
 
 internal const val QUESTION_PULL_REFRESH_TEST_TAG = "question-pull-refresh"
 internal const val QUESTION_QUEUE_TEST_TAG = "question-queue"
+internal const val QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG = "question-detail-submit-action"
+internal const val QUESTION_DETAIL_NOTE_ACTION_TEST_TAG = "question-detail-note-action"
+internal const val QUESTION_DETAIL_CHAT_ACTION_TEST_TAG = "question-detail-chat-action"
 
 @Composable
 private fun QuestionQueueView(
@@ -1116,6 +1189,7 @@ private fun QuestionDetailCard(
     projectLabel: String,
     branchLabel: String,
     askedAgo: String?,
+    questionChat: QuestionChatWorkflowUiState?,
     onToggleOption: (String) -> Unit,
     onNoteChanged: (String) -> Unit,
     onRetryDraftSave: () -> Unit,
@@ -1227,6 +1301,8 @@ private fun QuestionDetailCard(
             }
         )
 
+        val highlightedOptionValue = questionChat?.suggestedOptionReview?.optionValue
+        val reviewHighlightToken = questionChat?.suggestedOptionReview?.token ?: 0L
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             question.options.forEach { option ->
                 BallotOptionRow(
@@ -1234,6 +1310,8 @@ private fun QuestionDetailCard(
                     mode = question.mode,
                     selected = question.selectedValues.contains(option.value),
                     enabled = actionsEnabled,
+                    highlighted = highlightedOptionValue == option.value,
+                    reviewToken = reviewHighlightToken,
                     onToggle = {
                         onToggleOption(option.value)
                         if (option.value == OTHER_OPTION_VALUE) showNote = true
@@ -1325,23 +1403,36 @@ private fun QuestionDetailCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp, bottom = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            PostalSubmitButton(
-                enabled = actionsEnabled && question.canSubmit,
-                onClick = { onSubmitAnswer(question.note.nullIfBlank()) }
-            )
-            SubtleTextButton(
-                text = if (showNote) "Hide note" else "+ Add a note",
-                enabled = true,
-                onClick = { showNote = !showNote }
-            )
-            SubtleTextButton(
-                text = "Cancel",
-                enabled = actionsEnabled && question.availableActions.contains(QuestionAction.CANCEL),
-                onClick = { onCancelQuestion(question.note.nullIfBlank()) }
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PostalSubmitButton(
+                    enabled = actionsEnabled && question.canSubmit,
+                    onClick = { onSubmitAnswer(question.note.nullIfBlank()) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(QUESTION_DETAIL_SUBMIT_ACTION_TEST_TAG)
+                )
+                PostalAddNoteButton(
+                    showNote = showNote,
+                    enabled = true,
+                    onClick = { showNote = !showNote },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(QUESTION_DETAIL_NOTE_ACTION_TEST_TAG)
+                )
+            }
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                SubtleTextButton(
+                    text = "Cancel",
+                    enabled = actionsEnabled && question.availableActions.contains(QuestionAction.CANCEL),
+                    onClick = { onCancelQuestion(question.note.nullIfBlank()) }
+                )
+            }
         }
     }
 }
@@ -1437,9 +1528,19 @@ private fun BallotOptionRow(
     selected: Boolean,
     enabled: Boolean,
     onToggle: () -> Unit,
-    dashed: Boolean = false
+    dashed: Boolean = false,
+    highlighted: Boolean = false,
+    reviewToken: Long = 0L
 ) {
     val shape = RoundedCornerShape(8.dp)
+    val focusRequester = remember { FocusRequester() }
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    LaunchedEffect(highlighted, reviewToken) {
+        if (highlighted && reviewToken > 0L) {
+            bringIntoViewRequester.bringIntoView()
+            focusRequester.requestFocus()
+        }
+    }
     val selectionModifier = when (mode) {
         QuestionMode.SINGLE -> Modifier.selectable(
             selected = selected,
@@ -1462,22 +1563,30 @@ private fun BallotOptionRow(
             .clip(shape)
             .background(
                 when {
+                    highlighted -> PostalColors.history.copy(alpha = 0.08f).compositeOver(PostalColors.elevated)
                     selected -> PostalColors.attention.copy(alpha = 0.05f).compositeOver(PostalColors.elevated)
                     dashed -> PostalColors.elevated.copy(alpha = 0.6f).compositeOver(PostalColors.canvas)
                     else -> PostalColors.elevated
                 }
             )
             .then(
-                if (dashed && !selected) {
+                if (dashed && !selected && !highlighted) {
                     Modifier.dashedBorder(PostalColors.borderStrong, cornerRadius = 8.dp)
                 } else {
                     Modifier.border(
-                        width = if (selected) 1.5.dp else 1.dp,
-                        color = if (selected) PostalColors.attention else PostalColors.border,
+                        width = if (selected || highlighted) 1.5.dp else 1.dp,
+                        color = when {
+                            highlighted -> PostalColors.historyForeground
+                            selected -> PostalColors.attention
+                            else -> PostalColors.border
+                        },
                         shape = shape
                     )
                 }
             )
+            .bringIntoViewRequester(bringIntoViewRequester)
+            .focusRequester(focusRequester)
+            .focusable()
             .then(selectionModifier)
             .padding(16.dp)
             .height(IntrinsicSize.Min),
@@ -1531,6 +1640,19 @@ private fun BallotOptionRow(
                         .padding(horizontal = 8.dp, vertical = 2.dp)
                 )
             }
+            if (highlighted) {
+                Text(
+                    text = "Ready to review",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = PostalColors.attentionForeground,
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .clip(CircleShape)
+                        .background(PostalColors.attention.copy(alpha = 0.12f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
             option.description?.let { description ->
                 Text(
                     text = description,
@@ -1566,11 +1688,12 @@ private fun BallotOptionRow(
 @Composable
 private fun PostalSubmitButton(
     enabled: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val outerShape = RoundedCornerShape(6.dp)
     Box(
-        modifier = Modifier
+        modifier = modifier
             .alpha(if (enabled) 1f else 0.5f)
             .shadow(if (enabled) 3.dp else 0.dp, outerShape, ambientColor = PostalColors.shadow, spotColor = PostalColors.shadow)
             .clip(outerShape)
@@ -1592,12 +1715,51 @@ private fun PostalSubmitButton(
                 modifier = Modifier.size(16.dp)
             )
             Text(
-                text = "Submit answer".uppercase(),
+                text = "Submit",
                 fontFamily = PostalDisplayFontFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp,
                 letterSpacing = 0.12.em,
                 color = PostalColors.attentionContrast
+            )
+        }
+    }
+}
+
+@Composable
+private fun PostalAddNoteButton(
+    showNote: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val outerShape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = modifier
+            .alpha(if (enabled) 1f else 0.5f)
+            .shadow(if (enabled) 2.dp else 0.dp, outerShape, ambientColor = PostalColors.shadow, spotColor = PostalColors.shadow)
+            .clip(outerShape)
+            .background(PostalColors.elevated)
+            .border(1.dp, PostalColors.borderStrong, outerShape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 12.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = NoteIcon,
+                contentDescription = null,
+                tint = PostalColors.text,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = "Add note",
+                fontFamily = PostalDisplayFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = PostalColors.text
             )
         }
     }
@@ -1895,7 +2057,17 @@ private fun QuestionWorkflowScreenPreview() {
             onCancelQuestion = {},
             onDismissQuestion = {},
             onEditServerUrl = {},
-            onRefresh = {}
+            onRefresh = {},
+            onStartQuestionChat = {},
+            onConfirmContextOnlyQuestionChat = {},
+            onRetryQuestionChat = {},
+            onSelectQuestionChatTab = {},
+            onQuestionChatDraftChanged = {},
+            onSendQuestionChatDraft = {},
+            onSendQuestionChatStarter = {},
+            onStopQuestionChat = {},
+            onReviewQuestionChatSuggestion = {},
+            onHandleBack = { false }
         )
     }
 }

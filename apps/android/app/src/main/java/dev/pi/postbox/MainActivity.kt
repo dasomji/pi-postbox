@@ -308,7 +308,7 @@ private fun ConnectedQuestionWorkflow(
         }
         onDispose {
             lifecycle.removeObserver(observer)
-            workflowViewModel.close()
+            workflowViewModel.dispose()
         }
     }
     LaunchedEffect(workflowViewModel, notificationPermissionState) {
@@ -337,7 +337,17 @@ private fun ConnectedQuestionWorkflow(
         onCancelQuestion = workflowViewModel::cancelQuestion,
         onDismissQuestion = workflowViewModel::dismissQuestion,
         onEditServerUrl = onEditServerUrl,
-        onRefresh = workflowViewModel::refreshQuestions
+        onRefresh = workflowViewModel::refreshQuestions,
+        onStartQuestionChat = workflowViewModel::startQuestionChat,
+        onConfirmContextOnlyQuestionChat = workflowViewModel::confirmContextOnlyQuestionChat,
+        onRetryQuestionChat = workflowViewModel::retryQuestionChat,
+        onSelectQuestionChatTab = workflowViewModel::selectQuestionChatTab,
+        onQuestionChatDraftChanged = workflowViewModel::updateQuestionChatDraft,
+        onSendQuestionChatDraft = workflowViewModel::sendQuestionChatDraft,
+        onSendQuestionChatStarter = workflowViewModel::sendQuestionChatStarter,
+        onStopQuestionChat = workflowViewModel::stopQuestionChat,
+        onReviewQuestionChatSuggestion = workflowViewModel::reviewQuestionChatSuggestion,
+        onHandleBack = workflowViewModel::handleBack
     )
 }
 
