@@ -115,6 +115,7 @@ function runMigrations(db: SqliteDatabase): void {
       question_json TEXT NOT NULL DEFAULT '{}',
       options_json TEXT NOT NULL DEFAULT '[]',
       context_json TEXT,
+      parent_question_id TEXT REFERENCES questions(question_id),
       status TEXT NOT NULL DEFAULT 'pending',
       expires_at TEXT,
       resolved_at TEXT,
@@ -206,6 +207,7 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "questions", "question_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, "questions", "options_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "questions", "context_json", "TEXT");
+  ensureColumn(db, "questions", "parent_question_id", "TEXT REFERENCES questions(question_id)");
   ensureColumn(db, "questions", "status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "questions", "expires_at", "TEXT");
   ensureColumn(db, "questions", "resolved_at", "TEXT");
@@ -218,6 +220,7 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "answers", "first_read_at", "TEXT");
   ensureColumn(db, "answers", "owner_notification_delivered_at", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_legacy_request ON questions(legacy_request_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_questions_parent ON questions(parent_question_id)");
 }
 
 function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {

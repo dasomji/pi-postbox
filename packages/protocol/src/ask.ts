@@ -117,8 +117,46 @@ export const AskCreatePayloadSchema = z.object({
   options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
   context: AskCreateHandoffContextSchema,
   forkReference: ForkReferenceSchema.optional(),
-  expiresAt: z.string().datetime().optional()
+  expiresAt: z.string().datetime().optional(),
+  parentQuestionId: RequestIdSchema.optional()
 });
+
+export const AskParentReferenceSchema = z.union([
+  z.object({ questionId: RequestIdSchema }).strict(),
+  z.object({ localRef: RequestIdSchema }).strict()
+]);
+
+export const AskQuestionDraftSchema = z.object({
+  localRef: RequestIdSchema,
+  requestId: RequestIdSchema,
+  mode: AskModeSchema.default("single"),
+  urgency: AskUrgencySchema.default("normal"),
+  question: AskQuestionSchema,
+  options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
+  context: AskCreateHandoffContextSchema,
+  forkReference: ForkReferenceSchema.optional(),
+  expiresAt: z.string().datetime().optional(),
+  parent: AskParentReferenceSchema.optional()
+}).strict();
+
+const AskSingleInputSchema = z.object({ mode: z.literal("single"), question: AskQuestionDraftSchema }).strict();
+const AskBatchInputSchema = z.object({ mode: z.literal("batch"), questions: z.array(AskQuestionDraftSchema).min(1) }).strict()
+  .superRefine(({ questions }, ctx) => {
+    const refs = new Set<string>();
+    questions.forEach((question, index) => {
+      if (refs.has(question.localRef)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["questions", index, "localRef"], message: "Local references must be unique" });
+      refs.add(question.localRef);
+    });
+  });
+export const AskPostboxInputSchema = z.union([AskSingleInputSchema, AskBatchInputSchema]);
+
+export const AskBatchRejectionCodeSchema = z.enum(["forward_parent_reference", "parent_not_found", "child_limit_reached", "depth_limit_reached", "batch_aborted", "invalid_draft"]);
+const AskBatchItemReceiptSchema = z.discriminatedUnion("status", [
+  z.object({ localRef: RequestIdSchema, status: z.literal("created"), questionId: RequestIdSchema, revision: z.number().int().min(1), nudge: z.string().optional() }).strict(),
+  z.object({ localRef: RequestIdSchema, status: z.literal("rejected"), reason: z.object({ code: AskBatchRejectionCodeSchema, message: ShortTextSchema }).strict() }).strict()
+]);
+export const AskBatchReceiptSchema = z.object({ status: z.enum(["created", "partial", "rejected"]), items: z.array(AskBatchItemReceiptSchema).min(1) }).strict();
+export const AskAnswerEventSchema = z.object({ questionId: RequestIdSchema, affectedDescendantIds: z.array(RequestIdSchema) }).passthrough();
 
 export const AskAnswerPayloadSchema = z.object({
   selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
@@ -208,7 +246,8 @@ export const AskRequestSnapshotSchema = z.object({
   createdAt: z.string().datetime(),
   expiresAt: z.string().datetime().optional(),
   resolvedAt: z.string().datetime().optional(),
-  result: AskResultSchema.optional()
+  result: AskResultSchema.optional(),
+  parentQuestionId: RequestIdSchema.optional()
 });
 
 export type AskMode = z.infer<typeof AskModeSchema>;
@@ -226,6 +265,9 @@ export type ProposeAnswerErrorCode = z.infer<typeof ProposeAnswerErrorCodeSchema
 export type ProposeAnswerResult = z.infer<typeof ProposeAnswerResultSchema>;
 export type AskQuestion = z.infer<typeof AskQuestionSchema>;
 export type AskCreatePayload = z.infer<typeof AskCreatePayloadSchema>;
+export type AskQuestionDraft = z.infer<typeof AskQuestionDraftSchema>;
+export type AskPostboxInput = z.infer<typeof AskPostboxInputSchema>;
+export type AskBatchReceipt = z.infer<typeof AskBatchReceiptSchema>;
 export type AskAnswerPayload = z.infer<typeof AskAnswerPayloadSchema>;
 export type AskCancelPayload = z.infer<typeof AskCancelPayloadSchema>;
 export type AskResult = z.infer<typeof AskResultSchema>;
