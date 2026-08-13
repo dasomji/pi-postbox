@@ -5,8 +5,7 @@ import { z } from "zod";
 
 const ExtensionConfigSchema = z.object({
   serverUrl: z.string().url().optional(),
-  machineId: z.string().min(1).optional(),
-  deliveredAnswerIds: z.array(z.string().min(1).max(200)).default([])
+  machineId: z.string().min(1).optional()
 });
 
 export type ExtensionConfig = z.infer<typeof ExtensionConfigSchema>;
@@ -18,7 +17,7 @@ export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string 
 export async function readExtensionConfig(env: NodeJS.ProcessEnv = process.env): Promise<ExtensionConfig> {
   const fileConfig: ExtensionConfig = await readFile(defaultConfigPath(env), "utf8")
     .then((text) => ExtensionConfigSchema.parse(JSON.parse(text)))
-    .catch(() => ExtensionConfigSchema.parse({}));
+    .catch(() => ({}));
 
   return {
     ...fileConfig,

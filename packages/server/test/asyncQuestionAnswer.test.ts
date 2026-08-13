@@ -125,7 +125,10 @@ describe("one asynchronous Question-to-Answer loop", () => {
     } });
     owner.send(JSON.stringify({ type: "answer.available.ack", requestId: replay.requestId as string,
       payload: { answerId: (replay.payload as { answerId: string }).answerId } } satisfies ExtensionClientMessage));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const ackBarrier = nextMessage(owner);
+    owner.send(JSON.stringify({ type: "heartbeat", requestId: "after-answer-ack",
+      payload: { sessionId: "control-session-1", semanticState: "working" } } satisfies ExtensionClientMessage));
+    await expect(ackBarrier).resolves.toMatchObject({ type: "ack", requestId: "after-answer-ack", payload: { type: "heartbeat" } });
     owner.close();
     await app.close();
     apps.pop();

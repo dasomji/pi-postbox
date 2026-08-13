@@ -179,11 +179,10 @@ describe("PostboxClient pending ask resilience", () => {
   it("acks without re-emitting after a client crash before the server receives the first ack", async () => {
     FakeSocket.instances = [];
     const durable = new Set<string>();
-    const inbox = { recordIfNew: async (answerId: string) => {
-      if (durable.has(answerId)) return false;
-      durable.add(answerId);
-      return true;
-    } };
+    const inbox = {
+      begin: async (answerId: string) => durable.has(answerId) ? "delivered" as const : "new" as const,
+      markDelivered: async (answerId: string) => { durable.add(answerId); }
+    };
     const firstNotifications: unknown[] = [];
     const first = createClient({ answerNotificationInbox: inbox, onAnswerAvailable: (value) => firstNotifications.push(value) });
     first.start();
@@ -207,6 +206,37 @@ describe("PostboxClient pending ask resilience", () => {
     await vi.waitFor(() => expect(restartedSocket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true));
     expect(restartedNotifications).toEqual([]);
     restarted.stop();
+  });
+
+  it("replays pending delivery after crash-before-callback and after a throwing callback", async () => {
+    FakeSocket.instances = [];
+    const states = new Map<string, "pending" | "delivered">();
+    const inbox = {
+      begin: async (id: string) => states.get(id) ?? (states.set(id, "pending"), "new" as const),
+      markDelivered: async (id: string) => { states.set(id, "delivered"); }
+    };
+    // Simulate a prior process that persisted receipt then crashed before callback.
+    states.set("answer-pending", "pending");
+    let calls = 0;
+    const client = createClient({ answerNotificationInbox: inbox, onAnswerAvailable: () => {
+      calls += 1;
+      if (calls === 1) throw new Error("UI unavailable");
+    } });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const message = { type: "answer.available" as const, requestId: "pending-command", payload: {
+      questionId: "question-pending", question: "Retry?", answerId: "answer-pending"
+    } };
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    expect(states.get("answer-pending")).toBe("pending");
+    expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(false);
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(states.get("answer-pending")).toBe("delivered"));
+    expect(calls).toBe(2);
+    expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true);
+    client.stop();
   });
   it("status snapshot enriches a real connected local client with Tailnet URL, remote export, and Tailscale diagnostics", async () => {
     FakeSocket.instances = [];

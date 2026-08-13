@@ -182,6 +182,7 @@ export class PostboxClient {
   private readonly asynchronousAskCreates = new Set<string>();
   private readonly pendingCreateReceipts = new Map<string, PendingCreateReceipt>();
   private readonly answerNotificationInbox: AnswerNotificationInbox;
+  private answerNotificationOperation: Promise<void> = Promise.resolve();
   private readonly localResolutions = new Map<string, LocalResolution>();
   private currentSemanticState: SemanticState;
   private currentServerUrl: string;
@@ -505,7 +506,10 @@ export class PostboxClient {
           return;
         }
         if (parsed.data.type === "answer.available") {
-          void this.deliverAnswerNotification(parsed.data.requestId, parsed.data.payload);
+          const notification = parsed.data;
+          this.answerNotificationOperation = this.answerNotificationOperation.then(
+            () => this.deliverAnswerNotification(notification.requestId, notification.payload)
+          );
           return;
         }
         if (parsed.data.type === "answer.result") {
@@ -922,8 +926,10 @@ export class PostboxClient {
     notification: { questionId: string; question: string; answerId: string }
   ): Promise<void> {
     try {
-      if (await this.answerNotificationInbox.recordIfNew(notification.answerId)) {
+      const state = await this.answerNotificationInbox.begin(notification.answerId);
+      if (state !== "delivered") {
         this.options.onAnswerAvailable?.(notification);
+        await this.answerNotificationInbox.markDelivered(notification.answerId);
       }
       if (commandId) this.send({ type: "answer.available.ack", requestId: commandId, payload: { answerId: notification.answerId } });
     } catch (error) {
