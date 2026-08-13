@@ -782,6 +782,19 @@ export class RequestStore {
     return JSON.parse(value) as unknown;
   }
 
+  private decodeQuestionCursor(cursor: string | undefined): number {
+    if (cursor === undefined) return 0;
+    const match = /^question-offset:(\d+)$/.exec(cursor);
+    if (!match) throw new RequestStoreError("invalid_cursor", "Question cursor is invalid");
+    const offset = Number(match[1]);
+    if (!Number.isSafeInteger(offset)) throw new RequestStoreError("invalid_cursor", "Question cursor is invalid");
+    return offset;
+  }
+
+  private encodeQuestionCursor(offset: number): string {
+    return `question-offset:${offset}`;
+  }
+
   private toResult(row: AskRequestRow): AskResult | undefined {
     if (!row.resolved_at) return undefined;
     if (row.status === "answered") {
