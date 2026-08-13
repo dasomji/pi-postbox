@@ -132,6 +132,9 @@ function runMigrations(db: SqliteDatabase): void {
       selected_values_json TEXT NOT NULL DEFAULT '[]',
       note TEXT,
       rationale TEXT,
+      first_reader_harness TEXT,
+      first_reader_owner_id TEXT,
+      first_read_at TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -209,6 +212,9 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "answers", "selected_values_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "answers", "note", "TEXT");
   ensureColumn(db, "answers", "rationale", "TEXT");
+  ensureColumn(db, "answers", "first_reader_harness", "TEXT");
+  ensureColumn(db, "answers", "first_reader_owner_id", "TEXT");
+  ensureColumn(db, "answers", "first_read_at", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_legacy_request ON questions(legacy_request_id)");
 }
 

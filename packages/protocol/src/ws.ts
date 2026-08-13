@@ -147,6 +147,15 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     payload: z.object({ requestId: z.string().min(1), status: z.literal("pending") })
   }),
   z.object({
+    type: z.literal("answer.available"),
+    requestId: z.string().min(1).optional(),
+    payload: z.object({
+      questionId: z.string().min(1),
+      question: z.string().min(1),
+      answerId: z.string().min(1)
+    }).strict()
+  }),
+  z.object({
     type: z.literal("ask.resolved"),
     requestId: z.string().min(1).optional(),
     payload: AskResultSchema

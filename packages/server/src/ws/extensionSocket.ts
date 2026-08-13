@@ -85,6 +85,15 @@ export async function registerExtensionSocket(
 
     const connectionId = randomUUID();
     const unsubscribers = new Set<() => void>();
+    unsubscribers.add(requestStore.onAnswerAvailable((answer) => {
+      if (!registeredSessionId || socket.readyState !== 1) return;
+      const owner = sessionStore.ownerForSession(registeredSessionId);
+      if (owner?.harness !== answer.ownerHarness || owner.ownerId !== answer.ownerId) return;
+      send(socket, {
+        type: "answer.available",
+        payload: { questionId: answer.questionId, question: answer.question, answerId: answer.answerId }
+      });
+    }));
     let registeredSessionId: string | undefined;
     let recoveryOffersComplete = false;
     const pendingRecoveries = new Map<string, {

@@ -41,6 +41,14 @@ interface AskRequestRow {
 }
 
 type ResolutionListener = (result: AskResult) => void;
+export interface AnswerAvailable {
+  questionId: string;
+  question: string;
+  answerId: string;
+  ownerHarness: string;
+  ownerId: string;
+}
+type AnswerAvailableListener = (answer: AnswerAvailable) => void;
 
 export interface RequestStoreOptions {
   askTimeoutMs?: number;
@@ -52,7 +60,6 @@ export interface ProposedAnswerAppend {
   request: AskRequestSnapshot;
 }
 
-const DEFAULT_ASK_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 const EXPIRED_RATIONALE = "Postbox request expired before an answer was submitted.";
 const SESSION_SHUTDOWN_NOTE = "Originating Pi session shut down.";
 const PROPOSED_OPTION_VALUE_ATTEMPTS = 4;
@@ -61,8 +68,9 @@ const OPTIONS_MAX = 20;
 export class RequestStore {
   private readonly listeners = new Map<string, Set<ResolutionListener>>();
   private readonly globalResolutionListeners = new Set<ResolutionListener>();
+  private readonly answerAvailableListeners = new Set<AnswerAvailableListener>();
   private closed = false;
-  private readonly askTimeoutMs: number;
+  private readonly askTimeoutMs: number | undefined;
   private readonly generateProposedOptionValue: () => string;
 
   constructor(
@@ -70,7 +78,7 @@ export class RequestStore {
     private readonly now: () => number,
     options: RequestStoreOptions = {}
   ) {
-    this.askTimeoutMs = options.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    this.askTimeoutMs = options.askTimeoutMs;
     this.generateProposedOptionValue = options.generateProposedOptionValue ?? (() => `chat_${randomUUID()}`);
   }
 
@@ -78,6 +86,7 @@ export class RequestStore {
     this.closed = true;
     this.listeners.clear();
     this.globalResolutionListeners.clear();
+    this.answerAvailableListeners.clear();
   }
 
   create(payload: AskCreatePayload): AskRequestSnapshot {
@@ -89,7 +98,9 @@ export class RequestStore {
     if (existing) return existing;
 
     const nowIso = new Date(this.now()).toISOString();
-    const expiresAt = parsed.expiresAt ?? new Date(this.now() + this.askTimeoutMs).toISOString();
+    const expiresAt = parsed.expiresAt ?? (this.askTimeoutMs === undefined
+      ? undefined
+      : new Date(this.now() + this.askTimeoutMs).toISOString());
 
     const session = this.db.prepare("SELECT session_id, owner_harness, owner_id FROM sessions WHERE session_id = ?").get(parsed.sessionId) as
       { session_id: string; owner_harness: string | null; owner_id: string | null } | undefined;
@@ -242,6 +253,7 @@ export class RequestStore {
     this.expireDue();
     const parsed = AskAnswerPayloadSchema.parse(payload);
     let result: AskResult | undefined;
+    let available: AnswerAvailable | undefined;
 
     const transaction = this.db.transaction(() => {
       const existing = this.getPending(requestId);
@@ -269,27 +281,81 @@ export class RequestStore {
 
       if (changes !== 1) throw new RequestStoreError("request_already_resolved", "Ask request is already resolved");
       const question = this.db.prepare(`UPDATE questions SET status = 'answered', resolved_at = @resolvedAt, updated_at = @resolvedAt
-        WHERE legacy_request_id = @requestId AND status = 'pending' RETURNING question_id, revision`)
-        .get({ requestId, resolvedAt }) as { question_id: string; revision: number } | undefined;
+        WHERE legacy_request_id = @requestId AND status = 'pending'
+        RETURNING question_id, revision, question_json, owner_harness, owner_owner_id`)
+        .get({ requestId, resolvedAt }) as { question_id: string; revision: number; question_json: string; owner_harness: string; owner_owner_id: string } | undefined;
+      const answerId = randomUUID();
       if (question) this.db.prepare(`INSERT INTO answers (
         answer_id, question_id, question_revision, status, selected_values_json, note, rationale, created_at
       ) VALUES (@answerId, @questionId, @revision, 'answered', @selectedValuesJson, @note, @rationale, @resolvedAt)`)
-        .run({ answerId: randomUUID(), questionId: question.question_id, revision: question.revision,
+        .run({ answerId, questionId: question.question_id, revision: question.revision,
           selectedValuesJson: JSON.stringify(parsed.selectedValues), note: parsed.note ?? null, rationale: parsed.rationale ?? null, resolvedAt });
       result = {
         status: "answered",
         requestId,
+        ...(question ? { questionId: question.question_id, answerId, alreadyRead: false } : {}),
         selectedValues: parsed.selectedValues,
         note: parsed.note,
         rationale: parsed.rationale,
         resolvedAt
       };
+      if (question) available = {
+        questionId: question.question_id,
+        question: (JSON.parse(question.question_json) as { prompt: string }).prompt,
+        answerId,
+        ownerHarness: question.owner_harness,
+        ownerId: question.owner_owner_id
+      };
     });
 
     transaction();
     if (!result) throw new Error("answer transaction did not produce a result");
+    if (available) for (const listener of [...this.answerAvailableListeners]) listener(available);
     this.notify(requestId, result);
     return result;
+  }
+
+  onAnswerAvailable(listener: AnswerAvailableListener): () => void {
+    this.answerAvailableListeners.add(listener);
+    return () => this.answerAvailableListeners.delete(listener);
+  }
+
+  getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
+    let output: Record<string, unknown> | undefined;
+    this.db.transaction(() => {
+      const question = this.db.prepare(`SELECT question_id, revision, question_json, owner_harness, owner_owner_id
+        FROM questions WHERE question_id = ?`).get(questionId) as {
+          question_id: string; revision: number; question_json: string; owner_harness: string; owner_owner_id: string
+        } | undefined;
+      if (!question) throw new RequestStoreError("request_not_found", "Question not found");
+      if (question.owner_harness !== reader.harness || question.owner_owner_id !== reader.ownerId) {
+        throw new RequestStoreError("wrong_owner", "Reader does not own this Question");
+      }
+      const answer = this.db.prepare(`SELECT * FROM answers WHERE question_id = ? ORDER BY created_at DESC LIMIT 1`).get(questionId) as {
+        answer_id: string; selected_values_json: string; note: string | null; rationale: string | null;
+        first_reader_harness: string | null; first_reader_owner_id: string | null
+      } | undefined;
+      if (!answer) throw new RequestStoreError("answer_not_found", "Answer not found");
+      const alreadyRead = answer.first_reader_harness !== null;
+      if (!alreadyRead) this.db.prepare(`UPDATE answers SET first_reader_harness = ?, first_reader_owner_id = ?, first_read_at = ?
+        WHERE answer_id = ? AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, new Date(this.now()).toISOString(), answer.answer_id);
+      const firstReader = alreadyRead
+        ? { harness: answer.first_reader_harness!, ownerId: answer.first_reader_owner_id! }
+        : reader;
+      const parsedQuestion = JSON.parse(question.question_json) as { prompt: string };
+      output = {
+        alreadyRead,
+        question: { questionId: question.question_id, prompt: parsedQuestion.prompt, revision: question.revision },
+        answer: {
+          answerId: answer.answer_id,
+          selectedValues: JSON.parse(answer.selected_values_json),
+          note: answer.note ?? undefined,
+          rationale: answer.rationale ?? undefined
+        },
+        firstReader
+      };
+    })();
+    return output!;
   }
 
   cancel(requestId: string, payload: AskCancelPayload = {}): AskResult {

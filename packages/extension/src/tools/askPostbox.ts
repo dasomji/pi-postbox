@@ -6,6 +6,7 @@ import {
   type AskCreateHandoffContext,
   type AskOption,
   type AskResult,
+  type AskReceipt,
   type AskUrgency,
   type ForkReference
 } from "@pi-postbox/protocol";
@@ -143,18 +144,22 @@ export async function executeAskPostbox(
   sessionId: string,
   signal?: AbortSignal,
   lifecycle?: AskPostboxWaitLifecycle
-): Promise<AskResult> {
+): Promise<AskResult | AskReceipt> {
   const payload = createAskPayload(input, sessionId);
   const releaseWait = lifecycle?.beginAskPostboxWait(input.question);
-  try {
-    const result = await client.ask(payload, signal);
-    return AskResultSchema.parse(result);
-  } finally {
-    releaseWait?.();
-  }
+  const answer = client.ask(payload, signal).then((result) => AskResultSchema.parse(result));
+  releaseWait?.();
+  return Promise.race([
+    answer,
+    new Promise<AskReceipt>((resolve) => setTimeout(
+      () => resolve({ questionId: payload.requestId, revision: 1, status: "pending" }),
+      0
+    ))
+  ]);
 }
 
-export function formatAskResult(result: AskResult): string {
+export function formatAskResult(result: AskResult | AskReceipt): string {
+  if ("questionId" in result) return `Postbox queued ${result.questionId} (revision ${result.revision}).`;
   if (result.status === "answered") {
     const note = result.note ? ` Note: ${result.note}` : "";
     const rationale = result.rationale ? ` Rationale: ${result.rationale}` : "";

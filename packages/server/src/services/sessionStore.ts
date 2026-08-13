@@ -105,6 +105,12 @@ export class SessionStore {
     this.activeConnections.clear();
   }
 
+  ownerForSession(sessionId: string): { harness: string; ownerId: string } | undefined {
+    const row = this.db.prepare("SELECT owner_harness, owner_id FROM sessions WHERE session_id = ?").get(sessionId) as
+      { owner_harness: string | null; owner_id: string | null } | undefined;
+    return row?.owner_harness && row.owner_id ? { harness: row.owner_harness, ownerId: row.owner_id } : undefined;
+  }
+
   register(connectionId: string, payload: SessionRegisterPayload): void {
     if (this.closed) return;
     const nowIso = new Date(this.now()).toISOString();

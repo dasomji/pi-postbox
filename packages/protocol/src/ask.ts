@@ -161,6 +161,12 @@ export const AskResultSchema = z.discriminatedUnion("status", [
   })
 ]);
 
+export const AskReceiptSchema = z.object({
+  questionId: RequestIdSchema,
+  revision: z.number().int().min(1),
+  status: z.literal("pending")
+});
+
 export const AskRequestSnapshotSchema = z.object({
   requestId: RequestIdSchema,
   sessionId: z.string().min(1).max(200),
@@ -195,4 +201,5 @@ export type AskCreatePayload = z.infer<typeof AskCreatePayloadSchema>;
 export type AskAnswerPayload = z.infer<typeof AskAnswerPayloadSchema>;
 export type AskCancelPayload = z.infer<typeof AskCancelPayloadSchema>;
 export type AskResult = z.infer<typeof AskResultSchema>;
+export type AskReceipt = z.infer<typeof AskReceiptSchema>;
 export type AskRequestSnapshot = z.infer<typeof AskRequestSnapshotSchema>;
