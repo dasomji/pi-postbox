@@ -66,6 +66,9 @@ describe("owner Question/Answer source of truth", () => {
     db.prepare(`UPDATE questions SET legacy_request_id=NULL,source_session_id=NULL,
       question_json='{"prompt":"Newer intentional wording"}',options_json='[{"value":"keep","label":"Keep"}]',
       updated_at='2026-02-01T00:00:00.000Z' WHERE question_id='explicit'`).run();
+    // A previously interrupted mirror may already contain the manufactured
+    // timestamp but not its provenance. The resumed migration must clear it.
+    db.prepare("UPDATE questions SET expires_at=?,expiry_provenance=NULL WHERE question_id='default'").run(twelveHours);
     db.close();
 
     db = openPostboxDatabase(path);
@@ -84,6 +87,8 @@ describe("owner Question/Answer source of truth", () => {
     expect(db.prepare("SELECT legacy_request_id,source_session_id,question_json,options_json FROM questions WHERE question_id='explicit'").get())
       .toEqual({ legacy_request_id: "explicit", source_session_id: "legacy-session",
         question_json: '{"prompt":"Newer intentional wording"}', options_json: '[{"value":"keep","label":"Keep"}]' });
+    expect(db.prepare("SELECT expires_at,expiry_provenance FROM questions WHERE question_id='default'").get())
+      .toEqual({ expires_at: null, expiry_provenance: "manufactured_default" });
     db.close(); rmSync(root, { recursive: true, force: true });
   });
 });

@@ -323,8 +323,10 @@ function migrateLegacyDecisions(db: SqliteDatabase): void {
       parent_question_id = COALESCE(q.parent_question_id, (SELECT r.parent_question_id FROM ask_requests r WHERE r.request_id=q.question_id)),
       status = CASE WHEN q.revision=1 AND q.question_json='{}' THEN
         (SELECT r.status FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.status END,
-      expires_at = COALESCE(q.expires_at, (SELECT CASE WHEN r.expiry_provenance='manufactured_default' THEN NULL ELSE r.expires_at END
-        FROM ask_requests r WHERE r.request_id=q.question_id)),
+      expires_at = CASE
+        WHEN (SELECT r.expiry_provenance FROM ask_requests r WHERE r.request_id=q.question_id)='manufactured_default' THEN NULL
+        ELSE COALESCE(q.expires_at, (SELECT r.expires_at FROM ask_requests r WHERE r.request_id=q.question_id))
+      END,
       resolved_at = COALESCE(q.resolved_at, (SELECT r.resolved_at FROM ask_requests r WHERE r.request_id=q.question_id))
       WHERE q.creator_harness='legacy' AND q.revision=1
         AND EXISTS (SELECT 1 FROM ask_requests r WHERE r.request_id=q.question_id)`).run();
