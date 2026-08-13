@@ -5,6 +5,7 @@ import {
   AskCreatePayloadSchema,
   AskResultSchema,
   AskStatusSchema,
+  UpdateQuestionPayloadSchema,
   AnswerReadResultSchema,
   ProposeAnswerPayloadSchema,
   ProposeAnswerResultSchema
@@ -94,6 +95,8 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("questions.get"), requestId: WsCorrelationIdSchema, payload: z.object({ questionIds: z.array(z.string().min(1)).min(1) }).strict() }),
   z.object({ type: z.literal("question.status.list"), requestId: WsCorrelationIdSchema, payload: z.object({ sessionId: z.string().min(1), owner: OwnerIdentitySchema.optional(), repository: z.string().optional(), worktree: z.string().optional(), feature: z.string().optional(), status: AskStatusSchema.optional(), global: z.boolean().optional(), readState: z.enum(["read", "unread"]).optional(), includeTerminal: z.boolean().optional() }).strict() }),
   z.object({ type: z.literal("owner.status.get"), requestId: WsCorrelationIdSchema, payload: z.object({ owners: z.array(OwnerIdentitySchema).min(1) }).strict() }),
+  z.object({ type: z.literal("question.update"), requestId: WsCorrelationIdSchema, payload: z.object({ sessionId: z.string().min(1), questionId: z.string().min(1), update: UpdateQuestionPayloadSchema }).strict() }),
+  z.object({ type: z.literal("question.history.get"), requestId: WsCorrelationIdSchema, payload: z.object({ questionId: z.string().min(1) }).strict() }),
   z.object({ type: z.literal("postbox.wait"), requestId: WsCorrelationIdSchema,
     payload: z.object({ sessionId: z.string().min(1) }).strict() }),
   z.object({

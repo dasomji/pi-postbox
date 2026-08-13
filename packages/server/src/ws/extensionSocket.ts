@@ -361,6 +361,15 @@ export async function registerExtensionSocket(
         send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.listQuestionStatus({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload }) }); return;
       }
       if (message.type === "owner.status.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: sessionStore.getPostboxOwnerStatus(message.payload.owners) }); return; }
+      if (message.type === "question.update") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Question updates require this connection's registered session")); return; }
+        const actor = sessionStore.ownerForSession(message.payload.sessionId);
+        if (!actor) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
+        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update) }); }
+        catch (error) { sendAskError(socket, message.requestId, "question_update_failed", error); }
+        return;
+      }
+      if (message.type === "question.history.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestionHistory(message.payload.questionId) }); return; }
       if (message.type === "postbox.wait") {
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
           sendAskError(socket, message.requestId, "wait_not_owner", new Error("Postbox wait requires this connection's registered session")); return;

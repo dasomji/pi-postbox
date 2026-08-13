@@ -196,6 +196,11 @@ export default function postboxExtension(pi: PiLikeApi): void {
       owners: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
         required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } } }
     } }, "owner.status.get");
+  registerQueryTool("update_question", "Revise, cancel, supersede, or reparent an owned Question with expected-revision concurrency.",
+    { type: "object", additionalProperties: false, required: ["questionId", "update"], properties: { questionId: { type: "string" }, update: { type: "object" } } }, "question.update",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  registerQueryTool("get_question_history", "Explicitly retrieve immutable Question revision, parent, and terminal event facts.",
+    { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string" } } }, "question.history.get");
   pi.registerTool?.({
     name: "wait_for_postbox", label: "Wait for Postbox", annotations: { readOnlyHint: false },
     description: "Cancellably wait for the first actionable event across every Question owned by this agent.",
