@@ -168,6 +168,12 @@ function runMigrations(db: SqliteDatabase): void {
       facts_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS question_revisions (
+      question_id TEXT NOT NULL REFERENCES questions(question_id), revision INTEGER NOT NULL,
+      question_json TEXT NOT NULL, options_json TEXT NOT NULL, context_json TEXT,
+      actor_harness TEXT NOT NULL, actor_owner_id TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (question_id, revision)
+    );
 
     CREATE TRIGGER IF NOT EXISTS questions_creator_immutable
       BEFORE UPDATE OF creator_harness, creator_owner_id ON questions

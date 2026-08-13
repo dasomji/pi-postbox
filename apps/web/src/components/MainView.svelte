@@ -35,7 +35,9 @@
   {:else if selection.kind === "request"}
     {#if store.selectedRequest}
       {#key store.selectedRequest.requestId}
-        <QuestionDetail request={store.selectedRequest} session={store.selectedSession} {unansweredAncestors} />
+        <QuestionDetail request={store.displayedSelectedRequest ?? store.selectedRequest} latestRequest={store.selectedRequest}
+          revisionChanges={store.displayedSelectedRequest && store.selectedRequest.revision > store.displayedSelectedRequest.revision ? ["Question content or options changed"] : []}
+          session={store.selectedSession} {unansweredAncestors} />
       {/key}
     {:else}
       <EmptyMain title="Question resolved" message="This request was answered, cancelled, or expired." />

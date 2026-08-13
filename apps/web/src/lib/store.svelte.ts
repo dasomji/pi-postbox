@@ -46,6 +46,7 @@ class PostboxStore {
    */
   private readonly locallyResolvingRequestIds = new Set<string>();
   private locallyRetainedRequest: AskRequestSnapshot | undefined;
+  private displayedRequest: AskRequestSnapshot | undefined;
   private historyLoadPromise: Promise<HistoryResponse> | undefined;
   private snapshotLoadPromise: Promise<StateSnapshot> | undefined;
   private readonly snapshotWaiters = new Set<{
@@ -114,6 +115,8 @@ class PostboxStore {
     return this.requests.find((request) => request.requestId === selection.requestId)
       ?? (this.locallyRetainedRequest?.requestId === selection.requestId ? this.locallyRetainedRequest : undefined);
   });
+
+  displayedSelectedRequest = $derived.by(() => this.displayedRequest?.requestId === this.selectedRequest?.requestId ? this.displayedRequest : this.selectedRequest);
 
   selectedSession = $derived.by<SessionSnapshot | undefined>(() => {
     const selection = this.selection;
@@ -215,6 +218,7 @@ class PostboxStore {
         ?? (this.locallyRetainedRequest?.requestId === selection.requestId ? this.locallyRetainedRequest : undefined)
       : undefined;
 
+    if (previouslySelectedRequest && !this.displayedRequest) this.displayedRequest = previouslySelectedRequest;
     this.snapshot = { status: "ready", data: next };
     this.syncing = false;
     this.lastSnapshotAtMs = Date.now();

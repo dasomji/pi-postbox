@@ -74,6 +74,7 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
       // delivered-stamp animation to land before routing away.
       const minimumStampTime = new Promise((resolve) => setTimeout(resolve, 900));
       await postJson(`/api/requests/${encodeURIComponent(currentRequest.requestId)}/answer`, {
+        expectedRevision: currentRequest.revision,
         selectedValues: selected,
         note: note.trim() || undefined
       });

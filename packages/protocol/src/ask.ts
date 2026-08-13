@@ -163,7 +163,7 @@ export const AskBatchReceiptSchema = z.object({ status: z.enum(["created", "part
 export const AskAnswerEventSchema = z.object({ questionId: RequestIdSchema, affectedDescendantIds: z.array(RequestIdSchema) }).passthrough();
 
 export const AskAnswerPayloadSchema = z.object({
-  expectedRevision: z.number().int().min(1).optional(),
+  expectedRevision: z.number().int().min(1),
   selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
   note: LongTextSchema.optional(),
   rationale: LongTextSchema.optional()

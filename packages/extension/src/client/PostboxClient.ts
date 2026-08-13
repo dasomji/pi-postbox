@@ -443,6 +443,7 @@ export class PostboxClient {
     const pending = this.findPendingAsk(input.requestId);
     this.validateSelectedValues(pending.payload, input.selectedValues);
     const answer: AskAnswerPayload = {
+      expectedRevision: 1,
       selectedValues: input.selectedValues,
       note: input.note,
       rationale: input.rationale
