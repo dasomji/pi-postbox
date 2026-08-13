@@ -87,6 +87,7 @@ function runMigrations(db: SqliteDatabase): void {
       rationale TEXT,
       created_at TEXT NOT NULL,
       expires_at TEXT,
+      expiry_provenance TEXT,
       resolved_at TEXT,
       updated_at TEXT NOT NULL
     );
@@ -113,6 +114,9 @@ function runMigrations(db: SqliteDatabase): void {
       owner_owner_id TEXT NOT NULL,
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
       legacy_request_id TEXT UNIQUE,
+      source_session_id TEXT REFERENCES sessions(session_id),
+      fork_reference_json TEXT,
+      expiry_provenance TEXT,
       mode TEXT NOT NULL DEFAULT 'single',
       question_json TEXT NOT NULL DEFAULT '{}',
       options_json TEXT NOT NULL DEFAULT '[]',
@@ -234,12 +238,16 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "ask_requests", "fork_reference_json", "TEXT");
   ensureColumn(db, "ask_requests", "parent_question_id", "TEXT");
   ensureColumn(db, "ask_requests", "expires_at", "TEXT");
+  ensureColumn(db, "ask_requests", "expiry_provenance", "TEXT");
   ensureColumn(db, "sessions", "owner_harness", "TEXT");
   ensureColumn(db, "sessions", "owner_id", "TEXT");
   ensureColumn(db, "sessions", "repository_id", "TEXT");
   ensureColumn(db, "sessions", "worktree_id", "TEXT");
   ensureColumn(db, "sessions", "feature_id", "TEXT");
   ensureColumn(db, "questions", "legacy_request_id", "TEXT");
+  ensureColumn(db, "questions", "source_session_id", "TEXT REFERENCES sessions(session_id)");
+  ensureColumn(db, "questions", "fork_reference_json", "TEXT");
+  ensureColumn(db, "questions", "expiry_provenance", "TEXT");
   ensureColumn(db, "questions", "mode", "TEXT NOT NULL DEFAULT 'single'");
   ensureColumn(db, "questions", "question_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, "questions", "options_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -273,19 +281,17 @@ function runMigrations(db: SqliteDatabase): void {
 
 function migrateLegacyDecisions(db: SqliteDatabase): void {
   db.transaction(() => {
-    db.prepare(`UPDATE ask_requests SET expires_at = NULL WHERE expires_at IS NOT NULL
-      AND abs((julianday(expires_at) - julianday(created_at)) - 0.5) < 0.000001`).run();
     db.prepare(`INSERT OR IGNORE INTO owners (harness, owner_id, harness_session_id, created_at, updated_at)
       SELECT 'legacy', session_id, session_id, MIN(created_at), MAX(updated_at) FROM ask_requests GROUP BY session_id`)
       .run();
     db.prepare(`INSERT OR IGNORE INTO questions (
-      question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
+      question_id, legacy_request_id, source_session_id, fork_reference_json, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
       revision, mode, question_json, options_json, context_json, parent_question_id, status, expires_at, resolved_at,
       created_at, updated_at)
-      SELECT request_id, request_id, 'legacy', session_id, 'legacy', session_id, 1, mode,
+      SELECT request_id, request_id, session_id, fork_reference_json, 'legacy', session_id, 'legacy', session_id, 1, mode,
         COALESCE(question_json, json_object('prompt', prompt)), options_json, context_json, parent_question_id,
-        status, CASE WHEN expires_at IS NOT NULL AND abs((julianday(expires_at) - julianday(created_at)) - 0.5) < 0.000001
-          THEN NULL ELSE expires_at END, resolved_at, created_at, updated_at FROM ask_requests`)
+        status, CASE WHEN expiry_provenance = 'manufactured_default' THEN NULL ELSE expires_at END,
+        resolved_at, created_at, updated_at FROM ask_requests`)
       .run();
     db.prepare(`INSERT OR IGNORE INTO question_revisions
       (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
@@ -297,8 +303,21 @@ function migrateLegacyDecisions(db: SqliteDatabase): void {
       first_reader_harness, first_reader_owner_id, first_read_at, owner_notification_delivered_at, created_at)
       SELECT 'legacy-answer-' || request_id, request_id, 1, 'answered', selected_values_json, note, rationale,
         'legacy', session_id, COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at)
-      FROM ask_requests WHERE status = 'answered'`)
+      FROM ask_requests r WHERE status = 'answered'
+        AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=r.request_id)`)
       .run();
+    db.prepare(`INSERT OR IGNORE INTO answers (
+      answer_id, question_id, question_revision, status, selected_values_json, note, rationale,
+      first_reader_harness, first_reader_owner_id, first_read_at, owner_notification_delivered_at, created_at)
+      SELECT 'legacy-result-' || request_id, request_id, 1, status, '[]', note, rationale,
+        'legacy', session_id, COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at)
+      FROM ask_requests WHERE status IN ('cancelled','expired')`).run();
+    db.prepare(`UPDATE answers SET
+      first_reader_harness = COALESCE(first_reader_harness, 'legacy'),
+      first_reader_owner_id = COALESCE(first_reader_owner_id, (SELECT creator_owner_id FROM questions WHERE questions.question_id=answers.question_id)),
+      first_read_at = COALESCE(first_read_at, created_at),
+      owner_notification_delivered_at = COALESCE(owner_notification_delivered_at, created_at)
+      WHERE question_id IN (SELECT request_id FROM ask_requests WHERE status='answered')`).run();
   })();
 }
 

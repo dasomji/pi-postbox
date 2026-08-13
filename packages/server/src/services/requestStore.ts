@@ -29,6 +29,13 @@ import { normalizeProposedOptionLabel } from "./proposedOptionPolicy.js";
 interface AskRequestRow {
   request_id: string;
   session_id: string;
+  revision: number;
+  creator_harness: string;
+  creator_owner_id: string;
+  owner_harness: string;
+  owner_owner_id: string;
+  answer_id: string | null;
+  first_reader_harness: string | null;
   mode: "single" | "multi";
   prompt: string;
   question_json: string | null;
@@ -225,38 +232,22 @@ export class RequestStore {
       { session_id: string; owner_harness: string | null; owner_id: string | null; repository_id: string | null; worktree_id: string | null; feature_id: string | null } | undefined;
     if (!session) throw new RequestStoreError("session_not_found", "Cannot create an ask for an unknown session");
 
-    const insertLegacy = this.db.prepare(
-        `INSERT INTO ask_requests (
-          request_id, session_id, mode, prompt, question_json, options_json, context_json, fork_reference_json, parent_question_id, status,
-          selected_values_json, note, rationale, created_at, expires_at, resolved_at, updated_at
-        ) VALUES (
-          @requestId, @sessionId, @mode, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, @parentQuestionId, 'pending',
-          NULL, NULL, NULL, @nowIso, @expiresAt, NULL, @nowIso
-        )`
-      );
+    if (!session.owner_harness || !session.owner_id) {
+      throw new RequestStoreError("owner_required", "Questions require an owner identity");
+    }
     const createDecision = this.db.transaction(() => {
-      insertLegacy.run({
-        requestId: parsed.requestId,
-        sessionId: parsed.sessionId,
-        mode: parsed.mode,
-        prompt: parsed.question.prompt,
-        questionJson: JSON.stringify(parsed.question),
-        optionsJson: JSON.stringify(parsed.options),
-        contextJson: parsed.context ? JSON.stringify(parsed.context) : null,
-        forkReferenceJson: parsed.forkReference ? JSON.stringify(parsed.forkReference) : null,
-        parentQuestionId: parsed.parentQuestionId ?? null,
-        nowIso,
-        expiresAt
-      });
-      if (session.owner_harness && session.owner_id) this.db.prepare(`INSERT INTO questions (
-        question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
+      this.db.prepare(`INSERT INTO questions (
+        question_id, source_session_id, fork_reference_json, expiry_provenance, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
         revision, mode, question_json, options_json, context_json, parent_question_id, status, expires_at, resolved_at,
         repository_id, worktree_id, feature_id, created_at, updated_at
-      ) VALUES (@requestId, @requestId, @harness, @ownerId, @harness, @ownerId,
+      ) VALUES (@requestId, @sessionId, @forkReferenceJson, @expiryProvenance, @harness, @ownerId, @harness, @ownerId,
         1, @mode, @questionJson, @optionsJson, @contextJson, @parentQuestionId, 'pending', @expiresAt, NULL,
         @repositoryId, @worktreeId, @featureId, @nowIso, @nowIso)`)
         .run({
           requestId: parsed.requestId,
+          sessionId: parsed.sessionId,
+          forkReferenceJson: parsed.forkReference ? JSON.stringify(parsed.forkReference) : null,
+          expiryProvenance: expiresAt ? "explicit" : null,
           harness: session.owner_harness,
           ownerId: session.owner_id,
           mode: parsed.mode,
@@ -270,7 +261,7 @@ export class RequestStore {
           expiresAt,
           nowIso
         });
-      if (session.owner_harness && session.owner_id) this.db.prepare(`INSERT INTO question_revisions
+      this.db.prepare(`INSERT INTO question_revisions
         (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
         VALUES (@requestId, 1, @questionJson, @optionsJson, @contextJson, @harness, @ownerId, @nowIso)`).run({
           requestId: parsed.requestId, questionJson: JSON.stringify(parsed.question), optionsJson: JSON.stringify(parsed.options),
@@ -281,8 +272,9 @@ export class RequestStore {
 
     const snapshot = this.get(parsed.requestId);
     if (!snapshot) throw new Error("created request could not be loaded");
-    this.recordTelemetry({ operation: "question.create", questionLength: parsed.question.prompt.length,
+    this.recordTelemetry({ operation: "question.create", ...this.draftTelemetry(parsed),
       contextSerializedBytes: Buffer.byteLength(JSON.stringify(parsed.context)), optionsSerializedBytes: Buffer.byteLength(JSON.stringify(parsed.options)),
+      requestSerializedBytes: Buffer.byteLength(JSON.stringify(parsed)),
       responseCharacterCount: JSON.stringify(snapshot).length });
     return snapshot;
   }
@@ -342,10 +334,17 @@ export class RequestStore {
     })();
     const created = items.filter((item) => item.status === "created").length;
     const receipt: AskBatchReceipt = { status: created === items.length ? "created" : created ? "partial" : "rejected", items };
+    const draftMetrics = drafts.map((draft) => this.draftTelemetry(draft));
+    const total = (field: keyof ReturnType<RequestStore["draftTelemetry"]>) => draftMetrics.reduce((sum, metrics) => sum + (metrics[field] ?? 0), 0);
     this.recordTelemetry({ operation: "question.batch.create", batchSize: drafts.length,
-      questionLength: drafts.reduce((sum, draft) => sum + draft.question.prompt.length, 0),
+      questionLength: total("questionLength"), questionContextLength: total("questionContextLength"),
+      relevanceLength: total("relevanceLength"), decisionImpactLength: total("decisionImpactLength"),
+      optionValueLength: total("optionValueLength"), optionLabelLength: total("optionLabelLength"),
+      optionDescriptionLength: total("optionDescriptionLength"), optionMeaningLength: total("optionMeaningLength"),
+      optionContextLength: total("optionContextLength"),
       contextSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.context))),
-      optionsSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.options))), responseCharacterCount: JSON.stringify(receipt).length });
+      optionsSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.options))),
+      batchSerializedBytes: Buffer.byteLength(JSON.stringify(drafts)), responseCharacterCount: JSON.stringify(receipt).length });
     return receipt;
   }
 
@@ -367,21 +366,13 @@ export class RequestStore {
   }
 
   list(filters: { status?: AskStatus } = {}): AskRequestSnapshot[] {
-    const rows =
-      filters.status === "pending"
-        ? (this.db
-            .prepare("SELECT * FROM ask_requests WHERE status = 'pending' ORDER BY created_at ASC")
-            .all() as AskRequestRow[])
-        : filters.status
-          ? (this.db
-              .prepare("SELECT * FROM ask_requests WHERE status = ? ORDER BY created_at ASC")
-              .all(filters.status) as AskRequestRow[])
-          : (this.db.prepare("SELECT * FROM ask_requests ORDER BY created_at ASC").all() as AskRequestRow[]);
+    const rows = this.db.prepare(`${this.snapshotSelect()} ${filters.status ? "WHERE q.status = ?" : ""} ORDER BY q.created_at ASC`)
+      .all(...(filters.status ? [filters.status] : [])) as AskRequestRow[];
     return rows.map((row) => this.toSnapshot(row));
   }
 
   get(requestId: string): AskRequestSnapshot | undefined {
-    const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
+    const row = this.db.prepare(`${this.snapshotSelect()} WHERE q.question_id = ?`).get(requestId) as AskRequestRow | undefined;
     return row ? this.toSnapshot(row) : undefined;
   }
 
@@ -423,8 +414,7 @@ export class RequestStore {
     parameters.status = filters.status ?? "pending";
     const rows = this.db.prepare(`SELECT q.question_id, q.question_json, q.created_at
       FROM questions q
-      JOIN ask_requests r ON r.request_id = q.legacy_request_id
-      JOIN sessions s ON s.session_id = r.session_id
+      JOIN sessions s ON s.session_id = q.source_session_id
       JOIN projects p ON p.project_id = s.project_id
       WHERE ${clauses.join(" AND ")}
       ORDER BY q.created_at ASC, q.question_id ASC
@@ -496,8 +486,7 @@ export class RequestStore {
     const rows = this.db.prepare(`SELECT q.question_id, q.status, a.answer_id, a.first_reader_harness
       FROM questions q
       LEFT JOIN answers a ON a.question_id = q.question_id
-      JOIN ask_requests r ON r.request_id = q.legacy_request_id
-      JOIN sessions s ON s.session_id = r.session_id
+      JOIN sessions s ON s.session_id = q.source_session_id
       JOIN projects p ON p.project_id = s.project_id
       WHERE ${clauses.length ? clauses.join(" AND ") : "1 = 1"}
       ORDER BY q.created_at ASC, q.question_id ASC`).all(parameters) as Array<{
@@ -516,13 +505,13 @@ export class RequestStore {
     let appended: ProposedAnswerAppend | undefined;
 
     const transaction = this.db.transaction(() => {
-      const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
+      const row = this.db.prepare(`${this.snapshotSelect()} WHERE q.question_id = ?`).get(requestId) as AskRequestRow | undefined;
       if (!row) throw new RequestStoreError("request_not_found", "Question not found.");
       if (row.status !== "pending") throw new RequestStoreError("request_terminal", "Question is no longer pending.");
-      const durableQuestion = this.db.prepare("SELECT * FROM questions WHERE legacy_request_id = ?").get(requestId) as any;
-      const ownsQuestion = durableQuestion ? this.db.prepare(`SELECT 1 FROM questions q JOIN sessions s
+      const durableQuestion = this.db.prepare("SELECT * FROM questions WHERE question_id = ?").get(requestId) as any;
+      const ownsQuestion = this.db.prepare(`SELECT 1 FROM questions q JOIN sessions s
         ON s.owner_harness = q.owner_harness AND s.owner_id = q.owner_owner_id
-        WHERE q.legacy_request_id = ? AND s.session_id = ? AND q.status = 'pending'`).get(requestId, ownerSessionId) : row.session_id === ownerSessionId;
+        WHERE q.question_id = ? AND s.session_id = ? AND q.status = 'pending'`).get(requestId, ownerSessionId);
       if (!ownsQuestion) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
 
       const parsed = ProposeAnswerPayloadSchema.safeParse(payload);
@@ -559,29 +548,15 @@ export class RequestStore {
         ? { harness: durableQuestion.owner_harness as string, ownerId: durableQuestion.owner_owner_id as string }
         : undefined;
       if (durableQuestion && proposalActor) this.seedQuestionRevision(durableQuestion, proposalActor);
-      const changes = this.db.prepare(
-        `UPDATE ask_requests
-         SET options_json = @optionsJson,
-             updated_at = @updatedAt
-         WHERE request_id = @requestId
-           AND status = 'pending'`
-      ).run({
-        requestId,
-        ownerSessionId,
-        optionsJson: JSON.stringify([...options, option]),
-        updatedAt
-      }).changes;
-
-      if (changes !== 1) throw new RequestStoreError("request_terminal", "Question is no longer pending.");
       const durableChanges = this.db.prepare(`UPDATE questions SET options_json = @optionsJson, revision = revision + 1, updated_at = @updatedAt
-        WHERE legacy_request_id = @requestId AND owner_harness = (
+        WHERE question_id = @requestId AND owner_harness = (
           SELECT owner_harness FROM sessions WHERE session_id = @ownerSessionId
         ) AND owner_owner_id = (
           SELECT owner_id FROM sessions WHERE session_id = @ownerSessionId
         ) AND status = 'pending'`).run({ requestId, ownerSessionId, optionsJson: JSON.stringify([...options, option]), updatedAt }).changes;
-      if (durableQuestion && durableChanges !== 1) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
+      if (durableChanges !== 1) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
       if (durableQuestion && proposalActor) {
-        const revised = this.db.prepare("SELECT * FROM questions WHERE legacy_request_id=?").get(requestId) as any;
+        const revised = this.db.prepare("SELECT * FROM questions WHERE question_id=?").get(requestId) as any;
         this.db.prepare(`INSERT INTO question_revisions
           (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -628,13 +603,10 @@ export class RequestStore {
         if (parsed.context) changes.push("context");
         this.db.prepare(`UPDATE questions SET revision=?, question_json=?, options_json=COALESCE(?, options_json), context_json=COALESCE(?, context_json), updated_at=? WHERE question_id=?`)
           .run(revision, JSON.stringify(parsed.question), parsed.options ? JSON.stringify(parsed.options) : null, parsed.context ? JSON.stringify(parsed.context) : null, at, questionId);
-        this.db.prepare(`UPDATE ask_requests SET question_json=?, prompt=?, options_json=COALESCE(?, options_json), context_json=COALESCE(?, context_json), updated_at=? WHERE request_id=?`)
-          .run(JSON.stringify(parsed.question), parsed.question.prompt, parsed.options ? JSON.stringify(parsed.options) : null, parsed.context ? JSON.stringify(parsed.context) : null, at, questionId);
         type = "revision"; facts = { changes };
       } else if (parsed.action === "reparent") {
         this.validateNewParent(questionId, parsed.parentQuestionId);
         this.db.prepare("UPDATE questions SET revision=?, parent_question_id=?, updated_at=? WHERE question_id=?").run(revision, parsed.parentQuestionId, at, questionId);
-        this.db.prepare("UPDATE ask_requests SET parent_question_id=?, updated_at=? WHERE request_id=?").run(parsed.parentQuestionId, at, questionId);
         type = "parent_changed"; facts = { parentQuestionId: parsed.parentQuestionId };
       } else {
         const status = parsed.action === "cancel" ? "cancelled" : "superseded";
@@ -642,7 +614,11 @@ export class RequestStore {
         if (replacement === questionId) throw new RequestStoreError("invalid_replacement", "A Question cannot supersede itself");
         if (replacement && !this.db.prepare("SELECT 1 FROM questions WHERE question_id=?").get(replacement)) throw new RequestStoreError("replacement_not_found", "Replacement Question not found");
         this.db.prepare("UPDATE questions SET revision=?, status=?, replacement_question_id=?, resolved_at=?, updated_at=? WHERE question_id=?").run(revision, status, replacement, at, at, questionId);
-        this.db.prepare("UPDATE ask_requests SET status='cancelled', rationale=?, resolved_at=?, updated_at=? WHERE request_id=?").run(parsed.action === "cancel" ? parsed.rationale ?? null : `Superseded by ${replacement}`, at, at, questionId);
+        this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,rationale,
+          first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), questionId, revision, status, "[]",
+            parsed.action === "cancel" ? parsed.rationale ?? null : `Superseded by ${replacement}`,
+            actor.harness, actor.ownerId, at, at, at);
         type = status; facts = replacement ? { replacementQuestionId: replacement } : {};
       }
       this.recordQuestionEvent(questionId, type, revision, actor, facts, at);
@@ -696,7 +672,7 @@ export class RequestStore {
 
   answer(requestId: string, payload: AskAnswerPayload | (Omit<AskAnswerPayload, "expectedRevision"> & { expectedRevision?: number })): AskResult {
     this.expireDue();
-    const currentRevision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=? OR legacy_request_id=?").get(requestId, requestId) as { revision: number } | undefined)?.revision ?? 1;
+    const currentRevision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(requestId) as { revision: number } | undefined)?.revision ?? 1;
     const parsed = AskAnswerPayloadSchema.parse({ expectedRevision: payload.expectedRevision ?? currentRevision, ...payload });
     let result: AskResult | undefined;
     let available: AnswerAvailable | undefined;
@@ -704,37 +680,18 @@ export class RequestStore {
     const transaction = this.db.transaction(() => {
       const existing = this.getPending(requestId);
       if (parsed.expectedRevision !== undefined) {
-        const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=? OR legacy_request_id=?").get(requestId, requestId) as { revision: number } | undefined)?.revision;
+        const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(requestId) as { revision: number } | undefined)?.revision;
         // Pre-Question legacy asks have no durable revision row; their public snapshot is revision 1.
         if (revision !== undefined && revision !== parsed.expectedRevision) throw new RequestStoreError("stale_revision", "Question revision is stale");
       }
       this.validateSelectedValues(existing, parsed.selectedValues);
       const resolvedAt = new Date(this.now()).toISOString();
 
-      const changes = this.db
-        .prepare(
-          `UPDATE ask_requests
-           SET status = 'answered',
-               selected_values_json = @selectedValuesJson,
-               note = @note,
-               rationale = @rationale,
-               resolved_at = @resolvedAt,
-               updated_at = @resolvedAt
-           WHERE request_id = @requestId AND status = 'pending'`
-        )
-        .run({
-          requestId,
-          selectedValuesJson: JSON.stringify(parsed.selectedValues),
-          note: parsed.note ?? null,
-          rationale: parsed.rationale ?? null,
-          resolvedAt
-        }).changes;
-
-      if (changes !== 1) throw new RequestStoreError("request_already_resolved", "Ask request is already resolved");
       const question = this.db.prepare(`UPDATE questions SET status = 'answered', resolved_at = @resolvedAt, updated_at = @resolvedAt
-        WHERE legacy_request_id = @requestId AND status = 'pending'
+        WHERE question_id = @requestId AND status = 'pending'
         RETURNING question_id, revision, question_json, owner_harness, owner_owner_id`)
         .get({ requestId, resolvedAt }) as { question_id: string; revision: number; question_json: string; owner_harness: string; owner_owner_id: string } | undefined;
+      if (!question) throw new RequestStoreError("request_already_resolved", "Question is already resolved");
       const answerId = randomUUID();
       const affectedDescendantIds = question ? this.openDescendantIds(question.question_id) : [];
       if (question) this.db.prepare(`INSERT INTO answers (
@@ -766,6 +723,8 @@ export class RequestStore {
     transaction();
     if (!result) throw new Error("answer transaction did not produce a result");
     this.recordTelemetry({ operation: "answer.create", selectedIdCount: parsed.selectedValues.length,
+      noteLength: parsed.note?.length ?? 0, rationaleLength: parsed.rationale?.length ?? 0,
+      requestSerializedBytes: Buffer.byteLength(JSON.stringify(parsed)),
       answerResponseBytes: Buffer.byteLength(JSON.stringify(result)) });
     if (available) for (const listener of [...this.answerAvailableListeners]) listener(available);
     if (available) this.wakeOwnerWithAnswer({ harness: available.ownerHarness, ownerId: available.ownerId });
@@ -878,22 +837,14 @@ export class RequestStore {
       this.getPending(requestId);
       const resolvedAt = new Date(this.now()).toISOString();
 
-      const changes = this.db
-        .prepare(
-          `UPDATE ask_requests
-           SET status = 'cancelled',
-               note = @note,
-               rationale = @rationale,
-               resolved_at = @resolvedAt,
-               updated_at = @resolvedAt
-           WHERE request_id = @requestId AND status = 'pending'`
-        )
-        .run({ requestId, note: parsed.note ?? null, rationale: parsed.rationale ?? null, resolvedAt }).changes;
-
+      const changes = this.db.prepare(`UPDATE questions SET status = 'cancelled', resolved_at = @resolvedAt, updated_at = @resolvedAt
+        WHERE question_id = @requestId AND status = 'pending'`).run({ requestId, resolvedAt }).changes;
       if (changes !== 1) throw new RequestStoreError("request_already_resolved", "Ask request is already resolved");
-      this.db.prepare(`UPDATE questions SET status = 'cancelled', resolved_at = @resolvedAt, updated_at = @resolvedAt
-        WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId, resolvedAt });
-      const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE legacy_request_id=?").get(requestId) as any;
+      const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(requestId) as any;
+      this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,rationale,
+        first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), requestId, question.revision, "cancelled", "[]",
+          parsed.note ?? null, parsed.rationale ?? null, question.owner_harness, question.owner_owner_id, resolvedAt, resolvedAt, resolvedAt);
       if (question) this.recordQuestionEvent(question.question_id, "cancelled", question.revision,
         { harness: question.owner_harness, ownerId: question.owner_owner_id }, {}, resolvedAt);
       result = {
@@ -915,8 +866,7 @@ export class RequestStore {
   cancelPendingForSession(sessionId: string, rationale: string): AskResult[] {
     this.expireDue();
     const nowIso = new Date(this.now()).toISOString();
-    const pendingRows = this.db
-      .prepare("SELECT * FROM ask_requests WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC")
+    const pendingRows = this.db.prepare(`${this.snapshotSelect()} WHERE q.source_session_id = ? AND q.status = 'pending' ORDER BY q.created_at ASC`)
       .all(sessionId) as AskRequestRow[];
 
     if (pendingRows.length === 0) return [];
@@ -924,22 +874,16 @@ export class RequestStore {
     const results: AskResult[] = [];
     const transaction = this.db.transaction(() => {
       for (const row of pendingRows) {
-        const changes = this.db
-          .prepare(
-            `UPDATE ask_requests
-             SET status = 'cancelled',
-                 note = COALESCE(note, @note),
-                 rationale = COALESCE(rationale, @rationale),
-                 resolved_at = @resolvedAt,
-                 updated_at = @resolvedAt
-             WHERE request_id = @requestId AND status = 'pending'`
-          )
-          .run({ requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso }).changes;
+        const changes = this.db.prepare(`UPDATE questions SET status='cancelled', resolved_at=@resolvedAt, updated_at=@resolvedAt
+          WHERE question_id=@requestId AND status='pending'`)
+          .run({ requestId: row.request_id, resolvedAt: nowIso }).changes;
 
         if (changes === 1) {
-          this.db.prepare(`UPDATE questions SET status = 'cancelled', resolved_at = @resolvedAt, updated_at = @resolvedAt
-            WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId: row.request_id, resolvedAt: nowIso });
-          const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE legacy_request_id=?").get(row.request_id) as any;
+          const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(row.request_id) as any;
+          this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,rationale,
+            first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), row.request_id, question.revision, "cancelled", "[]",
+              SESSION_SHUTDOWN_NOTE, rationale, question.owner_harness, question.owner_owner_id, nowIso, nowIso, nowIso);
           if (question) this.recordQuestionEvent(question.question_id, "cancelled", question.revision,
             { harness: question.owner_harness, ownerId: question.owner_owner_id }, {}, nowIso);
           results.push({ status: "cancelled", requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso });
@@ -956,7 +900,7 @@ export class RequestStore {
   expireDue(): AskResult[] {
     const nowIso = new Date(this.now()).toISOString();
     const dueRows = this.db
-      .prepare("SELECT * FROM ask_requests WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY created_at ASC")
+      .prepare(`${this.snapshotSelect()} WHERE q.status = 'pending' AND q.expires_at IS NOT NULL AND q.expires_at <= ? ORDER BY q.created_at ASC`)
       .all(nowIso) as AskRequestRow[];
 
     if (dueRows.length === 0) return [];
@@ -964,21 +908,16 @@ export class RequestStore {
     const results: AskResult[] = [];
     const transaction = this.db.transaction(() => {
       for (const row of dueRows) {
-        const changes = this.db
-          .prepare(
-            `UPDATE ask_requests
-             SET status = 'expired',
-                 rationale = COALESCE(rationale, @rationale),
-                 resolved_at = @resolvedAt,
-                 updated_at = @resolvedAt
-             WHERE request_id = @requestId AND status = 'pending'`
-          )
-          .run({ requestId: row.request_id, rationale: EXPIRED_RATIONALE, resolvedAt: nowIso }).changes;
+        const changes = this.db.prepare(`UPDATE questions SET status='expired', resolved_at=@resolvedAt, updated_at=@resolvedAt
+          WHERE question_id=@requestId AND status='pending'`)
+          .run({ requestId: row.request_id, resolvedAt: nowIso }).changes;
 
         if (changes === 1) {
-          this.db.prepare(`UPDATE questions SET status = 'expired', resolved_at = @resolvedAt, updated_at = @resolvedAt
-            WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId: row.request_id, resolvedAt: nowIso });
-          const question = this.db.prepare("SELECT question_id, revision FROM questions WHERE legacy_request_id=?").get(row.request_id) as any;
+          const question = this.db.prepare("SELECT question_id, revision FROM questions WHERE question_id=?").get(row.request_id) as any;
+          this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,rationale,
+            first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
+            SELECT ?,question_id,revision,'expired','[]',?,owner_harness,owner_owner_id,?,?,? FROM questions WHERE question_id=?`)
+            .run(randomUUID(), EXPIRED_RATIONALE, nowIso, nowIso, nowIso, row.request_id);
           if (question) this.recordQuestionEvent(question.question_id, "expired", question.revision,
             { harness: "postbox", ownerId: "expiry" }, {}, nowIso);
           results.push({ status: "expired", requestId: row.request_id, rationale: EXPIRED_RATIONALE, resolvedAt: nowIso });
@@ -1029,15 +968,44 @@ export class RequestStore {
     if (invalid) throw new RequestStoreError("invalid_selection", `Unknown option value: ${invalid}`);
   }
 
+  /** Compatibility snapshots are derived from the owner Question/Answer records. */
+  private snapshotSelect(): string {
+    return `SELECT q.question_id AS request_id, q.source_session_id AS session_id, q.revision,
+      q.creator_harness, q.creator_owner_id, q.owner_harness, q.owner_owner_id, a.answer_id, a.first_reader_harness, q.mode,
+      json_extract(q.question_json, '$.prompt') AS prompt, q.question_json, q.options_json, q.context_json,
+      q.fork_reference_json, q.parent_question_id, q.status, a.selected_values_json, a.note, a.rationale,
+      q.created_at, q.expires_at, q.resolved_at, q.updated_at
+      FROM questions q LEFT JOIN answers a ON a.answer_id = (
+        SELECT answer_id FROM answers WHERE question_id=q.question_id ORDER BY question_revision DESC, created_at DESC LIMIT 1
+      )`;
+  }
+
+  private draftTelemetry(draft: Pick<AskCreatePayload, "question" | "options">): Record<string, number> {
+    return {
+      questionLength: draft.question.prompt.length,
+      questionContextLength: draft.question.context?.length ?? 0,
+      relevanceLength: draft.question.relevance?.length ?? 0,
+      decisionImpactLength: draft.question.decisionImpact?.length ?? 0,
+      optionValueLength: draft.options.reduce((sum, option) => sum + option.value.length, 0),
+      optionLabelLength: draft.options.reduce((sum, option) => sum + option.label.length, 0),
+      optionDescriptionLength: draft.options.reduce((sum, option) => sum + (option.description?.length ?? 0), 0),
+      optionMeaningLength: draft.options.reduce((sum, option) => sum + (option.meaning?.length ?? 0), 0),
+      optionContextLength: draft.options.reduce((sum, option) => sum + (option.context?.length ?? 0), 0)
+    };
+  }
+
   private toSnapshot(row: AskRequestRow): AskRequestSnapshot {
     const result = this.toResult(row);
     const grouping = this.db.prepare(`SELECT q.repository_id, q.worktree_id, q.feature_id, r.remote, r.machine_id, r.common_directory,
       w.machine_id AS worktree_machine_id, w.canonical_path, f.name AS feature_name FROM questions q
       LEFT JOIN repositories r ON r.repository_id=q.repository_id LEFT JOIN worktrees w ON w.worktree_id=q.worktree_id
-      LEFT JOIN features f ON f.feature_id=q.feature_id WHERE q.legacy_request_id=?`).get(row.request_id) as any;
+      LEFT JOIN features f ON f.feature_id=q.feature_id WHERE q.question_id=?`).get(row.request_id) as any;
     return {
       requestId: row.request_id,
       sessionId: row.session_id,
+      revision: row.revision,
+      creator: { harness: row.creator_harness as AskRequestSnapshot["creator"]["harness"], ownerId: row.creator_owner_id },
+      owner: { harness: row.owner_harness as AskRequestSnapshot["owner"]["harness"], ownerId: row.owner_owner_id },
       mode: row.mode,
       question: this.parseJson(row.question_json, { prompt: row.prompt }) as AskRequestSnapshot["question"],
       options: JSON.parse(row.options_json) as AskRequestSnapshot["options"],
@@ -1050,6 +1018,8 @@ export class RequestStore {
       expiresAt: row.expires_at ?? undefined,
       resolvedAt: row.resolved_at ?? undefined,
       result
+      ,answerId: row.answer_id ?? undefined
+      ,answerRead: row.answer_id ? row.first_reader_harness !== null : undefined
       ,parentQuestionId: row.parent_question_id ?? undefined
       ,repository: grouping?.repository_id ? { repositoryId: grouping.repository_id, remote: grouping.remote ?? undefined,
         machineId: grouping.machine_id ?? undefined, commonDirectory: grouping.common_directory ?? undefined } : undefined

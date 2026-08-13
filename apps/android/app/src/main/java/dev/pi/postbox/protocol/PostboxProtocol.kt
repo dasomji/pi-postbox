@@ -85,6 +85,9 @@ enum class PresenceState {
 data class AskRequestSnapshot(
     val requestId: String,
     val sessionId: String,
+    val revision: Int = 1,
+    val creator: OwnerIdentity? = null,
+    val owner: OwnerIdentity? = null,
     val mode: AskMode,
     val question: AskQuestion,
     val options: List<AskOption>,
@@ -94,8 +97,13 @@ data class AskRequestSnapshot(
     val createdAt: String,
     val expiresAt: String? = null,
     val resolvedAt: String? = null,
-    val result: AskResult? = null
+    val result: AskResult? = null,
+    val answerId: String? = null,
+    val answerRead: Boolean? = null
 )
+
+@Serializable
+data class OwnerIdentity(val harness: String, val ownerId: String)
 
 @Serializable
 enum class AskMode {

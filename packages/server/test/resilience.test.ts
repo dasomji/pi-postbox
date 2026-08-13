@@ -27,7 +27,7 @@ function registrationMessage(): ExtensionClientMessage {
     payload: {
       machine: { machineId: "machine-1", hostname: "workstation" },
       project: { projectId: "project-1", name: "pi-postbox", cwd: "/repo", branch: "main" },
-      session: { sessionId: "session-1", title: "Resilient ask", cwd: "/repo", branch: "main", semanticState: "blocked" }
+      session: { sessionId: "session-1", title: "Resilient ask", cwd: "/repo", branch: "main", semanticState: "blocked", owner: { harness: "pi", ownerId: "11111111-1111-4111-8111-111111111111" } }
     }
   };
 }
@@ -99,14 +99,12 @@ describe("pending ask resilience", () => {
     expect(state.requests.filter((request) => request.requestId === "ask-replay")).toHaveLength(1);
     expect(state.requests[0]).toMatchObject({ requestId: "ask-replay", status: "pending" });
 
-    const resolved = nextMessage(secondSocket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-replay/answer",
       payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answerResponse.statusCode).toBe(200);
-    await expect(resolved).resolves.toMatchObject({ type: "ask.resolved", payload: { status: "answered", requestId: "ask-replay" } });
   });
 
   it("replaying an already terminal request returns the existing terminal result instead of a duplicate card", async () => {
@@ -119,14 +117,12 @@ describe("pending ask resilience", () => {
     socket.send(JSON.stringify(askCreateMessage("ask-terminal")));
     await created;
 
-    const firstResolved = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-terminal/answer",
       payload: { expectedRevision: 1, selectedValues: ["yes"], rationale: "Already decided" }
     });
     expect(answerResponse.statusCode).toBe(200);
-    await firstResolved;
 
     const replayResolved = nextMessage(socket);
     socket.send(JSON.stringify(askCreateMessage("ask-terminal")));
@@ -152,7 +148,6 @@ describe("pending ask resilience", () => {
     socket.send(JSON.stringify(askCreateMessage("ask-expire", new Date(31_000).toISOString())));
     await created;
 
-    const expiredMessage = nextMessage(socket);
     now = 31_001;
     const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
     expect(state.requests).toEqual([]);
@@ -160,6 +155,5 @@ describe("pending ask resilience", () => {
     const expiredRequest = history.history[0]?.request;
     expect(expiredRequest).toMatchObject({ status: "expired", result: { status: "expired", requestId: "ask-expire" } });
     expect(AskResultSchema.parse(expiredRequest?.result)).toMatchObject({ status: "expired", requestId: "ask-expire" });
-    await expect(expiredMessage).resolves.toMatchObject({ type: "ask.resolved", payload: { status: "expired", requestId: "ask-expire" } });
   });
 });

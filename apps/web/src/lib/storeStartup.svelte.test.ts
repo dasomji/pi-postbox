@@ -21,6 +21,9 @@ const SNAPSHOT: StateSnapshot = {
   requests: [{
     requestId: "ask-notification",
     sessionId: "session-notification",
+    revision: 1,
+    creator: { harness: "pi", ownerId: "owner" },
+    owner: { harness: "pi", ownerId: "owner" },
     mode: "single",
     question: { prompt: "Choose the rollout?" },
     options: [{ value: "ship", label: "Ship" }],

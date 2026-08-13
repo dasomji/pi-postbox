@@ -54,9 +54,6 @@ describe("RequestStore Chat-proposed options", () => {
   it("atomically appends an authoritative, answerable option without persisting Chat internals", () => {
     const store = new RequestStore(db, () => 2_000, { generateProposedOptionValue: () => "chat_opaque_1" });
     store.create(ask("ask-success"));
-    db.prepare("UPDATE ask_requests SET note = ?, rationale = ? WHERE request_id = ?")
-      .run("draft-note", "draft-rationale", "ask-success");
-
     const appended = store.proposeAnswer("ask-success", "session-owner", proposal("Stage first"));
 
     expect(appended.option).toEqual({
@@ -71,10 +68,9 @@ describe("RequestStore Chat-proposed options", () => {
       { value: "ship", label: "Ship now" },
       appended.option
     ]);
-    const row = db.prepare("SELECT options_json, note, rationale FROM ask_requests WHERE request_id = ?")
-      .get("ask-success") as { options_json: string; note: string; rationale: string };
+    const row = db.prepare("SELECT options_json FROM questions WHERE question_id = ?")
+      .get("ask-success") as { options_json: string };
     expect(JSON.parse(row.options_json)).toEqual(appended.request.options);
-    expect(row).toMatchObject({ note: "draft-note", rationale: "draft-rationale" });
     expect(row.options_json).not.toContain("toolCall");
     expect(row.options_json).not.toContain("transcript");
     expect(store.getQuestionHistory("ask-success")).toMatchObject({
@@ -102,7 +98,7 @@ describe("RequestStore Chat-proposed options", () => {
       fileSessions.register("connection-owner", {
         machine: { machineId: "machine-1", hostname: "workstation" },
         project: { projectId: "project-1", name: "postbox", cwd: "/repo" },
-        session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user" }
+        session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user", owner: { harness: "pi", ownerId: "agent" } }
       });
       const firstStore = new RequestStore(fileDb, () => 2_000, {
         generateProposedOptionValue: () => "chat_durable"

@@ -258,6 +258,9 @@ export const AnswerReadResultSchema = z.object({
 export const AskRequestSnapshotSchema = z.object({
   requestId: RequestIdSchema,
   sessionId: z.string().min(1).max(200),
+  revision: z.number().int().min(1),
+  creator: OwnerIdentitySchema,
+  owner: OwnerIdentitySchema,
   mode: AskModeSchema,
   question: AskQuestionSchema,
   options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
@@ -268,6 +271,8 @@ export const AskRequestSnapshotSchema = z.object({
   expiresAt: z.string().datetime().optional(),
   resolvedAt: z.string().datetime().optional(),
   result: AskResultSchema.optional(),
+  answerId: RequestIdSchema.optional(),
+  answerRead: z.boolean().optional(),
   parentQuestionId: RequestIdSchema.optional(),
   repository: RepositoryIdentitySchema.optional(),
   worktree: WorktreeIdentitySchema.optional(),

@@ -532,8 +532,8 @@ export class SessionStore {
           repositories.common_directory, worktrees.canonical_path, worktrees.machine_id AS worktree_machine_id,
           features.name AS feature_name,
           EXISTS (
-            SELECT 1 FROM ask_requests
-            WHERE ask_requests.session_id = sessions.session_id AND ask_requests.status = 'pending'
+            SELECT 1 FROM questions
+            WHERE questions.source_session_id = sessions.session_id AND questions.status = 'pending'
           ) AS has_pending_question
         FROM sessions
         JOIN machines ON machines.machine_id = sessions.machine_id
@@ -559,12 +559,7 @@ export class SessionStore {
     return { sessions, requests: [], timestamp: new Date(nowMs).toISOString() };
   }
 
-  /**
-   * Deletes sessions that have been offline for longer than the retention
-   * window. Sessions still referenced by any ask request (pending or kept as
-   * history) are preserved; they become eligible once history pruning removes
-   * those requests. Machines and projects left without sessions are swept too.
-   */
+  /** Deletes only offline sessions which have never sourced a durable Question. */
   pruneOfflineSessions(): number {
     if (this.closed) return 0;
     const cutoffIso = new Date(this.now() - this.retentionMs).toISOString();
@@ -574,7 +569,7 @@ export class SessionStore {
          FROM sessions
          WHERE ${OFFLINE_SINCE_SQL} < @cutoffIso
            AND NOT EXISTS (
-             SELECT 1 FROM ask_requests WHERE ask_requests.session_id = sessions.session_id
+             SELECT 1 FROM questions WHERE questions.source_session_id = sessions.session_id
            )`
       )
       .all({ cutoffIso }) as SessionPresenceRow[];

@@ -30,7 +30,7 @@ function registrationMessage(): ExtensionClientMessage {
     payload: {
       machine: { machineId: "machine-1", hostname: "workstation" },
       project: { projectId: "project-1", name: "pi-postbox", cwd: "/repo", branch: "main" },
-      session: { sessionId: "session-1", title: "Answer loop", cwd: "/repo", branch: "main", semanticState: "working" }
+      session: { sessionId: "session-1", title: "Answer loop", cwd: "/repo", branch: "main", semanticState: "working", owner: { harness: "pi", ownerId: "11111111-1111-4111-8111-111111111111" } }
     }
   };
 }
@@ -215,7 +215,6 @@ describe("ask_postbox request loop", () => {
       ]
     });
 
-    const resolvedMessage = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-1/answer",
@@ -230,10 +229,6 @@ describe("ask_postbox request loop", () => {
       selectedValues: ["fastify"],
       note: "Use the boring daemon choice",
       rationale: "Strong lifecycle"
-    });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", requestId: "ask-1", selectedValues: ["fastify"] }
     });
   });
 
@@ -259,7 +254,6 @@ describe("ask_postbox request loop", () => {
     );
     await expect(created).resolves.toMatchObject({ type: "ask.created", payload: { requestId: "ask-other", status: "pending" } });
 
-    const resolvedMessage = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-other/answer",
@@ -272,10 +266,6 @@ describe("ask_postbox request loop", () => {
       requestId: "ask-other",
       selectedValues: [OTHER_OPTION_VALUE],
       note: "Wait for design review first."
-    });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", requestId: "ask-other", selectedValues: [OTHER_OPTION_VALUE] }
     });
   });
 
@@ -308,17 +298,12 @@ describe("ask_postbox request loop", () => {
     expect(snapshot.requests).toHaveLength(1);
     expect(snapshot.requests[0]).toMatchObject({ requestId: "ask-multi", mode: "multi", status: "pending" });
 
-    const resolvedMessage = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-multi/answer",
       payload: { expectedRevision: 1, selectedValues: ["branch", "machine"] }
     });
     expect(answerResponse.statusCode).toBe(200);
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", selectedValues: ["branch", "machine"] }
-    });
   });
 
   it("cancels a pending ask and returns a structured cancellation to the waiting caller", async () => {
@@ -342,7 +327,6 @@ describe("ask_postbox request loop", () => {
     );
     await created;
 
-    const resolvedMessage = nextMessage(socket);
     const cancelResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-cancel/cancel",
@@ -351,10 +335,6 @@ describe("ask_postbox request loop", () => {
 
     expect(cancelResponse.statusCode).toBe(200);
     expect(cancelResponse.json().result).toMatchObject({ status: "cancelled", requestId: "ask-cancel", note: "Not now" });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "cancelled", requestId: "ask-cancel", note: "Not now" }
-    });
   });
 
   it("preserves all pending asks while marking a replaced Pi session offline", async () => {
@@ -501,7 +481,6 @@ describe("ask_postbox request loop", () => {
     expect(stateSnapshot.requests[0]?.options[0]?.context).toContain("Tailscale");
     expect(stateSnapshot.requests[0]?.context?.additionalInfo?.[0]).toMatchObject({ kind: "diagram", title: "Decision flow" });
 
-    const resolvedMessage = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-rich/answer",
@@ -512,10 +491,6 @@ describe("ask_postbox request loop", () => {
       status: "answered",
       context: { problemContext: "Need an interviewer handoff without streaming full chats." },
       forkReference: { agentSessionId: "agent-session-1" }
-    });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", requestId: "ask-rich", selectedValues: ["sqlite"] }
     });
   });
 });

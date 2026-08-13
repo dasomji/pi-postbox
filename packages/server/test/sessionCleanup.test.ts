@@ -35,7 +35,8 @@ function registrationMessage(sessionId = "session-1"): ExtensionClientMessage {
         title: "Session cleanup",
         cwd: "/repo/pi-postbox",
         branch: "feature/session-cleanup",
-        semanticState: "working"
+        semanticState: "working",
+        owner: { harness: "pi", ownerId: `11111111-1111-4111-8111-${sessionId.padEnd(12, "0").slice(0, 12)}` }
       }
     }
   };

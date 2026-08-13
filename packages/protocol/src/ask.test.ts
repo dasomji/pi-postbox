@@ -70,7 +70,8 @@ describe("ask_postbox protocol", () => {
 
     const legacySnapshot = StateSnapshotSchema.parse({
       sessions: [],
-      requests: [{ ...basePayload, status: "pending", createdAt: "2026-06-03T00:00:00.000Z" }],
+      requests: [{ ...basePayload, revision: 1, creator: { harness: "pi", ownerId: "owner" },
+        owner: { harness: "pi", ownerId: "owner" }, status: "pending", createdAt: "2026-06-03T00:00:00.000Z" }],
       timestamp: "2026-06-03T00:00:01.000Z"
     });
     expect(legacySnapshot.requests[0]).not.toHaveProperty("urgency");
@@ -188,6 +189,9 @@ describe("ask_postbox protocol", () => {
         {
           requestId: "ask-1",
           sessionId: "session-1",
+          revision: 1,
+          creator: { harness: "pi", ownerId: "owner" },
+          owner: { harness: "pi", ownerId: "owner" },
           mode: "single",
           question: { prompt: "What next?" },
           options: [{ value: "continue", label: "Continue" }],
@@ -249,6 +253,9 @@ describe("ask_postbox protocol", () => {
       requests: [
         {
           ...payload,
+          revision: 1,
+          creator: { harness: "pi", ownerId: "owner" },
+          owner: { harness: "pi", ownerId: "owner" },
           status: "pending",
           createdAt: "2026-06-03T00:00:00.000Z"
         }

@@ -52,7 +52,8 @@ function registrationMessage(sessionId = "session-history-1", projectId = "proje
         cwd: "/worktrees/history",
         branch: "feature/history",
         worktreePath: "/worktrees/history",
-        semanticState: "blocked"
+        semanticState: "blocked",
+        owner: { harness: "pi", ownerId: `owner-${sessionId}` }
       }
     }
   };
@@ -219,14 +220,12 @@ describe("question history", () => {
       await createAsk(socket, "ask-history");
 
       now = 2_000;
-      const resolved = nextMessage(socket);
       const answer = await app.inject({
         method: "POST",
         url: "/api/requests/ask-history/answer",
         payload: { expectedRevision: 1, selectedValues: ["ship"], note: "Proceed", rationale: "The audit trail has enough context." }
       });
       expect(answer.statusCode).toBe(200);
-      await resolved;
 
       await app.close();
       apps.pop();
@@ -288,17 +287,13 @@ describe("question history", () => {
     const socket = await connectAndRegister(app);
 
     await createAsk(socket, "ask-cancelled");
-    const cancelled = nextMessage(socket);
     const cancelResponse = await app.inject({ method: "POST", url: "/api/requests/ask-cancelled/cancel", payload: { note: "Not today" } });
     expect(cancelResponse.statusCode).toBe(200);
-    await cancelled;
 
     await createAsk(socket, "ask-expired", new Date(5_500).toISOString());
-    const expired = nextMessage(socket);
     now = 5_501;
     const historyResponse = await app.inject({ method: "GET", url: "/api/history" });
     expect(historyResponse.statusCode).toBe(200);
-    await expired;
 
     const history = HistoryResponseSchema.parse(historyResponse.json());
     expect(history.history.map((record) => record.request.status)).toEqual(["expired", "cancelled"]);
@@ -323,9 +318,7 @@ describe("question history", () => {
     const socket = await connectAndRegister(app);
 
     await createAsk(socket, "ask-old-terminal");
-    const oldResolved = nextMessage(socket);
     await app.inject({ method: "POST", url: "/api/requests/ask-old-terminal/answer", payload: { expectedRevision: 1, selectedValues: ["ship"] } });
-    await oldResolved;
 
     await createAsk(socket, "ask-still-pending");
     now = 12_001;
@@ -352,9 +345,7 @@ describe("question history", () => {
 
     for (const requestId of ["ask-count-1", "ask-count-2", "ask-count-3"]) {
       await createAsk(socket, requestId);
-      const resolved = nextMessage(socket);
       await app.inject({ method: "POST", url: `/api/requests/${requestId}/answer`, payload: { expectedRevision: 1, selectedValues: ["ship"] } });
-      await resolved;
       now += 1_000;
     }
 

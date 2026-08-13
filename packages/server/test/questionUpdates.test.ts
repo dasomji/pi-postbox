@@ -88,7 +88,7 @@ describe("immutable Question updates", () => {
     }));
 
     create("expiry");
-    db.prepare("UPDATE ask_requests SET expires_at='2000-01-01T00:00:00.000Z' WHERE request_id='expiry'").run();
+    db.prepare("UPDATE questions SET expires_at='2000-01-01T00:00:00.000Z' WHERE question_id='expiry'").run();
     store.expireDue();
     expect(store.getQuestionHistory("expiry").events).toContainEqual(expect.objectContaining({
       type: "expired", actor: { harness: "postbox", ownerId: "expiry" }, at: expect.any(String)

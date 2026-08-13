@@ -42,7 +42,7 @@ export class HistoryService {
     const rows = this.db
       .prepare(
         `SELECT
-          ask_requests.request_id,
+          questions.question_id AS request_id,
           sessions.session_id,
           sessions.title AS session_title,
           sessions.cwd AS session_cwd,
@@ -66,12 +66,12 @@ export class HistoryService {
           projects.icon_data_url,
           projects.icon_media_type,
           projects.icon_size_bytes
-        FROM ask_requests
-        JOIN sessions ON sessions.session_id = ask_requests.session_id
+        FROM questions
+        JOIN sessions ON sessions.session_id = questions.source_session_id
         JOIN machines ON machines.machine_id = sessions.machine_id
         JOIN projects ON projects.project_id = sessions.project_id
-        WHERE ask_requests.status IN (${TERMINAL_STATUSES})
-        ORDER BY ask_requests.resolved_at DESC, ask_requests.created_at DESC`
+        WHERE questions.status IN (${TERMINAL_STATUSES})
+        ORDER BY questions.resolved_at DESC, questions.created_at DESC`
       )
       .all() as HistoryRow[];
 
