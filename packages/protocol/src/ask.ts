@@ -167,6 +167,34 @@ export const AskReceiptSchema = z.object({
   status: z.literal("pending")
 });
 
+export const AnswerReadResultSchema = z.object({
+  alreadyRead: z.boolean(),
+  question: z.object({
+    questionId: RequestIdSchema,
+    revision: z.number().int().min(1),
+    mode: AskModeSchema,
+    urgency: AskUrgencySchema,
+    question: AskQuestionSchema,
+    options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
+    context: HandoffContextSchema.optional(),
+    createdAt: z.string().datetime(),
+    resolvedAt: z.string().datetime()
+  }).strict(),
+  answer: z.object({
+    answerId: z.string().min(1).max(200),
+    questionRevision: z.number().int().min(1),
+    status: z.literal("answered"),
+    selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
+    note: LongTextSchema.optional(),
+    rationale: LongTextSchema.optional(),
+    createdAt: z.string().datetime()
+  }).strict(),
+  firstRead: z.object({
+    reader: z.object({ harness: ShortTextSchema, ownerId: ShortTextSchema }).strict(),
+    readAt: z.string().datetime()
+  }).strict()
+}).strict();
+
 export const AskRequestSnapshotSchema = z.object({
   requestId: RequestIdSchema,
   sessionId: z.string().min(1).max(200),
@@ -202,4 +230,5 @@ export type AskAnswerPayload = z.infer<typeof AskAnswerPayloadSchema>;
 export type AskCancelPayload = z.infer<typeof AskCancelPayloadSchema>;
 export type AskResult = z.infer<typeof AskResultSchema>;
 export type AskReceipt = z.infer<typeof AskReceiptSchema>;
+export type AnswerReadResult = z.infer<typeof AnswerReadResultSchema>;
 export type AskRequestSnapshot = z.infer<typeof AskRequestSnapshotSchema>;

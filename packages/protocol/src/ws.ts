@@ -4,6 +4,7 @@ import {
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
   AskResultSchema,
+  AnswerReadResultSchema,
   ProposeAnswerPayloadSchema,
   ProposeAnswerResultSchema
 } from "./ask.js";
@@ -56,6 +57,7 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("ask.create"),
     requestId: z.string().min(1).optional(),
+    awaitAnswer: z.boolean().optional(),
     payload: AskCreatePayloadSchema
   }),
   z.object({
@@ -67,6 +69,11 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("ask.cancel"),
     requestId: z.string().min(1).optional(),
     payload: z.object({ requestId: z.string().min(1), cancel: AskCancelPayloadSchema.default({}) })
+  }),
+  z.object({
+    type: z.literal("answer.get"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({ questionId: z.string().min(1).max(200) }).strict()
   }),
   z.object({
     type: z.literal("chat.ready"),
@@ -144,16 +151,20 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("ask.created"),
     requestId: z.string().min(1).optional(),
-    payload: z.object({ requestId: z.string().min(1), status: z.literal("pending") })
+    payload: z.object({ requestId: z.string().min(1), questionId: z.string().min(1), revision: z.number().int().min(1), status: z.literal("pending") })
   }),
   z.object({
     type: z.literal("answer.available"),
     requestId: z.string().min(1).optional(),
     payload: z.object({
       questionId: z.string().min(1),
-      question: z.string().min(1),
       answerId: z.string().min(1)
     }).strict()
+  }),
+  z.object({
+    type: z.literal("answer.result"),
+    requestId: WsCorrelationIdSchema,
+    payload: AnswerReadResultSchema
   }),
   z.object({
     type: z.literal("ask.resolved"),

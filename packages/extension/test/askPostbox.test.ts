@@ -10,12 +10,11 @@ import {
 
 describe("ask_postbox tool", () => {
   it("returns a pending Question receipt without waiting for the human Answer", async () => {
-    const neverAnswered = new Promise<AskResult>(() => {});
+    let acknowledge!: () => void;
     const client = {
-      ask: async (payload: AskCreatePayload): Promise<AskResult> => {
-        void payload;
-        return neverAnswered;
-      }
+      createAsk: (payload: AskCreatePayload) => new Promise<never>((resolve) => {
+        acknowledge = () => resolve({ questionId: payload.requestId, revision: 1, status: "pending" } as never);
+      })
     };
 
     const result = await Promise.race([
@@ -34,9 +33,13 @@ describe("ask_postbox tool", () => {
       ),
       new Promise<"still-waiting">((resolve) => setTimeout(() => resolve("still-waiting"), 20))
     ]);
-
-    expect(result).toEqual({
-      questionId: "question-async-1",
+    expect(result).toBe("still-waiting");
+    acknowledge();
+    await expect(executeAskPostbox({
+      requestId: "question-async-2", question: "Ship?", options: [{ value: "yes", label: "Yes" }],
+      context: { codebaseContext: "Extension", problemContext: "Decision" }
+    }, { createAsk: async (payload) => ({ questionId: payload.requestId, revision: 1, status: "pending" }) }, "pi-control-session")).resolves.toEqual({
+      questionId: "question-async-2",
       revision: 1,
       status: "pending"
     });
@@ -109,16 +112,9 @@ describe("ask_postbox tool", () => {
   it("waits for the client ask result and returns concise normalized answer data", async () => {
     let sentPayload: AskCreatePayload | undefined;
     const client = {
-      ask: async (payload: AskCreatePayload): Promise<AskResult> => {
+      createAsk: async (payload: AskCreatePayload) => {
         sentPayload = payload;
-        return {
-          status: "answered",
-          requestId: payload.requestId,
-          selectedValues: ["branch", "machine"],
-          note: "Show both",
-          rationale: "Disambiguates worktrees",
-          resolvedAt: "2026-06-03T00:00:00.000Z"
-        };
+        return { questionId: payload.requestId, revision: 1, status: "pending" as const };
       }
     };
 
@@ -141,32 +137,16 @@ describe("ask_postbox tool", () => {
     );
 
     expect(sentPayload).toMatchObject({ requestId: "ask-multi", mode: "multi", sessionId: "session-1" });
-    expect(result).toEqual({
-      status: "answered",
-      requestId: "ask-multi",
-      selectedValues: ["branch", "machine"],
-      note: "Show both",
-      rationale: "Disambiguates worktrees",
-      resolvedAt: "2026-06-03T00:00:00.000Z"
-    });
-    expect(formatAskResult(result)).toContain("branch, machine");
+    expect(result).toEqual({ questionId: "ask-multi", revision: 1, status: "pending" });
+    expect(formatAskResult(result)).toContain("asynchronously");
   });
 
   it("accepts rich handoff input while stripping rich context from the final tool result", async () => {
     let sentPayload: AskCreatePayload | undefined;
     const client = {
-      ask: async (payload: AskCreatePayload): Promise<AskResult> => {
+      createAsk: async (payload: AskCreatePayload) => {
         sentPayload = payload;
-        return {
-          status: "answered",
-          requestId: payload.requestId,
-          selectedValues: ["sqlite"],
-          note: "Use SQLite",
-          rationale: "Durable and simple",
-          resolvedAt: "2026-06-03T00:00:00.000Z",
-          context: payload.context,
-          forkReference: payload.forkReference
-        } as AskResult;
+        return { questionId: payload.requestId, revision: 1, status: "pending" as const };
       }
     };
 
@@ -212,13 +192,6 @@ describe("ask_postbox tool", () => {
       context: { codebaseContext: "Fastify + SQLite server package." },
       forkReference: { leafId: "leaf-123" }
     });
-    expect(result).toEqual({
-      status: "answered",
-      requestId: "ask-rich",
-      selectedValues: ["sqlite"],
-      note: "Use SQLite",
-      rationale: "Durable and simple",
-      resolvedAt: "2026-06-03T00:00:00.000Z"
-    });
+    expect(result).toEqual({ questionId: "ask-rich", revision: 1, status: "pending" });
   });
 });

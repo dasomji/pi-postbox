@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
   AskCreatePayloadSchema,
-  AskResultSchema,
   type AskCreatePayload,
   type AskCreateHandoffContext,
   type AskOption,
-  type AskResult,
   type AskReceipt,
+  type AskResult,
   type AskUrgency,
   type ForkReference
 } from "@pi-postbox/protocol";
@@ -140,38 +139,23 @@ export interface AskPostboxWaitLifecycle {
 
 export async function executeAskPostbox(
   input: AskPostboxInput,
-  client: Pick<PostboxClient, "ask">,
+  client: Pick<PostboxClient, "createAsk"> | Pick<PostboxClient, "ask">,
   sessionId: string,
   signal?: AbortSignal,
   lifecycle?: AskPostboxWaitLifecycle
-): Promise<AskResult | AskReceipt> {
+): Promise<AskReceipt> {
   const payload = createAskPayload(input, sessionId);
-  const releaseWait = lifecycle?.beginAskPostboxWait(input.question);
-  const answer = client.ask(payload, signal).then((result) => AskResultSchema.parse(result));
-  releaseWait?.();
-  return Promise.race([
-    answer,
-    new Promise<AskReceipt>((resolve) => setTimeout(
-      () => resolve({ questionId: payload.requestId, revision: 1, status: "pending" }),
-      0
-    ))
-  ]);
+  void lifecycle;
+  if ("createAsk" in client) return client.createAsk(payload, signal);
+  // Compatibility for embedders compiled against the synchronous v1 client.
+  return client.ask(payload, signal).then((result) => {
+    if (result.status !== "answered") throw new Error(`Question was not persisted: ${result.status}`);
+    return { questionId: payload.requestId, revision: 1, status: "pending" as const };
+  });
 }
 
-export function formatAskResult(result: AskResult | AskReceipt): string {
-  if ("questionId" in result) return `Postbox queued ${result.questionId} (revision ${result.revision}).`;
-  if (result.status === "answered") {
-    const note = result.note ? ` Note: ${result.note}` : "";
-    const rationale = result.rationale ? ` Rationale: ${result.rationale}` : "";
-    return `Postbox answered ${result.requestId}: ${result.selectedValues.join(", ")}.${note}${rationale}`;
-  }
-
-  if (result.status === "cancelled") {
-    const note = result.note ? ` Note: ${result.note}` : "";
-    const rationale = result.rationale ? ` Rationale: ${result.rationale}` : "";
-    return `Postbox cancelled ${result.requestId}.${note}${rationale}`;
-  }
-
-  const rationale = result.rationale ? ` Rationale: ${result.rationale}` : "";
-  return `Postbox ${result.status} ${result.requestId}.${rationale}`;
+export function formatAskResult(result: AskReceipt | AskResult): string {
+  if ("questionId" in result) return `Postbox persisted ${result.questionId} (revision ${result.revision}); the Answer will arrive asynchronously. Use get_answer with this questionId after notification.`;
+  if (result.status === "answered") return `Postbox answered ${result.requestId}: ${result.selectedValues.join(", ")}.`;
+  return `Postbox ${result.status} ${result.requestId}.${result.rationale ? ` ${result.rationale}` : ""}`;
 }

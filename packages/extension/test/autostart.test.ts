@@ -176,7 +176,7 @@ describe("package-local Postbox server autostart", () => {
       await vi.waitFor(() => expect(postboxClientMock.started).toBe(1));
 
       await expect(toolResult).resolves.toMatchObject({
-        details: { status: "answered", requestId: "ask-autostart", selectedValues: ["yes"] }
+        details: { status: "pending", questionId: "ask-autostart", revision: 1 }
       });
       expect(postboxClientMock.options.at(-1)).toMatchObject({ serverUrl: LOCAL_TARGET_URL });
       expect(postboxClientMock.asks.at(-1)).toMatchObject({ requestId: "ask-autostart" });
@@ -234,7 +234,7 @@ describe("package-local Postbox server autostart", () => {
       });
 
       expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ details: { status: "answered", requestId: "ask-recovered-preferred" } });
+      expect(result).toMatchObject({ details: { status: "pending", questionId: "ask-recovered-preferred" } });
       expect(postboxClientMock.options.at(-1)).toMatchObject({ serverUrl: preferredUrl });
       expect(postboxClientMock.asks.at(-1)).toMatchObject({ requestId: "ask-recovered-preferred" });
     });
@@ -265,7 +265,7 @@ describe("package-local Postbox server autostart", () => {
       });
 
       expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ details: { status: "answered", requestId: "ask-recovered-active-local" } });
+      expect(result).toMatchObject({ details: { status: "pending", questionId: "ask-recovered-active-local" } });
       expect(postboxClientMock.options.at(-1)).toMatchObject({ serverUrl: LOCAL_TARGET_URL });
       expect(postboxClientMock.asks.at(-1)).toMatchObject({ requestId: "ask-recovered-active-local" });
     });

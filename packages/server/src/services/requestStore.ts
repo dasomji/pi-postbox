@@ -43,7 +43,6 @@ interface AskRequestRow {
 type ResolutionListener = (result: AskResult) => void;
 export interface AnswerAvailable {
   questionId: string;
-  question: string;
   answerId: string;
   ownerHarness: string;
   ownerId: string;
@@ -301,7 +300,6 @@ export class RequestStore {
       };
       if (question) available = {
         questionId: question.question_id,
-        question: (JSON.parse(question.question_json) as { prompt: string }).prompt,
         answerId,
         ownerHarness: question.owner_harness,
         ownerId: question.owner_owner_id
@@ -320,39 +318,55 @@ export class RequestStore {
     return () => this.answerAvailableListeners.delete(listener);
   }
 
+  claimOwnerNotification(answerId: string): boolean {
+    return this.db.prepare(`UPDATE answers SET owner_notification_delivered_at = ?
+      WHERE answer_id = ? AND owner_notification_delivered_at IS NULL`).run(new Date(this.now()).toISOString(), answerId).changes === 1;
+  }
+
   getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
-      const question = this.db.prepare(`SELECT question_id, revision, question_json, owner_harness, owner_owner_id
+      const question = this.db.prepare(`SELECT question_id, revision, mode, urgency, question_json, options_json, context_json,
+          owner_harness, owner_owner_id, created_at, resolved_at
         FROM questions WHERE question_id = ?`).get(questionId) as {
-          question_id: string; revision: number; question_json: string; owner_harness: string; owner_owner_id: string
+          question_id: string; revision: number; mode: "single" | "multi"; urgency: "low" | "normal" | "high";
+          question_json: string; options_json: string; context_json: string | null; owner_harness: string; owner_owner_id: string;
+          created_at: string; resolved_at: string | null
         } | undefined;
       if (!question) throw new RequestStoreError("request_not_found", "Question not found");
       if (question.owner_harness !== reader.harness || question.owner_owner_id !== reader.ownerId) {
         throw new RequestStoreError("wrong_owner", "Reader does not own this Question");
       }
-      const answer = this.db.prepare(`SELECT * FROM answers WHERE question_id = ? ORDER BY created_at DESC LIMIT 1`).get(questionId) as {
-        answer_id: string; selected_values_json: string; note: string | null; rationale: string | null;
-        first_reader_harness: string | null; first_reader_owner_id: string | null
+      const answer = this.db.prepare(`SELECT * FROM answers WHERE question_id = ? ORDER BY question_revision DESC, created_at DESC LIMIT 1`).get(questionId) as {
+        answer_id: string; question_revision: number; status: "answered"; selected_values_json: string; note: string | null; rationale: string | null;
+        first_reader_harness: string | null; first_reader_owner_id: string | null; first_read_at: string | null; created_at: string
       } | undefined;
       if (!answer) throw new RequestStoreError("answer_not_found", "Answer not found");
       const alreadyRead = answer.first_reader_harness !== null;
+      const readAt = answer.first_read_at ?? new Date(this.now()).toISOString();
       if (!alreadyRead) this.db.prepare(`UPDATE answers SET first_reader_harness = ?, first_reader_owner_id = ?, first_read_at = ?
-        WHERE answer_id = ? AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, new Date(this.now()).toISOString(), answer.answer_id);
+        WHERE answer_id = ? AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, readAt, answer.answer_id);
       const firstReader = alreadyRead
         ? { harness: answer.first_reader_harness!, ownerId: answer.first_reader_owner_id! }
         : reader;
-      const parsedQuestion = JSON.parse(question.question_json) as { prompt: string };
       output = {
         alreadyRead,
-        question: { questionId: question.question_id, prompt: parsedQuestion.prompt, revision: question.revision },
+        question: {
+          questionId: question.question_id, revision: question.revision, mode: question.mode, urgency: question.urgency,
+          question: JSON.parse(question.question_json), options: JSON.parse(question.options_json),
+          ...(question.context_json ? { context: JSON.parse(question.context_json) } : {}),
+          createdAt: question.created_at, resolvedAt: question.resolved_at
+        },
         answer: {
           answerId: answer.answer_id,
+          questionRevision: answer.question_revision,
+          status: answer.status,
           selectedValues: JSON.parse(answer.selected_values_json),
           note: answer.note ?? undefined,
-          rationale: answer.rationale ?? undefined
+          rationale: answer.rationale ?? undefined,
+          createdAt: answer.created_at
         },
-        firstReader
+        firstRead: { reader: firstReader, readAt }
       };
     })();
     return output!;

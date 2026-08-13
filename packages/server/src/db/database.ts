@@ -135,6 +135,7 @@ function runMigrations(db: SqliteDatabase): void {
       first_reader_harness TEXT,
       first_reader_owner_id TEXT,
       first_read_at TEXT,
+      owner_notification_delivered_at TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -215,6 +216,7 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "answers", "first_reader_harness", "TEXT");
   ensureColumn(db, "answers", "first_reader_owner_id", "TEXT");
   ensureColumn(db, "answers", "first_read_at", "TEXT");
+  ensureColumn(db, "answers", "owner_notification_delivered_at", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_legacy_request ON questions(legacy_request_id)");
 }
 

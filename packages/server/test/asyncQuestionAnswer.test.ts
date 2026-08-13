@@ -65,6 +65,7 @@ async function createQuestion(socket: WebSocket): Promise<Record<string, unknown
   socket.send(JSON.stringify({
     type: "ask.create",
     requestId: "wire-question-1",
+    awaitAnswer: false,
     payload: {
       requestId: "question-1",
       sessionId: "control-session-1",
@@ -127,7 +128,6 @@ describe("one asynchronous Question-to-Answer loop", () => {
       type: "answer.available",
       payload: {
         questionId: "question-1",
-        question: "Which database should v1 use?",
         answerId: response.json().result.answerId
       }
     });
@@ -138,32 +138,35 @@ describe("one asynchronous Question-to-Answer loop", () => {
     apps.push(app);
     const socket = await connectOwner(app);
     await createQuestion(socket);
+    const notification = nextMessage(socket);
     await app.inject({
       method: "POST",
       url: "/api/requests/question-1/answer",
       payload: { selectedValues: ["sqlite"], note: "Keep it local", rationale: "Simple persistence" }
     });
+    await notification;
 
-    const read = () => app.inject({
-      method: "POST",
-      url: "/api/questions/question-1/get-answer",
-      payload: { reader: { harness: "pi", ownerId: PI_SESSION_UUID } }
-    });
-    const [first, competing] = await Promise.all([read(), read()]);
-    expect([first.statusCode, competing.statusCode]).toEqual([200, 200]);
-    const reads = [first.json(), competing.json()];
-    expect(reads.filter((result) => result.alreadyRead === false)).toHaveLength(1);
-    expect(reads.filter((result) => result.alreadyRead === true)).toHaveLength(1);
+    const read = async (requestId: string) => {
+      const response = nextMessage(socket);
+      socket.send(JSON.stringify({ type: "answer.get", requestId, payload: { questionId: "question-1" } } satisfies ExtensionClientMessage));
+      return response;
+    };
+    const reads = [await read("read-1"), await read("read-2")];
+    expect(reads.filter((result) => (result.payload as { alreadyRead: boolean }).alreadyRead === false)).toHaveLength(1);
+    expect(reads.filter((result) => (result.payload as { alreadyRead: boolean }).alreadyRead === true)).toHaveLength(1);
     for (const result of reads) {
       expect(result).toMatchObject({
-        question: { questionId: "question-1", prompt: "Which database should v1 use?", revision: 1 },
+        type: "answer.result",
+        payload: {
+        question: { questionId: "question-1", revision: 1, question: { prompt: "Which database should v1 use?" } },
         answer: {
           answerId: expect.any(String),
           selectedValues: ["sqlite"],
           note: "Keep it local",
           rationale: "Simple persistence"
         },
-        firstReader: { harness: "pi", ownerId: PI_SESSION_UUID }
+        firstRead: { reader: { harness: "pi", ownerId: PI_SESSION_UUID } }
+        }
       });
     }
   });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionRegisterPayload } from "@pi-postbox/protocol";
+import { AnswerReadResultSchema, type SessionRegisterPayload } from "@pi-postbox/protocol";
 import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
@@ -117,10 +117,10 @@ export default function postboxExtension(pi: PiLikeApi): void {
   pi.registerTool?.({
     name: "ask_postbox",
     label: "Ask Postbox",
-    description: "Send a structured decision question to Pi Postbox and wait for the remote answer.",
-    promptSnippet: "Ask the user for a remote decision through Pi Postbox.",
+    description: "Persist a structured decision question in Pi Postbox and return after server acknowledgement.",
+    promptSnippet: "Queue a remote decision, continue other work, then use get_answer after notification.",
     promptGuidelines: [
-      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext so a future interviewer can explain the decision. The tool blocks until the Postbox Question is answered or cancelled."
+      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext. It returns after durable persistence, not after an Answer. Continue non-blocked work and call get_answer with the questionId after notification."
     ],
     parameters: askPostboxParameters,
     async execute(_toolCallId: string, params: AskPostboxInput, signal?: AbortSignal) {
@@ -153,6 +153,22 @@ export default function postboxExtension(pi: PiLikeApi): void {
 
       const result = await executeAskPostbox(params, client, currentRegistration.session.sessionId, signal, semanticStateController);
       return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
+    }
+  });
+
+  pi.registerTool?.({
+    name: "get_answer",
+    label: "Get Postbox Answer",
+    description: "Read the latest Answer for an owned Postbox Question; the registered Pi session supplies reader identity.",
+    annotations: { readOnlyHint: false },
+    parameters: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
+      questionId: { type: "string", minLength: 1, description: "Question ID returned by ask_postbox." }
+    } },
+    async execute(_toolCallId: string, params: { questionId: string }) {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
+      if (!client) throw new Error(unavailableRationale);
+      const result = AnswerReadResultSchema.parse(await client.getAnswer(params.questionId));
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
   });
 

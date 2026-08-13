@@ -87,11 +87,12 @@ export async function registerExtensionSocket(
     const unsubscribers = new Set<() => void>();
     unsubscribers.add(requestStore.onAnswerAvailable((answer) => {
       if (!registeredSessionId || socket.readyState !== 1) return;
-      const owner = sessionStore.ownerForSession(registeredSessionId);
-      if (owner?.harness !== answer.ownerHarness || owner.ownerId !== answer.ownerId) return;
+      const owner = { harness: answer.ownerHarness, ownerId: answer.ownerId };
+      if (!sessionStore.isConnectedNonWaitingOwner(registeredSessionId, owner)) return;
+      if (!requestStore.claimOwnerNotification(answer.answerId)) return;
       send(socket, {
         type: "answer.available",
-        payload: { questionId: answer.questionId, question: answer.question, answerId: answer.answerId }
+        payload: { questionId: answer.questionId, answerId: answer.answerId }
       });
     }));
     let registeredSessionId: string | undefined;
@@ -334,21 +335,34 @@ export async function registerExtensionSocket(
           send(socket, {
             type: "ask.created",
             requestId: message.requestId,
-            payload: { requestId: snapshot.requestId, status: "pending" }
+            payload: { requestId: snapshot.requestId, questionId: snapshot.requestId, revision: 1, status: "pending" }
           });
           if (!alreadyExisted) {
             void pushNotifier?.notifyNewPendingAsk(snapshot).catch((error: unknown) => {
               app.log.warn({ error, requestId: snapshot.requestId }, "failed to send new ask push notification");
             });
           }
-          const unsubscribe = requestStore.onResolved(snapshot.requestId, (result) => {
-            if (socket.readyState === 1) {
-              send(socket, { type: "ask.resolved", requestId: snapshot.requestId, payload: result });
-            }
-          });
-          unsubscribers.add(unsubscribe);
+          if (message.awaitAnswer !== false) {
+            const unsubscribe = requestStore.onResolved(snapshot.requestId, (result) => {
+              if (socket.readyState === 1) send(socket, { type: "ask.resolved", requestId: snapshot.requestId, payload: result });
+            });
+            unsubscribers.add(unsubscribe);
+          }
         } catch (error) {
           sendAskError(socket, message.requestId, "ask_create_failed", error);
+        }
+        return;
+      }
+
+      if (message.type === "answer.get") {
+        try {
+          if (!registeredSessionId) throw new RequestStoreError("wrong_owner", "Register before reading an Answer");
+          const owner = sessionStore.ownerForSession(registeredSessionId);
+          if (!owner) throw new RequestStoreError("wrong_owner", "Registered session has no native owner identity");
+          const result = requestStore.getAnswer(message.payload.questionId, owner);
+          send(socket, { type: "answer.result", requestId: message.requestId, payload: result as never });
+        } catch (error) {
+          sendAskError(socket, message.requestId, "answer_get_failed", error);
         }
         return;
       }

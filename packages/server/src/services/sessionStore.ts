@@ -111,6 +111,13 @@ export class SessionStore {
     return row?.owner_harness && row.owner_id ? { harness: row.owner_harness, ownerId: row.owner_id } : undefined;
   }
 
+  isConnectedNonWaitingOwner(sessionId: string, owner: { harness: string; ownerId: string }): boolean {
+    if (!this.activeConnections.has(sessionId)) return false;
+    const row = this.db.prepare(`SELECT owner_harness, owner_id, semantic_state FROM sessions WHERE session_id = ?`).get(sessionId) as
+      { owner_harness: string | null; owner_id: string | null; semantic_state: SemanticState } | undefined;
+    return row?.owner_harness === owner.harness && row.owner_id === owner.ownerId && row.semantic_state !== "blocked";
+  }
+
   register(connectionId: string, payload: SessionRegisterPayload): void {
     if (this.closed) return;
     const nowIso = new Date(this.now()).toISOString();

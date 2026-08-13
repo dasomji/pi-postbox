@@ -6,6 +6,9 @@ import {
   type AskOption,
   OTHER_OPTION_VALUE,
   type AskResult,
+  type AskReceipt,
+  AnswerReadResultSchema,
+  type AnswerReadResult,
   type ExtensionClientMessage,
   type ProposeAnswerPayload,
   type ProposeAnswerResult,
@@ -131,6 +134,15 @@ interface PendingAsk {
   unavailableTimer?: NodeJS.Timeout;
   expiryTimer?: NodeJS.Timeout;
   targetAffinityTimer?: NodeJS.Timeout;
+  createCommandId: string;
+  resolveReceipt?: (receipt: AskReceipt) => void;
+  rejectReceipt?: (error: Error) => void;
+}
+
+interface PendingAnswerRead {
+  questionId: string;
+  resolve: (result: AnswerReadResult) => void;
+  reject: (error: Error) => void;
 }
 
 interface PendingProposal {
@@ -160,6 +172,7 @@ export class PostboxClient {
   private readonly askUnavailableAfterMs: number;
   private readonly WebSocketImpl: WebSocketConstructor;
   private readonly pendingAsks = new Map<string, PendingAsk>();
+  private readonly asynchronousAskCreates = new Set<string>();
   private readonly localResolutions = new Map<string, LocalResolution>();
   private currentSemanticState: SemanticState;
   private currentServerUrl: string;
@@ -173,6 +186,7 @@ export class PostboxClient {
   private readonly questionChatSubscriptions = new Map<string, () => void>();
   private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
   private readonly pendingProposals = new Map<string, PendingProposal>();
+  private readonly pendingAnswerReads = new Map<string, PendingAnswerRead>();
   private readonly liveQuestionChats = new Map<string, string>();
   private readonly terminalQuestionChats = new Map<string, string>();
   private recoveryOffers: QuestionChatRecoveryOffer[] = [];
@@ -221,6 +235,7 @@ export class PostboxClient {
     this.recoveryOfferIndex = 0;
     this.recoveryCompleteSent = false;
     this.failPendingProposals("Question Chat proposal stopped before the server responded.");
+    this.failPendingAnswerReads("Postbox stopped before the Answer was returned.");
     this.liveQuestionChats.clear();
     this.terminalQuestionChats.clear();
     this.socket?.close();
@@ -293,6 +308,7 @@ export class PostboxClient {
     return new Promise<AskResult>((resolve, reject) => {
       const cleanup = () => {
         this.pendingAsks.delete(payload.requestId);
+        this.asynchronousAskCreates.delete(payload.requestId);
         signal?.removeEventListener("abort", abort);
         if (pending.unavailableTimer) clearTimeout(pending.unavailableTimer);
         if (pending.expiryTimer) clearTimeout(pending.expiryTimer);
@@ -319,7 +335,8 @@ export class PostboxClient {
         },
         cleanup,
         sentAtLeastOnce: false,
-        createdServerUrl: this.currentServerUrl
+        createdServerUrl: this.currentServerUrl,
+        createCommandId: `ask_create_${randomUUID()}`
       };
 
       this.pendingAsks.set(payload.requestId, pending);
@@ -329,6 +346,32 @@ export class PostboxClient {
       this.ensureConnection();
       this.publishLocalFallbackStatus();
       this.sendPendingAsk(pending);
+    });
+  }
+
+  createAsk(payload: AskCreatePayload, signal?: AbortSignal): Promise<AskReceipt> {
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question was not persisted."));
+    this.asynchronousAskCreates.add(payload.requestId);
+    const answer = this.ask(payload, signal);
+    const pending = this.pendingAsks.get(payload.requestId);
+    if (!pending) return answer.then(() => { throw new Error("Question was resolved before its persisted acknowledgement."); });
+    // The answer continues to be tracked independently for notification and local compatibility.
+    void answer.catch(() => undefined);
+    return new Promise<AskReceipt>((resolve, reject) => {
+      pending.resolveReceipt = resolve;
+      pending.rejectReceipt = reject;
+    });
+  }
+
+  getAnswer(questionId: string): Promise<AnswerReadResult> {
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Answer cannot be read."));
+    const commandId = `answer_get_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      this.pendingAnswerReads.set(commandId, { questionId, resolve, reject });
+      if (!this.send({ type: "answer.get", requestId: commandId, payload: { questionId } })) {
+        this.pendingAnswerReads.delete(commandId);
+        reject(new Error("Pi Postbox disconnected before get_answer could be sent."));
+      }
     });
   }
 
@@ -443,6 +486,22 @@ export class PostboxClient {
           this.offerQuestionChatRecovery();
           return;
         }
+        if (parsed.data.type === "ask.created") {
+          const pending = [...this.pendingAsks.values()].find((candidate) => candidate.createCommandId === parsed.data.requestId);
+          if (pending && parsed.data.payload.questionId === pending.payload.requestId) {
+            pending.resolveReceipt?.(parsed.data.payload);
+            pending.resolveReceipt = undefined;
+            pending.rejectReceipt = undefined;
+          }
+          return;
+        }
+        if (parsed.data.type === "answer.result") {
+          const pending = this.pendingAnswerReads.get(parsed.data.requestId);
+          if (!pending || pending.questionId !== parsed.data.payload.question.questionId) return;
+          this.pendingAnswerReads.delete(parsed.data.requestId);
+          pending.resolve(AnswerReadResultSchema.parse(parsed.data.payload));
+          return;
+        }
         if (parsed.data.type === "chat.reconcile") {
           void this.reconcileQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
@@ -483,7 +542,16 @@ export class PostboxClient {
         if (parsed.data.type === "error") {
           this.options.onStatus?.(`server-error:${parsed.data.error.code}`);
           if (parsed.data.requestId) {
-            this.pendingAsks.get(parsed.data.requestId)?.reject(new Error(parsed.data.error.message));
+            const error = new Error(parsed.data.error.message);
+            const create = [...this.pendingAsks.values()].find((candidate) => candidate.createCommandId === parsed.data.requestId);
+            create?.rejectReceipt?.(error);
+            if (create) create.reject(error);
+            const read = this.pendingAnswerReads.get(parsed.data.requestId);
+            if (read) {
+              this.pendingAnswerReads.delete(parsed.data.requestId);
+              read.reject(error);
+            }
+            this.pendingAsks.get(parsed.data.requestId)?.reject(error);
           }
         }
         if (parsed.data.type === "ask.resolved") {
@@ -507,6 +575,7 @@ export class PostboxClient {
     socket.on("close", () => {
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       this.failPendingProposals("Postbox disconnected before the Question Chat proposal completed.");
+      this.failPendingAnswerReads("Postbox disconnected before the Answer was returned.");
       this.connectionState = "disconnected";
       this.recordConnectionDiagnostic("websocket:disconnected");
       if (this.stopped) return;
@@ -767,8 +836,13 @@ export class PostboxClient {
 
   private send(message: ExtensionClientMessage): boolean {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify(message));
-    return true;
+    try {
+      this.socket.send(JSON.stringify(message));
+      return true;
+    } catch (error) {
+      this.recordConnectionDiagnostic(`send-error:${messageFrom(error)}`);
+      return false;
+    }
   }
 
   private finishProposal(commandId: string, result: ProposeAnswerResult): void {
@@ -800,7 +874,10 @@ export class PostboxClient {
 
   private sendPendingAsk(pending: PendingAsk): boolean {
     if (pending.originServerUrl && pending.originServerUrl !== this.currentServerUrl) return false;
-    const sent = this.send({ type: "ask.create", requestId: pending.payload.requestId, payload: pending.payload });
+    const sent = this.send({
+      type: "ask.create", requestId: pending.createCommandId,
+      awaitAnswer: !this.asynchronousAskCreates.has(pending.payload.requestId), payload: pending.payload
+    });
     if (sent) {
       pending.sentAtLeastOnce = true;
       pending.originServerUrl ??= this.currentServerUrl;
@@ -809,7 +886,19 @@ export class PostboxClient {
         pending.unavailableTimer = undefined;
       }
     }
+    if (!sent && this.asynchronousAskCreates.has(pending.payload.requestId)) {
+      const error = new Error("Pi Postbox could not send the Question for persistence.");
+      pending.rejectReceipt?.(error);
+      pending.reject(error);
+    }
     return sent;
+  }
+
+  private failPendingAnswerReads(message: string): void {
+    for (const [commandId, pending] of this.pendingAnswerReads) {
+      this.pendingAnswerReads.delete(commandId);
+      pending.reject(new Error(message));
+    }
   }
 
   private startUnavailableTimerIfNeeded(pending: PendingAsk): void {

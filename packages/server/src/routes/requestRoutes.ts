@@ -65,19 +65,6 @@ export async function registerRequestRoutes(
     }
   });
 
-  app.post("/api/questions/:questionId/get-answer", async (request, reply) => {
-    const { questionId } = request.params as { questionId: string };
-    const reader = (request.body as { reader?: { harness?: unknown; ownerId?: unknown } } | undefined)?.reader;
-    if (!reader || typeof reader.harness !== "string" || typeof reader.ownerId !== "string") {
-      return reply.code(400).send({ error: "invalid_reader" });
-    }
-    try {
-      return requestStore.getAnswer(questionId, { harness: reader.harness, ownerId: reader.ownerId });
-    } catch (error) {
-      return sendRequestError(reply, error);
-    }
-  });
-
   app.post("/api/requests/:requestId/chat", async (request, reply) => {
     const { requestId } = request.params as { requestId: string };
     expireDue();
