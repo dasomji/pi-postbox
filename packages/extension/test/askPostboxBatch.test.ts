@@ -16,6 +16,9 @@ describe("ask_postbox ordered batches", () => {
     expect(JSON.stringify(schema)).toMatch(/five (?:direct )?children/i);
     expect(JSON.stringify(schema)).toMatch(/four levels/i);
     expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toBeUndefined();
+    expect(schema.properties.questions.items.required).toEqual(["localRef", "question", "options", "context"]);
+    expect(schema.properties.questions.items.properties.parent.oneOf).toHaveLength(2);
   });
 
   it("sends an ordered batch once and returns every created and rejected receipt", async () => {

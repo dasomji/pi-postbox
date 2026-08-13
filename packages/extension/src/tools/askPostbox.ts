@@ -32,18 +32,47 @@ export interface AskPostboxBatchInput {
   questions: Array<AskPostboxInput & { localRef: string; parent?: { questionId: string } | { localRef: string } }>;
 }
 
+const optionParameters = {
+  type: "object", additionalProperties: false, required: ["value", "label"],
+  properties: {
+    value: { type: "string", minLength: 1 }, label: { type: "string", minLength: 1 },
+    description: { type: "string", minLength: 1 }, meaning: { type: "string", minLength: 1 },
+    context: { type: "string", minLength: 1 }
+  }
+} as const;
+const contextParameters = {
+  type: "object", additionalProperties: false, required: ["codebaseContext", "problemContext"],
+  properties: {
+    codebaseContext: { type: "string", minLength: 1 }, problemContext: { type: "string", minLength: 1 },
+    additionalInfo: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["content"], properties: {
+      kind: { type: "string", enum: ["text", "code", "diagram", "link"] }, title: { type: "string", minLength: 1 },
+      content: { type: "string", minLength: 1 }, language: { type: "string", minLength: 1 }
+    } } }
+  }
+} as const;
+const sharedDraftProperties = {
+  question: { type: "string", minLength: 1 }, questionContext: { type: "string", minLength: 1 },
+  relevance: { type: "string", minLength: 1 }, decisionImpact: { type: "string", minLength: 1 },
+  urgency: { type: "string", enum: ["low", "normal", "high"] }, requestId: { type: "string", minLength: 1 },
+  timeoutMs: { type: "number", minimum: 1 }, expiresAt: { type: "string", minLength: 1 },
+  options: { type: "array", minItems: 1, items: optionParameters }, context: contextParameters
+} as const;
+
 export const askPostboxParameters = {
   type: "object",
   additionalProperties: false,
-  required: ["question", "options", "context"],
   description: "Create Questions. A Question may have at most five direct children and the hierarchy may have at most four levels.",
-  oneOf: [{ required: ["question", "options", "context"] }, { required: ["mode", "questions"] }],
+  oneOf: [
+    { required: ["question", "options", "context"], not: { required: ["questions"] }, properties: { mode: { type: "string", enum: ["single", "multi"] } } },
+    { required: ["mode", "questions"], properties: { mode: { const: "batch" } }, not: { required: ["question"] } }
+  ],
   properties: {
-    question: { type: "string", minLength: 1, description: "Decision question to show in Pi Postbox." },
+    ...sharedDraftProperties,
+    question: { ...sharedDraftProperties.question, description: "Decision question to show in Pi Postbox." },
     questionContext: { type: "string", minLength: 1, description: "Concrete context for why this question is being asked." },
     relevance: { type: "string", minLength: 1, description: "Why this question is relevant now." },
     decisionImpact: { type: "string", minLength: 1, description: "What effect this decision will have." },
-    mode: { type: "string", enum: ["single", "multi"], description: "Whether one or many options may be selected." },
+    mode: { type: "string", enum: ["single", "multi", "batch"], description: "Single Question selection mode, or ordered batch creation." },
     urgency: {
       type: "string",
       enum: ["low", "normal", "high"],
@@ -52,46 +81,6 @@ export const askPostboxParameters = {
     requestId: { type: "string", minLength: 1, description: "Optional stable request id for this ask." },
     timeoutMs: { type: "number", minimum: 1, description: "Optional request expiry timeout in milliseconds." },
     expiresAt: { type: "string", minLength: 1, description: "Optional ISO datetime when this request expires." },
-    options: {
-      type: "array",
-      minItems: 1,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["value", "label"],
-        properties: {
-          value: { type: "string", minLength: 1 },
-          label: { type: "string", minLength: 1 },
-          description: { type: "string", minLength: 1 },
-          meaning: { type: "string", minLength: 1, description: "What choosing this option means." },
-          context: { type: "string", minLength: 1, description: "Additional context for this option." }
-        }
-      }
-    },
-    context: {
-      type: "object",
-      additionalProperties: false,
-      required: ["codebaseContext", "problemContext"],
-      properties: {
-        codebaseContext: { type: "string", minLength: 1, description: "Codebase context for a future interviewer." },
-        problemContext: { type: "string", minLength: 1, description: "Scoped problem context for a future interviewer." },
-        additionalInfo: {
-          type: "array",
-          maxItems: 20,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["content"],
-            properties: {
-              kind: { type: "string", enum: ["text", "code", "diagram", "link"] },
-              title: { type: "string", minLength: 1 },
-              content: { type: "string", minLength: 1 },
-              language: { type: "string", minLength: 1 }
-            }
-          }
-        }
-      }
-    },
     forkReference: {
       type: "object",
       additionalProperties: false,
@@ -103,7 +92,16 @@ export const askPostboxParameters = {
         model: { type: "string", minLength: 1 }
       }
     },
-    questions: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false } }
+    questions: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
+      required: ["localRef", "question", "options", "context"], properties: {
+        ...sharedDraftProperties, localRef: { type: "string", minLength: 1 },
+        mode: { type: "string", enum: ["single", "multi"] },
+        parent: { oneOf: [
+          { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string", minLength: 1 } } },
+          { type: "object", additionalProperties: false, required: ["localRef"], properties: { localRef: { type: "string", minLength: 1 } } }
+        ] }
+      } }
+    }
   }
 } as const;
 

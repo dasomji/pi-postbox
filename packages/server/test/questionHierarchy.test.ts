@@ -67,4 +67,15 @@ describe("Question hierarchy transaction", () => {
     expect(db.prepare("SELECT status FROM questions WHERE question_id = 'question-one'").get()).toEqual({ status: "pending" });
     db.close();
   });
+
+  it("replays accepted batch items idempotently at hierarchy limits and rejects batch-local parents in single mode", () => {
+    const { db, store } = setup();
+    const drafts = [question("root"), ...Array.from({ length: 5 }, (_, index) => question(`child-${index}`, { localRef: "root" }))];
+    expect(store.createBatch("session", drafts).status).toBe("created");
+    expect(store.createBatch("session", drafts)).toMatchObject({ status: "created", items: drafts.map((draft) => ({ localRef: draft.localRef, status: "created" })) });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM questions").get()).toEqual({ count: 6 });
+    expect(() => store.createOne("session", question("single-local", { localRef: "root" })))
+      .toThrowError(expect.objectContaining({ code: "invalid_parent_reference" }));
+    db.close();
+  });
 });

@@ -80,7 +80,7 @@ describe("ask_postbox tool", () => {
         "session-1"
       )
     ).toThrow("ask_postbox requires non-blank problemContext");
-    expect(askPostboxParameters.required).toContain("context");
+    expect(askPostboxParameters.oneOf[0].required).toContain("context");
     expect(askPostboxParameters.properties.context.required).toEqual(["codebaseContext", "problemContext"]);
   });
 

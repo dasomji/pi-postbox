@@ -12,6 +12,17 @@
   const realRequest = $derived(selection.kind === "request" ? store.selectedRequest : undefined);
   // Mock takes over only when there is no real question to answer.
   const showMock = $derived(layout.mockQuestion && !realRequest);
+  const unansweredAncestors = $derived.by(() => {
+    const ancestors = [];
+    let parentId = realRequest?.parentQuestionId;
+    while (parentId) {
+      const parent = store.requests.find((request) => request.requestId === parentId);
+      if (!parent) break;
+      if (parent.status === "pending") ancestors.push(parent);
+      parentId = parent.parentQuestionId;
+    }
+    return ancestors;
+  });
 </script>
 
 <main
@@ -24,7 +35,7 @@
   {:else if selection.kind === "request"}
     {#if store.selectedRequest}
       {#key store.selectedRequest.requestId}
-        <QuestionDetail request={store.selectedRequest} session={store.selectedSession} />
+        <QuestionDetail request={store.selectedRequest} session={store.selectedSession} {unansweredAncestors} />
       {/key}
     {:else}
       <EmptyMain title="Question resolved" message="This request was answered, cancelled, or expired." />

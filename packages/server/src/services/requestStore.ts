@@ -184,7 +184,12 @@ export class RequestStore {
   }
 
   createOne(sessionId: string, draft: AskQuestionDraft): { questionId: string; revision: number; status: "created"; nudge?: string } {
+    if (draft.parent && "localRef" in draft.parent) {
+      throw new RequestStoreError("invalid_parent_reference", "A single Question parent must use a Question ID.");
+    }
     const parentQuestionId = draft.parent && "questionId" in draft.parent ? draft.parent.questionId : undefined;
+    const existing = this.get(draft.requestId);
+    if (existing) return { questionId: existing.requestId, revision: 1, status: "created" };
     const hierarchy = this.validateHierarchy(parentQuestionId);
     const request = this.create({ ...draft, sessionId, parentQuestionId });
     const nudge = hierarchy.childCount === 3 ? "This is the fourth direct child Question." : hierarchy.depth === 3 ? "This is a level-four Question." : undefined;
@@ -202,6 +207,12 @@ export class RequestStore {
           continue;
         }
         let parentQuestionId: string | undefined;
+        const existing = this.get(draft.requestId);
+        if (existing) {
+          localIds.set(draft.localRef, existing.requestId);
+          items.push({ localRef: draft.localRef, status: "created", questionId: existing.requestId, revision: 1 });
+          continue;
+        }
         if (draft.parent && "localRef" in draft.parent) {
           parentQuestionId = localIds.get(draft.parent.localRef);
           if (!parentQuestionId) {

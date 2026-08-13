@@ -22,37 +22,64 @@ export interface QuestionProjectGroup {
 
 export interface QuestionTreeNode extends QuestionQueueItem { children: QuestionTreeNode[] }
 
+function orderQuestionTree(items: QuestionQueueItem[]): { questions: QuestionQueueItem[]; tree: QuestionTreeNode[] } {
+  const nodes = new Map(items.map((item) => [item.request.requestId, { ...item, children: [] } as QuestionTreeNode]));
+  const roots: QuestionTreeNode[] = [];
+  for (const node of nodes.values()) {
+    const parent = node.request.parentQuestionId ? nodes.get(node.request.parentQuestionId) : undefined;
+    if (parent) parent.children.push(node); else roots.push(node);
+  }
+  const oldestFirst = (a: QuestionTreeNode, b: QuestionTreeNode) => a.request.createdAt.localeCompare(b.request.createdAt) || a.request.requestId.localeCompare(b.request.requestId);
+  const sort = (values: QuestionTreeNode[]): void => { values.sort(oldestFirst); values.forEach((node) => sort(node.children)); };
+  sort(roots);
+  const questions: QuestionQueueItem[] = [];
+  const visit = (node: QuestionTreeNode): void => { questions.push(node); node.children.forEach(visit); };
+  roots.forEach(visit);
+  return { questions, tree: roots };
+}
+
 export function groupOpenQuestions(
   requests: AskRequestSnapshot[],
   sessions: SessionSnapshot[],
   projectFilter?: string
 ): QuestionProjectGroup[] {
-  if (sessions.some((session) => session.repository && session.worktree && session.feature)) {
+  if (requests.some((request) => request.repository && request.worktree && request.feature) || sessions.some((session) => session.repository && session.worktree && session.feature)) {
     const sessionsById = new Map(sessions.map((session) => [session.sessionId, session]));
     const repositories = new Map<string, QuestionProjectGroup>();
     for (const request of requests) {
       const session = sessionsById.get(request.sessionId);
-      if (!session?.repository || !session.worktree || !session.feature) continue;
-      if (projectFilter && session.repository.repositoryId !== projectFilter) continue;
-      let repository = repositories.get(session.repository.repositoryId);
+      const repositoryIdentity = request.repository ?? session?.repository;
+      const worktreeIdentity = request.worktree ?? session?.worktree;
+      const featureIdentity = request.feature ?? session?.feature;
+      if (!repositoryIdentity || !worktreeIdentity || !featureIdentity) continue;
+      if (projectFilter && repositoryIdentity.repositoryId !== projectFilter) continue;
+      let repository = repositories.get(repositoryIdentity.repositoryId);
       if (!repository) {
-        repository = { projectId: session.repository.repositoryId, repositoryId: session.repository.repositoryId,
-          projectName: session.repository.remote ?? session.projectName, questions: [], worktreeFeatures: [] };
-        repositories.set(session.repository.repositoryId, repository);
+        repository = { projectId: repositoryIdentity.repositoryId, repositoryId: repositoryIdentity.repositoryId,
+          projectName: repositoryIdentity.remote ?? session?.projectName ?? repositoryIdentity.repositoryId, questions: [], worktreeFeatures: [] };
+        repositories.set(repositoryIdentity.repositoryId, repository);
       }
-      const key = `${session.worktree.worktreeId}:${session.feature.featureId}`;
+      const key = `${worktreeIdentity.worktreeId}:${featureIdentity.featureId}`;
       let subgroup = repository.worktreeFeatures!.find((candidate) => `${candidate.worktree.worktreeId}:${candidate.feature.featureId}` === key);
       if (!subgroup) {
-        subgroup = { worktree: session.worktree, feature: session.feature, questions: [] };
+        subgroup = { worktree: worktreeIdentity, feature: featureIdentity, questions: [] };
         repository.worktreeFeatures!.push(subgroup);
       }
       const item = { request, session };
       subgroup.questions.push(item);
       repository.questions.push(item);
     }
-    for (const repository of repositories.values()) repository.worktreeFeatures!.sort((a, b) =>
-      a.feature.name?.localeCompare(b.feature.name ?? "") || a.feature.featureId.localeCompare(b.feature.featureId));
-    return [...repositories.values()].sort((a, b) => a.projectName.localeCompare(b.projectName));
+    for (const repository of repositories.values()) {
+      for (const subgroup of repository.worktreeFeatures!) {
+        const ordered = orderQuestionTree(subgroup.questions);
+        subgroup.questions = ordered.questions;
+      }
+      repository.worktreeFeatures!.sort((a, b) => a.questions[0]!.request.createdAt.localeCompare(b.questions[0]!.request.createdAt));
+      const repositoryItems = repository.worktreeFeatures!.flatMap((subgroup) => subgroup.questions);
+      repository.questions = repositoryItems;
+      repository.questionTree = orderQuestionTree(repositoryItems).tree;
+    }
+    return [...repositories.values()].sort((a, b) => a.questions[0]!.request.createdAt.localeCompare(b.questions[0]!.request.createdAt));
   }
   const sessionsById = new Map(sessions.map((session) => [session.sessionId, session]));
   const grouped = new Map<string, QuestionProjectGroup>();
@@ -78,22 +105,9 @@ export function groupOpenQuestions(
   const groups = [...grouped.values()];
   for (const group of groups) {
     group.questions.sort((a, b) => comparePendingRequests(a.request, b.request));
-    const nodes = new Map(group.questions.map((item) => [item.request.requestId, { ...item, children: [] } as QuestionTreeNode]));
-    const roots: QuestionTreeNode[] = [];
-    for (const node of nodes.values()) {
-      const parentId = node.request.parentQuestionId;
-      const parent = parentId ? nodes.get(parentId) : undefined;
-      if (parent) parent.children.push(node);
-      else roots.push(node);
-    }
-    const oldestFirst = (a: QuestionTreeNode, b: QuestionTreeNode) => a.request.createdAt.localeCompare(b.request.createdAt) || a.request.requestId.localeCompare(b.request.requestId);
-    const sortTree = (nodesToSort: QuestionTreeNode[]): void => { nodesToSort.sort(oldestFirst); nodesToSort.forEach((node) => sortTree(node.children)); };
-    sortTree(roots);
-    group.questionTree = roots;
-    const flattened: QuestionQueueItem[] = [];
-    const visit = (node: QuestionTreeNode): void => { flattened.push(node); node.children.forEach(visit); };
-    roots.forEach(visit);
-    group.questions = flattened;
+    const ordered = orderQuestionTree(group.questions);
+    group.questionTree = ordered.tree;
+    group.questions = ordered.questions;
   }
   groups.sort((a, b) => {
     const questionOrder = comparePendingRequests(a.questions[0]!.request, b.questions[0]!.request);
