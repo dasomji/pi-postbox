@@ -42,7 +42,7 @@ describe("RequestStore Chat-proposed options", () => {
     sessions.register("connection-owner", {
       machine: { machineId: "machine-1", hostname: "workstation" },
       project: { projectId: "project-1", name: "postbox", cwd: "/repo" },
-      session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user" }
+      session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user", owner: { harness: "pi", ownerId: "agent" } }
     });
   });
 
@@ -77,6 +77,14 @@ describe("RequestStore Chat-proposed options", () => {
     expect(row).toMatchObject({ note: "draft-note", rationale: "draft-rationale" });
     expect(row.options_json).not.toContain("toolCall");
     expect(row.options_json).not.toContain("transcript");
+    expect(store.getQuestionHistory("ask-success")).toMatchObject({
+      revisions: [
+        { revision: 1, options: [{ value: "ship", label: "Ship now" }] },
+        { revision: 2, options: [{ value: "ship", label: "Ship now" }, expect.objectContaining({ value: "chat_opaque_1" })] }
+      ],
+      events: [expect.objectContaining({ type: "revision", revision: 2, changes: ["options"], actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String) })]
+    });
+    expect(JSON.stringify(store.getQuestionHistory("ask-success"))).not.toMatch(/selectedValues|rationale|draft-note/);
 
     expect(store.answer("ask-success", { selectedValues: [appended.option.value] })).toMatchObject({
       status: "answered",

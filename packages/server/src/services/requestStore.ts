@@ -140,6 +140,22 @@ export class RequestStore {
     wait.resolve({ type: "lifecycle", questionId, event: "transferred", owner: nextOwner });
   }
 
+  transferQuestionOwner(
+    questionId: string,
+    expectedOwner: { harness: string; ownerId: string },
+    nextOwner: { harness: string; ownerId: string }
+  ): void {
+    this.db.transaction(() => {
+      const nextExists = this.db.prepare("SELECT 1 FROM owners WHERE harness=? AND owner_id=?").get(nextOwner.harness, nextOwner.ownerId);
+      if (!nextExists) throw new RequestStoreError("owner_not_found", "The new Question owner does not exist");
+      const changed = this.db.prepare(`UPDATE questions SET owner_harness=?, owner_owner_id=?, updated_at=?
+        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending'`)
+        .run(nextOwner.harness, nextOwner.ownerId, new Date(this.now()).toISOString(), questionId, expectedOwner.harness, expectedOwner.ownerId).changes;
+      if (changed !== 1) throw new RequestStoreError("owner_changed", "Question owner changed or Question is terminal");
+    })();
+    this.notifyOwnerTransfer(expectedOwner, nextOwner, questionId);
+  }
+
   async waitForPostbox(input: {
     owner: { harness: string; ownerId: string };
     signal?: AbortSignal;
@@ -468,7 +484,7 @@ export class RequestStore {
       const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
       if (!row) throw new RequestStoreError("request_not_found", "Question not found.");
       if (row.status !== "pending") throw new RequestStoreError("request_terminal", "Question is no longer pending.");
-      const durableQuestion = this.db.prepare("SELECT 1 FROM questions WHERE legacy_request_id = ?").get(requestId);
+      const durableQuestion = this.db.prepare("SELECT * FROM questions WHERE legacy_request_id = ?").get(requestId) as any;
       const ownsQuestion = durableQuestion ? this.db.prepare(`SELECT 1 FROM questions q JOIN sessions s
         ON s.owner_harness = q.owner_harness AND s.owner_id = q.owner_owner_id
         WHERE q.legacy_request_id = ? AND s.session_id = ? AND q.status = 'pending'`).get(requestId, ownerSessionId) : row.session_id === ownerSessionId;
@@ -504,6 +520,10 @@ export class RequestStore {
 
       const option: ProposedAnswerOption = { value, ...parsed.data, provenance: "chat" };
       const updatedAt = new Date(this.now()).toISOString();
+      const proposalActor = durableQuestion
+        ? { harness: durableQuestion.owner_harness as string, ownerId: durableQuestion.owner_owner_id as string }
+        : undefined;
+      if (durableQuestion && proposalActor) this.seedQuestionRevision(durableQuestion, proposalActor);
       const changes = this.db.prepare(
         `UPDATE ask_requests
          SET options_json = @optionsJson,
@@ -525,6 +545,15 @@ export class RequestStore {
           SELECT owner_id FROM sessions WHERE session_id = @ownerSessionId
         ) AND status = 'pending'`).run({ requestId, ownerSessionId, optionsJson: JSON.stringify([...options, option]), updatedAt }).changes;
       if (durableQuestion && durableChanges !== 1) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
+      if (durableQuestion && proposalActor) {
+        const revised = this.db.prepare("SELECT * FROM questions WHERE legacy_request_id=?").get(requestId) as any;
+        this.db.prepare(`INSERT INTO question_revisions
+          (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(revised.question_id, revised.revision, revised.question_json, revised.options_json, revised.context_json,
+            proposalActor.harness, proposalActor.ownerId, updatedAt);
+        this.recordQuestionEvent(revised.question_id, "revision", revised.revision, proposalActor, { changes: ["options"] }, updatedAt);
+      }
       const request = this.get(requestId);
       if (!request) throw new Error("updated request could not be loaded");
       appended = { option, request };

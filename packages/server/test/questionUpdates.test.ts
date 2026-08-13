@@ -74,6 +74,9 @@ describe("immutable Question updates", () => {
     const { db, store, create } = setup();
     create("browser-cancel");
     store.cancel("browser-cancel", { rationale: "No longer needed" });
+    expect(store.getQuestionHistory("browser-cancel").revisions).toEqual([
+      expect.objectContaining({ revision: 1, question: { prompt: "browser-cancel?" } })
+    ]);
     expect(store.getQuestionHistory("browser-cancel").events).toContainEqual(expect.objectContaining({
       type: "cancelled", actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String)
     }));
