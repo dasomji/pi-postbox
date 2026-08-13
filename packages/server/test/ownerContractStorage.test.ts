@@ -59,6 +59,13 @@ describe("owner Question/Answer source of truth", () => {
     expect(db.prepare("SELECT question_id,expires_at FROM questions WHERE question_id IN ('explicit','default') ORDER BY question_id").all())
       .toEqual([{ question_id: "default", expires_at: null }, { question_id: "explicit", expires_at: twelveHours }]);
     db.prepare("UPDATE answers SET first_reader_harness=NULL,first_reader_owner_id=NULL,first_read_at=NULL,owner_notification_delivered_at=NULL WHERE question_id='answered'").run();
+    db.prepare(`UPDATE ask_requests SET fork_reference_json='{"leafId":"legacy-leaf"}' WHERE request_id='answered'`).run();
+    db.prepare(`UPDATE questions SET legacy_request_id=NULL,source_session_id=NULL,fork_reference_json=NULL,
+      question_json='{}',options_json='[]',status='pending',resolved_at=NULL WHERE question_id='answered'`).run();
+    db.prepare(`UPDATE question_revisions SET question_json='{}',options_json='[]' WHERE question_id='answered'`).run();
+    db.prepare(`UPDATE questions SET legacy_request_id=NULL,source_session_id=NULL,
+      question_json='{"prompt":"Newer intentional wording"}',options_json='[{"value":"keep","label":"Keep"}]',
+      updated_at='2026-02-01T00:00:00.000Z' WHERE question_id='explicit'`).run();
     db.close();
 
     db = openPostboxDatabase(path);
@@ -67,6 +74,16 @@ describe("owner Question/Answer source of truth", () => {
         first_reader_owner_id: "legacy-session", first_read_at: "2026-01-01T00:01:00.000Z",
         owner_notification_delivered_at: "2026-01-01T00:01:00.000Z" });
     expect(db.prepare("SELECT count(*) count FROM answers WHERE question_id='answered'").get()).toEqual({ count: 1 });
+    expect(db.prepare(`SELECT legacy_request_id,source_session_id,fork_reference_json,question_json,options_json,status,resolved_at
+      FROM questions WHERE question_id='answered'`).get()).toEqual({ legacy_request_id: "answered",
+        source_session_id: "legacy-session", fork_reference_json: '{"leafId":"legacy-leaf"}',
+        question_json: '{"prompt":"Answered?"}', options_json: '[{"value":"yes","label":"Yes"}]', status: "answered",
+        resolved_at: "2026-01-01T00:01:00.000Z" });
+    expect(db.prepare("SELECT facts_json FROM migration_ledger WHERE migration_key='owner-contract-v1-expiry'").get())
+      .toEqual({ facts_json: '{"unknownLegacyExpiry":"preserved","clearOnly":"manufactured_default"}' });
+    expect(db.prepare("SELECT legacy_request_id,source_session_id,question_json,options_json FROM questions WHERE question_id='explicit'").get())
+      .toEqual({ legacy_request_id: "explicit", source_session_id: "legacy-session",
+        question_json: '{"prompt":"Newer intentional wording"}', options_json: '[{"value":"keep","label":"Keep"}]' });
     db.close(); rmSync(root, { recursive: true, force: true });
   });
 });

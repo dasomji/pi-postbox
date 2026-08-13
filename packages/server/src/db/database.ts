@@ -178,6 +178,11 @@ function runMigrations(db: SqliteDatabase): void {
       actor_harness TEXT NOT NULL, actor_owner_id TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (question_id, revision)
     );
+    CREATE TABLE IF NOT EXISTS migration_ledger (
+      migration_key TEXT PRIMARY KEY,
+      facts_json TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
 
     CREATE TRIGGER IF NOT EXISTS questions_creator_immutable
       BEFORE UPDATE OF creator_harness, creator_owner_id ON questions
@@ -293,6 +298,42 @@ function migrateLegacyDecisions(db: SqliteDatabase): void {
         status, CASE WHEN expiry_provenance = 'manufactured_default' THEN NULL ELSE expires_at END,
         resolved_at, created_at, updated_at FROM ask_requests`)
       .run();
+    // A released pre-marker ask_requests row cannot distinguish an explicitly
+    // chosen 12-hour expiry from the old writer's manufactured 12-hour default.
+    // Preserve that unknown value. Only the provenance marker introduced at
+    // the writer boundary is sufficient evidence to clear an automatic expiry.
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('owner-contract-v1-expiry', '{"unknownLegacyExpiry":"preserved","clearOnly":"manufactured_default"}', datetime('now'))`).run();
+
+    // Some deployments were interrupted after the deterministic Question row
+    // was inserted but before compatibility metadata was copied. Fill only
+    // absent fields and recognizable revision-1 placeholders. Never replace a
+    // newer owner edit or a non-placeholder authoritative value.
+    db.prepare(`UPDATE questions AS q SET
+      legacy_request_id = COALESCE(q.legacy_request_id, q.question_id),
+      source_session_id = COALESCE(q.source_session_id, (SELECT r.session_id FROM ask_requests r WHERE r.request_id=q.question_id)),
+      fork_reference_json = COALESCE(q.fork_reference_json, (SELECT r.fork_reference_json FROM ask_requests r WHERE r.request_id=q.question_id)),
+      expiry_provenance = COALESCE(q.expiry_provenance, (SELECT r.expiry_provenance FROM ask_requests r WHERE r.request_id=q.question_id)),
+      mode = CASE WHEN q.revision=1 AND q.question_json='{}' THEN (SELECT r.mode FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.mode END,
+      question_json = CASE WHEN q.revision=1 AND q.question_json='{}' THEN
+        (SELECT COALESCE(r.question_json, json_object('prompt', r.prompt)) FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.question_json END,
+      options_json = CASE WHEN q.revision=1 AND q.options_json='[]' THEN
+        (SELECT r.options_json FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.options_json END,
+      context_json = COALESCE(q.context_json, (SELECT r.context_json FROM ask_requests r WHERE r.request_id=q.question_id)),
+      parent_question_id = COALESCE(q.parent_question_id, (SELECT r.parent_question_id FROM ask_requests r WHERE r.request_id=q.question_id)),
+      status = CASE WHEN q.revision=1 AND q.question_json='{}' THEN
+        (SELECT r.status FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.status END,
+      expires_at = COALESCE(q.expires_at, (SELECT CASE WHEN r.expiry_provenance='manufactured_default' THEN NULL ELSE r.expires_at END
+        FROM ask_requests r WHERE r.request_id=q.question_id)),
+      resolved_at = COALESCE(q.resolved_at, (SELECT r.resolved_at FROM ask_requests r WHERE r.request_id=q.question_id))
+      WHERE q.creator_harness='legacy' AND q.revision=1
+        AND EXISTS (SELECT 1 FROM ask_requests r WHERE r.request_id=q.question_id)`).run();
+    db.prepare(`UPDATE question_revisions AS qr SET
+      question_json = CASE WHEN qr.question_json='{}' THEN (SELECT q.question_json FROM questions q WHERE q.question_id=qr.question_id) ELSE qr.question_json END,
+      options_json = CASE WHEN qr.options_json='[]' THEN (SELECT q.options_json FROM questions q WHERE q.question_id=qr.question_id) ELSE qr.options_json END,
+      context_json = COALESCE(qr.context_json, (SELECT q.context_json FROM questions q WHERE q.question_id=qr.question_id))
+      WHERE qr.revision=1 AND EXISTS (SELECT 1 FROM questions q JOIN ask_requests r ON r.request_id=q.question_id
+        WHERE q.question_id=qr.question_id AND q.creator_harness='legacy')`).run();
     db.prepare(`INSERT OR IGNORE INTO question_revisions
       (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
       SELECT request_id, 1, COALESCE(question_json, json_object('prompt', prompt)), options_json, context_json,

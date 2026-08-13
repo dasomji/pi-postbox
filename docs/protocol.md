@@ -2,6 +2,10 @@
 
 All process-boundary payloads are defined in `@pi-postbox/protocol` and validated with Zod. Clients should ignore unknown fields and preserve stable ids where provided. Schemas intentionally allow generous interviewer context, but still enforce finite string, option, icon, HTTP body, and WebSocket frame limits so a single ask cannot grow without bound.
 
+## Legacy expiry migration
+
+The owner-contract migration preserves expiry timestamps from databases written before expiry provenance was recorded. Those released rows cannot distinguish an explicit 12-hour expiry from the former automatic 12-hour default, so guessing from timestamp arithmetic would destroy user intent. Postbox clears an expiry only when the legacy writer recorded `manufactured_default`; unknown values are retained. The migration ledger records this conservative rule and makes repeated or partially completed migrations deterministic.
+
 ## HTTP endpoints
 
 | Endpoint | Purpose |
