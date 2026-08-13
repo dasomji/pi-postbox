@@ -92,6 +92,12 @@ export class RequestStore {
   private readonly listeners = new Map<string, Set<ResolutionListener>>();
   private readonly globalResolutionListeners = new Set<ResolutionListener>();
   private readonly answerAvailableListeners = new Set<AnswerAvailableListener>();
+  private readonly ownerWaits = new Map<string, {
+    owner: { harness: string; ownerId: string };
+    resolve: (result: Record<string, unknown>) => void;
+    reject: (error: Error) => void;
+    cleanup: () => void;
+  }>();
   private closed = false;
   private readonly askTimeoutMs: number | undefined;
   private readonly generateProposedOptionValue: () => string;
@@ -110,6 +116,38 @@ export class RequestStore {
     this.listeners.clear();
     this.globalResolutionListeners.clear();
     this.answerAvailableListeners.clear();
+    for (const wait of this.ownerWaits.values()) wait.reject(new Error("request store is closed"));
+    this.ownerWaits.clear();
+  }
+
+  activeWaitCount(owner: { harness: string; ownerId: string }): number {
+    return this.ownerWaits.has(this.ownerKey(owner)) ? 1 : 0;
+  }
+
+  async waitForPostbox(input: {
+    owner: { harness: string; ownerId: string };
+    signal?: AbortSignal;
+    publishSemanticState?: (state: string) => void;
+  }): Promise<Record<string, unknown>> {
+    const unreadQuestionId = this.nextUnreadQuestionId(input.owner);
+    if (unreadQuestionId) return { type: "answer", ...this.getAnswer(unreadQuestionId, input.owner) };
+    const active = this.db.prepare(`SELECT 1 FROM questions WHERE owner_harness = ? AND owner_owner_id = ?
+      AND status = 'pending' LIMIT 1`).get(input.owner.harness, input.owner.ownerId);
+    if (!active) return { type: "no_actionable_questions" };
+    const key = this.ownerKey(input.owner);
+    if (this.ownerWaits.has(key)) throw new RequestStoreError("wait_already_active", "This owner already has an active Postbox wait");
+    if (input.signal?.aborted) throw this.abortError();
+    input.publishSemanticState?.("waiting_for_postbox");
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      const onAbort = () => {
+        this.ownerWaits.delete(key);
+        input.signal?.removeEventListener("abort", onAbort);
+        reject(this.abortError());
+      };
+      const cleanup = () => input.signal?.removeEventListener("abort", onAbort);
+      this.ownerWaits.set(key, { owner: input.owner, resolve, reject, cleanup });
+      input.signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   create(payload: AskCreatePayload): AskRequestSnapshot {
@@ -539,6 +577,7 @@ export class RequestStore {
     transaction();
     if (!result) throw new Error("answer transaction did not produce a result");
     if (available) for (const listener of [...this.answerAvailableListeners]) listener(available);
+    if (available) this.wakeOwnerWithAnswer({ harness: available.ownerHarness, ownerId: available.ownerId });
     this.notify(requestId, result);
     return result;
   }
@@ -652,6 +691,7 @@ export class RequestStore {
     transaction();
     if (!result) throw new Error("cancel transaction did not produce a result");
     this.notify(requestId, result);
+    this.wakeOwnerWithLifecycle(requestId, "cancelled");
     return result;
   }
 
@@ -805,6 +845,53 @@ export class RequestStore {
   private parseJson(value: string | null, fallback: unknown): unknown {
     if (!value) return fallback;
     return JSON.parse(value) as unknown;
+  }
+
+  private ownerKey(owner: { harness: string; ownerId: string }): string {
+    return `${owner.harness}\u0000${owner.ownerId}`;
+  }
+
+  private nextUnreadQuestionId(owner: { harness: string; ownerId: string }): string | undefined {
+    const row = this.db.prepare(`SELECT q.question_id FROM questions q JOIN answers a ON a.question_id = q.question_id
+      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND a.first_reader_harness IS NULL
+      ORDER BY EXISTS (
+        WITH RECURSIVE descendants(question_id) AS (
+          SELECT question_id FROM questions WHERE parent_question_id = q.question_id
+          UNION ALL SELECT child.question_id FROM questions child JOIN descendants d ON child.parent_question_id = d.question_id
+        ) SELECT 1 FROM descendants d JOIN answers descendant_answer ON descendant_answer.question_id = d.question_id
+          WHERE descendant_answer.first_reader_harness IS NULL
+      ) DESC, a.created_at ASC, q.question_id ASC LIMIT 1`).get(owner.harness, owner.ownerId) as { question_id: string } | undefined;
+    return row?.question_id;
+  }
+
+  private wakeOwnerWithAnswer(owner: { harness: string; ownerId: string }): void {
+    const key = this.ownerKey(owner);
+    const wait = this.ownerWaits.get(key);
+    if (!wait) return;
+    const questionId = this.nextUnreadQuestionId(owner);
+    if (!questionId) return;
+    this.ownerWaits.delete(key);
+    wait.cleanup();
+    try { wait.resolve({ type: "answer", ...this.getAnswer(questionId, owner) }); }
+    catch (error) { wait.reject(error instanceof Error ? error : new Error(String(error))); }
+  }
+
+  private wakeOwnerWithLifecycle(questionId: string, event: string): void {
+    const row = this.db.prepare("SELECT owner_harness, owner_owner_id FROM questions WHERE question_id = ?").get(questionId) as
+      { owner_harness: string; owner_owner_id: string } | undefined;
+    if (!row) return;
+    const key = this.ownerKey({ harness: row.owner_harness, ownerId: row.owner_owner_id });
+    const wait = this.ownerWaits.get(key);
+    if (!wait) return;
+    this.ownerWaits.delete(key);
+    wait.cleanup();
+    wait.resolve({ type: "lifecycle", questionId, event });
+  }
+
+  private abortError(): Error {
+    const error = new Error("Postbox wait was aborted");
+    error.name = "AbortError";
+    return error;
   }
 
   private decodeQuestionCursor(cursor: string | undefined, fingerprint: string): { createdAt: string; questionId: string } | undefined {
