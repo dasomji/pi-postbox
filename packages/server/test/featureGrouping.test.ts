@@ -84,4 +84,42 @@ describe("server-managed active feature", () => {
     socket.send(JSON.stringify({ type: "question.list", requestId: "list-default", payload: { sessionId: "session-1" } }));
     expect((await list).payload.scope).toEqual({ repositoryId: "repo-1", worktreeId: "wt-1", featureId: secondFeatureId });
   });
+
+  it("rejects feature and discovery actions for another connection's session", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
+    apps.push(app);
+    const first = await connect(app);
+    const second = await connect(app);
+    const firstRegistration = await register(first, "session-1", "wt-1", "main");
+    await register(second, "session-2", "wt-2", "other");
+
+    let response = next(first);
+    first.send(JSON.stringify({ type: "feature.action", requestId: "foreign-feature", payload: {
+      sessionId: "session-2", action: "select", featureId: firstRegistration.payload.feature.featureId
+    }}));
+    await expect(response).resolves.toMatchObject({ type: "error", requestId: "foreign-feature" });
+
+    response = next(first);
+    first.send(JSON.stringify({ type: "question.list", requestId: "foreign-list", payload: { sessionId: "session-2" } }));
+    await expect(response).resolves.toMatchObject({ type: "error", requestId: "foreign-list" });
+  });
+
+  it("rejects nonexistent select and inherit ids instead of manufacturing features", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
+    apps.push(app);
+    const socket = await connect(app);
+    await register(socket, "session-1", "wt-1", "main");
+    for (const action of ["select", "inherit"] as const) {
+      const response = next(socket);
+      socket.send(JSON.stringify({ type: "feature.action", requestId: `missing-${action}`, payload: {
+        sessionId: "session-1", action, featureId: `missing-${action}`
+      }}));
+      await expect(response).resolves.toMatchObject({ type: "error", requestId: `missing-${action}` });
+    }
+
+    const collaborator = await connect(app);
+    await expect(register(collaborator, "session-2", "wt-2", "other", {
+      action: "inherit", featureId: "missing-inherit"
+    })).resolves.toMatchObject({ type: "error" });
+  });
 });

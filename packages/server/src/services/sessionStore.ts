@@ -179,10 +179,10 @@ export class SessionStore {
     const featureId = action.action === "start" ? randomUUID() : action.featureId;
     const name = action.action === "start" ? action.name : undefined;
     const nowIso = new Date(this.now()).toISOString();
-    this.db.prepare("INSERT OR IGNORE INTO features (feature_id, name, created_at) VALUES (?, ?, ?)").run(featureId, name ?? null, nowIso);
     if (action.action !== "start" && !this.db.prepare("SELECT 1 FROM features WHERE feature_id = ?").get(featureId)) {
       throw new SessionStoreError("feature_not_found", "Feature not found");
     }
+    if (action.action === "start") this.db.prepare("INSERT INTO features (feature_id, name, created_at) VALUES (?, ?, ?)").run(featureId, name ?? null, nowIso);
     this.db.prepare("UPDATE worktrees SET active_feature_id = ? WHERE worktree_id = ?").run(featureId, row.worktree_id);
     this.db.prepare("UPDATE sessions SET feature_id = ?, updated_at = ? WHERE session_id = ?").run(featureId, nowIso, sessionId);
     return { featureId, name };
@@ -273,10 +273,15 @@ export class SessionStore {
         let featureName: string | undefined;
         if (requested && "action" in requested) {
           if (requested.action === "start") { featureId = randomUUID(); featureName = requested.name; }
-          else featureId = requested.featureId;
+          else {
+            featureId = requested.featureId;
+            if (!this.db.prepare("SELECT 1 FROM features WHERE feature_id = ?").get(featureId)) throw new SessionStoreError("feature_not_found", "Feature not found");
+          }
         } else if (requested) { featureId = requested.featureId; featureName = requested.name; }
         else featureId = current?.active_feature_id ?? randomUUID();
-        this.db.prepare("INSERT OR IGNORE INTO features (feature_id, name, created_at) VALUES (?, ?, ?)").run(featureId, featureName ?? null, nowIso);
+        if (!this.db.prepare("SELECT 1 FROM features WHERE feature_id = ?").get(featureId)) {
+          this.db.prepare("INSERT INTO features (feature_id, name, created_at) VALUES (?, ?, ?)").run(featureId, featureName ?? null, nowIso);
+        }
         const stored = this.db.prepare("SELECT name FROM features WHERE feature_id = ?").get(featureId) as { name: string | null };
         activeFeature = { featureId, name: stored.name ?? undefined };
         this.db.prepare(`INSERT INTO worktrees (worktree_id, machine_id, canonical_path, repository_id, active_feature_id) VALUES (?, ?, ?, ?, ?)

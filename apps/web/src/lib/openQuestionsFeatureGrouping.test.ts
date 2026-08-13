@@ -29,4 +29,35 @@ describe("feature queue grouping", () => {
     expect(groups[0]).toMatchObject({ repositoryId: "repo-1" });
     expect(groups[0].worktreeFeatures.map((group: any) => group.feature.featureId)).toEqual(["feature-alpha", "feature-zeta"]);
   });
+
+  it("orders grouped Questions as an oldest-root parent tree", () => {
+    const child = { ...request("child", "session", "high", "2026-08-13T08:00:00.000Z"), parentQuestionId: "parent" };
+    const parent = request("parent", "session", "low", "2026-08-13T09:00:00.000Z");
+    const olderRoot = request("older-root", "session", "high", "2026-08-13T07:00:00.000Z");
+    const group = groupOpenQuestions([child, parent, olderRoot], [session("session", "wt", "feature")])[0]!;
+    expect(group.questions.map((item) => item.request.requestId)).toEqual(["older-root", "parent", "child"]);
+    expect(group.questionTree?.map((node) => node.request.requestId)).toEqual(["older-root", "parent"]);
+  });
+
+  it("uses persisted Question identities after its session changes feature and orders each parent tree oldest first", () => {
+    const changedSession = session("session", "wt-current", "feature-new");
+    const persisted = (id: string, createdAt: string, parentQuestionId?: string) => ({
+      ...request(id, "session", id === "new-root" ? "high" : "low", createdAt),
+      repository: { repositoryId: "repo-original", remote: "github.com/acme/postbox" },
+      worktree: { worktreeId: "wt-original", machineId: "machine-1", path: "/workspace/original" },
+      feature: { featureId: "feature-original", name: "Original" },
+      parentQuestionId
+    }) as AskRequestSnapshot;
+    const groups = groupOpenQuestions([
+      persisted("new-root", "2026-08-13T11:00:00.000Z"),
+      persisted("child", "2026-08-13T12:00:00.000Z", "old-root"),
+      persisted("old-root", "2026-08-13T08:00:00.000Z")
+    ], [changedSession]) as any[];
+
+    expect(groups[0]).toMatchObject({ repositoryId: "repo-original" });
+    expect(groups[0].worktreeFeatures[0]).toMatchObject({
+      worktree: { worktreeId: "wt-original" }, feature: { featureId: "feature-original" }
+    });
+    expect(groups[0].worktreeFeatures[0].questions.map((item: any) => item.request.requestId)).toEqual(["old-root", "child", "new-root"]);
+  });
 });
