@@ -158,6 +158,17 @@ function runMigrations(db: SqliteDatabase): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS question_events (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      question_id TEXT NOT NULL REFERENCES questions(question_id),
+      type TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      actor_harness TEXT NOT NULL,
+      actor_owner_id TEXT NOT NULL,
+      facts_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
     CREATE TRIGGER IF NOT EXISTS questions_creator_immutable
       BEFORE UPDATE OF creator_harness, creator_owner_id ON questions
       WHEN NEW.creator_harness IS NOT OLD.creator_harness
@@ -233,6 +244,7 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "questions", "status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "questions", "expires_at", "TEXT");
   ensureColumn(db, "questions", "resolved_at", "TEXT");
+  ensureColumn(db, "questions", "replacement_question_id", "TEXT");
   ensureColumn(db, "questions", "repository_id", "TEXT");
   ensureColumn(db, "questions", "worktree_id", "TEXT");
   ensureColumn(db, "questions", "feature_id", "TEXT");

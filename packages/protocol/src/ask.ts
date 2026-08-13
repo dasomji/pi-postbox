@@ -163,10 +163,27 @@ export const AskBatchReceiptSchema = z.object({ status: z.enum(["created", "part
 export const AskAnswerEventSchema = z.object({ questionId: RequestIdSchema, affectedDescendantIds: z.array(RequestIdSchema) }).passthrough();
 
 export const AskAnswerPayloadSchema = z.object({
+  expectedRevision: z.number().int().min(1).optional(),
   selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
   note: LongTextSchema.optional(),
   rationale: LongTextSchema.optional()
 });
+
+const ExpectedRevisionSchema = z.number().int().min(1);
+export const UpdateQuestionPayloadSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, question: AskQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional(), context: AskCreateHandoffContextSchema.optional() }).strict(),
+  z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, rationale: LongTextSchema.optional() }).strict(),
+  z.object({ action: z.literal("supersede"), expectedRevision: ExpectedRevisionSchema, replacementQuestionId: RequestIdSchema }).strict(),
+  z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict()
+]);
+const HistoryActorSchema = z.object({ harness: ShortTextSchema, ownerId: ShortTextSchema }).strict();
+const HistoryBaseSchema = z.object({ revision: ExpectedRevisionSchema, actor: HistoryActorSchema, at: z.string().datetime() });
+export const QuestionHistorySchema = z.object({ questionId: RequestIdSchema, events: z.array(z.union([
+  HistoryBaseSchema.extend({ type: z.literal("revision"), changes: z.array(ShortTextSchema) }).strict(),
+  HistoryBaseSchema.extend({ type: z.literal("parent_changed"), parentQuestionId: RequestIdSchema.nullable() }).strict(),
+  HistoryBaseSchema.extend({ type: z.enum(["cancelled", "answered", "expired"]), replacementQuestionId: RequestIdSchema.optional() }).strict(),
+  HistoryBaseSchema.extend({ type: z.literal("superseded"), replacementQuestionId: RequestIdSchema }).strict()
+])) }).strict();
 
 export const AskCancelPayloadSchema = z.object({
   note: LongTextSchema.optional(),
@@ -277,6 +294,8 @@ export type AskQuestionDraft = z.infer<typeof AskQuestionDraftSchema>;
 export type AskPostboxInput = z.infer<typeof AskPostboxInputSchema>;
 export type AskBatchReceipt = z.infer<typeof AskBatchReceiptSchema>;
 export type AskAnswerPayload = z.infer<typeof AskAnswerPayloadSchema>;
+export type UpdateQuestionPayload = z.infer<typeof UpdateQuestionPayloadSchema>;
+export type QuestionHistory = z.infer<typeof QuestionHistorySchema>;
 export type AskCancelPayload = z.infer<typeof AskCancelPayloadSchema>;
 export type AskResult = z.infer<typeof AskResultSchema>;
 export type AskReceipt = z.infer<typeof AskReceiptSchema>;
