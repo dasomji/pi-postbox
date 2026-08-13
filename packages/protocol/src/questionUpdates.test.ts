@@ -17,7 +17,10 @@ describe("Question update contract", () => {
   it("describes history as explicit actor and timestamp facts without Answer content", () => {
     const schema = (protocol as Record<string, any>).QuestionHistorySchema;
     expect(schema).toBeDefined();
-    const result = schema.parse({ questionId: "question", events: [
+    const result = schema.parse({ questionId: "question", revisions: [{
+      revision: 1, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T11:59:00.000Z",
+      question: { prompt: "Original?" }, options: [{ value: "yes", label: "Yes" }]
+    }], events: [
       { type: "revision", revision: 2, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:00:00.000Z", changes: ["question.prompt"] },
       { type: "parent_changed", revision: 3, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:01:00.000Z", parentQuestionId: "parent" },
       { type: "superseded", revision: 4, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:02:00.000Z", replacementQuestionId: "replacement" }

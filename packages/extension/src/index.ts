@@ -197,7 +197,35 @@ export default function postboxExtension(pi: PiLikeApi): void {
         required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } } }
     } }, "owner.status.get");
   registerQueryTool("update_question", "Revise, cancel, supersede, or reparent an owned Question with expected-revision concurrency.",
-    { type: "object", additionalProperties: false, required: ["questionId", "update"], properties: { questionId: { type: "string" }, update: { type: "object" } } }, "question.update",
+    { type: "object", additionalProperties: false, required: ["questionId", "update"], properties: { questionId: { type: "string" }, update: {
+      oneOf: [
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "question"], properties: {
+          action: { const: "revise" }, expectedRevision: { type: "integer", minimum: 1 },
+          question: { type: "object", additionalProperties: false, required: ["prompt"], properties: {
+            prompt: { type: "string" }, context: { type: "string" }, relevance: { type: "string" }, decisionImpact: { type: "string" }
+          } },
+          options: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", additionalProperties: false,
+            required: ["value", "label"], properties: { value: { type: "string" }, label: { type: "string" }, description: { type: "string" }, meaning: { type: "string" }, context: { type: "string" } } } },
+          context: { type: "object", additionalProperties: false, required: ["codebaseContext", "problemContext"], properties: {
+            codebaseContext: { type: "string" }, problemContext: { type: "string" }, additionalInfo: { type: "array", maxItems: 20, items: {
+              type: "object", additionalProperties: false, required: ["content"], properties: {
+                kind: { type: "string", enum: ["text", "code", "diagram", "link"] }, title: { type: "string" },
+                content: { type: "string" }, language: { type: "string" }
+              }
+            } }
+          } }
+        } },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision"], properties: {
+          action: { const: "cancel" }, expectedRevision: { type: "integer", minimum: 1 }, rationale: { type: "string" }
+        } },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "replacementQuestionId"], properties: {
+          action: { const: "supersede" }, expectedRevision: { type: "integer", minimum: 1 }, replacementQuestionId: { type: "string" }
+        } },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "parentQuestionId"], properties: {
+          action: { const: "reparent" }, expectedRevision: { type: "integer", minimum: 1 }, parentQuestionId: { type: ["string", "null"] }
+        } }
+      ]
+    } } }, "question.update",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   registerQueryTool("get_question_history", "Explicitly retrieve immutable Question revision, parent, and terminal event facts.",
     { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string" } } }, "question.history.get");

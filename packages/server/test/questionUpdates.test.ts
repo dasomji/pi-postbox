@@ -15,7 +15,7 @@ function setup() {
   const store = new RequestStore(db, () => now) as any;
   const create = (id: string, parentQuestionId?: string) => store.create({ requestId: id, sessionId: "session", mode: "single", urgency: "normal",
     question: { prompt: `${id}?` }, options: [{ value: "yes", label: "Yes" }], context: { codebaseContext: "Postbox", problemContext: "Keep Question accurate" }, parentQuestionId });
-  return { db, store, create, tick: () => { now += 1_000; } };
+  return { db, sessions, store, create, tick: () => { now += 1_000; } };
 }
 
 describe("immutable Question updates", () => {
@@ -62,6 +62,46 @@ describe("immutable Question updates", () => {
       expect.objectContaining({ type: "revision", revision: 2, actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String) }),
       expect.objectContaining({ type: "parent_changed", revision: 3 }),
       expect.objectContaining({ type: "answered", revision: 3 })
+    ], revisions: [
+      expect.objectContaining({ revision: 1, question: { prompt: "root?" }, actor: { harness: "pi", ownerId: "agent" } }),
+      expect.objectContaining({ revision: 2, question: { prompt: "Revised root?" } }),
+      expect.objectContaining({ revision: 3, question: { prompt: "Revised root?" } })
     ] });
+    expect(store.getQuestionHistory("root")).not.toHaveProperty("answer");
+  });
+
+  it("records browser, session, and expiry terminal events with stable actors and timestamps", () => {
+    const { db, store, create } = setup();
+    create("browser-cancel");
+    store.cancel("browser-cancel", { rationale: "No longer needed" });
+    expect(store.getQuestionHistory("browser-cancel").events).toContainEqual(expect.objectContaining({
+      type: "cancelled", actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String)
+    }));
+
+    create("session-cancel");
+    store.cancelPendingForSession("session", "Session ended");
+    expect(store.getQuestionHistory("session-cancel").events).toContainEqual(expect.objectContaining({
+      type: "cancelled", actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String)
+    }));
+
+    create("expiry");
+    db.prepare("UPDATE ask_requests SET expires_at='2000-01-01T00:00:00.000Z' WHERE request_id='expiry'").run();
+    store.expireDue();
+    expect(store.getQuestionHistory("expiry").events).toContainEqual(expect.objectContaining({
+      type: "expired", actor: { harness: "postbox", ownerId: "expiry" }, at: expect.any(String)
+    }));
+  });
+
+  it("rejects reparenting across owner boundaries", () => {
+    const { store, create, sessions } = setup();
+    create("child");
+    sessions.register("other-connection", { machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
+      session: { sessionId: "other-session", cwd: "/repo", semanticState: "working", owner: { harness: "pi", ownerId: "other-agent" } } });
+    store.create({ requestId: "foreign-parent", sessionId: "other-session", mode: "single", urgency: "normal",
+      question: { prompt: "foreign-parent?" }, options: [{ value: "yes", label: "Yes" }],
+      context: { codebaseContext: "Postbox", problemContext: "Different owner" } });
+    expect(() => store.updateQuestion("child", { harness: "pi", ownerId: "agent" }, {
+      action: "reparent", expectedRevision: 1, parentQuestionId: "foreign-parent"
+    })).toThrowError(expect.objectContaining({ code: "wrong_owner" }));
   });
 });

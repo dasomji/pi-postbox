@@ -95,6 +95,7 @@ describe("token-cheap Question discovery", () => {
     const { db, requests, create, caller } = setup();
     for (let index = 0; index < 3; index += 1) create("current", `cursor-${index}`, `Question ${index}`);
     const first = requests.listQuestions({ caller, pageSize: 2 });
+    db.prepare("DELETE FROM question_revisions WHERE question_id = ?").run("cursor-0");
     db.prepare("DELETE FROM questions WHERE question_id = ?").run("cursor-0");
     db.prepare("DELETE FROM ask_requests WHERE request_id = ?").run("cursor-0");
     const second = requests.listQuestions({ caller, pageSize: 2, cursor: first.nextCursor });

@@ -264,6 +264,10 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "answers", "owner_notification_delivered_at", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_legacy_request ON questions(legacy_request_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_questions_parent ON questions(parent_question_id)");
+  db.exec(`INSERT OR IGNORE INTO question_revisions
+    (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+    SELECT question_id, revision, question_json, options_json, context_json, creator_harness, creator_owner_id, created_at
+    FROM questions`);
 }
 
 function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {

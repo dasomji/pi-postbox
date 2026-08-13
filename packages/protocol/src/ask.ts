@@ -178,7 +178,12 @@ export const UpdateQuestionPayloadSchema = z.discriminatedUnion("action", [
 ]);
 const HistoryActorSchema = z.object({ harness: ShortTextSchema, ownerId: ShortTextSchema }).strict();
 const HistoryBaseSchema = z.object({ revision: ExpectedRevisionSchema, actor: HistoryActorSchema, at: z.string().datetime() });
-export const QuestionHistorySchema = z.object({ questionId: RequestIdSchema, events: z.array(z.union([
+export const QuestionRevisionSnapshotSchema = HistoryBaseSchema.extend({
+  question: AskQuestionSchema,
+  options: z.array(AskOptionSchema),
+  context: AskCreateHandoffContextSchema.optional()
+}).strict();
+export const QuestionHistorySchema = z.object({ questionId: RequestIdSchema, revisions: z.array(QuestionRevisionSnapshotSchema), events: z.array(z.union([
   HistoryBaseSchema.extend({ type: z.literal("revision"), changes: z.array(ShortTextSchema) }).strict(),
   HistoryBaseSchema.extend({ type: z.literal("parent_changed"), parentQuestionId: RequestIdSchema.nullable() }).strict(),
   HistoryBaseSchema.extend({ type: z.enum(["cancelled", "answered", "expired"]), replacementQuestionId: RequestIdSchema.optional() }).strict(),
