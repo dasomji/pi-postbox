@@ -372,11 +372,21 @@ export async function registerExtensionSocket(
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Question updates require this connection's registered session")); return; }
         const actor = sessionStore.ownerForSession(message.payload.sessionId);
         if (!actor) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
-        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update) }); }
+        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update, sessionStore) }); }
         catch (error) { sendAskError(socket, message.requestId, "question_update_failed", error); }
         return;
       }
       if (message.type === "question.history.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestionHistory(message.payload.questionId) }); return; }
+      if (message.type === "question.answer.recover") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Recovery reads require this connection's registered session")); return; }
+        const reader = sessionStore.ownerForSession(message.payload.sessionId);
+        if (!reader) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
+        const question = requestStore.getQuestions({ questionIds: [message.payload.questionId] })[0] as any;
+        if (!question || sessionStore.presenceForOwner(question.owner) !== "offline") { sendAskError(socket, message.requestId, "owner_not_offline", new Error("Recovery reads require an offline owner")); return; }
+        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getAnswerForRecovery(message.payload.questionId, reader) }); }
+        catch (error) { sendAskError(socket, message.requestId, "recovery_read_failed", error); }
+        return;
+      }
       if (message.type === "postbox.wait") {
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
           sendAskError(socket, message.requestId, "wait_not_owner", new Error("Postbox wait requires this connection's registered session")); return;
@@ -495,11 +505,8 @@ export async function registerExtensionSocket(
         return;
       }
 
-      if (message.payload.reason !== "reload") {
-        requestStore.cancelPendingForSession(message.payload.sessionId, lifecycleShutdownRationale(message.payload.reason));
-        sessionStore.shutdown(message.payload.sessionId);
-        broadcaster.broadcast();
-      }
+      sessionStore.shutdown(message.payload.sessionId);
+      broadcaster.broadcast();
       send(socket, { type: "ack", requestId: message.requestId, payload: { type: "session.shutdown" } });
     });
 

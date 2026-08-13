@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
+import { OwnerIdentitySchema } from "./ownerIdentity.js";
 
 export const OTHER_OPTION_VALUE = "other";
 
@@ -174,7 +175,9 @@ export const UpdateQuestionPayloadSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, question: AskQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional(), context: AskCreateHandoffContextSchema.optional() }).strict(),
   z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, rationale: LongTextSchema.optional() }).strict(),
   z.object({ action: z.literal("supersede"), expectedRevision: ExpectedRevisionSchema, replacementQuestionId: RequestIdSchema }).strict(),
-  z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict()
+  z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict(),
+  z.object({ action: z.literal("transfer"), expectedRevision: ExpectedRevisionSchema, expectedOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema }).strict(),
+  z.object({ action: z.literal("takeover"), expectedRevision: ExpectedRevisionSchema, expectedOwner: OwnerIdentitySchema }).strict()
 ]);
 const HistoryActorSchema = z.object({ harness: ShortTextSchema, ownerId: ShortTextSchema }).strict();
 const HistoryBaseSchema = z.object({ revision: ExpectedRevisionSchema, actor: HistoryActorSchema, at: z.string().datetime() });
@@ -188,6 +191,7 @@ export const QuestionHistorySchema = z.object({ questionId: RequestIdSchema, rev
   HistoryBaseSchema.extend({ type: z.literal("parent_changed"), parentQuestionId: RequestIdSchema.nullable() }).strict(),
   HistoryBaseSchema.extend({ type: z.enum(["cancelled", "answered", "expired"]), replacementQuestionId: RequestIdSchema.optional() }).strict(),
   HistoryBaseSchema.extend({ type: z.literal("superseded"), replacementQuestionId: RequestIdSchema }).strict()
+  ,HistoryBaseSchema.extend({ type: z.literal("owner_changed"), previousOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema, reason: z.enum(["transfer", "takeover"]) }).strict()
 ])) }).strict();
 
 export const AskCancelPayloadSchema = z.object({

@@ -130,6 +130,10 @@ export class SessionStore {
       { semantic_state: SemanticState } | undefined)?.semantic_state;
   }
 
+  presenceForOwner(owner: { harness: string; ownerId: string }): "live" | "stale" | "offline" {
+    return this.getPostboxOwnerStatus([owner])[0]?.presence ?? "offline";
+  }
+
   getPostboxOwnerStatus(owners: ReadonlyArray<{ harness: string; ownerId: string }>): PostboxOwnerStatus[] {
     const sessionQuery = this.db.prepare(`SELECT session_id, semantic_state, last_heartbeat_at, connected_at,
         disconnected_at, shutdown_at, updated_at

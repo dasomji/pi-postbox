@@ -24,6 +24,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "../db/database.js";
+import type { SessionStore } from "./sessionStore.js";
 import { normalizeProposedOptionLabel } from "./proposedOptionPolicy.js";
 
 interface AskRequestRow {
@@ -143,17 +144,33 @@ export class RequestStore {
   transferQuestionOwner(
     questionId: string,
     expectedOwner: { harness: string; ownerId: string },
-    nextOwner: { harness: string; ownerId: string }
+    nextOwner: { harness: string; ownerId: string },
+    reason: "transfer" | "takeover" = "transfer",
+    expectedRevision?: number
   ): void {
+    const at = new Date(this.now()).toISOString();
     this.db.transaction(() => {
       const nextExists = this.db.prepare("SELECT 1 FROM owners WHERE harness=? AND owner_id=?").get(nextOwner.harness, nextOwner.ownerId);
       if (!nextExists) throw new RequestStoreError("owner_not_found", "The new Question owner does not exist");
       const changed = this.db.prepare(`UPDATE questions SET owner_harness=?, owner_owner_id=?, updated_at=?
-        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending'`)
-        .run(nextOwner.harness, nextOwner.ownerId, new Date(this.now()).toISOString(), questionId, expectedOwner.harness, expectedOwner.ownerId).changes;
+        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending' AND (? IS NULL OR revision=?)`)
+        .run(nextOwner.harness, nextOwner.ownerId, at, questionId, expectedOwner.harness, expectedOwner.ownerId, expectedRevision ?? null, expectedRevision ?? null).changes;
       if (changed !== 1) throw new RequestStoreError("owner_changed", "Question owner changed or Question is terminal");
+      const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(questionId) as { revision: number }).revision;
+      this.recordQuestionEvent(questionId, "owner_changed", revision, expectedOwner, { previousOwner: expectedOwner, owner: nextOwner, reason }, at);
     })();
     this.notifyOwnerTransfer(expectedOwner, nextOwner, questionId);
+  }
+
+  takeoverQuestionOwner(questionId: string, expectedOwner: { harness: string; ownerId: string }, nextOwner: { harness: string; ownerId: string }, sessions: SessionStore, expectedRevision?: number): void {
+    if (sessions.presenceForOwner(expectedOwner) !== "offline") throw new RequestStoreError("owner_not_offline", "Current Question owner is not offline");
+    this.transferQuestionOwner(questionId, expectedOwner, nextOwner, "takeover", expectedRevision);
+  }
+
+  getAnswerForRecovery(questionId: string, _reader: { harness: string; ownerId: string }): Record<string, unknown> {
+    const question = this.db.prepare("SELECT owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(questionId) as any;
+    if (!question) throw new RequestStoreError("request_not_found", "Question not found");
+    return this.getAnswer(questionId, { harness: question.owner_harness, ownerId: question.owner_owner_id });
   }
 
   async waitForPostbox(input: {
@@ -564,8 +581,18 @@ export class RequestStore {
     return appended;
   }
 
-  updateQuestion(questionId: string, actor: { harness: string; ownerId: string }, payload: UpdateQuestionPayload): Record<string, unknown> {
+  updateQuestion(questionId: string, actor: { harness: string; ownerId: string }, payload: UpdateQuestionPayload, sessions?: SessionStore): Record<string, unknown> {
     const parsed = UpdateQuestionPayloadSchema.parse(payload);
+    if (parsed.action === "transfer") {
+      if (actor.harness !== parsed.expectedOwner.harness || actor.ownerId !== parsed.expectedOwner.ownerId) throw new RequestStoreError("wrong_owner", "Only the current owner may transfer this Question");
+      this.transferQuestionOwner(questionId, parsed.expectedOwner, parsed.owner, "transfer", parsed.expectedRevision);
+      return { questionId, owner: parsed.owner, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator };
+    }
+    if (parsed.action === "takeover") {
+      if (!sessions) throw new RequestStoreError("presence_unavailable", "Owner presence is unavailable");
+      this.takeoverQuestionOwner(questionId, parsed.expectedOwner, actor, sessions, parsed.expectedRevision);
+      return { questionId, owner: actor, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator };
+    }
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
       const row = this.db.prepare("SELECT * FROM questions WHERE question_id = ?").get(questionId) as any;

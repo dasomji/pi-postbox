@@ -395,7 +395,7 @@ export class PostboxClient {
     });
   }
 
-  query(type: "question.list" | "questions.get" | "question.status.list" | "owner.status.get" | "question.update" | "question.history.get", payload: any): Promise<any> {
+  query(type: "question.list" | "questions.get" | "question.status.list" | "owner.status.get" | "question.update" | "question.history.get" | "question.answer.recover", payload: any): Promise<any> {
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected."));
     const requestId = `query_${randomUUID()}`;
     return new Promise((resolve, reject) => {

@@ -28,8 +28,10 @@ interface PiLikeApi {
 }
 
 interface PiLikeContext {
+  hasUI?: boolean;
   cwd?: string;
   ui?: {
+    confirm?: (title: string, message: string) => Promise<boolean>;
     notify?: (message: string, level?: string) => void;
     setStatus?: (key: string, value: string) => void;
     setWidget?: (key: string, value: string[]) => void;
@@ -235,17 +237,47 @@ export default function postboxExtension(pi: PiLikeApi): void {
         } },
         { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "parentQuestionId"], properties: {
           action: { const: "reparent" }, expectedRevision: { type: "integer", minimum: 1 }, parentQuestionId: { type: ["string", "null"] }
+        } },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwner", "owner"], properties: {
+          action: { const: "transfer" }, expectedRevision: { type: "integer", minimum: 1 },
+          expectedOwner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } },
+          owner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } }
+        } },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwner"], properties: {
+          action: { const: "takeover" }, expectedRevision: { type: "integer", minimum: 1 },
+          expectedOwner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } }
         } }
       ]
     } } }, "question.update",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   registerQueryTool("get_question_history", "Explicitly retrieve immutable Question revision, parent, and terminal event facts.",
     { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string" } } }, "question.history.get");
+  registerQueryTool("recover_question_answer", "Read a discovered offline owner's Answer without taking ownership.",
+    { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string" } } }, "question.answer.recover",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   pi.registerTool?.(createWaitForPostboxTool(async (signal) => {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env, signal);
       if (!client || !currentRegistration) throw new Error(unavailableRationale);
-      return client.waitForPostbox(currentRegistration.session.sessionId, signal);
+      // Expose explicit Postbox waiting independently to Herdr and other parent status systems.
+      const release = semanticStateController?.beginAskPostboxWait("waiting_for_postbox");
+      try { return await client.waitForPostbox(currentRegistration.session.sessionId, signal); }
+      finally { release?.(); }
   }));
+
+  const confirmUnresolvedPostboxWork = async (ctx: PiLikeContext) => {
+    if (!client || !currentRegistration?.session.owner || !ctx.hasUI || !ctx.ui?.confirm) return;
+    const [status] = await client.query("owner.status.get", { owners: [currentRegistration.session.owner] }) as Array<{
+      activeQuestionCount?: number; unreadAnswerCount?: number;
+    }>;
+    const active = status?.activeQuestionCount ?? 0;
+    const unread = status?.unreadAnswerCount ?? 0;
+    if (active === 0 && unread === 0) return;
+    const confirmed = await ctx.ui.confirm("Leave Postbox work unresolved?",
+      `${active} active Question(s) and ${unread} unread Answer(s) will remain assigned to this owner. Continue?`);
+    if (!confirmed) return { cancel: true };
+  };
+  pi.on("session_before_switch", (_event, ctx) => confirmUnresolvedPostboxWork(ctx));
+  pi.on("session_before_fork", (_event, ctx) => confirmUnresolvedPostboxWork(ctx));
 
   pi.on("session_start", (_event, ctx) => {
     activeUiScope?.deactivate();
