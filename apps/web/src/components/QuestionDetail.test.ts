@@ -79,4 +79,16 @@ describe("selected Postbox Question detail", () => {
     expect(body).not.toContain("Root parent?");
     expect(body).toContain("question=direct-parent");
   });
+
+  it("disables an obsolete revision, discloses meaningful changes, and offers refresh to latest content", () => {
+    const latest = { ...REQUEST, revision: 3, question: { prompt: "Updated storage strategy?" } } as AskRequestSnapshot;
+    const obsolete = { ...REQUEST, revision: 2 } as AskRequestSnapshot;
+    const { body } = render(QuestionDetail, { props: { request: obsolete, latestRequest: latest,
+      revisionChanges: ["Question text changed", "One option was removed"], isMock: true } as any });
+    expect(body).toMatch(/newer revision|obsolete revision/i);
+    expect(body).toContain("Question text changed");
+    expect(body).toContain("One option was removed");
+    expect(body).toMatch(/refresh.*latest/i);
+    expect(body).toContain("disabled");
+  });
 });
