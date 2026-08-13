@@ -63,6 +63,25 @@ export interface ProposedAnswerAppend {
   request: AskRequestSnapshot;
 }
 
+export interface QuestionDiscoveryCaller {
+  owner: { harness: string; ownerId: string };
+  repository: string;
+  worktree: string;
+  feature: string;
+}
+
+export interface QuestionDiscoveryFilters {
+  caller: QuestionDiscoveryCaller;
+  owner?: { harness: string; ownerId: string };
+  repository?: string;
+  worktree?: string;
+  feature?: string;
+  status?: AskStatus;
+  global?: boolean;
+  cursor?: string;
+  pageSize?: number;
+}
+
 const EXPIRED_RATIONALE = "Postbox request expired before an answer was submitted.";
 const SESSION_SHUTDOWN_NOTE = "Originating Pi session shut down.";
 const PROPOSED_OPTION_VALUE_ATTEMPTS = 4;
@@ -242,6 +261,121 @@ export class RequestStore {
   get(requestId: string): AskRequestSnapshot | undefined {
     const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
     return row ? this.toSnapshot(row) : undefined;
+  }
+
+  listQuestions(filters: QuestionDiscoveryFilters): {
+    questions: Array<{ questionId: string; question: string }>;
+    nextCursor?: string;
+  } {
+    const pageSize = filters.pageSize ?? 25;
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
+      throw new RequestStoreError("invalid_page_size", "Question page size must be a positive integer");
+    }
+    const offset = this.decodeQuestionCursor(filters.cursor);
+    const clauses: string[] = [];
+    const parameters: Record<string, unknown> = { limit: pageSize + 1, offset };
+    if (!filters.global) {
+      clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository", "COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree", "COALESCE(q.feature_id, s.branch, p.branch) = @feature");
+      parameters.repository = filters.repository ?? filters.caller.repository;
+      parameters.worktree = filters.worktree ?? filters.caller.worktree;
+      parameters.feature = filters.feature ?? filters.caller.feature;
+    } else {
+      if (filters.repository !== undefined) { clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository"); parameters.repository = filters.repository; }
+      if (filters.worktree !== undefined) { clauses.push("COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree"); parameters.worktree = filters.worktree; }
+      if (filters.feature !== undefined) { clauses.push("COALESCE(q.feature_id, s.branch, p.branch) = @feature"); parameters.feature = filters.feature; }
+    }
+    if (filters.owner) {
+      clauses.push("q.owner_harness = @ownerHarness", "q.owner_owner_id = @ownerId");
+      parameters.ownerHarness = filters.owner.harness;
+      parameters.ownerId = filters.owner.ownerId;
+    }
+    clauses.push("q.status = @status");
+    parameters.status = filters.status ?? "pending";
+    const rows = this.db.prepare(`SELECT q.question_id, q.question_json
+      FROM questions q
+      JOIN ask_requests r ON r.request_id = q.legacy_request_id
+      JOIN sessions s ON s.session_id = r.session_id
+      JOIN projects p ON p.project_id = s.project_id
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY q.created_at ASC, q.question_id ASC
+      LIMIT @limit OFFSET @offset`).all(parameters) as Array<{ question_id: string; question_json: string }>;
+    const hasMore = rows.length > pageSize;
+    const questions = rows.slice(0, pageSize).map((row) => ({
+      questionId: row.question_id,
+      question: (JSON.parse(row.question_json) as { prompt: string }).prompt
+    }));
+    return { questions, ...(hasMore ? { nextCursor: this.encodeQuestionCursor(offset + pageSize) } : {}) };
+  }
+
+  getQuestions(input: { questionIds: string[] }): Array<Record<string, unknown>> {
+    if (input.questionIds.length === 0) return [];
+    const select = this.db.prepare(`SELECT q.*, a.answer_id, a.first_reader_harness
+      FROM questions q LEFT JOIN answers a ON a.question_id = q.question_id
+      WHERE q.question_id = ? ORDER BY a.question_revision DESC, a.created_at DESC LIMIT 1`);
+    return input.questionIds.flatMap((questionId) => {
+      const row = select.get(questionId) as Record<string, unknown> | undefined;
+      if (!row) return [];
+      return [{
+        questionId: row.question_id,
+        revision: row.revision,
+        mode: row.mode,
+        urgency: row.urgency,
+        question: JSON.parse(row.question_json as string),
+        options: JSON.parse(row.options_json as string),
+        ...(row.context_json ? { context: JSON.parse(row.context_json as string) } : {}),
+        status: row.status,
+        owner: { harness: row.owner_harness, ownerId: row.owner_owner_id },
+        creator: { harness: row.creator_harness, ownerId: row.creator_owner_id },
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
+        ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
+        ...(row.answer_id ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null } : {})
+      }];
+    });
+  }
+
+  listQuestionStatus(filters: QuestionDiscoveryFilters & {
+    readState?: "read" | "unread";
+    includeTerminal?: boolean;
+  }): Array<Record<string, unknown>> {
+    const clauses: string[] = [];
+    const parameters: Record<string, unknown> = {};
+    const owner = filters.owner ?? filters.caller.owner;
+    if (!filters.global || filters.owner) {
+      clauses.push("q.owner_harness = @ownerHarness", "q.owner_owner_id = @ownerId");
+      parameters.ownerHarness = owner.harness;
+      parameters.ownerId = owner.ownerId;
+    }
+    if (!filters.global) {
+      clauses.push("p.repo_name = @repository", "COALESCE(s.worktree_path, p.worktree_path, s.cwd) = @worktree", "COALESCE(s.branch, p.branch) = @feature");
+      parameters.repository = filters.repository ?? filters.caller.repository;
+      parameters.worktree = filters.worktree ?? filters.caller.worktree;
+      parameters.feature = filters.feature ?? filters.caller.feature;
+    } else {
+      if (filters.repository !== undefined) { clauses.push("p.repo_name = @repository"); parameters.repository = filters.repository; }
+      if (filters.worktree !== undefined) { clauses.push("COALESCE(s.worktree_path, p.worktree_path, s.cwd) = @worktree"); parameters.worktree = filters.worktree; }
+      if (filters.feature !== undefined) { clauses.push("COALESCE(s.branch, p.branch) = @feature"); parameters.feature = filters.feature; }
+    }
+    if (filters.status) { clauses.push("q.status = @status"); parameters.status = filters.status; }
+    else if (filters.readState === "read") clauses.push("a.first_reader_harness IS NOT NULL");
+    else if (filters.readState === "unread") clauses.push("a.answer_id IS NOT NULL", "a.first_reader_harness IS NULL");
+    else clauses.push("(q.status = 'pending' OR (a.answer_id IS NOT NULL AND a.first_reader_harness IS NULL))");
+    const rows = this.db.prepare(`SELECT q.question_id, q.status, a.answer_id, a.first_reader_harness
+      FROM questions q
+      LEFT JOIN answers a ON a.question_id = q.question_id
+      JOIN ask_requests r ON r.request_id = q.legacy_request_id
+      JOIN sessions s ON s.session_id = r.session_id
+      JOIN projects p ON p.project_id = s.project_id
+      WHERE ${clauses.length ? clauses.join(" AND ") : "1 = 1"}
+      ORDER BY q.created_at ASC, q.question_id ASC`).all(parameters) as Array<{
+        question_id: string; status: string; answer_id: string | null; first_reader_harness: string | null
+      }>;
+    return rows.map((row) => ({
+      questionId: row.question_id,
+      status: row.status,
+      ...(row.answer_id ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null } : {})
+    }));
   }
 
   proposeAnswer(requestId: string, ownerSessionId: string, payload: ProposeAnswerPayload): ProposedAnswerAppend {
@@ -627,6 +761,11 @@ export class RequestStore {
       expiresAt: row.expires_at ?? undefined,
       resolvedAt: row.resolved_at ?? undefined,
       result
+      ,parentQuestionId: row.parent_question_id ?? undefined
+      ,repository: grouping?.repository_id ? { repositoryId: grouping.repository_id, remote: grouping.remote ?? undefined,
+        machineId: grouping.machine_id ?? undefined, commonDirectory: grouping.common_directory ?? undefined } : undefined
+      ,worktree: grouping?.worktree_id ? { worktreeId: grouping.worktree_id, machineId: grouping.worktree_machine_id, path: grouping.canonical_path } : undefined
+      ,feature: grouping?.feature_id ? { featureId: grouping.feature_id, name: grouping.feature_name ?? undefined } : undefined
     };
   }
 

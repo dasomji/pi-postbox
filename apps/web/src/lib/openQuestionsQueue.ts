@@ -90,6 +90,10 @@ export function groupOpenQuestions(
     const sortTree = (nodesToSort: QuestionTreeNode[]): void => { nodesToSort.sort(oldestFirst); nodesToSort.forEach((node) => sortTree(node.children)); };
     sortTree(roots);
     group.questionTree = roots;
+    const flattened: QuestionQueueItem[] = [];
+    const visit = (node: QuestionTreeNode): void => { flattened.push(node); node.children.forEach(visit); };
+    roots.forEach(visit);
+    group.questions = flattened;
   }
   groups.sort((a, b) => {
     const questionOrder = comparePendingRequests(a.questions[0]!.request, b.questions[0]!.request);
