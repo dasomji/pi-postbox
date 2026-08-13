@@ -73,6 +73,13 @@ export {
 } from "./health.js";
 export type { CreateHealthResponseOptions, HealthResponse } from "./health.js";
 export {
+  HarnessLineageSchema,
+  HarnessSchema,
+  OwnerIdentitySchema,
+  ownerIdentityKey
+} from "./ownerIdentity.js";
+export type { Harness, HarnessLineage, OwnerIdentity } from "./ownerIdentity.js";
+export {
   QUESTION_CHAT_ASSISTANT_TEXT_MAX,
   QUESTION_CHAT_COMMAND_ID_MAX,
   QUESTION_CHAT_DELTA_MAX,

@@ -86,6 +86,48 @@ function runMigrations(db: SqliteDatabase): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS owners (
+      harness TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      harness_session_id TEXT,
+      parent_owner_id TEXT,
+      root_owner_id TEXT,
+      depth INTEGER CHECK (depth IS NULL OR depth >= 0),
+      path TEXT,
+      task_label TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (harness, owner_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS questions (
+      question_id TEXT PRIMARY KEY,
+      creator_harness TEXT NOT NULL,
+      creator_owner_id TEXT NOT NULL,
+      owner_harness TEXT NOT NULL,
+      owner_owner_id TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (creator_harness, creator_owner_id) REFERENCES owners(harness, owner_id),
+      FOREIGN KEY (owner_harness, owner_owner_id) REFERENCES owners(harness, owner_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS answers (
+      answer_id TEXT PRIMARY KEY,
+      question_id TEXT NOT NULL REFERENCES questions(question_id),
+      question_revision INTEGER NOT NULL CHECK (question_revision >= 1),
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TRIGGER IF NOT EXISTS questions_creator_immutable
+      BEFORE UPDATE OF creator_harness, creator_owner_id ON questions
+      WHEN NEW.creator_harness IS NOT OLD.creator_harness
+        OR NEW.creator_owner_id IS NOT OLD.creator_owner_id
+      BEGIN
+        SELECT RAISE(ABORT, 'question creator is immutable');
+      END;
+
     CREATE INDEX IF NOT EXISTS idx_ask_requests_status_created
       ON ask_requests(status, created_at);
 
