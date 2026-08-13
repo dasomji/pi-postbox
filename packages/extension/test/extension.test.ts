@@ -211,6 +211,17 @@ describe("Pi Postbox extension registration", () => {
     expect(payload.session.agentSessionId).toBe("12345678-1234-4123-8123-123456789abc");
   });
 
+  it("does not manufacture authoritative owner identity from a Pi session file", () => {
+    const session = collectSessionMetadata(
+      { getSessionName: () => "Legacy compatible identity" },
+      { cwd: "/repo", sessionManager: { getSessionFile: () => "/tmp/session-without-native-id.jsonl" } }
+    );
+
+    expect(session.sessionId).toMatch(/^session_/);
+    expect(session.owner).toBeUndefined();
+    expect(session.agentSessionId).toBeUndefined();
+  });
+
   it("preserves a generated session identity across reload but rotates it on replacement", async () => {
     const server = await startHealthServer({ role: "dev", instanceId: DEV_INSTANCE_ID });
     vi.stubEnv("PI_POSTBOX_URL", server.url);

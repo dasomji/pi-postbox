@@ -40,6 +40,6 @@ export function collectSessionMetadata(
     agentSessionId: piSessionId,
     agentSessionPath: sessionPath,
     leafId: ctx.sessionManager?.getLeafId?.(),
-    owner: { harness: "pi", ownerId: piSessionId ?? sessionId }
+    owner: piSessionId ? { harness: "pi", ownerId: piSessionId } : undefined
   };
 }
