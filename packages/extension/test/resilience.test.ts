@@ -158,7 +158,7 @@ describe("PostboxClient pending ask resilience", () => {
     await expect(stopped).rejects.toThrow("stopped");
   });
 
-  it("delivers each lightweight answer notification once and acknowledges replays", () => {
+  it("delivers each lightweight answer notification once and acknowledges replays", async () => {
     FakeSocket.instances = [];
     const notifications: unknown[] = [];
     const client = createClient({ onAnswerAvailable: (value) => notifications.push(value) });
@@ -170,9 +170,43 @@ describe("PostboxClient pending ask resilience", () => {
     } };
     socket.serverMessage(message);
     socket.serverMessage(message);
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
     expect(notifications).toEqual([message.payload]);
     expect(socket.sent.filter((value) => (value as { type?: string }).type === "answer.available.ack")).toHaveLength(2);
     client.stop();
+  });
+
+  it("acks without re-emitting after a client crash before the server receives the first ack", async () => {
+    FakeSocket.instances = [];
+    const durable = new Set<string>();
+    const inbox = { recordIfNew: async (answerId: string) => {
+      if (durable.has(answerId)) return false;
+      durable.add(answerId);
+      return true;
+    } };
+    const firstNotifications: unknown[] = [];
+    const first = createClient({ answerNotificationInbox: inbox, onAnswerAvailable: (value) => firstNotifications.push(value) });
+    first.start();
+    const firstSocket = FakeSocket.instances[0];
+    firstSocket.open();
+    const replay = { type: "answer.available" as const, requestId: "delivery-answer-crash", payload: {
+      questionId: "question-crash", question: "Recover?", answerId: "answer-crash"
+    } };
+    firstSocket.serverMessage(replay);
+    await vi.waitFor(() => expect(firstNotifications).toHaveLength(1));
+    // Simulate the process dying after durable inbox write and UI delivery while
+    // the server never receives the ack recorded by this fake transport.
+    first.stop();
+
+    const restartedNotifications: unknown[] = [];
+    const restarted = createClient({ answerNotificationInbox: inbox, onAnswerAvailable: (value) => restartedNotifications.push(value) });
+    restarted.start();
+    const restartedSocket = FakeSocket.instances[1];
+    restartedSocket.open();
+    restartedSocket.serverMessage(replay);
+    await vi.waitFor(() => expect(restartedSocket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true));
+    expect(restartedNotifications).toEqual([]);
+    restarted.stop();
   });
   it("status snapshot enriches a real connected local client with Tailnet URL, remote export, and Tailscale diagnostics", async () => {
     FakeSocket.instances = [];

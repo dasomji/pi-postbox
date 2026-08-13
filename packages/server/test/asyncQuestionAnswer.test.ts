@@ -31,7 +31,11 @@ function nextMessage(socket: WebSocket): Promise<Record<string, unknown>> {
   });
 }
 
-async function connectOwner(app: FastifyInstance): Promise<WebSocket> {
+async function connectOwner(
+  app: FastifyInstance,
+  semanticState: "working" | "blocked" = "working",
+  beforeRegister?: (socket: WebSocket) => void
+): Promise<WebSocket> {
   if (!app.server.listening) await app.listen({ host: "127.0.0.1", port: 0 });
   const socket = new WebSocket(`ws://127.0.0.1:${port(app)}/api/extension/ws`);
   sockets.push(socket);
@@ -39,6 +43,7 @@ async function connectOwner(app: FastifyInstance): Promise<WebSocket> {
     socket.once("open", resolve);
     socket.once("error", reject);
   });
+  beforeRegister?.(socket);
   const registered = nextMessage(socket);
   socket.send(JSON.stringify({
     type: "session.register",
@@ -49,7 +54,7 @@ async function connectOwner(app: FastifyInstance): Promise<WebSocket> {
       session: {
         sessionId: "control-session-1",
         cwd: "/repo",
-        semanticState: "working",
+        semanticState,
         owner: { harness: "pi", ownerId: PI_SESSION_UUID },
         agentSessionId: "session-file-provenance-only",
         agentSessionPath: "/tmp/session.jsonl"
@@ -95,11 +100,13 @@ describe("one asynchronous Question-to-Answer loop", () => {
 
     app = await createPostboxApp({ databasePath, expirySweepMs: 0 });
     apps.push(app);
-    const owner = await connectOwner(app);
-    let notified = false;
-    owner.once("message", () => { notified = true; });
+    const observed: Record<string, unknown>[] = [];
+    const owner = await connectOwner(app, "blocked", (socket) => socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (message.type === "answer.available") observed.push(message);
+    }));
     await new Promise((resolve) => setTimeout(resolve, 15));
-    expect(notified).toBe(false);
+    expect(observed).toEqual([]);
 
     const notification = new Promise<Record<string, unknown>>((resolve) => {
       const listener = (data: WebSocket.RawData) => {
@@ -112,11 +119,25 @@ describe("one asynchronous Question-to-Answer loop", () => {
     owner.send(JSON.stringify({ type: "session.update", payload: { sessionId: "control-session-1", semanticState: "working" } } satisfies ExtensionClientMessage));
     expect(await updated).toMatchObject({ type: "ack", payload: { type: "session.update" } });
     const replay = await notification;
+    expect(observed).toHaveLength(1);
     expect(replay).toMatchObject({ type: "answer.available", payload: {
       questionId: "question-1", question: "Which database should v1 use?", answerId: expect.any(String)
     } });
     owner.send(JSON.stringify({ type: "answer.available.ack", requestId: replay.requestId as string,
       payload: { answerId: (replay.payload as { answerId: string }).answerId } } satisfies ExtensionClientMessage));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    owner.close();
+    await app.close();
+    apps.pop();
+    app = await createPostboxApp({ databasePath, expirySweepMs: 0 });
+    apps.push(app);
+    const afterRestart: Record<string, unknown>[] = [];
+    await connectOwner(app, "working", (socket) => socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (message.type === "answer.available") afterRestart.push(message);
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(afterRestart).toEqual([]);
   });
 
   it("keeps a pending owner-addressed Question across disconnect and restart with no default expiry", async () => {

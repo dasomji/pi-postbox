@@ -17,6 +17,7 @@ import { collectSessionMetadata } from "./sessionMetadata.js";
 import { askPostboxParameters, executeAskPostbox, formatAskResult, type AskPostboxInput } from "./tools/askPostbox.js";
 import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./status.js";
 import { PiQuestionChatRuntimeAdapter, QuestionChatRuntimeRegistry } from "./questionChatRuntime.js";
+import { FileAnswerNotificationInbox } from "./answerNotificationInbox.js";
 
 interface PiLikeApi {
   on(event: string, handler: (event: unknown, ctx: PiLikeContext) => unknown): void;
@@ -281,6 +282,7 @@ async function registerResolvedTarget(
         uiScope.notify(`Postbox answer ready for “${notification.question}” (${notification.questionId}).`, "info");
         pi.events?.emit?.("postbox:answer-available", notification);
       },
+      answerNotificationInbox: new FileAnswerNotificationInbox(env),
       questionChats
     });
     client.start();

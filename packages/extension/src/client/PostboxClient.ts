@@ -7,6 +7,7 @@ import {
   OTHER_OPTION_VALUE,
   type AskResult,
   type AskReceipt,
+  AskReceiptSchema,
   AnswerReadResultSchema,
   type AnswerReadResult,
   type ExtensionClientMessage,
@@ -45,6 +46,7 @@ import {
   type PostboxStatusTailscaleInspector
 } from "../status.js";
 import type { PostboxAutostartStatusSnapshot } from "../autostart.js";
+import { MemoryAnswerNotificationInbox, type AnswerNotificationInbox } from "../answerNotificationInbox.js";
 
 interface WebSocketLike {
   readyState: number;
@@ -75,6 +77,7 @@ export interface PostboxClientOptions {
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
   onAnswerAvailable?: (notification: { questionId: string; question: string; answerId: string }) => void;
+  answerNotificationInbox?: AnswerNotificationInbox;
   questionChats?: {
     activate(input: { requestId: string; ownerSessionId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
     activateContext(input: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
@@ -178,7 +181,7 @@ export class PostboxClient {
   private readonly pendingAsks = new Map<string, PendingAsk>();
   private readonly asynchronousAskCreates = new Set<string>();
   private readonly pendingCreateReceipts = new Map<string, PendingCreateReceipt>();
-  private readonly deliveredAnswerNotifications = new Set<string>();
+  private readonly answerNotificationInbox: AnswerNotificationInbox;
   private readonly localResolutions = new Map<string, LocalResolution>();
   private currentSemanticState: SemanticState;
   private currentServerUrl: string;
@@ -207,6 +210,7 @@ export class PostboxClient {
     this.reconnect = options.reconnect ?? true;
     this.askUnavailableAfterMs = options.askUnavailableAfterMs ?? DEFAULT_UNAVAILABLE_AFTER_MS;
     this.WebSocketImpl = options.WebSocketImpl ?? (WebSocket as unknown as WebSocketConstructor);
+    this.answerNotificationInbox = options.answerNotificationInbox ?? new MemoryAnswerNotificationInbox();
     this.currentSemanticState = options.registration.session.semanticState;
     this.currentServerUrl = options.serverUrl;
     this.currentTargetSource = options.targetSource;
@@ -496,22 +500,12 @@ export class PostboxClient {
         if (parsed.data.type === "ask.created") {
           const pending = [...this.pendingAsks.values()].find((candidate) => candidate.createCommandId === parsed.data.requestId);
           if (pending && parsed.data.payload.questionId === pending.payload.requestId) {
-            this.resolveCreateReceipt(pending.payload.requestId, parsed.data.payload);
+            this.resolveCreateReceipt(pending.payload.requestId, AskReceiptSchema.parse(parsed.data.payload));
           }
           return;
         }
         if (parsed.data.type === "answer.available") {
-          if (!this.deliveredAnswerNotifications.has(parsed.data.payload.answerId)) {
-            if (this.deliveredAnswerNotifications.size >= 256) {
-              this.deliveredAnswerNotifications.delete(this.deliveredAnswerNotifications.values().next().value!);
-            }
-            this.deliveredAnswerNotifications.add(parsed.data.payload.answerId);
-            this.options.onAnswerAvailable?.(parsed.data.payload);
-          }
-          if (parsed.data.requestId) this.send({
-            type: "answer.available.ack", requestId: parsed.data.requestId,
-            payload: { answerId: parsed.data.payload.answerId }
-          });
+          void this.deliverAnswerNotification(parsed.data.requestId, parsed.data.payload);
           return;
         }
         if (parsed.data.type === "answer.result") {
@@ -921,6 +915,20 @@ export class PostboxClient {
     if (!pending) return;
     this.pendingCreateReceipts.delete(requestId);
     pending.resolve(receipt);
+  }
+
+  private async deliverAnswerNotification(
+    commandId: string | undefined,
+    notification: { questionId: string; question: string; answerId: string }
+  ): Promise<void> {
+    try {
+      if (await this.answerNotificationInbox.recordIfNew(notification.answerId)) {
+        this.options.onAnswerAvailable?.(notification);
+      }
+      if (commandId) this.send({ type: "answer.available.ack", requestId: commandId, payload: { answerId: notification.answerId } });
+    } catch (error) {
+      this.options.onStatus?.(`answer-notification-persist-error:${messageFrom(error)}`);
+    }
   }
 
   private rejectCreateReceipt(requestId: string, error: Error): void {
