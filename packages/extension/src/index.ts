@@ -55,6 +55,27 @@ export function createWaitForPostboxTool(wait: (signal?: AbortSignal) => Promise
   };
 }
 
+export function createPostboxNavigationGuard(options: {
+  owner: { harness: string; ownerId: string };
+  query: (type: "owner.status.get", payload: { owners: Array<{ harness: string; ownerId: string }> }) => Promise<Array<{ activeQuestionCount?: number; unreadAnswerCount?: number }>>;
+  confirm: (title: string, message: string) => Promise<boolean>;
+}) {
+  return async () => {
+    try {
+      const [status] = await options.query("owner.status.get", { owners: [options.owner] });
+      const active = status?.activeQuestionCount ?? 0;
+      const unread = status?.unreadAnswerCount ?? 0;
+      if (active === 0 && unread === 0) return;
+      const confirmed = await options.confirm("Leave Postbox work unresolved?",
+        `${active} active Question(s) and ${unread} unread Answer(s) will remain assigned to this owner. Continue?`);
+      if (!confirmed) return { cancel: true };
+    } catch {
+      // Navigation must fail open: Postbox can warn, but cannot trap the user.
+      return;
+    }
+  };
+}
+
 interface SessionUiScope {
   isActive(): boolean;
   deactivate(): void;
@@ -266,15 +287,8 @@ export default function postboxExtension(pi: PiLikeApi): void {
 
   const confirmUnresolvedPostboxWork = async (ctx: PiLikeContext) => {
     if (!client || !currentRegistration?.session.owner || !ctx.hasUI || !ctx.ui?.confirm) return;
-    const [status] = await client.query("owner.status.get", { owners: [currentRegistration.session.owner] }) as Array<{
-      activeQuestionCount?: number; unreadAnswerCount?: number;
-    }>;
-    const active = status?.activeQuestionCount ?? 0;
-    const unread = status?.unreadAnswerCount ?? 0;
-    if (active === 0 && unread === 0) return;
-    const confirmed = await ctx.ui.confirm("Leave Postbox work unresolved?",
-      `${active} active Question(s) and ${unread} unread Answer(s) will remain assigned to this owner. Continue?`);
-    if (!confirmed) return { cancel: true };
+    return createPostboxNavigationGuard({ owner: currentRegistration.session.owner,
+      query: (type, payload) => client!.query(type, payload), confirm: ctx.ui.confirm })();
   };
   pi.on("session_before_switch", (_event, ctx) => confirmUnresolvedPostboxWork(ctx));
   pi.on("session_before_fork", (_event, ctx) => confirmUnresolvedPostboxWork(ctx));

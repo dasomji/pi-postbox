@@ -3,7 +3,7 @@ import { AskRequestSnapshotSchema } from "./ask.js";
 import { HarnessLineageSchema, OwnerIdentitySchema } from "./ownerIdentity.js";
 import { FeatureActionSchema, FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
 
-export const SemanticStateSchema = z.enum(["working", "blocked", "idle", "unknown"]);
+export const SemanticStateSchema = z.enum(["working", "blocked", "waiting_for_postbox", "idle", "unknown"]);
 export const PresenceStateSchema = z.enum(["live", "stale", "offline"]);
 
 export const MachineRegistrationSchema = z.object({

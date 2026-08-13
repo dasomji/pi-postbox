@@ -134,7 +134,7 @@ describe("semantic session state updates", () => {
       sessions: [expect.objectContaining({ sessionId: "session-1", semanticState: "idle", presence: "live" })]
     });
 
-    for (const semanticState of ["working", "blocked", "idle"] as const) {
+    for (const semanticState of ["working", "blocked", "waiting_for_postbox", "idle"] as const) {
       const ack = nextMessage(socket);
       socket.send(
         JSON.stringify({

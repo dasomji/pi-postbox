@@ -10,7 +10,7 @@ export function historyTone(status: AskRequestSnapshot["status"]): BadgeTone {
 }
 
 export function semanticTone(state: SessionSnapshot["semanticState"]): BadgeTone {
-  if (state === "blocked") return "danger";
+  if (state === "blocked" || state === "waiting_for_postbox") return "danger";
   if (state === "working") return "attention";
   return "neutral";
 }

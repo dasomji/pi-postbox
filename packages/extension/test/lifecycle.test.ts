@@ -111,6 +111,18 @@ describe("Pi semantic state lifecycle reporting", () => {
     expect(client.states).toEqual(["working", "blocked", "working"]);
   });
 
+  it("publishes a first-class Postbox wait state while keeping Herdr signaling independent", () => {
+    const client = new FakeClient();
+    const pi = new FakePi();
+    const controller = createSemanticStateController(() => client, pi, { idleDebounceMs: 0 });
+    controller.markWorking();
+    const release = controller.beginAskPostboxWait();
+    expect(client.states.at(-1)).toBe("waiting_for_postbox");
+    expect(pi.herdrEvents.at(-1)).toMatchObject({ eventName: "herdr:blocked", data: { active: true } });
+    release();
+    expect(client.states.at(-1)).toBe("working");
+  });
+
   it("does not send a semantic session shutdown release for reload", () => {
     const client = new FakeClient();
     const pi = new FakePi();

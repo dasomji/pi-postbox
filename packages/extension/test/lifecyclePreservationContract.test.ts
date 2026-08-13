@@ -1,15 +1,21 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import { createPostboxNavigationGuard } from "../src/index.js";
 
 describe("Pi lifecycle preservation contract", () => {
-  it("registers pre-switch and pre-fork confirmation guards using owner queue facts", async () => {
-    const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
-    expect(source).toContain('pi.on("session_before_switch"');
-    expect(source).toContain('pi.on("session_before_fork"');
-    expect(source).toMatch(/activeQuestionCount|openQuestionCount/);
-    expect(source).toMatch(/unreadAnswerCount/);
-    expect(source).toMatch(/ui\.confirm/);
-    expect(source).toMatch(/return \{ cancel: true \}/);
+  it("queries the exact owner and supports no-count, decline, accept, and error fail-open paths", async () => {
+    const owner = { harness: "pi", ownerId: "owner-1" };
+    const calls: unknown[] = [];
+    const guard = (counts: { activeQuestionCount: number; unreadAnswerCount: number }, confirmation = true) =>
+      createPostboxNavigationGuard({ owner,
+        query: async (type, payload) => { calls.push({ type, payload }); return [counts]; },
+        confirm: async () => confirmation });
+    await expect(guard({ activeQuestionCount: 0, unreadAnswerCount: 0 })()).resolves.toBeUndefined();
+    await expect(guard({ activeQuestionCount: 1, unreadAnswerCount: 0 }, false)()).resolves.toEqual({ cancel: true });
+    await expect(guard({ activeQuestionCount: 0, unreadAnswerCount: 1 }, true)()).resolves.toBeUndefined();
+    expect(calls[0]).toEqual({ type: "owner.status.get", payload: { owners: [owner] } });
+    await expect(createPostboxNavigationGuard({ owner, query: async () => { throw new Error("offline"); }, confirm: async () => false })()).resolves.toBeUndefined();
+    await expect(createPostboxNavigationGuard({ owner, query: async () => [{ activeQuestionCount: 1 }], confirm: async () => { throw new Error("UI closed"); } })()).resolves.toBeUndefined();
   });
 
   it("keeps ordinary Question creation non-blocking and isolates local ask_user from explicit Postbox waiting", async () => {

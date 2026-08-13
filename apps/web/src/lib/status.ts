@@ -11,7 +11,7 @@ export type DotColor = "green" | "red" | "blue" | "gray";
  */
 export function sessionDot(session: SessionSnapshot, hasOpenQuestion: boolean): DotColor {
   if (session.presence === "offline") return "gray";
-  if (hasOpenQuestion || session.semanticState === "blocked") return "red";
+  if (hasOpenQuestion || session.semanticState === "blocked" || session.semanticState === "waiting_for_postbox") return "red";
   if (session.semanticState === "working") return "green";
   if (session.semanticState === "idle") return "blue";
   return "gray";
