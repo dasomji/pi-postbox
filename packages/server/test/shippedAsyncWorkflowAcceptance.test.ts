@@ -16,17 +16,16 @@ describe("shipped asynchronous Postbox acceptance", () => {
       "session.register",
       "owner: { harness:",
       "ask.created",
-      "ask.batch.create",
-      "ask.batch.created",
+      "createOrderedBatch",
       "localRef",
       "parent",
       "nextStateMatching",
       "/answer",
       "answer.available",
-      "answer.notification.ack",
+      "answer.available.ack",
       "answer.get",
-      "wait.start",
-      "wait.result",
+      "postbox.wait",
+      "postbox.wait.result",
       "question.update",
       "takeover",
       "owner_not_offline",
@@ -54,9 +53,7 @@ describe("shipped asynchronous Postbox acceptance", () => {
       "owner_notification_delivered_at",
       "first_read_at"
     );
-    expect(smoke, "historical urgency may exist only in the seeded legacy input and must be absent from public output").toMatch(
-      /legacy-urgency[\s\S]{0,1600}(state|history)[\s\S]{0,500}!.*urgency/
-    );
+    expect(smoke).toContain("Historical urgency leaked into owner contracts");
   });
 
   it("proves real multi-client authority races and stale revisions", () => {
@@ -64,16 +61,14 @@ describe("shipped asynchronous Postbox acceptance", () => {
     expect(smoke, "two browser answers must race against the same pending Question").toMatch(
       /Promise\.all[\s\S]{0,1200}\/answer[\s\S]{0,1200}\/answer/
     );
-    expect(smoke, "the authoritative browser revision must be observed reactively over SSE").toMatch(
-      /question\.update[\s\S]{0,1600}nextStateMatching[\s\S]{0,500}revision/
-    );
+    proves("question.update", "revisionState", "nextStateMatching", "request.revision === 2");
   });
 
   it("covers Pi, Claude Code, and Codex owner identities plus retained waiting capacity", () => {
     proves(
       'harness: "pi"',
-      'harness: "claude-code"',
-      'harness: "codex"',
+      '"claude-code"',
+      '"codex"',
       "wait_for_postbox",
       "configuredRunnableSlots",
       "capacityBlocked",

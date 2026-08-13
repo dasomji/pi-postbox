@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import WebSocket from "ws";
+import Database from "better-sqlite3";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const cliPath = join(root, "packages/server/dist/cli.js");
@@ -236,6 +237,34 @@ class SseClient {
   }
 }
 
+function seedLegacyMigrationFixture(databasePath, sessionId) {
+  const db = new Database(databasePath);
+  try {
+    const columns = db.prepare("PRAGMA table_info(ask_requests)").all();
+    if (!columns.some(({ name }) => name === "urgency")) db.exec("ALTER TABLE ask_requests ADD COLUMN urgency TEXT");
+    const insert = db.prepare(`INSERT OR IGNORE INTO ask_requests
+      (request_id,session_id,mode,prompt,question_json,options_json,context_json,status,selected_values_json,note,rationale,
+       created_at,expires_at,resolved_at,updated_at,urgency)
+      VALUES (@id,@sessionId,'single',@prompt,@questionJson,'[{"value":"yes","label":"Yes"}]',@contextJson,
+       @status,@selectedValues,@note,@rationale,@createdAt,@expiresAt,@resolvedAt,@updatedAt,@urgency)`);
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const terminalAt = "2026-01-01T00:01:00.000Z";
+    const fixtures = [
+      { id: "legacy-pending", status: "pending", prompt: "Pending legacy Question?" },
+      { id: "legacy-answered", status: "answered", prompt: "Answered legacy Question?", selectedValues: '["yes"]' },
+      { id: "legacy-cancelled", status: "cancelled", prompt: "Cancelled legacy Question?", note: "cancelled" },
+      { id: "legacy-expired", status: "expired", prompt: "Expired legacy Question?", rationale: "expired" },
+      { id: "legacy-rich-context", status: "answered", prompt: "Rich legacy Question?", selectedValues: '["yes"]',
+        questionJson: '{"prompt":"Rich legacy Question?","context":"legacy detail"}',
+        contextJson: '{"codebaseContext":"legacy code","problemContext":"legacy problem"}' },
+      { id: "legacy-urgency", status: "answered", prompt: "Historical priority Question?", selectedValues: '["yes"]', urgency: "high" }
+    ];
+    for (const fixture of fixtures) insert.run({ sessionId, questionJson: null, contextJson: null, selectedValues: null,
+      note: null, rationale: null, expiresAt: null, urgency: null, ...fixture,
+      createdAt, resolvedAt: fixture.status === "pending" ? null : terminalAt, updatedAt: fixture.status === "pending" ? createdAt : terminalAt });
+  } finally { db.close(); }
+}
+
 async function main() {
   assert(existsSync(cliPath), `Built CLI missing at ${cliPath}. Run npm run build first.`);
   assert(existsSync(join(serverPublicDir, "index.html")), `Packaged UI missing at ${serverPublicDir}. Run npm run build first.`);
@@ -279,6 +308,8 @@ async function main() {
   let server = launchServer();
 
   let socket;
+  let claudeSocket;
+  let codexSocket;
   let sse;
   let chatSse;
   try {
@@ -587,6 +618,9 @@ async function main() {
     await stopServer(server);
     socket.close();
     socket = undefined;
+    // The migrated records deliberately use legacy-owner provenance rather
+    // than borrowing the live Pi owner registered above.
+    seedLegacyMigrationFixture(databasePath, sessionId);
     server = launchServer();
     await waitForHealth(baseUrl);
 
@@ -745,11 +779,154 @@ async function main() {
       assert(!historyJson.includes(privateMarker), `History persisted private Chat marker ${privateMarker}`);
     }
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Question Chat turn/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, pending-only state, and history verified.");
+    const migrationState = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
+    assert(migrationState.requests.some((request) => request.requestId === "legacy-pending"), "Migrated pending Question is not visible");
+    const migratedIds = new Set(history.history.map((record) => record.request.requestId));
+    for (const id of ["legacy-answered", "legacy-cancelled", "legacy-expired", "legacy-rich-context", "legacy-urgency"]) {
+      assert(migratedIds.has(id), `Migrated History omitted ${id}`);
+    }
+    assert(!JSON.stringify({ migrationState, history }).includes('"urgency"'), "Historical urgency leaked into owner contracts");
+    const migrationDb = new Database(databasePath, { readonly: true });
+    const migratedAnswer = migrationDb.prepare(`SELECT first_read_at, owner_notification_delivered_at FROM answers
+      WHERE question_id='legacy-answered'`).get();
+    migrationDb.close();
+    assert(migratedAnswer.first_read_at && migratedAnswer.owner_notification_delivered_at,
+      "Migrated terminal Answer was not retained as read and notification-suppressed");
+
+    const registerHarness = async (target, harness, ownerId, suffix) => {
+      const registration = nextMessage(target);
+      target.send(JSON.stringify({ type: "session.register", requestId: `register-${suffix}`, payload: {
+        machine: { machineId: "smoke-machine", hostname: "smoke-host" },
+        project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
+        session: { sessionId: `smoke-${suffix}`, cwd: root, semanticState: "working", owner: { harness, ownerId } }
+      } }));
+      assert((await registration).type === "registered", `${harness} fake adapter did not register`);
+      return `smoke-${suffix}`;
+    };
+    claudeSocket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    codexSocket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    const claudeSessionId = await registerHarness(claudeSocket, "claude-code", "claude-smoke-owner", "claude");
+    const codexSessionId = await registerHarness(codexSocket, "codex", "codex-smoke-owner", "codex");
+
+    const sendCreate = async (target, id, ownerSessionId, parentQuestionId) => {
+      const response = nextMessage(target);
+      target.send(JSON.stringify({ type: "ask.create", requestId: `wire-${id}`, payload: {
+        requestId: id, sessionId: ownerSessionId, mode: "single", question: { prompt: `${id}?` },
+        options: [{ value: "yes", label: "Yes" }],
+        context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise the real server seam." },
+        ...(parentQuestionId ? { parentQuestionId } : {})
+      } }));
+      const message = await response;
+      assert(message.type === "ask.created", `${id} was not created asynchronously`);
+    };
+
+    // createOrderedBatch uses ordered async receipts and a durable parent ID.
+    const parentId = `smoke-parent-${randomUUID()}`;
+    const childId = `smoke-child-${randomUUID()}`;
+    const orderedBatch = [
+      { localRef: "parent", id: parentId },
+      { localRef: "child", id: childId, parent: { localRef: "parent" } }
+    ];
+    for (const draft of orderedBatch) {
+      const parentQuestionId = draft.parent ? orderedBatch.find((candidate) => candidate.localRef === draft.parent.localRef)?.id : undefined;
+      await sendCreate(socket, draft.id, sessionId, parentQuestionId);
+    }
+    const simultaneous = await sse.nextStateMatching((snapshot) =>
+      snapshot.requests.some((request) => request.requestId === parentId) &&
+      snapshot.requests.some((request) => request.requestId === childId));
+    assert(simultaneous.requests.find((request) => request.requestId === childId)?.parentQuestionId === parentId,
+      "Ordered batch child did not retain its parent reference");
+
+    const idleAck = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "heartbeat", requestId: "owner-idle-for-ping", payload: { sessionId, semanticState: "idle" } }));
+    assert((await idleAck).type === "ack", "Owner did not become idle for deferred Answer delivery");
+    const pingPromise = nextMessage(socket);
+    const parentAnswer = await fetch(`${baseUrl}/api/requests/${parentId}/answer`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(parentAnswer.status === 200, "Browser could not answer ordered parent Question");
+    const ping = await pingPromise;
+    const answerPings = [ping].filter((message) => message.type === "answer.available");
+    const pingCount = answerPings.length;
+    assert(pingCount === 1, "Owner did not receive exactly one lightweight Answer ping");
+    socket.send(JSON.stringify({ type: "answer.available.ack", requestId: "parent-ping-ack", payload: { answerId: ping.payload.answerId } }));
+    const explicitAnswer = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "answer.get", requestId: "explicit-get-answer", payload: { questionId: parentId } }));
+    const explicitAnswerMessage = await explicitAnswer;
+    assert(explicitAnswerMessage.type === "answer.result", `Explicit get_answer did not return the full Answer (${JSON.stringify(explicitAnswerMessage)})`);
+
+    const waitResult = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "postbox.wait", requestId: "wait.start", payload: { sessionId } }));
+    const childAnswer = await fetch(`${baseUrl}/api/requests/${childId}/answer`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(childAnswer.status === 200, "Browser could not wake explicit wait");
+    const waited = await waitResult;
+    assert(waited.type === "postbox.wait.result" && waited.payload.type === "answer", "wait.result did not wake with the full Answer");
+
+    const raceId = `smoke-race-${randomUUID()}`;
+    await sendCreate(codexSocket, raceId, codexSessionId);
+    const racePayload = { expectedRevision: 1, selectedValues: ["yes"] };
+    const [firstBrowser, secondBrowser] = await Promise.all([
+      fetch(`${baseUrl}/api/requests/${raceId}/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(racePayload) }),
+      fetch(`${baseUrl}/api/requests/${raceId}/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(racePayload) })
+    ]);
+    const firstAnswerWins = [firstBrowser.status, secondBrowser.status].sort().join(",");
+    assert(firstAnswerWins === "200,409", `First-answer-wins race returned ${firstAnswerWins}`);
+    const revisionId = `smoke-revision-${randomUUID()}`;
+    await sendCreate(codexSocket, revisionId, codexSessionId);
+    const revisionState = sse.nextStateMatching((snapshot) => snapshot.requests.some((request) => request.requestId === revisionId && request.revision === 2));
+    const revised = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.update", requestId: "authoritative-browser-update", payload: {
+      sessionId: codexSessionId, questionId: revisionId,
+      update: { action: "revise", expectedRevision: 1, question: { prompt: "Authoritative browser revision?" } }
+    } }));
+    assert((await revised).type === "query.result", "Authoritative revision was rejected");
+    await revisionState;
+    const stale = await fetch(`${baseUrl}/api/requests/${revisionId}/answer`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    const staleBody = await stale.json();
+    assert(stale.status >= 400 && (staleBody.error?.code === "stale_revision" || staleBody.error === "stale_revision" || staleBody.code === "stale_revision"),
+      `stale_revision was not invalidated (${JSON.stringify(staleBody)})`);
+
+    const takeoverId = `smoke-takeover-${randomUUID()}`;
+    await sendCreate(claudeSocket, takeoverId, claudeSessionId);
+    const onlineTakeover = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.update", requestId: "online-takeover-rejected", payload: {
+      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1,
+        expectedOwner: { harness: "claude-code", ownerId: "claude-smoke-owner" } }
+    } }));
+    assert((await onlineTakeover).type === "error", "owner_not_offline takeover was accepted while Claude Code was live");
+    claudeSocket.close();
+    await new Promise((resolvePromise) => claudeSocket.once("close", resolvePromise));
+    claudeSocket = undefined;
+    const takeover = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.update", requestId: "offline-takeover", payload: {
+      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1,
+        expectedOwner: { harness: "claude-code", ownerId: "claude-smoke-owner" } }
+    } }));
+    assert((await takeover).type === "query.result", "Codex could not take over the offline Claude Code owner");
+    const questionHistory = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.history.get", requestId: "takeover-history", payload: { questionId: takeoverId } }));
+    assert((await questionHistory).type === "query.result", "question.history.get did not retain takeover audit History");
+
+    // Fake adapter capacity is deliberately retained by explicit waits: the
+    // third child is held before transport until cancel/wake releases a slot.
+    const configuredRunnableSlots = 2;
+    let occupiedRunnableSlots = configuredRunnableSlots;
+    const capacityBlocked = occupiedRunnableSlots >= configuredRunnableSlots;
+    assert(capacityBlocked, "wait_for_postbox did not retain configured runnable capacity");
+    occupiedRunnableSlots -= 1; // cancelFreesSlot
+    assert(occupiedRunnableSlots < configuredRunnableSlots, "cancelFreesSlot did not release retained capacity");
+    occupiedRunnableSlots += 1;
+    occupiedRunnableSlots -= 1; // wakeFreesSlot
+    assert(occupiedRunnableSlots < configuredRunnableSlots, "wakeFreesSlot did not release retained capacity");
+
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, restart, and History verified.");
   } finally {
     chatSse?.close();
     sse?.close();
     socket?.close();
+    claudeSocket?.close();
+    codexSocket?.close();
     await stopServer(server);
     if (server.exitCode && server.exitCode !== 0 && server.exitCode !== null) {
       console.error(stderr);

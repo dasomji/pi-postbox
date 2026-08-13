@@ -375,6 +375,7 @@ export async function registerExtensionSocket(
         try {
           const payload = requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update, sessionStore);
           if (message.payload.update.action === "transfer" || message.payload.update.action === "takeover") questionChatRelay?.disposeNonTerminal(message.payload.questionId);
+          broadcaster.broadcast();
           send(socket, { type: "query.result", requestId: message.requestId, payload });
         }
         catch (error) { sendAskError(socket, message.requestId, "question_update_failed", error); }
