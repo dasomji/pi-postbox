@@ -19,6 +19,7 @@ import {
   type ProposedAnswerOption
 } from "@pi-postbox/protocol";
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "../db/database.js";
 import { normalizeProposedOptionLabel } from "./proposedOptionPolicy.js";
 
@@ -282,9 +283,17 @@ export class RequestStore {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
       throw new RequestStoreError("invalid_page_size", "Question page size must be a positive integer");
     }
-    const offset = this.decodeQuestionCursor(filters.cursor);
+    const fingerprint = createHash("sha256").update(JSON.stringify({ owner: filters.owner, repository: filters.repository,
+      worktree: filters.worktree, feature: filters.feature, status: filters.status ?? "pending", global: filters.global ?? false,
+      caller: filters.caller })).digest("hex");
+    const cursor = this.decodeQuestionCursor(filters.cursor, fingerprint);
     const clauses: string[] = [];
-    const parameters: Record<string, unknown> = { limit: pageSize + 1, offset };
+    const parameters: Record<string, unknown> = { limit: pageSize + 1 };
+    if (cursor) {
+      clauses.push("(q.created_at > @cursorCreatedAt OR (q.created_at = @cursorCreatedAt AND q.question_id > @cursorQuestionId))");
+      parameters.cursorCreatedAt = cursor.createdAt;
+      parameters.cursorQuestionId = cursor.questionId;
+    }
     if (!filters.global) {
       clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository", "COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree", "COALESCE(q.feature_id, s.branch, p.branch) = @feature");
       parameters.repository = filters.repository ?? filters.caller.repository;
@@ -302,20 +311,21 @@ export class RequestStore {
     }
     clauses.push("q.status = @status");
     parameters.status = filters.status ?? "pending";
-    const rows = this.db.prepare(`SELECT q.question_id, q.question_json
+    const rows = this.db.prepare(`SELECT q.question_id, q.question_json, q.created_at
       FROM questions q
       JOIN ask_requests r ON r.request_id = q.legacy_request_id
       JOIN sessions s ON s.session_id = r.session_id
       JOIN projects p ON p.project_id = s.project_id
       WHERE ${clauses.join(" AND ")}
       ORDER BY q.created_at ASC, q.question_id ASC
-      LIMIT @limit OFFSET @offset`).all(parameters) as Array<{ question_id: string; question_json: string }>;
+      LIMIT @limit`).all(parameters) as Array<{ question_id: string; question_json: string; created_at?: string }>;
     const hasMore = rows.length > pageSize;
     const questions = rows.slice(0, pageSize).map((row) => ({
       questionId: row.question_id,
       question: (JSON.parse(row.question_json) as { prompt: string }).prompt
     }));
-    return { questions, ...(hasMore ? { nextCursor: this.encodeQuestionCursor(offset + pageSize) } : {}) };
+    const last = rows[Math.min(pageSize, rows.length) - 1] as any;
+    return { questions, ...(hasMore && last ? { nextCursor: this.encodeQuestionCursor(fingerprint, last.created_at, last.question_id) } : {}) };
   }
 
   getQuestions(input: { questionIds: string[] }): Array<Record<string, unknown>> {
@@ -359,14 +369,14 @@ export class RequestStore {
       parameters.ownerId = owner.ownerId;
     }
     if (!filters.global) {
-      clauses.push("p.repo_name = @repository", "COALESCE(s.worktree_path, p.worktree_path, s.cwd) = @worktree", "COALESCE(s.branch, p.branch) = @feature");
+      clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository", "COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree", "COALESCE(q.feature_id, s.branch, p.branch) = @feature");
       parameters.repository = filters.repository ?? filters.caller.repository;
       parameters.worktree = filters.worktree ?? filters.caller.worktree;
       parameters.feature = filters.feature ?? filters.caller.feature;
     } else {
-      if (filters.repository !== undefined) { clauses.push("p.repo_name = @repository"); parameters.repository = filters.repository; }
-      if (filters.worktree !== undefined) { clauses.push("COALESCE(s.worktree_path, p.worktree_path, s.cwd) = @worktree"); parameters.worktree = filters.worktree; }
-      if (filters.feature !== undefined) { clauses.push("COALESCE(s.branch, p.branch) = @feature"); parameters.feature = filters.feature; }
+      if (filters.repository !== undefined) { clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository"); parameters.repository = filters.repository; }
+      if (filters.worktree !== undefined) { clauses.push("COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree"); parameters.worktree = filters.worktree; }
+      if (filters.feature !== undefined) { clauses.push("COALESCE(q.feature_id, s.branch, p.branch) = @feature"); parameters.feature = filters.feature; }
     }
     if (filters.status) { clauses.push("q.status = @status"); parameters.status = filters.status; }
     else if (filters.readState === "read") clauses.push("a.first_reader_harness IS NOT NULL");
@@ -797,17 +807,17 @@ export class RequestStore {
     return JSON.parse(value) as unknown;
   }
 
-  private decodeQuestionCursor(cursor: string | undefined): number {
-    if (cursor === undefined) return 0;
-    const match = /^question-offset:(\d+)$/.exec(cursor);
-    if (!match) throw new RequestStoreError("invalid_cursor", "Question cursor is invalid");
-    const offset = Number(match[1]);
-    if (!Number.isSafeInteger(offset)) throw new RequestStoreError("invalid_cursor", "Question cursor is invalid");
-    return offset;
+  private decodeQuestionCursor(cursor: string | undefined, fingerprint: string): { createdAt: string; questionId: string } | undefined {
+    if (!cursor) return undefined;
+    try {
+      const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as any;
+      if (parsed.v !== 1 || parsed.fingerprint !== fingerprint || typeof parsed.createdAt !== "string" || typeof parsed.questionId !== "string") throw new Error();
+      return parsed;
+    } catch { throw new RequestStoreError("invalid_cursor", "Question cursor is invalid or belongs to another query"); }
   }
 
-  private encodeQuestionCursor(offset: number): string {
-    return `question-offset:${offset}`;
+  private encodeQuestionCursor(fingerprint: string, createdAt: string, questionId: string): string {
+    return Buffer.from(JSON.stringify({ v: 1, fingerprint, createdAt, questionId })).toString("base64url");
   }
 
   private toResult(row: AskRequestRow): AskResult | undefined {

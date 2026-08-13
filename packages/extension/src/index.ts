@@ -173,6 +173,30 @@ export default function postboxExtension(pi: PiLikeApi): void {
     }
   });
 
+  const registerQueryTool = (name: string, description: string, parameters: any, type: any, payload: (params: any) => any = (value) => value) => pi.registerTool?.({
+    name, label: name, description, annotations: { readOnlyHint: true }, parameters,
+    async execute(_id: string, params: any) {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
+      if (!client || !currentRegistration) throw new Error(unavailableRationale);
+      const result = await client.query(type, payload(params));
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    }
+  });
+  const filters = { owner: { type: "object" }, repository: { type: "string" }, worktree: { type: "string" }, feature: { type: "string" }, status: { type: "string" }, global: { type: "boolean" } };
+  registerQueryTool("list_questions", "List compact active Postbox Question IDs and text in the current repository/worktree/feature unless deliberately broadened.",
+    { type: "object", additionalProperties: false, properties: { ...filters, cursor: { type: "string" }, pageSize: { type: "number" } } }, "question.list",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  registerQueryTool("get_questions", "Get complete latest Question details for explicit IDs without Answer content.",
+    { type: "object", additionalProperties: false, required: ["questionIds"], properties: { questionIds: { type: "array", minItems: 1, items: { type: "string" } } } }, "questions.get");
+  registerQueryTool("list_question_status", "List compact actionable Question and unread Answer status.",
+    { type: "object", additionalProperties: false, properties: { ...filters, readState: { type: "string", enum: ["read", "unread"] }, includeTerminal: { type: "boolean" } } }, "question.status.list",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  registerQueryTool("get_postbox_owner_status", "Get compact presence and queue counts for exact harness-neutral owners.",
+    { type: "object", additionalProperties: false, required: ["owners"], properties: {
+      owners: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
+        required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } } }
+    } }, "owner.status.get");
+
   pi.on("session_start", (_event, ctx) => {
     activeUiScope?.deactivate();
     stopActiveLocalSupervisor();

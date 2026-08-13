@@ -91,6 +91,17 @@ describe("token-cheap Question discovery", () => {
     });
   });
 
+  it("uses a query-bound keyset cursor that remains stable when earlier Questions are inserted", () => {
+    const { db, requests, create, caller } = setup();
+    for (let index = 0; index < 3; index += 1) create("current", `cursor-${index}`, `Question ${index}`);
+    const first = requests.listQuestions({ caller, pageSize: 2 });
+    db.prepare("DELETE FROM questions WHERE question_id = ?").run("cursor-0");
+    db.prepare("DELETE FROM ask_requests WHERE request_id = ?").run("cursor-0");
+    const second = requests.listQuestions({ caller, pageSize: 2, cursor: first.nextCursor });
+    expect(second.questions.map((question) => question.questionId)).toEqual(["cursor-2"]);
+    expect(() => requests.listQuestions({ caller: { ...caller, feature: "other" }, pageSize: 2, cursor: first.nextCursor })).toThrow(/another query/i);
+  });
+
   it("supports explicit owner, repository, worktree, feature, status, and global relevance filters", () => {
     const { requests, register, create, caller } = setup();
     register("recovery", OTHER_OWNER, "recovery/repo", "/worktrees/recovery", "feature/recovery");

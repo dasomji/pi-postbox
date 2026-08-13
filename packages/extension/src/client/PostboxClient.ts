@@ -198,6 +198,7 @@ export class PostboxClient {
   private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
   private readonly pendingProposals = new Map<string, PendingProposal>();
   private readonly pendingAnswerReads = new Map<string, PendingAnswerRead>();
+  private readonly pendingQueries = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   private readonly liveQuestionChats = new Map<string, string>();
   private readonly terminalQuestionChats = new Map<string, string>();
   private recoveryOffers: QuestionChatRecoveryOffer[] = [];
@@ -388,6 +389,15 @@ export class PostboxClient {
     });
   }
 
+  query(type: "question.list" | "questions.get" | "question.status.list" | "owner.status.get", payload: any): Promise<any> {
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected."));
+    const requestId = `query_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      this.pendingQueries.set(requestId, { resolve, reject });
+      if (!this.send({ type, requestId, payload } as ExtensionClientMessage)) { this.pendingQueries.delete(requestId); reject(new Error("Query could not be sent.")); }
+    });
+  }
+
   listPendingAsks(): PendingAskSnapshot[] {
     return [...this.pendingAsks.values()].map((pending) => ({
       requestId: pending.payload.requestId,
@@ -518,6 +528,11 @@ export class PostboxClient {
           if (!pending || pending.questionId !== parsed.data.payload.question.questionId) return;
           this.pendingAnswerReads.delete(parsed.data.requestId);
           pending.resolve(AnswerReadResultSchema.parse(parsed.data.payload));
+          return;
+        }
+        if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result") {
+          const pending = this.pendingQueries.get(parsed.data.requestId);
+          if (pending) { this.pendingQueries.delete(parsed.data.requestId); pending.resolve(parsed.data.payload); }
           return;
         }
         if (parsed.data.type === "chat.reconcile") {

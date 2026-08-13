@@ -297,23 +297,30 @@ export async function registerExtensionSocket(
       }
 
       if (message.type === "session.register") {
-        registeredSessionId = message.payload.session.sessionId;
-        recoveryOffersComplete = false;
-        pendingRecoveries.clear();
-        const feature = sessionStore.register(connectionId, message.payload);
-        questionChatRelay?.bind(message.payload.session.sessionId, connectionId, socket);
-        broadcaster.broadcast();
-        send(socket, {
-          type: "registered",
-          requestId: message.requestId,
-          payload: { sessionId: message.payload.session.sessionId, presence: "live", feature }
-        });
-        flushAnswerNotifications();
+        try {
+          const feature = sessionStore.register(connectionId, message.payload);
+          registeredSessionId = message.payload.session.sessionId;
+          recoveryOffersComplete = false;
+          pendingRecoveries.clear();
+          questionChatRelay?.bind(message.payload.session.sessionId, connectionId, socket);
+          broadcaster.broadcast();
+          send(socket, {
+            type: "registered",
+            requestId: message.requestId,
+            payload: { sessionId: message.payload.session.sessionId, presence: "live", feature }
+          });
+          flushAnswerNotifications();
+        } catch (error) {
+          sendAskError(socket, message.requestId, "session_registration_failed", error);
+        }
         return;
       }
 
       if (message.type === "feature.action") {
         try {
+          if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+            throw new Error("Feature actions require this connection's registered session");
+          }
           const feature = sessionStore.selectFeature(message.payload.sessionId, message.payload);
           broadcaster.broadcast();
           send(socket, { type: "registered", requestId: message.requestId,
@@ -330,13 +337,25 @@ export async function registerExtensionSocket(
       }
 
       if (message.type === "question.list") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "scope_not_found", new Error("Question discovery requires this connection's registered session"));
+          return;
+        }
         const scope = sessionStore.groupingForSession(message.payload.sessionId);
         if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
         const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
-        const result = requestStore.listQuestions({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId } });
+        const result = requestStore.listQuestions({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload });
         send(socket, { type: "question.list.result", requestId: message.requestId, payload: { scope, ...result } });
         return;
       }
+      if (message.type === "questions.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestions(message.payload) }); return; }
+      if (message.type === "question.status.list") {
+        const scope = sessionStore.groupingForSession(message.payload.sessionId);
+        const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
+        if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
+        send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.listQuestionStatus({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload }) }); return;
+      }
+      if (message.type === "owner.status.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: sessionStore.getPostboxOwnerStatus(message.payload.owners) }); return; }
 
       if (message.type === "heartbeat") {
         sessionStore.heartbeat(connectionId, message.payload.sessionId, message.payload.semanticState);
