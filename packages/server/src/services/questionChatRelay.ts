@@ -361,6 +361,15 @@ export class QuestionChatRelay {
     this.activeChats.delete(requestId);
   }
 
+  disposeNonTerminal(requestId: string): void {
+    const identity = this.activeChats.get(requestId);
+    if (!identity) return;
+    this.activeChats.delete(requestId);
+    this.subscribers.delete(requestId);
+    const extension = this.extensions.get(identity.ownerSessionId);
+    if (extension?.socket.readyState === 1) this.send(extension.socket, { type: "chat.cleanup", payload: { requestId, reason: "wrong_owner" } });
+  }
+
   rejectRecovery(identity: QuestionChatIdentity, reason: QuestionChatCleanupReason): void {
     const { requestId, ownerSessionId } = identity;
     this.activeChats.delete(requestId);

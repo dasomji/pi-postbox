@@ -28,7 +28,7 @@ describe("complete asynchronous adapter/browser/API loop", () => {
       registration: {
         machine: { machineId: "machine-complete", hostname: "workstation" },
         project: { projectId: "project-complete", name: "postbox", cwd: "/repo" },
-        session: { sessionId: "session-complete", cwd: "/repo", semanticState: "working",
+        session: { sessionId: "session-complete", cwd: "/repo", semanticState: "idle",
           owner: { harness: "pi", ownerId: "12345678-1234-4123-8123-123456789abc" } }
       },
       onStatus: (status) => { if (status === "connected") connected(); },

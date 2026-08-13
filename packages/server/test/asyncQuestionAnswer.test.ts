@@ -128,7 +128,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
       owner.on("message", listener);
     });
     const updated = nextMessage(owner);
-    owner.send(JSON.stringify({ type: "session.update", payload: { sessionId: "control-session-1", semanticState: "working" } } satisfies ExtensionClientMessage));
+    owner.send(JSON.stringify({ type: "session.update", payload: { sessionId: "control-session-1", semanticState: "idle" } } satisfies ExtensionClientMessage));
     expect(await updated).toMatchObject({ type: "ack", payload: { type: "session.update" } });
     const replay = await notification;
     expect(observed).toHaveLength(1);
@@ -161,7 +161,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
     const databasePath = join(directory, "postbox.sqlite");
     let app = await createPostboxApp({ databasePath, expirySweepMs: 0 });
     apps.push(app);
-    const socket = await connectOwner(app);
+    const socket = await connectOwner(app, "idle");
 
     await expect(createQuestion(socket)).resolves.toMatchObject({
       type: "ask.created",
@@ -181,7 +181,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
   it("creates an unread Answer ID and sends the connected owner one content-free ping", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);
-    const socket = await connectOwner(app);
+    const socket = await connectOwner(app, "idle");
     await createQuestion(socket);
 
     const ping = nextMessage(socket);
@@ -213,7 +213,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
   it("atomically records the first get_answer reader and retains full content for later readers", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);
-    const socket = await connectOwner(app);
+    const socket = await connectOwner(app, "idle");
     await createQuestion(socket);
     const notification = nextMessage(socket);
     await app.inject({

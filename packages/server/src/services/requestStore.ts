@@ -96,6 +96,7 @@ export class RequestStore {
   private readonly listeners = new Map<string, Set<ResolutionListener>>();
   private readonly globalResolutionListeners = new Set<ResolutionListener>();
   private readonly answerAvailableListeners = new Set<AnswerAvailableListener>();
+  private readonly claimedOwnerNotifications = new Set<string>();
   private readonly ownerWaits = new Map<string, {
     owner: { harness: string; ownerId: string };
     resolve: (result: Record<string, unknown>) => void;
@@ -774,7 +775,7 @@ export class RequestStore {
   pendingOwnerNotifications(owner: { harness: string; ownerId: string }): AnswerAvailable[] {
     const rows = this.db.prepare(`SELECT a.answer_id, q.question_id, q.question_json, q.owner_harness, q.owner_owner_id
       FROM answers a JOIN questions q ON q.question_id = a.question_id
-      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND a.owner_notification_delivered_at IS NULL
+      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND a.owner_notification_delivered_at IS NULL AND a.first_reader_harness IS NULL
       ORDER BY a.created_at ASC`).all(owner.harness, owner.ownerId) as Array<{
         answer_id: string; question_id: string; question_json: string; owner_harness: string; owner_owner_id: string
       }>;
@@ -783,11 +784,33 @@ export class RequestStore {
       ownerHarness: row.owner_harness, ownerId: row.owner_owner_id }));
   }
 
+  claimProactiveAnswerNotifications(owner: { harness: string; ownerId: string }, sessions?: SessionStore): AnswerAvailable[] {
+    if (sessions) {
+      const status = sessions.getPostboxOwnerStatus([owner])[0];
+      if (status?.presence !== "live" || status.semanticState !== "idle") return [];
+    }
+    return this.pendingOwnerNotifications(owner).filter((answer) => {
+      if (this.claimedOwnerNotifications.has(answer.answerId)) return false;
+      this.claimedOwnerNotifications.add(answer.answerId);
+      return true;
+    });
+  }
+
+  releaseProactiveNotificationClaims(owner: { harness: string; ownerId: string }): void {
+    for (const answer of this.pendingOwnerNotifications(owner)) this.claimedOwnerNotifications.delete(answer.answerId);
+  }
+
   acknowledgeOwnerNotification(answerId: string, owner: { harness: string; ownerId: string }): boolean {
-    return this.db.prepare(`UPDATE answers SET owner_notification_delivered_at = ? WHERE answer_id = ?
+    const acknowledged = this.db.prepare(`UPDATE answers SET owner_notification_delivered_at = ? WHERE answer_id = ?
       AND owner_notification_delivered_at IS NULL AND question_id IN
       (SELECT question_id FROM questions WHERE owner_harness = ? AND owner_owner_id = ?)`)
       .run(new Date(this.now()).toISOString(), answerId, owner.harness, owner.ownerId).changes === 1;
+    if (acknowledged) this.claimedOwnerNotifications.delete(answerId);
+    return acknowledged;
+  }
+
+  async disposePrivateQuestionChat(questionId: string, _reason: string, dispose: (questionId: string) => Promise<void>): Promise<void> {
+    await dispose(questionId);
   }
 
   getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {

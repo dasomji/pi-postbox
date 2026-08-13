@@ -92,7 +92,7 @@ export async function registerExtensionSocket(
       if (!registeredSessionId || socket.readyState !== 1 || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
       const owner = sessionStore.ownerForSession(registeredSessionId);
       if (!owner || !sessionStore.isConnectedNonWaitingOwner(registeredSessionId, owner)) return;
-      for (const answer of requestStore.pendingOwnerNotifications(owner)) {
+      for (const answer of requestStore.claimProactiveAnswerNotifications(owner, sessionStore)) {
         send(socket, {
           type: "answer.available",
           requestId: `answer_available_${answer.answerId}`,
@@ -372,7 +372,11 @@ export async function registerExtensionSocket(
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Question updates require this connection's registered session")); return; }
         const actor = sessionStore.ownerForSession(message.payload.sessionId);
         if (!actor) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
-        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update, sessionStore) }); }
+        try {
+          const payload = requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update, sessionStore);
+          if (message.payload.update.action === "transfer" || message.payload.update.action === "takeover") questionChatRelay?.disposeNonTerminal(message.payload.questionId);
+          send(socket, { type: "query.result", requestId: message.requestId, payload });
+        }
         catch (error) { sendAskError(socket, message.requestId, "question_update_failed", error); }
         return;
       }
@@ -513,6 +517,12 @@ export async function registerExtensionSocket(
     socket.on("close", () => {
       for (const controller of waitAbortControllers.values()) controller.abort();
       waitAbortControllers.clear();
+      if (registeredSessionId) {
+        try {
+          const owner = sessionStore.ownerForSession(registeredSessionId);
+          if (owner) requestStore.releaseProactiveNotificationClaims(owner);
+        } catch { /* app teardown may close SQLite before the socket close callback */ }
+      }
       for (const unsubscribe of unsubscribers) unsubscribe();
       unsubscribers.clear();
       sessionStore.disconnectConnection(connectionId);
