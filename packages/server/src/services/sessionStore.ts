@@ -147,10 +147,10 @@ export class SessionStore {
       INSERT INTO sessions (
         session_id, machine_id, project_id, title, cwd, branch, worktree_path, semantic_state,
         last_heartbeat_at, connected_at, disconnected_at, shutdown_at, agent_session_id,
-        agent_session_path, leaf_id, created_at, updated_at
+        agent_session_path, leaf_id, owner_harness, owner_id, created_at, updated_at
       ) VALUES (
         @sessionId, @machineId, @projectId, @title, @cwd, @branch, @worktreePath, @semanticState,
-        @nowIso, @nowIso, NULL, NULL, @agentSessionId, @agentSessionPath, @leafId, @nowIso, @nowIso
+        @nowIso, @nowIso, NULL, NULL, @agentSessionId, @agentSessionPath, @leafId, @ownerHarness, @ownerId, @nowIso, @nowIso
       )
       ON CONFLICT(session_id) DO UPDATE SET
         machine_id = excluded.machine_id,
@@ -167,10 +167,36 @@ export class SessionStore {
         agent_session_id = excluded.agent_session_id,
         agent_session_path = excluded.agent_session_path,
         leaf_id = excluded.leaf_id,
+        owner_harness = excluded.owner_harness,
+        owner_id = excluded.owner_id,
         updated_at = excluded.updated_at
     `);
 
     const transaction = this.db.transaction(() => {
+      const owner = payload.session.owner ?? {
+        harness: "pi" as const,
+        ownerId: payload.session.agentSessionId ?? payload.session.sessionId
+      };
+      this.db.prepare(`INSERT INTO owners (
+        harness, owner_id, harness_session_id, parent_owner_id, root_owner_id, depth, path, task_label, created_at, updated_at
+      ) VALUES (@harness, @ownerId, @harnessSessionId, @parentOwnerId, @rootOwnerId, @depth, @path, @taskLabel, @nowIso, @nowIso)
+      ON CONFLICT(harness, owner_id) DO UPDATE SET
+        harness_session_id = COALESCE(excluded.harness_session_id, owners.harness_session_id),
+        parent_owner_id = COALESCE(excluded.parent_owner_id, owners.parent_owner_id),
+        root_owner_id = COALESCE(excluded.root_owner_id, owners.root_owner_id),
+        depth = COALESCE(excluded.depth, owners.depth),
+        path = COALESCE(excluded.path, owners.path),
+        task_label = COALESCE(excluded.task_label, owners.task_label),
+        updated_at = excluded.updated_at`).run({
+          ...owner,
+          harnessSessionId: payload.session.lineage?.harnessSessionId ?? null,
+          parentOwnerId: payload.session.lineage?.parentOwnerId ?? null,
+          rootOwnerId: payload.session.lineage?.rootOwnerId ?? null,
+          depth: payload.session.lineage?.depth ?? null,
+          path: payload.session.lineage?.path ?? null,
+          taskLabel: payload.session.lineage?.taskLabel ?? null,
+          nowIso
+        });
       insertMachine.run({ ...payload.machine, displayName: payload.machine.displayName ?? null, nowIso });
       insertProject.run({
         ...payload.project,
@@ -199,6 +225,8 @@ export class SessionStore {
         agentSessionId: payload.session.agentSessionId ?? null,
         agentSessionPath: payload.session.agentSessionPath ?? null,
         leafId: payload.session.leafId ?? null,
+        ownerHarness: owner.harness,
+        ownerId: owner.ownerId,
         nowIso
       });
     });

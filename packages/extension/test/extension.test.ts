@@ -90,7 +90,7 @@ vi.mock("../src/questionChatRuntime.js", async (importOriginal) => {
 
 import { toExtensionSocketUrl } from "../src/client/PostboxClient.js";
 import { getMachineIdentity } from "../src/machineIdentity.js";
-import postboxExtension, { startRegistration } from "../src/index.js";
+import postboxExtension, { collectRegistrationPayload, startRegistration } from "../src/index.js";
 import { collectSessionMetadata } from "../src/sessionMetadata.js";
 
 const dirs: string[] = [];
@@ -193,6 +193,22 @@ describe("Pi Postbox extension registration", () => {
 
     expect(first.sessionId).toBe(firstReconnect.sessionId);
     expect(replacement.sessionId).not.toBe(first.sessionId);
+  });
+
+  it("supplies Pi's actual session UUID as owner identity from the harness adapter", async () => {
+    const env = await tempConfigEnv();
+    const payload = await collectRegistrationPayload(
+      { getSessionName: () => "Harness-owned identity" },
+      { cwd: process.cwd(), sessionManager: {
+        getSessionId: () => "12345678-1234-4123-8123-123456789abc",
+        getSessionFile: () => "/tmp/2026-08-13_12345678-1234-4123-8123-123456789abc.jsonl",
+        getLeafId: () => "leaf-1"
+      } },
+      env
+    );
+
+    expect(payload.session.owner).toEqual({ harness: "pi", ownerId: "12345678-1234-4123-8123-123456789abc" });
+    expect(payload.session.agentSessionId).toBe("12345678-1234-4123-8123-123456789abc");
   });
 
   it("preserves a generated session identity across reload but rotates it on replacement", async () => {

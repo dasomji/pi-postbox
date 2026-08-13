@@ -34,6 +34,7 @@ interface PiLikeContext {
     setWidget?: (key: string, value: string[]) => void;
   };
   sessionManager?: {
+    getSessionId?: () => string;
     getSessionFile?: () => string | undefined;
     getLeafId?: () => string | undefined;
   };

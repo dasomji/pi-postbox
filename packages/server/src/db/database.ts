@@ -62,6 +62,8 @@ function runMigrations(db: SqliteDatabase): void {
       agent_session_id TEXT,
       agent_session_path TEXT,
       leaf_id TEXT,
+      owner_harness TEXT,
+      owner_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -107,6 +109,15 @@ function runMigrations(db: SqliteDatabase): void {
       owner_harness TEXT NOT NULL,
       owner_owner_id TEXT NOT NULL,
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      legacy_request_id TEXT UNIQUE,
+      mode TEXT NOT NULL DEFAULT 'single',
+      urgency TEXT NOT NULL DEFAULT 'normal',
+      question_json TEXT NOT NULL DEFAULT '{}',
+      options_json TEXT NOT NULL DEFAULT '[]',
+      context_json TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at TEXT,
+      resolved_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (creator_harness, creator_owner_id) REFERENCES owners(harness, owner_id),
@@ -117,6 +128,10 @@ function runMigrations(db: SqliteDatabase): void {
       answer_id TEXT PRIMARY KEY,
       question_id TEXT NOT NULL REFERENCES questions(question_id),
       question_revision INTEGER NOT NULL CHECK (question_revision >= 1),
+      status TEXT NOT NULL DEFAULT 'answered',
+      selected_values_json TEXT NOT NULL DEFAULT '[]',
+      note TEXT,
+      rationale TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -179,6 +194,39 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "ask_requests", "context_json", "TEXT");
   ensureColumn(db, "ask_requests", "fork_reference_json", "TEXT");
   ensureColumn(db, "ask_requests", "expires_at", "TEXT");
+  ensureColumn(db, "sessions", "owner_harness", "TEXT");
+  ensureColumn(db, "sessions", "owner_id", "TEXT");
+  ensureColumn(db, "questions", "legacy_request_id", "TEXT");
+  ensureColumn(db, "questions", "mode", "TEXT NOT NULL DEFAULT 'single'");
+  ensureColumn(db, "questions", "urgency", "TEXT NOT NULL DEFAULT 'normal'");
+  ensureColumn(db, "questions", "question_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, "questions", "options_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "questions", "context_json", "TEXT");
+  ensureColumn(db, "questions", "status", "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, "questions", "expires_at", "TEXT");
+  ensureColumn(db, "questions", "resolved_at", "TEXT");
+  ensureColumn(db, "answers", "status", "TEXT NOT NULL DEFAULT 'answered'");
+  ensureColumn(db, "answers", "selected_values_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "answers", "note", "TEXT");
+  ensureColumn(db, "answers", "rationale", "TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_legacy_request ON questions(legacy_request_id)");
+  db.exec(`
+    INSERT OR IGNORE INTO owners (harness, owner_id, created_at, updated_at)
+      SELECT 'pi', COALESCE(agent_session_id, session_id), created_at, updated_at FROM sessions;
+    UPDATE sessions SET owner_harness = 'pi', owner_id = COALESCE(agent_session_id, session_id)
+      WHERE owner_harness IS NULL OR owner_id IS NULL;
+    INSERT OR IGNORE INTO questions (
+      question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
+      revision, mode, urgency, question_json, options_json, context_json, status, expires_at, resolved_at, created_at, updated_at
+    ) SELECT r.request_id, r.request_id, s.owner_harness, s.owner_id, s.owner_harness, s.owner_id,
+      1, r.mode, r.urgency, COALESCE(r.question_json, json_object('prompt', r.prompt)), r.options_json,
+      r.context_json, r.status, r.expires_at, r.resolved_at, r.created_at, r.updated_at
+      FROM ask_requests r JOIN sessions s ON s.session_id = r.session_id;
+    INSERT OR IGNORE INTO answers (
+      answer_id, question_id, question_revision, status, selected_values_json, note, rationale, created_at
+    ) SELECT 'legacy-answer:' || request_id, request_id, 1, 'answered', selected_values_json, note, rationale, resolved_at
+      FROM ask_requests WHERE status = 'answered' AND resolved_at IS NOT NULL;
+  `);
 }
 
 function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {

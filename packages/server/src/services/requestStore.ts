@@ -91,11 +91,12 @@ export class RequestStore {
     const nowIso = new Date(this.now()).toISOString();
     const expiresAt = parsed.expiresAt ?? new Date(this.now() + this.askTimeoutMs).toISOString();
 
-    const session = this.db.prepare("SELECT session_id FROM sessions WHERE session_id = ?").get(parsed.sessionId);
+    const session = this.db.prepare("SELECT session_id, owner_harness, owner_id FROM sessions WHERE session_id = ?").get(parsed.sessionId) as
+      { session_id: string; owner_harness: string | null; owner_id: string | null } | undefined;
     if (!session) throw new RequestStoreError("session_not_found", "Cannot create an ask for an unknown session");
+    if (!session.owner_harness || !session.owner_id) throw new RequestStoreError("session_not_found", "Session has no harness owner identity");
 
-    this.db
-      .prepare(
+    const insertLegacy = this.db.prepare(
         `INSERT INTO ask_requests (
           request_id, session_id, mode, urgency, prompt, question_json, options_json, context_json, fork_reference_json, status,
           selected_values_json, note, rationale, created_at, expires_at, resolved_at, updated_at
@@ -103,8 +104,9 @@ export class RequestStore {
           @requestId, @sessionId, @mode, @urgency, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, 'pending',
           NULL, NULL, NULL, @nowIso, @expiresAt, NULL, @nowIso
         )`
-      )
-      .run({
+      );
+    const createDecision = this.db.transaction(() => {
+      insertLegacy.run({
         requestId: parsed.requestId,
         sessionId: parsed.sessionId,
         mode: parsed.mode,
@@ -117,6 +119,25 @@ export class RequestStore {
         nowIso,
         expiresAt
       });
+      this.db.prepare(`INSERT INTO questions (
+        question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
+        revision, mode, urgency, question_json, options_json, context_json, status, expires_at, resolved_at, created_at, updated_at
+      ) VALUES (@requestId, @requestId, @harness, @ownerId, @harness, @ownerId,
+        1, @mode, @urgency, @questionJson, @optionsJson, @contextJson, 'pending', @expiresAt, NULL, @nowIso, @nowIso)`)
+        .run({
+          requestId: parsed.requestId,
+          harness: session.owner_harness,
+          ownerId: session.owner_id,
+          mode: parsed.mode,
+          urgency: parsed.urgency,
+          questionJson: JSON.stringify(parsed.question),
+          optionsJson: JSON.stringify(parsed.options),
+          contextJson: JSON.stringify(parsed.context),
+          expiresAt,
+          nowIso
+        });
+    });
+    createDecision();
 
     const snapshot = this.get(parsed.requestId);
     if (!snapshot) throw new Error("created request could not be loaded");
@@ -151,7 +172,10 @@ export class RequestStore {
       const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
       if (!row) throw new RequestStoreError("request_not_found", "Question not found.");
       if (row.status !== "pending") throw new RequestStoreError("request_terminal", "Question is no longer pending.");
-      if (row.session_id !== ownerSessionId) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
+      const ownsQuestion = this.db.prepare(`SELECT 1 FROM questions q JOIN sessions s
+        ON s.owner_harness = q.owner_harness AND s.owner_id = q.owner_owner_id
+        WHERE q.legacy_request_id = ? AND s.session_id = ? AND q.status = 'pending'`).get(requestId, ownerSessionId);
+      if (!ownsQuestion) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
 
       const parsed = ProposeAnswerPayloadSchema.safeParse(payload);
       if (!parsed.success || normalizeProposedOptionLabel(parsed.data.label).length === 0) {
@@ -188,7 +212,6 @@ export class RequestStore {
          SET options_json = @optionsJson,
              updated_at = @updatedAt
          WHERE request_id = @requestId
-           AND session_id = @ownerSessionId
            AND status = 'pending'`
       ).run({
         requestId,
@@ -198,6 +221,13 @@ export class RequestStore {
       }).changes;
 
       if (changes !== 1) throw new RequestStoreError("request_terminal", "Question is no longer pending.");
+      const durableChanges = this.db.prepare(`UPDATE questions SET options_json = @optionsJson, revision = revision + 1, updated_at = @updatedAt
+        WHERE legacy_request_id = @requestId AND owner_harness = (
+          SELECT owner_harness FROM sessions WHERE session_id = @ownerSessionId
+        ) AND owner_owner_id = (
+          SELECT owner_id FROM sessions WHERE session_id = @ownerSessionId
+        ) AND status = 'pending'`).run({ requestId, ownerSessionId, optionsJson: JSON.stringify([...options, option]), updatedAt }).changes;
+      if (durableChanges !== 1) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
       const request = this.get(requestId);
       if (!request) throw new Error("updated request could not be loaded");
       appended = { option, request };
@@ -238,6 +268,15 @@ export class RequestStore {
         }).changes;
 
       if (changes !== 1) throw new RequestStoreError("request_already_resolved", "Ask request is already resolved");
+      const question = this.db.prepare(`UPDATE questions SET status = 'answered', resolved_at = @resolvedAt, updated_at = @resolvedAt
+        WHERE legacy_request_id = @requestId AND status = 'pending' RETURNING question_id, revision`)
+        .get({ requestId, resolvedAt }) as { question_id: string; revision: number } | undefined;
+      if (!question) throw new Error("durable question could not be answered");
+      this.db.prepare(`INSERT INTO answers (
+        answer_id, question_id, question_revision, status, selected_values_json, note, rationale, created_at
+      ) VALUES (@answerId, @questionId, @revision, 'answered', @selectedValuesJson, @note, @rationale, @resolvedAt)`)
+        .run({ answerId: randomUUID(), questionId: question.question_id, revision: question.revision,
+          selectedValuesJson: JSON.stringify(parsed.selectedValues), note: parsed.note ?? null, rationale: parsed.rationale ?? null, resolvedAt });
       result = {
         status: "answered",
         requestId,
@@ -276,6 +315,8 @@ export class RequestStore {
         .run({ requestId, note: parsed.note ?? null, rationale: parsed.rationale ?? null, resolvedAt }).changes;
 
       if (changes !== 1) throw new RequestStoreError("request_already_resolved", "Ask request is already resolved");
+      this.db.prepare(`UPDATE questions SET status = 'cancelled', resolved_at = @resolvedAt, updated_at = @resolvedAt
+        WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId, resolvedAt });
       result = {
         status: "cancelled",
         requestId,
@@ -316,6 +357,8 @@ export class RequestStore {
           .run({ requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso }).changes;
 
         if (changes === 1) {
+          this.db.prepare(`UPDATE questions SET status = 'cancelled', resolved_at = @resolvedAt, updated_at = @resolvedAt
+            WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId: row.request_id, resolvedAt: nowIso });
           results.push({ status: "cancelled", requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso });
         }
       }
@@ -349,6 +392,8 @@ export class RequestStore {
           .run({ requestId: row.request_id, rationale: EXPIRED_RATIONALE, resolvedAt: nowIso }).changes;
 
         if (changes === 1) {
+          this.db.prepare(`UPDATE questions SET status = 'expired', resolved_at = @resolvedAt, updated_at = @resolvedAt
+            WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId: row.request_id, resolvedAt: nowIso });
           results.push({ status: "expired", requestId: row.request_id, rationale: EXPIRED_RATIONALE, resolvedAt: nowIso });
         }
       }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AskRequestSnapshotSchema } from "./ask.js";
+import { HarnessLineageSchema, OwnerIdentitySchema } from "./ownerIdentity.js";
 
 export const SemanticStateSchema = z.enum(["working", "blocked", "idle", "unknown"]);
 export const PresenceStateSchema = z.enum(["live", "stale", "offline"]);
@@ -44,7 +45,9 @@ export const SessionRegistrationSchema = z.object({
   semanticState: SemanticStateSchema.default("unknown"),
   agentSessionId: z.string().min(1).optional(),
   agentSessionPath: z.string().min(1).optional(),
-  leafId: z.string().min(1).optional()
+  leafId: z.string().min(1).optional(),
+  owner: OwnerIdentitySchema.optional(),
+  lineage: HarnessLineageSchema.optional()
 });
 
 export const SessionRegisterPayloadSchema = z.object({

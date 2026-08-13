@@ -4,6 +4,7 @@ import type { SessionRegistration } from "@pi-postbox/protocol";
 interface SessionLikeContext {
   cwd?: string;
   sessionManager?: {
+    getSessionId?: () => string;
     getSessionFile?: () => string | undefined;
     getLeafId?: () => string | undefined;
   };
@@ -26,6 +27,7 @@ export function collectSessionMetadata(
 ): SessionRegistration {
   const cwd = ctx.cwd ?? process.cwd();
   const sessionPath = ctx.sessionManager?.getSessionFile?.();
+  const piSessionId = ctx.sessionManager?.getSessionId?.();
   const sessionId = sessionPath ? stableId(sessionPath) : stableId(fallbackSessionIdentity ?? `${cwd}:${process.pid}`);
 
   return {
@@ -35,7 +37,9 @@ export function collectSessionMetadata(
     branch,
     worktreePath,
     semanticState: "idle",
+    agentSessionId: piSessionId,
     agentSessionPath: sessionPath,
-    leafId: ctx.sessionManager?.getLeafId?.()
+    leafId: ctx.sessionManager?.getLeafId?.(),
+    owner: { harness: "pi", ownerId: piSessionId ?? sessionId }
   };
 }
