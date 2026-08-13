@@ -8,6 +8,8 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import WebSocket from "ws";
 import Database from "better-sqlite3";
+import { executeAskPostbox } from "../packages/extension/dist/tools/askPostbox.js";
+import { createWaitForPostboxTool } from "../packages/extension/dist/index.js";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const cliPath = join(root, "packages/server/dist/cli.js");
@@ -780,11 +782,23 @@ async function main() {
     }
 
     const migrationState = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
-    assert(migrationState.requests.some((request) => request.requestId === "legacy-pending"), "Migrated pending Question is not visible");
+    const migratedPending = migrationState.requests.find((request) => request.requestId === "legacy-pending");
+    assert(migratedPending?.status === "pending" && migratedPending.owner?.harness === "legacy",
+      "Migrated pending Question did not retain offline legacy-owner provenance");
     const migratedIds = new Set(history.history.map((record) => record.request.requestId));
     for (const id of ["legacy-answered", "legacy-cancelled", "legacy-expired", "legacy-rich-context", "legacy-urgency"]) {
       assert(migratedIds.has(id), `Migrated History omitted ${id}`);
     }
+    const migratedById = new Map(history.history.map((record) => [record.request.requestId, record.request]));
+    assert(migratedById.get("legacy-answered")?.result?.status === "answered" &&
+      migratedById.get("legacy-answered")?.result?.selectedValues?.[0] === "yes", "Migrated answered result was incomplete");
+    assert(migratedById.get("legacy-cancelled")?.result?.status === "cancelled", "Migrated cancelled result was incomplete");
+    assert(migratedById.get("legacy-expired")?.result?.status === "expired", "Migrated expired result was incomplete");
+    assert(migratedById.get("legacy-rich-context")?.question?.context === "legacy detail" &&
+      migratedById.get("legacy-rich-context")?.context?.problemContext === "legacy problem",
+      "Migrated rich Question context was not preserved");
+    assert([...migratedById.values()].every((request) => request.owner?.harness === "legacy" || !request.requestId.startsWith("legacy-")),
+      "Legacy migration heuristically borrowed a live harness owner");
     assert(!JSON.stringify({ migrationState, history }).includes('"urgency"'), "Historical urgency leaked into owner contracts");
     const migrationDb = new Database(databasePath, { readonly: true });
     const migratedAnswer = migrationDb.prepare(`SELECT first_read_at, owner_notification_delivered_at FROM answers
@@ -820,17 +834,30 @@ async function main() {
       assert(message.type === "ask.created", `${id} was not created asynchronously`);
     };
 
-    // createOrderedBatch uses ordered async receipts and a durable parent ID.
+    // Drive the published ask_postbox batch tool through a fake adapter backed
+    // by the real packaged server WebSocket.
     const parentId = `smoke-parent-${randomUUID()}`;
     const childId = `smoke-child-${randomUUID()}`;
-    const orderedBatch = [
-      { localRef: "parent", id: parentId },
-      { localRef: "child", id: childId, parent: { localRef: "parent" } }
-    ];
-    for (const draft of orderedBatch) {
-      const parentQuestionId = draft.parent ? orderedBatch.find((candidate) => candidate.localRef === draft.parent.localRef)?.id : undefined;
-      await sendCreate(socket, draft.id, sessionId, parentQuestionId);
-    }
+    const createOrderedBatch = (payload) => {
+      const ids = new Map();
+      const items = [];
+      return payload.questions.reduce(async (prior, draft) => {
+        await prior;
+        const parentQuestionId = draft.parent && "localRef" in draft.parent ? ids.get(draft.parent.localRef) : draft.parent?.questionId;
+        await sendCreate(socket, draft.requestId, payload.sessionId, parentQuestionId);
+        ids.set(draft.localRef, draft.requestId);
+        items.push({ localRef: draft.localRef, status: "created", questionId: draft.requestId, revision: 1 });
+      }, Promise.resolve()).then(() => ({ status: "created", items }));
+    };
+    const batchReceipt = await executeAskPostbox({ mode: "batch", questions: [
+      { localRef: "parent", requestId: parentId, question: `${parentId}?`, options: [{ value: "yes", label: "Yes" }],
+        context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise the published batch tool." } },
+      { localRef: "child", requestId: childId, parent: { localRef: "parent" }, question: `${childId}?`, options: [{ value: "yes", label: "Yes" }],
+        context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise ordered localRef parenting." } }
+    ] }, { createAskBatch: createOrderedBatch }, sessionId);
+    assert(batchReceipt.status === "created" && batchReceipt.items.length === 2 &&
+      batchReceipt.items[1].localRef === "child" && batchReceipt.items[1].questionId === childId,
+      "Published ask_postbox batch receipt did not preserve localRef ordering");
     const simultaneous = await sse.nextStateMatching((snapshot) =>
       snapshot.requests.some((request) => request.requestId === parentId) &&
       snapshot.requests.some((request) => request.requestId === childId));
@@ -853,6 +880,22 @@ async function main() {
     socket.send(JSON.stringify({ type: "answer.get", requestId: "explicit-get-answer", payload: { questionId: parentId } }));
     const explicitAnswerMessage = await explicitAnswer;
     assert(explicitAnswerMessage.type === "answer.result", `Explicit get_answer did not return the full Answer (${JSON.stringify(explicitAnswerMessage)})`);
+    const duplicateWindow = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "heartbeat", requestId: "ping-dedupe-heartbeat", payload: { sessionId, semanticState: "idle" } }));
+    assert((await duplicateWindow).type === "ack", "A second visible notification appeared during the heartbeat dedupe window");
+    socket.close();
+    await new Promise((resolvePromise) => socket.once("close", resolvePromise));
+    socket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    // Re-register the original durable session identity, not a replacement.
+    const reconnect = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "session.register", requestId: "ping-dedupe-reconnect", payload: {
+      machine: { machineId: "smoke-machine", hostname: "smoke-host" }, project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
+      session: { sessionId, cwd: root, semanticState: "idle", owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" } }
+    } }));
+    assert((await reconnect).type === "registered", "Pi owner did not reconnect for notification dedupe proof");
+    const reconnectDuplicateWindow = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "heartbeat", requestId: "ping-dedupe-after-reconnect", payload: { sessionId, semanticState: "idle" } }));
+    assert((await reconnectDuplicateWindow).type === "ack", "Acknowledged Answer replayed a visible notification after reconnect/restart");
 
     const waitResult = nextMessage(socket);
     socket.send(JSON.stringify({ type: "postbox.wait", requestId: "wait.start", payload: { sessionId } }));
@@ -908,17 +951,58 @@ async function main() {
     codexSocket.send(JSON.stringify({ type: "question.history.get", requestId: "takeover-history", payload: { questionId: takeoverId } }));
     assert((await questionHistory).type === "query.result", "question.history.get did not retain takeover audit History");
 
-    // Fake adapter capacity is deliberately retained by explicit waits: the
-    // third child is held before transport until cancel/wake releases a slot.
+    claudeSocket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    await registerHarness(claudeSocket, "claude-code", "claude-smoke-owner", "claude");
+    const raceRead = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "answer.get", requestId: "race-read-before-capacity", payload: { questionId: raceId } }));
+    assert((await raceRead).type === "answer.result", "Codex race Answer was not explicitly consumed before capacity test");
+    const capacityPi = `capacity-pi-${randomUUID()}`;
+    const capacityClaude = `capacity-claude-${randomUUID()}`;
+    const capacityCodex = `capacity-codex-${randomUUID()}`;
+    await sendCreate(socket, capacityPi, sessionId);
+    await sendCreate(claudeSocket, capacityClaude, claudeSessionId);
+    await sendCreate(codexSocket, capacityCodex, codexSessionId);
+
+    // Invoke the production wait_for_postbox tool under the fake adapter's
+    // actual runnable-slot limiter for Pi, Claude Code, and Codex.
     const configuredRunnableSlots = 2;
-    let occupiedRunnableSlots = configuredRunnableSlots;
-    const capacityBlocked = occupiedRunnableSlots >= configuredRunnableSlots;
-    assert(capacityBlocked, "wait_for_postbox did not retain configured runnable capacity");
-    occupiedRunnableSlots -= 1; // cancelFreesSlot
-    assert(occupiedRunnableSlots < configuredRunnableSlots, "cancelFreesSlot did not release retained capacity");
-    occupiedRunnableSlots += 1;
-    occupiedRunnableSlots -= 1; // wakeFreesSlot
-    assert(occupiedRunnableSlots < configuredRunnableSlots, "wakeFreesSlot did not release retained capacity");
+    let occupiedRunnableSlots = 0;
+    const runHarnessWait = (harness, target, harnessSessionId, signal) => {
+      if (occupiedRunnableSlots >= configuredRunnableSlots) throw new Error("capacityBlocked");
+      occupiedRunnableSlots += 1;
+      const waitRequestId = `capacity-wait-${harness}`;
+      const tool = createWaitForPostboxTool((toolSignal) => new Promise((resolvePromise, reject) => {
+        const response = nextMessage(target, 10_000);
+        target.send(JSON.stringify({ type: "postbox.wait", requestId: waitRequestId, payload: { sessionId: harnessSessionId } }));
+        const onAbort = () => {
+          target.send(JSON.stringify({ type: "postbox.wait.cancel", requestId: `cancel-${harness}`,
+            payload: { sessionId: harnessSessionId, waitRequestId } }));
+          reject(Object.assign(new Error("cancelled"), { name: "AbortError" }));
+        };
+        toolSignal?.addEventListener("abort", onAbort, { once: true });
+        void response.then((message) => resolvePromise(message.payload), reject);
+      }));
+      return tool.execute(`wait-${harness}`, {}, signal).finally(() => { occupiedRunnableSlots -= 1; });
+    };
+    const piController = new AbortController();
+    const claudeController = new AbortController();
+    const piWait = runHarnessWait("pi", socket, sessionId, piController.signal);
+    const claudeWait = runHarnessWait("claude-code", claudeSocket, claudeSessionId, claudeController.signal);
+    let capacityBlocked = false;
+    try { runHarnessWait("codex", codexSocket, codexSessionId, new AbortController().signal); }
+    catch (error) { capacityBlocked = error instanceof Error && error.message === "capacityBlocked"; }
+    assert(capacityBlocked, "Third harness did not retain configured wait_for_postbox capacity");
+    const wakePi = await fetch(`${baseUrl}/api/requests/${capacityPi}/answer`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(wakePi.status === 200 && (await piWait).details.type === "answer", "wakeFreesSlot did not wake Pi and release capacity");
+    const codexController = new AbortController();
+    const codexWait = runHarnessWait("codex", codexSocket, codexSessionId, codexController.signal);
+    claudeController.abort();
+    await claudeWait.catch((error) => assert(error.name === "AbortError", "cancelFreesSlot returned the wrong error"));
+    const wakeCodex = await fetch(`${baseUrl}/api/requests/${capacityCodex}/answer`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(wakeCodex.status === 200 && (await codexWait).details.type === "answer" && occupiedRunnableSlots === 0,
+      "Codex wait did not wake or release retained capacity");
 
     console.log("Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, restart, and History verified.");
   } finally {
