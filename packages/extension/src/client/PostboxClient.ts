@@ -250,6 +250,7 @@ export class PostboxClient {
     this.recoveryCompleteSent = false;
     this.failPendingProposals("Question Chat proposal stopped before the server responded.");
     this.failPendingAnswerReads("Postbox stopped before the Answer was returned.");
+    this.failPendingQueries("Postbox stopped before the query was returned.");
     this.liveQuestionChats.clear();
     this.terminalQuestionChats.clear();
     this.socket?.close();
@@ -584,6 +585,8 @@ export class PostboxClient {
               this.pendingAnswerReads.delete(parsed.data.requestId);
               read.reject(error);
             }
+            const query = this.pendingQueries.get(parsed.data.requestId);
+            if (query) { this.pendingQueries.delete(parsed.data.requestId); query.reject(error); }
             this.pendingAsks.get(parsed.data.requestId)?.reject(error);
           }
         }
@@ -612,6 +615,7 @@ export class PostboxClient {
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       this.failPendingProposals("Postbox disconnected before the Question Chat proposal completed.");
       this.failPendingAnswerReads("Postbox disconnected before the Answer was returned.");
+      this.failPendingQueries("Postbox disconnected before the query was returned.");
       this.connectionState = "disconnected";
       this.recordConnectionDiagnostic("websocket:disconnected");
       if (this.stopped) return;
@@ -965,6 +969,11 @@ export class PostboxClient {
       this.pendingAnswerReads.delete(commandId);
       pending.reject(new Error(message));
     }
+  }
+
+  private failPendingQueries(message: string): void {
+    for (const pending of this.pendingQueries.values()) pending.reject(new Error(message));
+    this.pendingQueries.clear();
   }
 
   private startUnavailableTimerIfNeeded(pending: PendingAsk): void {

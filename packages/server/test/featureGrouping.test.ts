@@ -100,6 +100,10 @@ describe("server-managed active feature", () => {
     await expect(response).resolves.toMatchObject({ type: "error", requestId: "foreign-feature" });
 
     response = next(first);
+    first.send(JSON.stringify({ type: "question.status.list", requestId: "foreign-status", payload: { sessionId: "session-2" } }));
+    await expect(response).resolves.toMatchObject({ type: "error", requestId: "foreign-status" });
+
+    response = next(first);
     first.send(JSON.stringify({ type: "question.list", requestId: "foreign-list", payload: { sessionId: "session-2" } }));
     await expect(response).resolves.toMatchObject({ type: "error", requestId: "foreign-list" });
   });

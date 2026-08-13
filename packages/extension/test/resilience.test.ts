@@ -110,6 +110,24 @@ function socketUrl(serverUrl: string): string {
 }
 
 describe("PostboxClient pending ask resilience", () => {
+  it("settles discovery queries on correlated error, disconnect, and stop", async () => {
+    FakeSocket.instances = [];
+    const client = createClient(); client.start();
+    const socket = FakeSocket.instances[0]; socket.open();
+    const invalid = client.query("question.list", { sessionId: "session-1", pageSize: 0 });
+    const invalidCommand = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({ type: "error", requestId: invalidCommand.requestId, error: { code: "invalid_message", message: "invalid page size" } });
+    await expect(invalid).rejects.toThrow("invalid page size");
+
+    const disconnected = client.query("question.list", { sessionId: "session-1" });
+    socket.close();
+    await expect(disconnected).rejects.toThrow("disconnected");
+
+    const restarted = createClient(); restarted.start(); const second = FakeSocket.instances.at(-1)!; second.open();
+    const stopped = restarted.query("question.list", { sessionId: "session-1" });
+    restarted.stop();
+    await expect(stopped).rejects.toThrow("stopped");
+  });
   it("settles create receipts only from persistence evidence and survives lost ack through terminal replay", async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];

@@ -350,6 +350,10 @@ export async function registerExtensionSocket(
       }
       if (message.type === "questions.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestions(message.payload) }); return; }
       if (message.type === "question.status.list") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "scope_not_found", new Error("Question status requires this connection's registered session"));
+          return;
+        }
         const scope = sessionStore.groupingForSession(message.payload.sessionId);
         const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
         if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
