@@ -467,6 +467,21 @@ export async function registerExtensionSocket(
         return;
       }
 
+      if (message.type === "ask.batch.create") {
+        try {
+          if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+            throw new RequestStoreError("wrong_owner", "Question batches require this connection's registered session");
+          }
+          expireDue();
+          const receipt = requestStore.createBatch(message.payload.sessionId, message.payload.questions);
+          broadcaster.broadcast();
+          send(socket, { type: "ask.batch.result", requestId: message.requestId, payload: receipt });
+        } catch (error) {
+          sendAskError(socket, message.requestId, "ask_batch_create_failed", error);
+        }
+        return;
+      }
+
       if (message.type === "answer.get") {
         try {
           if (!registeredSessionId) throw new RequestStoreError("wrong_owner", "Register before reading an Answer");

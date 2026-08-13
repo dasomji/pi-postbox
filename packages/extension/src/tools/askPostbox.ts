@@ -146,9 +146,10 @@ export async function executeAskPostbox(
 ): Promise<AskReceipt | AskBatchReceipt> {
   if (input.mode === "batch") {
     if (!("createAskBatch" in client)) throw new Error("Postbox client does not support Question batches");
-    const questions = input.questions.map(({ localRef, parent, ...item }) => ({
-      ...createAskPayload(item, sessionId), localRef, parent
-    }));
+    const questions = input.questions.map(({ localRef, parent, ...item }) => {
+      const { sessionId: _sessionId, ...draft } = createAskPayload(item, sessionId);
+      return { ...draft, localRef, parent };
+    });
     return client.createAskBatch({ sessionId, questions }, signal);
   }
   const payload = createAskPayload(input, sessionId);

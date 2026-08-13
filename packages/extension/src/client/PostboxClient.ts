@@ -7,6 +7,9 @@ import {
   OTHER_OPTION_VALUE,
   type AskResult,
   type AskReceipt,
+  type AskBatchReceipt,
+  AskBatchReceiptSchema,
+  type AskQuestionDraft,
   AskReceiptSchema,
   AnswerReadResultSchema,
   type AnswerReadResult,
@@ -383,6 +386,28 @@ export class PostboxClient {
     return receipt;
   }
 
+  createAskBatch(payload: { sessionId: string; questions: AskQuestionDraft[] }, signal?: AbortSignal): Promise<AskBatchReceipt> {
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question batch was not persisted."));
+    if (signal?.aborted) return Promise.reject(Object.assign(new Error("ask_postbox batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
+    const requestId = `ask_batch_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        if (!this.pendingQueries.delete(requestId)) return;
+        reject(Object.assign(new Error("ask_postbox batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
+      };
+      this.pendingQueries.set(requestId, {
+        resolve: (value) => { signal?.removeEventListener("abort", abort); resolve(AskBatchReceiptSchema.parse(value)); },
+        reject: (error) => { signal?.removeEventListener("abort", abort); reject(error); }
+      });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (!this.send({ type: "ask.batch.create", requestId, payload })) {
+        this.pendingQueries.delete(requestId);
+        signal?.removeEventListener("abort", abort);
+        reject(new Error("Pi Postbox disconnected before the Question batch could be sent."));
+      }
+    });
+  }
+
   getAnswer(questionId: string): Promise<AnswerReadResult> {
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Answer cannot be read."));
     const commandId = `answer_get_${randomUUID()}`;
@@ -553,7 +578,7 @@ export class PostboxClient {
           pending.resolve(AnswerReadResultSchema.parse(parsed.data.payload));
           return;
         }
-        if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result" || parsed.data.type === "postbox.wait.result") {
+        if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result" || parsed.data.type === "postbox.wait.result" || parsed.data.type === "ask.batch.result") {
           const pending = this.pendingQueries.get(parsed.data.requestId);
           if (pending) { this.pendingQueries.delete(parsed.data.requestId); pending.resolve(parsed.data.payload); }
           return;

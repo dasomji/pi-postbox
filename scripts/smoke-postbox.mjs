@@ -10,6 +10,8 @@ import WebSocket from "ws";
 import Database from "better-sqlite3";
 import { executeAskPostbox } from "../packages/extension/dist/tools/askPostbox.js";
 import { createWaitForPostboxTool } from "../packages/extension/dist/index.js";
+import { PostboxClient } from "../packages/extension/dist/client/PostboxClient.js";
+import { AdapterRunnableSlotLimiter, ownerFromNativeIdentity } from "../packages/extension/dist/adapterContract.js";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const cliPath = join(root, "packages/server/dist/cli.js");
@@ -834,30 +836,33 @@ async function main() {
       assert(message.type === "ask.created", `${id} was not created asynchronously`);
     };
 
-    // Drive the published ask_postbox batch tool through a fake adapter backed
-    // by the real packaged server WebSocket.
+    // Drive the published ask_postbox batch tool through the production client
+    // and its correlated batch WebSocket command.
     const parentId = `smoke-parent-${randomUUID()}`;
     const childId = `smoke-child-${randomUUID()}`;
-    const createOrderedBatch = (payload) => {
-      const ids = new Map();
-      const items = [];
-      return payload.questions.reduce(async (prior, draft) => {
-        await prior;
-        const parentQuestionId = draft.parent && "localRef" in draft.parent ? ids.get(draft.parent.localRef) : draft.parent?.questionId;
-        await sendCreate(socket, draft.requestId, payload.sessionId, parentQuestionId);
-        ids.set(draft.localRef, draft.requestId);
-        items.push({ localRef: draft.localRef, status: "created", questionId: draft.requestId, revision: 1 });
-      }, Promise.resolve()).then(() => ({ status: "created", items }));
-    };
+    const batchSessionId = `batch-session-${randomUUID()}`;
+    let batchConnected;
+    const batchReady = new Promise((resolvePromise) => { batchConnected = resolvePromise; });
+    const batchClient = new PostboxClient({ serverUrl: baseUrl, reconnect: false, onStatus: (status) => {
+      if (status === "connected") batchConnected();
+    }, registration: {
+      machine: { machineId: "smoke-machine", hostname: "smoke-host" },
+      project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
+      session: { sessionId: batchSessionId, cwd: root, semanticState: "idle",
+        owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" } }
+    } });
+    batchClient.start();
+    await batchReady;
     const batchReceipt = await executeAskPostbox({ mode: "batch", questions: [
       { localRef: "parent", requestId: parentId, question: `${parentId}?`, options: [{ value: "yes", label: "Yes" }],
         context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise the published batch tool." } },
       { localRef: "child", requestId: childId, parent: { localRef: "parent" }, question: `${childId}?`, options: [{ value: "yes", label: "Yes" }],
         context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise ordered localRef parenting." } }
-    ] }, { createAskBatch: createOrderedBatch }, sessionId);
+    ] }, batchClient, batchSessionId);
     assert(batchReceipt.status === "created" && batchReceipt.items.length === 2 &&
       batchReceipt.items[1].localRef === "child" && batchReceipt.items[1].questionId === childId,
       "Published ask_postbox batch receipt did not preserve localRef ordering");
+    batchClient.stop();
     const simultaneous = await sse.nextStateMatching((snapshot) =>
       snapshot.requests.some((request) => request.requestId === parentId) &&
       snapshot.requests.some((request) => request.requestId === childId));
@@ -965,11 +970,8 @@ async function main() {
 
     // Invoke the production wait_for_postbox tool under the fake adapter's
     // actual runnable-slot limiter for Pi, Claude Code, and Codex.
-    const configuredRunnableSlots = 2;
-    let occupiedRunnableSlots = 0;
+    const limiter = new AdapterRunnableSlotLimiter(2);
     const runHarnessWait = (harness, target, harnessSessionId, signal) => {
-      if (occupiedRunnableSlots >= configuredRunnableSlots) throw new Error("capacityBlocked");
-      occupiedRunnableSlots += 1;
       const waitRequestId = `capacity-wait-${harness}`;
       const tool = createWaitForPostboxTool((toolSignal) => new Promise((resolvePromise, reject) => {
         const response = nextMessage(target, 10_000);
@@ -982,15 +984,19 @@ async function main() {
         toolSignal?.addEventListener("abort", onAbort, { once: true });
         void response.then((message) => resolvePromise(message.payload), reject);
       }));
-      return tool.execute(`wait-${harness}`, {}, signal).finally(() => { occupiedRunnableSlots -= 1; });
+      return limiter.run(() => tool.execute(`wait-${harness}`, {}, signal));
     };
+    assert(ownerFromNativeIdentity({ harness: "pi", sessionUuid: "pi-native-session" }).ownerId === "pi-native-session" &&
+      ownerFromNativeIdentity({ harness: "claude-code", agentId: "claude-native-agent", sessionId: "broader-run" }).ownerId === "claude-native-agent" &&
+      ownerFromNativeIdentity({ harness: "codex", threadId: "codex-native-thread", sessionId: "broader-run" }).ownerId === "codex-native-thread",
+    "Harness adapter identity mapping did not preserve native authority identifiers");
     const piController = new AbortController();
     const claudeController = new AbortController();
     const piWait = runHarnessWait("pi", socket, sessionId, piController.signal);
     const claudeWait = runHarnessWait("claude-code", claudeSocket, claudeSessionId, claudeController.signal);
     let capacityBlocked = false;
     try { runHarnessWait("codex", codexSocket, codexSessionId, new AbortController().signal); }
-    catch (error) { capacityBlocked = error instanceof Error && error.message === "capacityBlocked"; }
+    catch (error) { capacityBlocked = error instanceof Error && error.message === "runnable capacity exhausted"; }
     assert(capacityBlocked, "Third harness did not retain configured wait_for_postbox capacity");
     const wakePi = await fetch(`${baseUrl}/api/requests/${capacityPi}/answer`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
@@ -1001,7 +1007,7 @@ async function main() {
     await claudeWait.catch((error) => assert(error.name === "AbortError", "cancelFreesSlot returned the wrong error"));
     const wakeCodex = await fetch(`${baseUrl}/api/requests/${capacityCodex}/answer`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
-    assert(wakeCodex.status === 200 && (await codexWait).details.type === "answer" && occupiedRunnableSlots === 0,
+    assert(wakeCodex.status === 200 && (await codexWait).details.type === "answer" && limiter.occupiedSlots === 0,
       "Codex wait did not wake or release retained capacity");
 
     console.log("Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, restart, and History verified.");

@@ -3,6 +3,8 @@ import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
+  AskQuestionDraftSchema,
+  AskBatchReceiptSchema,
   AskResultSchema,
   AskStatusSchema,
   UpdateQuestionPayloadSchema,
@@ -68,6 +70,11 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("ask.create"),
     requestId: z.string().min(1).optional(),
     payload: AskCreatePayloadSchema
+  }),
+  z.object({
+    type: z.literal("ask.batch.create"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({ sessionId: z.string().min(1), questions: z.array(AskQuestionDraftSchema).min(1) }).strict()
   }),
   z.object({
     type: z.literal("ask.answer"),
@@ -178,6 +185,11 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("ask.created"),
     requestId: z.string().min(1).optional(),
     payload: z.object({ requestId: z.string().min(1), questionId: z.string().min(1), revision: z.number().int().min(1), status: z.literal("pending") })
+  }),
+  z.object({
+    type: z.literal("ask.batch.result"),
+    requestId: WsCorrelationIdSchema,
+    payload: AskBatchReceiptSchema
   }),
   z.object({
     type: z.literal("answer.available"),
