@@ -92,7 +92,7 @@ export async function registerExtensionSocket(
       if (!registeredSessionId || socket.readyState !== 1 || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
       const owner = sessionStore.ownerForSession(registeredSessionId);
       if (!owner || !sessionStore.isConnectedNonWaitingOwner(registeredSessionId, owner)) return;
-      for (const answer of requestStore.claimProactiveAnswerNotifications(owner, sessionStore)) {
+      for (const answer of requestStore.claimProactiveAnswerNotifications(owner, connectionId, sessionStore)) {
         send(socket, {
           type: "answer.available",
           requestId: `answer_available_${answer.answerId}`,
@@ -340,7 +340,7 @@ export async function registerExtensionSocket(
       if (message.type === "answer.available.ack") {
         if (!registeredSessionId || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
         const owner = sessionStore.ownerForSession(registeredSessionId);
-        if (owner) requestStore.acknowledgeOwnerNotification(message.payload.answerId, owner);
+        if (owner) requestStore.acknowledgeOwnerNotification(message.payload.answerId, owner, connectionId);
         return;
       }
 
@@ -520,7 +520,7 @@ export async function registerExtensionSocket(
       if (registeredSessionId) {
         try {
           const owner = sessionStore.ownerForSession(registeredSessionId);
-          if (owner) requestStore.releaseProactiveNotificationClaims(owner);
+          if (owner) requestStore.releaseProactiveNotificationClaims(owner, connectionId);
         } catch { /* app teardown may close SQLite before the socket close callback */ }
       }
       for (const unsubscribe of unsubscribers) unsubscribe();

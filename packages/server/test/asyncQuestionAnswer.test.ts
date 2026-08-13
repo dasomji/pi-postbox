@@ -33,7 +33,7 @@ function nextMessage(socket: WebSocket): Promise<Record<string, unknown>> {
 
 async function connectOwner(
   app: FastifyInstance,
-  semanticState: "working" | "blocked" = "working",
+  semanticState: "working" | "blocked" | "idle" = "working",
   beforeRegister?: (socket: WebSocket) => void
 ): Promise<WebSocket> {
   if (!app.server.listening) await app.listen({ host: "127.0.0.1", port: 0 });
@@ -85,6 +85,54 @@ async function createQuestion(socket: WebSocket): Promise<Record<string, unknown
 }
 
 describe("one asynchronous Question-to-Answer loop", () => {
+  it("reassigns an unacked ping to the replacement connection without letting the old socket ack or release it", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
+    apps.push(app);
+    const first = await connectOwner(app, "idle");
+    await createQuestion(first);
+    const firstPingPromise = nextMessage(first);
+    const answered = await app.inject({ method: "POST", url: "/api/requests/question-1/answer",
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"] } });
+    const firstPing = await firstPingPromise;
+    const replacementPingPromise = new Promise<Record<string, unknown>>((resolve) => {
+      void connectOwner(app, "idle", (socket) => socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (message.type === "answer.available") resolve(message);
+      }));
+    });
+    const replacementPing = await replacementPingPromise;
+    expect(replacementPing).toMatchObject({ type: "answer.available", payload: { answerId: answered.json().result.answerId } });
+    first.send(JSON.stringify({ type: "answer.available.ack", requestId: firstPing.requestId as string,
+      payload: { answerId: answered.json().result.answerId } } satisfies ExtensionClientMessage));
+    first.close();
+    const replacement = sockets.at(-1)!;
+    replacement.send(JSON.stringify({ type: "answer.available.ack", requestId: replacementPing.requestId as string,
+      payload: { answerId: answered.json().result.answerId } } satisfies ExtensionClientMessage));
+    const barrier = nextMessage(replacement);
+    replacement.send(JSON.stringify({ type: "heartbeat", requestId: "ack-race-barrier",
+      payload: { sessionId: "control-session-1", semanticState: "idle" } } satisfies ExtensionClientMessage));
+    await expect(barrier).resolves.toMatchObject({ type: "ack", requestId: "ack-race-barrier" });
+  });
+
+  it("replays a send-before-ack claim after server restart for client-side durable dedupe", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "postbox-answer-claim-restart-")); directories.push(directory);
+    const databasePath = join(directory, "postbox.sqlite");
+    let app = await createPostboxApp({ databasePath, expirySweepMs: 0 }); apps.push(app);
+    const first = await connectOwner(app, "idle"); await createQuestion(first);
+    const firstPing = nextMessage(first);
+    await app.inject({ method: "POST", url: "/api/requests/question-1/answer", payload: { expectedRevision: 1, selectedValues: ["sqlite"] } });
+    const sent = await firstPing;
+    await app.close(); apps.pop();
+    app = await createPostboxApp({ databasePath, expirySweepMs: 0 }); apps.push(app);
+    const replay = new Promise<Record<string, unknown>>((resolve) => {
+      void connectOwner(app, "idle", (socket) => socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (message.type === "answer.available") resolve(message);
+      }));
+    });
+    await expect(replay).resolves.toMatchObject({ type: "answer.available", payload: { answerId: (sent.payload as any).answerId } });
+  });
+
   it("settles a displaced correlated wait when the same session connection is replaced", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);
