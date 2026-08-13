@@ -9,6 +9,39 @@ import {
 } from "../src/tools/askPostbox.js";
 
 describe("ask_postbox tool", () => {
+  it("returns a pending Question receipt without waiting for the human Answer", async () => {
+    const neverAnswered = new Promise<AskResult>(() => {});
+    const client = {
+      ask: async (payload: AskCreatePayload): Promise<AskResult> => {
+        void payload;
+        return neverAnswered;
+      }
+    };
+
+    const result = await Promise.race([
+      executeAskPostbox(
+        {
+          requestId: "question-async-1",
+          question: "Ship the release?",
+          options: [{ value: "ship", label: "Ship" }],
+          context: {
+            codebaseContext: "Pi Postbox extension.",
+            problemContext: "The agent must continue while a human decides."
+          }
+        },
+        client,
+        "pi-control-session"
+      ),
+      new Promise<"still-waiting">((resolve) => setTimeout(() => resolve("still-waiting"), 20))
+    ]);
+
+    expect(result).toEqual({
+      questionId: "question-async-1",
+      revision: 1,
+      status: "pending"
+    });
+  });
+
   it("exposes finite urgency input and defaults omitted urgency to normal", () => {
     const baseInput = {
       requestId: "ask-urgent",
