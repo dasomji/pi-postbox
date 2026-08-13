@@ -20,6 +20,25 @@ function tableColumns(db: SqliteDatabase, table: string): string[] {
 }
 
 describe("durable decision compatibility migration", () => {
+  it("registers legacy sessions without manufacturing an authoritative owner", () => {
+    const db = openPostboxDatabase(":memory:");
+    databases.push(db);
+    const sessions = new SessionStore(db, () => Date.parse("2026-08-13T00:00:00.000Z"), {
+      staleAfterMs: 1_000,
+      offlineAfterMs: 2_000
+    });
+
+    sessions.register("legacy-connection", {
+      machine: { machineId: "legacy-machine", hostname: "host" },
+      project: { projectId: "legacy-project", name: "repo", cwd: "/repo" },
+      session: { sessionId: "session_file_derived", agentSessionId: "legacy-agent-field", cwd: "/repo", semanticState: "idle" }
+    });
+
+    expect(db.prepare("SELECT owner_harness, owner_id FROM sessions WHERE session_id = ?").get("session_file_derived"))
+      .toEqual({ owner_harness: null, owner_id: null });
+    expect(db.prepare("SELECT harness, owner_id FROM owners").all()).toEqual([]);
+  });
+
   it("adds owners, questions, and separately identified answers beside legacy requests", () => {
     const db = openPostboxDatabase(":memory:");
     databases.push(db);
@@ -146,9 +165,7 @@ describe("durable decision compatibility migration", () => {
     expect(tableColumns(reopened, "owners")).toContain("owner_id");
     expect(tableColumns(reopened, "questions")).toContain("revision");
     expect(tableColumns(reopened, "answers")).toContain("answer_id");
-    expect(reopened.prepare("SELECT status, question_json, options_json FROM questions WHERE question_id = 'legacy-request'").get())
-      .toEqual({ status: "answered", question_json: '{"prompt":"Legacy choice?"}', options_json: '[{"value":"yes","label":"Yes"}]' });
-    expect(reopened.prepare("SELECT status, selected_values_json, note, rationale FROM answers WHERE question_id = 'legacy-request'").get())
-      .toEqual({ status: "answered", selected_values_json: '["yes"]', note: "old note", rationale: "old rationale" });
+    expect(reopened.prepare("SELECT * FROM questions WHERE question_id = 'legacy-request'").get()).toBeUndefined();
+    expect(reopened.prepare("SELECT * FROM answers WHERE question_id = 'legacy-request'").get()).toBeUndefined();
   });
 });

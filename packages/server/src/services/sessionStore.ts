@@ -173,11 +173,8 @@ export class SessionStore {
     `);
 
     const transaction = this.db.transaction(() => {
-      const owner = payload.session.owner ?? {
-        harness: "pi" as const,
-        ownerId: payload.session.agentSessionId ?? payload.session.sessionId
-      };
-      this.db.prepare(`INSERT INTO owners (
+      const owner = payload.session.owner;
+      if (owner) this.db.prepare(`INSERT INTO owners (
         harness, owner_id, harness_session_id, parent_owner_id, root_owner_id, depth, path, task_label, created_at, updated_at
       ) VALUES (@harness, @ownerId, @harnessSessionId, @parentOwnerId, @rootOwnerId, @depth, @path, @taskLabel, @nowIso, @nowIso)
       ON CONFLICT(harness, owner_id) DO UPDATE SET
@@ -225,8 +222,8 @@ export class SessionStore {
         agentSessionId: payload.session.agentSessionId ?? null,
         agentSessionPath: payload.session.agentSessionPath ?? null,
         leafId: payload.session.leafId ?? null,
-        ownerHarness: owner.harness,
-        ownerId: owner.ownerId,
+        ownerHarness: owner?.harness ?? null,
+        ownerId: owner?.ownerId ?? null,
         nowIso
       });
     });

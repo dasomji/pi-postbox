@@ -94,7 +94,6 @@ export class RequestStore {
     const session = this.db.prepare("SELECT session_id, owner_harness, owner_id FROM sessions WHERE session_id = ?").get(parsed.sessionId) as
       { session_id: string; owner_harness: string | null; owner_id: string | null } | undefined;
     if (!session) throw new RequestStoreError("session_not_found", "Cannot create an ask for an unknown session");
-    if (!session.owner_harness || !session.owner_id) throw new RequestStoreError("session_not_found", "Session has no harness owner identity");
 
     const insertLegacy = this.db.prepare(
         `INSERT INTO ask_requests (
@@ -119,7 +118,7 @@ export class RequestStore {
         nowIso,
         expiresAt
       });
-      this.db.prepare(`INSERT INTO questions (
+      if (session.owner_harness && session.owner_id) this.db.prepare(`INSERT INTO questions (
         question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
         revision, mode, urgency, question_json, options_json, context_json, status, expires_at, resolved_at, created_at, updated_at
       ) VALUES (@requestId, @requestId, @harness, @ownerId, @harness, @ownerId,
@@ -172,9 +171,10 @@ export class RequestStore {
       const row = this.db.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get(requestId) as AskRequestRow | undefined;
       if (!row) throw new RequestStoreError("request_not_found", "Question not found.");
       if (row.status !== "pending") throw new RequestStoreError("request_terminal", "Question is no longer pending.");
-      const ownsQuestion = this.db.prepare(`SELECT 1 FROM questions q JOIN sessions s
+      const durableQuestion = this.db.prepare("SELECT 1 FROM questions WHERE legacy_request_id = ?").get(requestId);
+      const ownsQuestion = durableQuestion ? this.db.prepare(`SELECT 1 FROM questions q JOIN sessions s
         ON s.owner_harness = q.owner_harness AND s.owner_id = q.owner_owner_id
-        WHERE q.legacy_request_id = ? AND s.session_id = ? AND q.status = 'pending'`).get(requestId, ownerSessionId);
+        WHERE q.legacy_request_id = ? AND s.session_id = ? AND q.status = 'pending'`).get(requestId, ownerSessionId) : row.session_id === ownerSessionId;
       if (!ownsQuestion) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
 
       const parsed = ProposeAnswerPayloadSchema.safeParse(payload);
@@ -227,7 +227,7 @@ export class RequestStore {
         ) AND owner_owner_id = (
           SELECT owner_id FROM sessions WHERE session_id = @ownerSessionId
         ) AND status = 'pending'`).run({ requestId, ownerSessionId, optionsJson: JSON.stringify([...options, option]), updatedAt }).changes;
-      if (durableChanges !== 1) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
+      if (durableQuestion && durableChanges !== 1) throw new RequestStoreError("wrong_owner", "Question Chat does not own this Question.");
       const request = this.get(requestId);
       if (!request) throw new Error("updated request could not be loaded");
       appended = { option, request };
@@ -271,8 +271,7 @@ export class RequestStore {
       const question = this.db.prepare(`UPDATE questions SET status = 'answered', resolved_at = @resolvedAt, updated_at = @resolvedAt
         WHERE legacy_request_id = @requestId AND status = 'pending' RETURNING question_id, revision`)
         .get({ requestId, resolvedAt }) as { question_id: string; revision: number } | undefined;
-      if (!question) throw new Error("durable question could not be answered");
-      this.db.prepare(`INSERT INTO answers (
+      if (question) this.db.prepare(`INSERT INTO answers (
         answer_id, question_id, question_revision, status, selected_values_json, note, rationale, created_at
       ) VALUES (@answerId, @questionId, @revision, 'answered', @selectedValuesJson, @note, @rationale, @resolvedAt)`)
         .run({ answerId: randomUUID(), questionId: question.question_id, revision: question.revision,
