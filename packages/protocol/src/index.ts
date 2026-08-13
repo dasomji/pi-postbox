@@ -83,6 +83,8 @@ export {
   SERVICE_NAME
 } from "./health.js";
 export type { CreateHealthResponseOptions, HealthResponse } from "./health.js";
+export { FeatureActionSchema, FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
+export type { FeatureAction, FeatureIdentity, RepositoryIdentity, WorktreeIdentity } from "./grouping.js";
 export {
   HarnessLineageSchema,
   HarnessSchema,

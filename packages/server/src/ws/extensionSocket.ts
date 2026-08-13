@@ -300,15 +300,25 @@ export async function registerExtensionSocket(
         registeredSessionId = message.payload.session.sessionId;
         recoveryOffersComplete = false;
         pendingRecoveries.clear();
-        sessionStore.register(connectionId, message.payload);
+        const feature = sessionStore.register(connectionId, message.payload);
         questionChatRelay?.bind(message.payload.session.sessionId, connectionId, socket);
         broadcaster.broadcast();
         send(socket, {
           type: "registered",
           requestId: message.requestId,
-          payload: { sessionId: message.payload.session.sessionId, presence: "live" }
+          payload: { sessionId: message.payload.session.sessionId, presence: "live", feature }
         });
         flushAnswerNotifications();
+        return;
+      }
+
+      if (message.type === "feature.action") {
+        try {
+          const feature = sessionStore.selectFeature(message.payload.sessionId, message.payload);
+          broadcaster.broadcast();
+          send(socket, { type: "registered", requestId: message.requestId,
+            payload: { sessionId: message.payload.sessionId, presence: "live", feature } });
+        } catch (error) { sendAskError(socket, message.requestId, "feature_action_failed", error); }
         return;
       }
 
@@ -316,6 +326,15 @@ export async function registerExtensionSocket(
         if (!registeredSessionId || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
         const owner = sessionStore.ownerForSession(registeredSessionId);
         if (owner) requestStore.acknowledgeOwnerNotification(message.payload.answerId, owner);
+        return;
+      }
+
+      if (message.type === "question.list") {
+        const scope = sessionStore.groupingForSession(message.payload.sessionId);
+        if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
+        const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
+        const result = requestStore.listQuestions({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId } });
+        send(socket, { type: "question.list.result", requestId: message.requestId, payload: { scope, ...result } });
         return;
       }
 

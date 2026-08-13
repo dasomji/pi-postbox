@@ -1,5 +1,6 @@
 import { ProjectIconSchema } from "@pi-postbox/protocol";
 import type {
+  FeatureIdentity,
   PresenceState,
   SemanticState,
   SessionRegisterPayload,
@@ -7,6 +8,7 @@ import type {
   SessionUpdatePayload,
   StateSnapshot
 } from "@pi-postbox/protocol";
+import { randomUUID } from "node:crypto";
 import type { QuestionChatSource } from "@pi-postbox/protocol";
 import type { SqliteDatabase } from "../db/database.js";
 
@@ -41,6 +43,9 @@ interface SessionRow extends SessionPresenceRow {
   worktree_path: string | null;
   semantic_state: SemanticState;
   has_pending_question: number;
+  repository_id: string | null; worktree_id: string | null; feature_id: string | null;
+  repository_remote: string | null; repository_machine_id: string | null; common_directory: string | null;
+  canonical_path: string | null; worktree_machine_id: string | null; feature_name: string | null;
 }
 
 export interface PresenceOptions {
@@ -53,6 +58,15 @@ export interface SessionStoreOptions extends PresenceOptions {
   hideOfflineAfterMs?: number;
   /** Offline sessions older than this are deleted, unless ask requests still reference them. */
   retentionMs?: number;
+}
+
+export interface PostboxOwnerStatus {
+  owner: { harness: string; ownerId: string };
+  presence: PresenceState;
+  semanticState: SemanticState;
+  lastHeartbeatAt: string | undefined;
+  activeQuestionCount: number;
+  unreadAnswerCount: number;
 }
 
 const DEFAULT_HIDE_OFFLINE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -111,6 +125,38 @@ export class SessionStore {
     return row?.owner_harness && row.owner_id ? { harness: row.owner_harness, ownerId: row.owner_id } : undefined;
   }
 
+  getPostboxOwnerStatus(owners: ReadonlyArray<{ harness: string; ownerId: string }>): PostboxOwnerStatus[] {
+    const sessionQuery = this.db.prepare(`SELECT session_id, semantic_state, last_heartbeat_at, connected_at,
+        disconnected_at, shutdown_at, updated_at
+      FROM sessions WHERE owner_harness = ? AND owner_id = ?
+      ORDER BY updated_at DESC`);
+    const countsQuery = this.db.prepare(`SELECT
+        SUM(CASE WHEN q.status = 'pending' THEN 1 ELSE 0 END) AS active_question_count,
+        SUM(CASE WHEN a.answer_id IS NOT NULL AND a.first_reader_harness IS NULL THEN 1 ELSE 0 END) AS unread_answer_count
+      FROM questions q LEFT JOIN answers a ON a.question_id = q.question_id
+      WHERE q.owner_harness = ? AND q.owner_owner_id = ?`);
+    return owners.map((owner) => {
+      const ownerSessions = sessionQuery.all(owner.harness, owner.ownerId) as Array<SessionPresenceRow & {
+        semantic_state: SemanticState;
+      }>;
+      const session = ownerSessions
+        .map((row) => ({ row, presence: this.derivePresence(row) }))
+        .sort((left, right) => this.presenceRank(right.presence) - this.presenceRank(left.presence))[0];
+      const counts = countsQuery.get(owner.harness, owner.ownerId) as {
+        active_question_count: number | null;
+        unread_answer_count: number | null;
+      };
+      return {
+        owner,
+        presence: session?.presence ?? "offline",
+        semanticState: session?.row.semantic_state ?? "unknown",
+        lastHeartbeatAt: session?.row.last_heartbeat_at ?? undefined,
+        activeQuestionCount: counts.active_question_count ?? 0,
+        unreadAnswerCount: counts.unread_answer_count ?? 0
+      };
+    });
+  }
+
   isConnectedNonWaitingOwner(sessionId: string, owner: { harness: string; ownerId: string }): boolean {
     if (!this.activeConnections.has(sessionId)) return false;
     const row = this.db.prepare(`SELECT owner_harness, owner_id, semantic_state FROM sessions WHERE session_id = ?`).get(sessionId) as
@@ -122,8 +168,28 @@ export class SessionStore {
     return this.activeConnections.get(sessionId) === connectionId;
   }
 
-  register(connectionId: string, payload: SessionRegisterPayload): void {
-    if (this.closed) return;
+  groupingForSession(sessionId: string): { repositoryId: string; worktreeId: string; featureId: string } | undefined {
+    return this.db.prepare("SELECT repository_id AS repositoryId, worktree_id AS worktreeId, feature_id AS featureId FROM sessions WHERE session_id = ?")
+      .get(sessionId) as { repositoryId: string; worktreeId: string; featureId: string } | undefined;
+  }
+
+  selectFeature(sessionId: string, action: { action: "start"; name: string } | { action: "select" | "inherit"; featureId: string }): FeatureIdentity {
+    const row = this.db.prepare("SELECT worktree_id FROM sessions WHERE session_id = ?").get(sessionId) as { worktree_id: string | null } | undefined;
+    if (!row?.worktree_id) throw new SessionStoreError("worktree_not_found", "Session has no worktree identity");
+    const featureId = action.action === "start" ? randomUUID() : action.featureId;
+    const name = action.action === "start" ? action.name : undefined;
+    const nowIso = new Date(this.now()).toISOString();
+    this.db.prepare("INSERT OR IGNORE INTO features (feature_id, name, created_at) VALUES (?, ?, ?)").run(featureId, name ?? null, nowIso);
+    if (action.action !== "start" && !this.db.prepare("SELECT 1 FROM features WHERE feature_id = ?").get(featureId)) {
+      throw new SessionStoreError("feature_not_found", "Feature not found");
+    }
+    this.db.prepare("UPDATE worktrees SET active_feature_id = ? WHERE worktree_id = ?").run(featureId, row.worktree_id);
+    this.db.prepare("UPDATE sessions SET feature_id = ?, updated_at = ? WHERE session_id = ?").run(featureId, nowIso, sessionId);
+    return { featureId, name };
+  }
+
+  register(connectionId: string, payload: SessionRegisterPayload): FeatureIdentity | undefined {
+    if (this.closed) return undefined;
     const nowIso = new Date(this.now()).toISOString();
     const insertMachine = this.db.prepare(`
       INSERT INTO machines (machine_id, hostname, display_name, created_at, updated_at)
@@ -164,10 +230,10 @@ export class SessionStore {
       INSERT INTO sessions (
         session_id, machine_id, project_id, title, cwd, branch, worktree_path, semantic_state,
         last_heartbeat_at, connected_at, disconnected_at, shutdown_at, agent_session_id,
-        agent_session_path, leaf_id, owner_harness, owner_id, created_at, updated_at
+        agent_session_path, leaf_id, owner_harness, owner_id, repository_id, worktree_id, feature_id, created_at, updated_at
       ) VALUES (
         @sessionId, @machineId, @projectId, @title, @cwd, @branch, @worktreePath, @semanticState,
-        @nowIso, @nowIso, NULL, NULL, @agentSessionId, @agentSessionPath, @leafId, @ownerHarness, @ownerId, @nowIso, @nowIso
+        @nowIso, @nowIso, NULL, NULL, @agentSessionId, @agentSessionPath, @leafId, @ownerHarness, @ownerId, @repositoryId, @worktreeId, @featureId, @nowIso, @nowIso
       )
       ON CONFLICT(session_id) DO UPDATE SET
         machine_id = excluded.machine_id,
@@ -186,11 +252,37 @@ export class SessionStore {
         leaf_id = excluded.leaf_id,
         owner_harness = excluded.owner_harness,
         owner_id = excluded.owner_id,
+        repository_id = excluded.repository_id,
+        worktree_id = excluded.worktree_id,
+        feature_id = excluded.feature_id,
         updated_at = excluded.updated_at
     `);
 
+    let activeFeature: FeatureIdentity | undefined;
     const transaction = this.db.transaction(() => {
       const owner = payload.session.owner;
+      const repository = payload.session.repository ?? payload.project.repository;
+      const worktree = payload.session.worktree ?? payload.project.worktree;
+      if (repository && worktree) {
+        this.db.prepare(`INSERT INTO repositories (repository_id, remote, machine_id, common_directory) VALUES (?, ?, ?, ?)
+          ON CONFLICT(repository_id) DO UPDATE SET remote=excluded.remote, machine_id=excluded.machine_id, common_directory=excluded.common_directory`)
+          .run(repository.repositoryId, repository.remote ?? null, repository.machineId ?? null, repository.commonDirectory ?? null);
+        const requested = payload.session.feature;
+        const current = this.db.prepare("SELECT active_feature_id FROM worktrees WHERE worktree_id = ?").get(worktree.worktreeId) as { active_feature_id: string | null } | undefined;
+        let featureId: string;
+        let featureName: string | undefined;
+        if (requested && "action" in requested) {
+          if (requested.action === "start") { featureId = randomUUID(); featureName = requested.name; }
+          else featureId = requested.featureId;
+        } else if (requested) { featureId = requested.featureId; featureName = requested.name; }
+        else featureId = current?.active_feature_id ?? randomUUID();
+        this.db.prepare("INSERT OR IGNORE INTO features (feature_id, name, created_at) VALUES (?, ?, ?)").run(featureId, featureName ?? null, nowIso);
+        const stored = this.db.prepare("SELECT name FROM features WHERE feature_id = ?").get(featureId) as { name: string | null };
+        activeFeature = { featureId, name: stored.name ?? undefined };
+        this.db.prepare(`INSERT INTO worktrees (worktree_id, machine_id, canonical_path, repository_id, active_feature_id) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(worktree_id) DO UPDATE SET machine_id=excluded.machine_id, canonical_path=excluded.canonical_path, repository_id=excluded.repository_id, active_feature_id=excluded.active_feature_id`)
+          .run(worktree.worktreeId, worktree.machineId, worktree.path, repository.repositoryId, featureId);
+      }
       if (owner) this.db.prepare(`INSERT INTO owners (
         harness, owner_id, harness_session_id, parent_owner_id, root_owner_id, depth, path, task_label, created_at, updated_at
       ) VALUES (@harness, @ownerId, @harnessSessionId, @parentOwnerId, @rootOwnerId, @depth, @path, @taskLabel, @nowIso, @nowIso)
@@ -241,12 +333,16 @@ export class SessionStore {
         leafId: payload.session.leafId ?? null,
         ownerHarness: owner?.harness ?? null,
         ownerId: owner?.ownerId ?? null,
+        repositoryId: repository?.repositoryId ?? null,
+        worktreeId: worktree?.worktreeId ?? null,
+        featureId: activeFeature?.featureId ?? null,
         nowIso
       });
     });
 
     transaction();
     this.activeConnections.set(payload.session.sessionId, connectionId);
+    return activeFeature;
   }
 
   heartbeat(connectionId: string, sessionId: string, semanticState?: SemanticState): void {
@@ -409,6 +505,10 @@ export class SessionStore {
           sessions.disconnected_at,
           sessions.shutdown_at,
           sessions.updated_at,
+          sessions.repository_id, sessions.worktree_id, sessions.feature_id,
+          repositories.remote AS repository_remote, repositories.machine_id AS repository_machine_id,
+          repositories.common_directory, worktrees.canonical_path, worktrees.machine_id AS worktree_machine_id,
+          features.name AS feature_name,
           EXISTS (
             SELECT 1 FROM ask_requests
             WHERE ask_requests.session_id = sessions.session_id AND ask_requests.status = 'pending'
@@ -416,6 +516,9 @@ export class SessionStore {
         FROM sessions
         JOIN machines ON machines.machine_id = sessions.machine_id
         JOIN projects ON projects.project_id = sessions.project_id
+        LEFT JOIN repositories ON repositories.repository_id = sessions.repository_id
+        LEFT JOIN worktrees ON worktrees.worktree_id = sessions.worktree_id
+        LEFT JOIN features ON features.feature_id = sessions.feature_id
         ORDER BY sessions.updated_at DESC`
       )
       .all() as SessionRow[];
@@ -513,7 +616,12 @@ export class SessionStore {
       lastHeartbeatAt: row.last_heartbeat_at ?? undefined,
       connectedAt: row.connected_at ?? undefined,
       disconnectedAt: row.disconnected_at ?? undefined,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
+      repository: row.repository_id ? { repositoryId: row.repository_id, remote: row.repository_remote ?? undefined,
+        machineId: row.repository_machine_id ?? undefined, commonDirectory: row.common_directory ?? undefined } : undefined,
+      worktree: row.worktree_id && row.worktree_machine_id && row.canonical_path
+        ? { worktreeId: row.worktree_id, machineId: row.worktree_machine_id, path: row.canonical_path } : undefined,
+      feature: row.feature_id ? { featureId: row.feature_id, name: row.feature_name ?? undefined } : undefined
     };
   }
 
@@ -533,6 +641,10 @@ export class SessionStore {
     if (ageMs > this.presenceOptions.offlineAfterMs) return "offline";
     if (ageMs > this.presenceOptions.staleAfterMs) return "stale";
     return "live";
+  }
+
+  private presenceRank(presence: PresenceState): number {
+    return presence === "live" ? 2 : presence === "stale" ? 1 : 0;
   }
 }
 

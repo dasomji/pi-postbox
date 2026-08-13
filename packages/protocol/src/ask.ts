@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
 
 export const OTHER_OPTION_VALUE = "other";
 
@@ -118,7 +119,10 @@ export const AskCreatePayloadSchema = z.object({
   context: AskCreateHandoffContextSchema,
   forkReference: ForkReferenceSchema.optional(),
   expiresAt: z.string().datetime().optional(),
-  parentQuestionId: RequestIdSchema.optional()
+  parentQuestionId: RequestIdSchema.optional(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional(),
+  feature: FeatureIdentitySchema.optional()
 });
 
 export const AskParentReferenceSchema = z.union([
@@ -176,6 +180,7 @@ export const AskResultSchema = z.discriminatedUnion("status", [
     selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
     note: LongTextSchema.optional(),
     rationale: LongTextSchema.optional(),
+    affectedDescendantIds: z.array(RequestIdSchema).optional(),
     resolvedAt: z.string().datetime()
   }),
   z.object({
@@ -247,7 +252,10 @@ export const AskRequestSnapshotSchema = z.object({
   expiresAt: z.string().datetime().optional(),
   resolvedAt: z.string().datetime().optional(),
   result: AskResultSchema.optional(),
-  parentQuestionId: RequestIdSchema.optional()
+  parentQuestionId: RequestIdSchema.optional(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional(),
+  feature: FeatureIdentitySchema.optional()
 });
 
 export type AskMode = z.infer<typeof AskModeSchema>;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AskRequestSnapshotSchema } from "./ask.js";
 import { HarnessLineageSchema, OwnerIdentitySchema } from "./ownerIdentity.js";
+import { FeatureActionSchema, FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
 
 export const SemanticStateSchema = z.enum(["working", "blocked", "idle", "unknown"]);
 export const PresenceStateSchema = z.enum(["live", "stale", "offline"]);
@@ -33,7 +34,9 @@ export const ProjectRegistrationSchema = z.object({
   headSha: z.string().min(1).optional(),
   isDirty: z.boolean().optional(),
   worktreePath: z.string().min(1).optional(),
-  icon: ProjectIconSchema.optional()
+  icon: ProjectIconSchema.optional(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional()
 });
 
 export const SessionRegistrationSchema = z.object({
@@ -47,7 +50,10 @@ export const SessionRegistrationSchema = z.object({
   agentSessionPath: z.string().min(1).optional(),
   leafId: z.string().min(1).optional(),
   owner: OwnerIdentitySchema.optional(),
-  lineage: HarnessLineageSchema.optional()
+  lineage: HarnessLineageSchema.optional(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional(),
+  feature: z.union([FeatureIdentitySchema, FeatureActionSchema]).optional()
 });
 
 export const SessionRegisterPayloadSchema = z.object({
@@ -103,7 +109,10 @@ export const SessionSnapshotSchema = z.object({
   lastHeartbeatAt: z.string().datetime().optional(),
   connectedAt: z.string().datetime().optional(),
   disconnectedAt: z.string().datetime().optional(),
-  updatedAt: z.string().datetime()
+  updatedAt: z.string().datetime(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional(),
+  feature: FeatureIdentitySchema.optional()
 });
 
 export const StateSnapshotSchema = z.object({

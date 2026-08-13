@@ -25,6 +25,7 @@ import {
   SessionShutdownPayloadSchema,
   SessionUpdatePayloadSchema
 } from "./session.js";
+import { FeatureActionSchema, FeatureIdentitySchema } from "./grouping.js";
 
 const WsCorrelationIdSchema = z.string().min(1).max(200);
 const QuestionChatRecoveryOfferSchema = z.object({
@@ -44,6 +45,12 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1).optional(),
     payload: HeartbeatPayloadSchema
   }),
+  z.object({ type: z.literal("feature.action"), requestId: WsCorrelationIdSchema,
+    payload: z.discriminatedUnion("action", [
+      z.object({ sessionId: z.string().min(1), action: z.literal("start"), name: z.string().min(1) }).strict(),
+      z.object({ sessionId: z.string().min(1), action: z.literal("select"), featureId: z.string().min(1) }).strict(),
+      z.object({ sessionId: z.string().min(1), action: z.literal("inherit"), featureId: z.string().min(1) }).strict()
+    ]) }),
   z.object({
     type: z.literal("session.update"),
     requestId: z.string().min(1).optional(),
@@ -80,6 +87,8 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     requestId: WsCorrelationIdSchema,
     payload: z.object({ answerId: z.string().min(1).max(200) }).strict()
   }),
+  z.object({ type: z.literal("question.list"), requestId: WsCorrelationIdSchema,
+    payload: z.object({ sessionId: z.string().min(1) }).strict() }),
   z.object({
     type: z.literal("chat.ready"),
     requestId: WsCorrelationIdSchema,
@@ -146,7 +155,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("registered"),
     requestId: z.string().min(1).optional(),
-    payload: z.object({ sessionId: z.string().min(1), presence: z.literal("live") })
+    payload: z.object({ sessionId: z.string().min(1), presence: z.literal("live"), feature: FeatureIdentitySchema.optional() })
   }),
   z.object({
     type: z.literal("ack"),
@@ -172,6 +181,9 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     requestId: WsCorrelationIdSchema,
     payload: AnswerReadResultSchema
   }),
+  z.object({ type: z.literal("question.list.result"), requestId: WsCorrelationIdSchema,
+    payload: z.object({ scope: z.object({ repositoryId: z.string(), worktreeId: z.string(), featureId: z.string() }).strict(),
+      questions: z.array(z.object({ questionId: z.string(), question: z.string() }).strict()), nextCursor: z.string().optional() }).strict() }),
   z.object({
     type: z.literal("ask.resolved"),
     requestId: z.string().min(1).optional(),

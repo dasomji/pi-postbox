@@ -64,6 +64,9 @@ function runMigrations(db: SqliteDatabase): void {
       leaf_id TEXT,
       owner_harness TEXT,
       owner_id TEXT,
+      repository_id TEXT,
+      worktree_id TEXT,
+      feature_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -78,6 +81,7 @@ function runMigrations(db: SqliteDatabase): void {
       options_json TEXT NOT NULL,
       context_json TEXT,
       fork_reference_json TEXT,
+      parent_question_id TEXT,
       status TEXT NOT NULL,
       selected_values_json TEXT,
       note TEXT,
@@ -121,8 +125,22 @@ function runMigrations(db: SqliteDatabase): void {
       resolved_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      repository_id TEXT,
+      worktree_id TEXT,
+      feature_id TEXT,
       FOREIGN KEY (creator_harness, creator_owner_id) REFERENCES owners(harness, owner_id),
       FOREIGN KEY (owner_harness, owner_owner_id) REFERENCES owners(harness, owner_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS repositories (
+      repository_id TEXT PRIMARY KEY, remote TEXT, machine_id TEXT, common_directory TEXT
+    );
+    CREATE TABLE IF NOT EXISTS worktrees (
+      worktree_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, canonical_path TEXT NOT NULL,
+      repository_id TEXT NOT NULL, active_feature_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS features (
+      feature_id TEXT PRIMARY KEY, name TEXT, created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS answers (
@@ -198,9 +216,13 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "ask_requests", "urgency", "TEXT NOT NULL DEFAULT 'normal'");
   ensureColumn(db, "ask_requests", "context_json", "TEXT");
   ensureColumn(db, "ask_requests", "fork_reference_json", "TEXT");
+  ensureColumn(db, "ask_requests", "parent_question_id", "TEXT");
   ensureColumn(db, "ask_requests", "expires_at", "TEXT");
   ensureColumn(db, "sessions", "owner_harness", "TEXT");
   ensureColumn(db, "sessions", "owner_id", "TEXT");
+  ensureColumn(db, "sessions", "repository_id", "TEXT");
+  ensureColumn(db, "sessions", "worktree_id", "TEXT");
+  ensureColumn(db, "sessions", "feature_id", "TEXT");
   ensureColumn(db, "questions", "legacy_request_id", "TEXT");
   ensureColumn(db, "questions", "mode", "TEXT NOT NULL DEFAULT 'single'");
   ensureColumn(db, "questions", "urgency", "TEXT NOT NULL DEFAULT 'normal'");
@@ -211,6 +233,9 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "questions", "status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "questions", "expires_at", "TEXT");
   ensureColumn(db, "questions", "resolved_at", "TEXT");
+  ensureColumn(db, "questions", "repository_id", "TEXT");
+  ensureColumn(db, "questions", "worktree_id", "TEXT");
+  ensureColumn(db, "questions", "feature_id", "TEXT");
   ensureColumn(db, "answers", "status", "TEXT NOT NULL DEFAULT 'answered'");
   ensureColumn(db, "answers", "selected_values_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "answers", "note", "TEXT");
