@@ -553,6 +553,7 @@ export class RequestStore {
       const updated = this.db.prepare("SELECT question_json, status, parent_question_id, replacement_question_id FROM questions WHERE question_id=?").get(questionId) as any;
       output = { questionId, revision, status: updated.status, question: JSON.parse(updated.question_json), parentQuestionId: updated.parent_question_id ?? undefined, replacementQuestionId: updated.replacement_question_id ?? undefined };
     })();
+    if (parsed.action === "cancel" || parsed.action === "supersede") this.wakeOwnerWithLifecycle(questionId, parsed.action === "cancel" ? "cancelled" : "superseded");
     return output!;
   }
 
@@ -788,6 +789,7 @@ export class RequestStore {
     });
 
     transaction();
+    for (const result of results) this.wakeOwnerWithLifecycle(result.requestId, "cancelled");
     for (const result of results) this.notify(result.requestId, result);
     return results;
   }
@@ -823,6 +825,7 @@ export class RequestStore {
     });
 
     transaction();
+    for (const result of results) this.wakeOwnerWithLifecycle(result.requestId, "expired");
     for (const result of results) this.notify(result.requestId, result);
     return results;
   }

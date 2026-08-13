@@ -99,6 +99,8 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("question.history.get"), requestId: WsCorrelationIdSchema, payload: z.object({ questionId: z.string().min(1) }).strict() }),
   z.object({ type: z.literal("postbox.wait"), requestId: WsCorrelationIdSchema,
     payload: z.object({ sessionId: z.string().min(1) }).strict() }),
+  z.object({ type: z.literal("postbox.wait.cancel"), requestId: WsCorrelationIdSchema,
+    payload: z.object({ sessionId: z.string().min(1), waitRequestId: WsCorrelationIdSchema }).strict() }),
   z.object({
     type: z.literal("chat.ready"),
     requestId: WsCorrelationIdSchema,

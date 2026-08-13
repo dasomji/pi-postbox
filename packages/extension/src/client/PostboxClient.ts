@@ -199,6 +199,7 @@ export class PostboxClient {
   private readonly pendingProposals = new Map<string, PendingProposal>();
   private readonly pendingAnswerReads = new Map<string, PendingAnswerRead>();
   private readonly pendingQueries = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  private readonly pendingPostboxWaits = new Map<string, string>();
   private readonly liveQuestionChats = new Map<string, string>();
   private readonly terminalQuestionChats = new Map<string, string>();
   private recoveryOffers: QuestionChatRecoveryOffer[] = [];
@@ -250,6 +251,10 @@ export class PostboxClient {
     this.recoveryCompleteSent = false;
     this.failPendingProposals("Question Chat proposal stopped before the server responded.");
     this.failPendingAnswerReads("Postbox stopped before the Answer was returned.");
+    for (const [waitRequestId, sessionId] of this.pendingPostboxWaits) {
+      this.send({ type: "postbox.wait.cancel", requestId: `wait_cancel_${randomUUID()}`, payload: { sessionId, waitRequestId } });
+    }
+    this.pendingPostboxWaits.clear();
     this.failPendingQueries("Postbox stopped before the query was returned.");
     this.liveQuestionChats.clear();
     this.terminalQuestionChats.clear();
@@ -402,11 +407,17 @@ export class PostboxClient {
   waitForPostbox(sessionId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const requestId = `wait_${randomUUID()}`;
     return new Promise((resolve, reject) => {
-      const abort = () => { this.pendingQueries.delete(requestId); reject(Object.assign(new Error("Postbox wait was aborted"), { name: "AbortError" })); };
+      const abort = () => {
+        if (!this.pendingQueries.delete(requestId)) return;
+        this.pendingPostboxWaits.delete(requestId);
+        this.send({ type: "postbox.wait.cancel", requestId: `wait_cancel_${randomUUID()}`, payload: { sessionId, waitRequestId: requestId } });
+        reject(Object.assign(new Error("Postbox wait was aborted"), { name: "AbortError" }));
+      };
       if (signal?.aborted) return abort();
-      this.pendingQueries.set(requestId, { resolve: (value) => { signal?.removeEventListener("abort", abort); resolve(value as Record<string, unknown>); }, reject });
+      this.pendingPostboxWaits.set(requestId, sessionId);
+      this.pendingQueries.set(requestId, { resolve: (value) => { this.pendingPostboxWaits.delete(requestId); signal?.removeEventListener("abort", abort); resolve(value as Record<string, unknown>); }, reject: (error) => { this.pendingPostboxWaits.delete(requestId); signal?.removeEventListener("abort", abort); reject(error); } });
       signal?.addEventListener("abort", abort, { once: true });
-      if (!this.send({ type: "postbox.wait", requestId, payload: { sessionId } })) { this.pendingQueries.delete(requestId); reject(new Error("Postbox wait could not be sent.")); }
+      if (!this.send({ type: "postbox.wait", requestId, payload: { sessionId } })) { this.pendingPostboxWaits.delete(requestId); this.pendingQueries.delete(requestId); reject(new Error("Postbox wait could not be sent.")); }
     });
   }
 

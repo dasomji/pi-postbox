@@ -86,7 +86,7 @@ export async function registerExtensionSocket(
     const connectionId = randomUUID();
     const unsubscribers = new Set<() => void>();
     let registeredSessionId: string | undefined;
-    const waitAbortController = new AbortController();
+    const waitAbortControllers = new Map<string, AbortController>();
     const flushAnswerNotifications = () => {
       if (!registeredSessionId || socket.readyState !== 1 || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
       const owner = sessionStore.ownerForSession(registeredSessionId);
@@ -376,10 +376,27 @@ export async function registerExtensionSocket(
         }
         const owner = sessionStore.ownerForSession(message.payload.sessionId);
         if (!owner) { sendAskError(socket, message.requestId, "wait_owner_missing", new Error("Session has no owner identity")); return; }
+        const waitAbortController = new AbortController();
+        waitAbortControllers.set(message.requestId, waitAbortController);
+        const priorSemanticState = sessionStore.semanticStateForSession(message.payload.sessionId) ?? "working";
         void requestStore.waitForPostbox({ owner, signal: waitAbortController.signal,
           publishSemanticState: (semanticState) => sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: semanticState as any }) })
           .then((payload) => send(socket, { type: "postbox.wait.result", requestId: message.requestId, payload }))
-          .catch((error) => { if (error instanceof Error && error.name !== "AbortError") sendAskError(socket, message.requestId, "wait_failed", error); });
+          .catch((error) => { if (error instanceof Error && error.name !== "AbortError") sendAskError(socket, message.requestId, "wait_failed", error); })
+          .finally(() => {
+            waitAbortControllers.delete(message.requestId);
+            if (sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+              sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: priorSemanticState });
+              broadcaster.broadcast();
+            }
+          });
+        broadcaster.broadcast();
+        return;
+      }
+      if (message.type === "postbox.wait.cancel") {
+        if (message.payload.sessionId === registeredSessionId && sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          waitAbortControllers.get(message.payload.waitRequestId)?.abort();
+        }
         return;
       }
 
@@ -477,7 +494,8 @@ export async function registerExtensionSocket(
     });
 
     socket.on("close", () => {
-      waitAbortController.abort();
+      for (const controller of waitAbortControllers.values()) controller.abort();
+      waitAbortControllers.clear();
       for (const unsubscribe of unsubscribers) unsubscribe();
       unsubscribers.clear();
       sessionStore.disconnectConnection(connectionId);

@@ -125,6 +125,11 @@ export class SessionStore {
     return row?.owner_harness && row.owner_id ? { harness: row.owner_harness, ownerId: row.owner_id } : undefined;
   }
 
+  semanticStateForSession(sessionId: string): SemanticState | undefined {
+    return (this.db.prepare("SELECT semantic_state FROM sessions WHERE session_id = ?").get(sessionId) as
+      { semantic_state: SemanticState } | undefined)?.semantic_state;
+  }
+
   getPostboxOwnerStatus(owners: ReadonlyArray<{ harness: string; ownerId: string }>): PostboxOwnerStatus[] {
     const sessionQuery = this.db.prepare(`SELECT session_id, semantic_state, last_heartbeat_at, connected_at,
         disconnected_at, shutdown_at, updated_at

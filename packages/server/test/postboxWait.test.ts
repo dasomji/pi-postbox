@@ -18,7 +18,7 @@ function setup() {
     project: { projectId: "project", name: "repo", cwd: "/repo" },
     session: { sessionId: "session", cwd: "/repo", semanticState: "working", owner: OWNER }
   });
-  const requests = new RequestStore(db, () => now);
+  const requests = new RequestStore(db, () => now, { askTimeoutMs: 30_000 });
   const create = (id: string, parentQuestionId?: string) => requests.create({
     requestId: id, sessionId: "session", mode: "single", urgency: "normal", parentQuestionId,
     question: { prompt: `Question ${id}?` }, options: [{ value: "yes", label: "Yes" }],
@@ -40,7 +40,7 @@ describe("owner-wide explicit Postbox wait", () => {
   it("takes no Question IDs and immediately atomically reads an existing unread Answer", async () => {
     const { requests, waitable, create } = setup();
     create("ready");
-    requests.answer("ready", { selectedValues: ["yes"], note: "Proceed", rationale: "Approved" });
+    requests.answer("ready", { expectedRevision: 1, selectedValues: ["yes"], note: "Proceed", rationale: "Approved" });
 
     const result = await waitable.waitForPostbox({ owner: OWNER });
     expect(result).toMatchObject({
@@ -65,7 +65,7 @@ describe("owner-wide explicit Postbox wait", () => {
     expect(waitable.activeWaitCount(OWNER)).toBe(1);
     await expect(waitable.waitForPostbox({ owner: OWNER })).rejects.toMatchObject({ code: "wait_already_active" });
 
-    requests.answer("pending", { selectedValues: ["yes"] });
+    requests.answer("pending", { expectedRevision: 1, selectedValues: ["yes"] });
     await expect(first).resolves.toMatchObject({ type: "answer", question: { questionId: "pending" } });
     expect(waitable.activeWaitCount(OWNER)).toBe(0);
   });
@@ -75,11 +75,11 @@ describe("owner-wide explicit Postbox wait", () => {
     create("old-unrelated");
     create("ancestor");
     create("descendant", "ancestor");
-    requests.answer("descendant", { selectedValues: ["yes"] });
+    requests.answer("descendant", { expectedRevision: 1, selectedValues: ["yes"] });
     advance(1_000);
-    requests.answer("old-unrelated", { selectedValues: ["yes"] });
+    requests.answer("old-unrelated", { expectedRevision: 1, selectedValues: ["yes"] });
     advance(1_000);
-    requests.answer("ancestor", { selectedValues: ["yes"] });
+    requests.answer("ancestor", { expectedRevision: 1, selectedValues: ["yes"] });
 
     await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toMatchObject({ question: { questionId: "ancestor" } });
     await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toMatchObject({ question: { questionId: "descendant" } });
@@ -94,6 +94,20 @@ describe("owner-wide explicit Postbox wait", () => {
     requests.cancel("cancelled", { note: "Obsolete" });
     await expect(waiting).resolves.toEqual({ type: "lifecycle", questionId: "cancelled", event: "cancelled" });
     await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toEqual({ type: "no_actionable_questions" });
+  });
+
+  it("wakes waits for expiry and session-wide cancellation without consuming a later answer", async () => {
+    const { requests, waitable, create, advance } = setup();
+    create("expires");
+    const expiring = waitable.waitForPostbox({ owner: OWNER });
+    advance(60_000);
+    requests.expireDue();
+    await expect(expiring).resolves.toEqual({ type: "lifecycle", questionId: "expires", event: "expired" });
+
+    create("shutdown");
+    const shutdown = waitable.waitForPostbox({ owner: OWNER });
+    requests.cancelPendingForSession("session", "Session replaced");
+    await expect(shutdown).resolves.toEqual({ type: "lifecycle", questionId: "shutdown", event: "cancelled" });
   });
 
   it("aborting or disconnecting clears only the ephemeral wait and preserves durable Questions and Answers", async () => {

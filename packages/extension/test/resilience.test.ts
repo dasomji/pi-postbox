@@ -176,6 +176,31 @@ describe("PostboxClient pending ask resilience", () => {
     await expect(stopped).rejects.toThrow("stopped");
   });
 
+  it("correlates cancellation of an owner-wide wait and ignores a late result", async () => {
+    FakeSocket.instances = [];
+    const client = createClient(); client.start();
+    const socket = FakeSocket.instances[0]!; socket.open();
+    const controller = new AbortController();
+    const waiting = client.waitForPostbox("session-1", controller.signal);
+    const command = socket.sent.find((value) => (value as any).type === "postbox.wait") as any;
+    controller.abort();
+    await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+    expect(socket.sent).toContainEqual({ type: "postbox.wait.cancel", requestId: expect.any(String), payload: { sessionId: "session-1", waitRequestId: command.requestId } });
+    socket.serverMessage({ type: "postbox.wait.result", requestId: command.requestId, payload: { type: "answer" } });
+    client.stop();
+  });
+
+  it("cancels the correlated server wait before stopping", async () => {
+    FakeSocket.instances = [];
+    const client = createClient(); client.start();
+    const socket = FakeSocket.instances[0]!; socket.open();
+    const waiting = client.waitForPostbox("session-1");
+    const command = socket.sent.find((value) => (value as any).type === "postbox.wait") as any;
+    client.stop();
+    await expect(waiting).rejects.toThrow("stopped");
+    expect(socket.sent).toContainEqual({ type: "postbox.wait.cancel", requestId: expect.any(String), payload: { sessionId: "session-1", waitRequestId: command.requestId } });
+  });
+
   it("delivers each lightweight answer notification once and acknowledges replays", async () => {
     FakeSocket.instances = [];
     const notifications: unknown[] = [];
