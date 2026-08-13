@@ -35,6 +35,7 @@
   // capturing the initial props here is intentional.
   // svelte-ignore state_referenced_locally
   const form = createQuestionForm(request, isMock);
+  const answerDisabled = $derived(Boolean(latestRequest && latestRequest.revision > request.revision));
 
   $effect(() => {
     form.updateRequest(request);
@@ -174,7 +175,6 @@
         <p class="font-medium text-warning-foreground">A newer revision is available. This obsolete revision cannot be answered.</p>
         <ul class="mt-2 list-disc pl-5">{#each revisionChanges as change}<li>{change}</li>{/each}</ul>
         <a class="mt-2 inline-block underline" href="?question={encodeURIComponent(request.requestId)}&revision=latest">Refresh to latest content</a>
-        <span class="hidden" aria-hidden="true">disabled</span>
       </div>
     {/if}
     {#if activationError && !chatStarting}
@@ -210,6 +210,7 @@
       {request}
       {session}
       {form}
+      {answerDisabled}
       {chatButtonLabel}
       onChat={openChat}
     />

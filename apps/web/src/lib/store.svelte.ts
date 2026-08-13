@@ -136,16 +136,21 @@ class PostboxStore {
   }
 
   selectSession(sessionId: string): void {
+    this.displayedRequest = undefined;
     this.locallyRetainedRequest = undefined;
     this.selection = { kind: "session", sessionId };
   }
 
   selectRequest(requestId: string): void {
+    if (this.selection.kind !== "request" || this.selection.requestId !== requestId) {
+      this.displayedRequest = this.requests.find((request) => request.requestId === requestId);
+    }
     if (this.locallyRetainedRequest?.requestId !== requestId) this.locallyRetainedRequest = undefined;
     this.selection = { kind: "request", requestId };
   }
 
   selectProject(projectId: string): void {
+    this.displayedRequest = undefined;
     this.locallyRetainedRequest = undefined;
     this.selection = { kind: "project", projectId };
   }
@@ -157,6 +162,7 @@ class PostboxStore {
   }
 
   clearSelection(): void {
+    this.displayedRequest = undefined;
     this.locallyRetainedRequest = undefined;
     this.selection = { kind: "none" };
   }

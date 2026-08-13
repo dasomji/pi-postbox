@@ -224,7 +224,7 @@ describe("new pending ask FCM notifications", () => {
     const answered = await app.inject({
       method: "POST",
       url: "/api/requests/ask-fcm-resolve-1/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answered.statusCode).toBe(200);
 

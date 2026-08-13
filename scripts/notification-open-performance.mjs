@@ -117,7 +117,7 @@ async function startSeededServer(historyCount) {
     const answer = await app.inject({
       method: "POST",
       url: `/api/requests/${requestId}/answer`,
-      payload: { selectedValues: ["ship"] }
+      payload: { expectedRevision: 1, selectedValues: ["ship"] }
     });
     assert(answer.statusCode === 200, `Could not resolve fixture request ${requestId}: ${answer.body}`);
   }

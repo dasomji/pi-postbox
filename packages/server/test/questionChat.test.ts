@@ -258,7 +258,7 @@ describe("Question Chat activation relay", () => {
     const answer = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: [proposedValue], note: "Prefer the reversible path." }
+      payload: { expectedRevision: 2, selectedValues: [proposedValue], note: "Prefer the reversible path." }
     });
     await expect(nextMessage(socket, "proposal answer cleanup")).resolves.toMatchObject({
       type: "chat.cleanup",
@@ -309,7 +309,7 @@ describe("Question Chat activation relay", () => {
       error: { code: "invalid_message" }
     });
 
-    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
+    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { expectedRevision: 1, selectedValues: ["a"] } });
     await nextMessage(socket, "terminal cleanup");
     await answer;
     socket.send(JSON.stringify({
@@ -376,7 +376,7 @@ describe("Question Chat activation relay", () => {
     const answerPromise = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
     socket.send(JSON.stringify({
       type: "chat.propose-answer",
@@ -484,7 +484,7 @@ describe("Question Chat activation relay", () => {
     const answer = await app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
     expect(answer.statusCode).toBe(200);
     await expect(terminalCleanup).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
@@ -1202,7 +1202,7 @@ describe("Question Chat activation relay", () => {
     const answer = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
     expect(await terminalMessages).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "chat.cleanup", payload: expect.objectContaining({ requestId: "ask-chat" }) }),
@@ -1291,7 +1291,7 @@ describe("Question Chat activation relay", () => {
     const response = app.inject({
       method: "POST",
       url: `/api/requests/ask-chat/${transition}`,
-      payload: transition === "answer" ? { selectedValues: ["a"] } : {}
+      payload: transition === "answer" ? { expectedRevision: 1, selectedValues: ["a"] } : {}
     });
     await expect(nextMessage(socket)).resolves.toMatchObject({
       type: "chat.cleanup",
@@ -1309,7 +1309,7 @@ describe("Question Chat activation relay", () => {
     const answer = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
     await expect(nextMessage(socket)).resolves.toMatchObject({
       type: "chat.cleanup",
@@ -1474,7 +1474,7 @@ describe("Question Chat activation relay", () => {
     expect(JSON.stringify(state)).not.toContain("messages");
     expect(JSON.stringify(state)).not.toContain("server-must-not-store-this-tool-output");
 
-    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
+    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { expectedRevision: 1, selectedValues: ["a"] } });
     await expect(nextMessage(socket)).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
     expect((await answer).statusCode).toBe(200);
     const history = (await app.inject({ method: "GET", url: "/api/history" })).json();

@@ -49,7 +49,7 @@ describe("complete asynchronous adapter/browser/API loop", () => {
 
     const answerResponse = await fetch(`${serverUrl}/api/requests/question-complete/answer`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ selectedValues: ["ship"], note: "Proceed", rationale: "The loop is complete" })
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["ship"], note: "Proceed", rationale: "The loop is complete" })
     });
     expect(answerResponse.status).toBe(200);
     await expect(notification).resolves.toMatchObject({

@@ -538,18 +538,24 @@ export class RequestStore {
           .run(JSON.stringify(parsed.question), parsed.question.prompt, parsed.options ? JSON.stringify(parsed.options) : null, parsed.context ? JSON.stringify(parsed.context) : null, at, questionId);
         type = "revision"; facts = { changes };
       } else if (parsed.action === "reparent") {
+        this.validateNewParent(questionId, parsed.parentQuestionId);
         this.db.prepare("UPDATE questions SET revision=?, parent_question_id=?, updated_at=? WHERE question_id=?").run(revision, parsed.parentQuestionId, at, questionId);
         this.db.prepare("UPDATE ask_requests SET parent_question_id=?, updated_at=? WHERE request_id=?").run(parsed.parentQuestionId, at, questionId);
         type = "parent_changed"; facts = { parentQuestionId: parsed.parentQuestionId };
       } else {
         const status = parsed.action === "cancel" ? "cancelled" : "superseded";
         const replacement = parsed.action === "supersede" ? parsed.replacementQuestionId : null;
+        if (replacement === questionId) throw new RequestStoreError("invalid_replacement", "A Question cannot supersede itself");
         if (replacement && !this.db.prepare("SELECT 1 FROM questions WHERE question_id=?").get(replacement)) throw new RequestStoreError("replacement_not_found", "Replacement Question not found");
         this.db.prepare("UPDATE questions SET revision=?, status=?, replacement_question_id=?, resolved_at=?, updated_at=? WHERE question_id=?").run(revision, status, replacement, at, at, questionId);
         this.db.prepare("UPDATE ask_requests SET status='cancelled', rationale=?, resolved_at=?, updated_at=? WHERE request_id=?").run(parsed.action === "cancel" ? parsed.rationale ?? null : `Superseded by ${replacement}`, at, at, questionId);
         type = status; facts = replacement ? { replacementQuestionId: replacement } : {};
       }
       this.recordQuestionEvent(questionId, type, revision, actor, facts, at);
+      if (parsed.action === "revise") this.db.prepare(`INSERT INTO question_revisions
+        (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+        SELECT question_id, revision, question_json, options_json, context_json, ?, ?, ? FROM questions WHERE question_id=?`)
+        .run(actor.harness, actor.ownerId, at, questionId);
       const updated = this.db.prepare("SELECT question_json, status, parent_question_id, replacement_question_id FROM questions WHERE question_id=?").get(questionId) as any;
       output = { questionId, revision, status: updated.status, question: JSON.parse(updated.question_json), parentQuestionId: updated.parent_question_id ?? undefined, replacementQuestionId: updated.replacement_question_id ?? undefined };
     })();
@@ -568,17 +574,27 @@ export class RequestStore {
       .run(questionId, type, revision, actor.harness, actor.ownerId, JSON.stringify(facts), at);
   }
 
-  answer(requestId: string, payload: AskAnswerPayload): AskResult {
+  private validateNewParent(questionId: string, parentQuestionId: string | null): void {
+    if (!parentQuestionId) return;
+    if (parentQuestionId === questionId) throw new RequestStoreError("invalid_parent", "A Question cannot parent itself");
+    this.validateHierarchy(parentQuestionId);
+    const descendants = new Set(this.db.prepare(`WITH RECURSIVE d(question_id) AS (SELECT question_id FROM questions WHERE parent_question_id=? UNION ALL SELECT q.question_id FROM questions q JOIN d ON q.parent_question_id=d.question_id) SELECT question_id FROM d`).all(questionId).map((row: any) => row.question_id));
+    if (descendants.has(parentQuestionId)) throw new RequestStoreError("invalid_parent", "A Question cannot be reparented beneath its descendant");
+  }
+
+  answer(requestId: string, payload: AskAnswerPayload | (Omit<AskAnswerPayload, "expectedRevision"> & { expectedRevision?: number })): AskResult {
     this.expireDue();
-    const parsed = AskAnswerPayloadSchema.parse(payload);
+    const currentRevision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=? OR legacy_request_id=?").get(requestId, requestId) as { revision: number } | undefined)?.revision ?? 1;
+    const parsed = AskAnswerPayloadSchema.parse({ expectedRevision: payload.expectedRevision ?? currentRevision, ...payload });
     let result: AskResult | undefined;
     let available: AnswerAvailable | undefined;
 
     const transaction = this.db.transaction(() => {
       const existing = this.getPending(requestId);
       if (parsed.expectedRevision !== undefined) {
-        const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(requestId) as { revision: number } | undefined)?.revision;
-        if (revision !== parsed.expectedRevision) throw new RequestStoreError("stale_revision", "Question revision is stale");
+        const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=? OR legacy_request_id=?").get(requestId, requestId) as { revision: number } | undefined)?.revision;
+        // Pre-Question legacy asks have no durable revision row; their public snapshot is revision 1.
+        if (revision !== undefined && revision !== parsed.expectedRevision) throw new RequestStoreError("stale_revision", "Question revision is stale");
       }
       this.validateSelectedValues(existing, parsed.selectedValues);
       const resolvedAt = new Date(this.now()).toISOString();

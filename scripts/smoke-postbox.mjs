@@ -718,7 +718,7 @@ async function main() {
     const answerResponse = await fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/answer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ selectedValues: [proposedValue], note: "Smoke answered", rationale: "All release path checks passed." })
+      body: JSON.stringify({ expectedRevision: 2, selectedValues: [proposedValue], note: "Smoke answered", rationale: "All release path checks passed." })
     });
     assert(answerResponse.status === 200, `Answer returned ${answerResponse.status}`);
     const terminalMessages = await terminalMessagesPromise;

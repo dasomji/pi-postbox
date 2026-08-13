@@ -225,7 +225,7 @@ describe("ask_postbox request loop", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-1/answer",
-      payload: { selectedValues: ["fastify"], note: "Use the boring daemon choice", rationale: "Strong lifecycle" }
+      payload: { expectedRevision: 1, selectedValues: ["fastify"], note: "Use the boring daemon choice", rationale: "Strong lifecycle" }
     });
 
     expect(answerResponse.statusCode).toBe(200);
@@ -269,7 +269,7 @@ describe("ask_postbox request loop", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-other/answer",
-      payload: { selectedValues: [OTHER_OPTION_VALUE], note: "Wait for design review first." }
+      payload: { expectedRevision: 1, selectedValues: [OTHER_OPTION_VALUE], note: "Wait for design review first." }
     });
 
     expect(answerResponse.statusCode).toBe(200);
@@ -318,7 +318,7 @@ describe("ask_postbox request loop", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-multi/answer",
-      payload: { selectedValues: ["branch", "machine"] }
+      payload: { expectedRevision: 1, selectedValues: ["branch", "machine"] }
     });
     expect(answerResponse.statusCode).toBe(200);
     await expect(resolvedMessage).resolves.toMatchObject({
@@ -520,7 +520,7 @@ describe("ask_postbox request loop", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-rich/answer",
-      payload: { selectedValues: ["sqlite"], rationale: "Simple durable v1 storage." }
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"], rationale: "Simple durable v1 storage." }
     });
     expect(answerResponse.statusCode).toBe(200);
     expect(answerResponse.json().request).toMatchObject({

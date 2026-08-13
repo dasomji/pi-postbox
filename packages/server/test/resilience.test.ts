@@ -103,7 +103,7 @@ describe("pending ask resilience", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-replay/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answerResponse.statusCode).toBe(200);
     await expect(resolved).resolves.toMatchObject({ type: "ask.resolved", payload: { status: "answered", requestId: "ask-replay" } });
@@ -123,7 +123,7 @@ describe("pending ask resilience", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-terminal/answer",
-      payload: { selectedValues: ["yes"], rationale: "Already decided" }
+      payload: { expectedRevision: 1, selectedValues: ["yes"], rationale: "Already decided" }
     });
     expect(answerResponse.statusCode).toBe(200);
     await firstResolved;

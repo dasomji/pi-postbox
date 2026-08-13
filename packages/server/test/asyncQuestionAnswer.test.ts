@@ -94,7 +94,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
     const creator = await connectOwner(app);
     await createQuestion(creator);
     creator.close();
-    await app.inject({ method: "POST", url: "/api/requests/question-1/answer", payload: { selectedValues: ["sqlite"] } });
+    await app.inject({ method: "POST", url: "/api/requests/question-1/answer", payload: { expectedRevision: 1, selectedValues: ["sqlite"] } });
     await app.close();
     apps.pop();
 
@@ -176,7 +176,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/requests/question-1/answer",
-      payload: { selectedValues: ["sqlite"], note: "Keep it local", rationale: "Simple persistence" }
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Keep it local", rationale: "Simple persistence" }
     });
 
     expect(response.statusCode).toBe(200);
@@ -207,7 +207,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
     await app.inject({
       method: "POST",
       url: "/api/requests/question-1/answer",
-      payload: { selectedValues: ["sqlite"], note: "Keep it local", rationale: "Simple persistence" }
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Keep it local", rationale: "Simple persistence" }
     });
     await notification;
 

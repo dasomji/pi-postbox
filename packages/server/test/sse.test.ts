@@ -265,7 +265,7 @@ describe("browser state SSE reactivity", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-reactive/answer",
-      payload: { selectedValues: ["first"], note: "Client A got there first" }
+      payload: { expectedRevision: 1, selectedValues: ["first"], note: "Client A got there first" }
     });
     expect(answerResponse.statusCode).toBe(200);
 
@@ -275,7 +275,7 @@ describe("browser state SSE reactivity", () => {
     const lateAnswerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-reactive/answer",
-      payload: { selectedValues: ["second"], note: "Too late" }
+      payload: { expectedRevision: 1, selectedValues: ["second"], note: "Too late" }
     });
     expect(lateAnswerResponse.statusCode).toBe(409);
     expect(lateAnswerResponse.json()).toMatchObject({ error: "request_already_resolved" });

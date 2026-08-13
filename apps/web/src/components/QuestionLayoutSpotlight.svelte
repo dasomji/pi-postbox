@@ -12,12 +12,14 @@
     request,
     session,
     form,
+    answerDisabled = false,
     chatButtonLabel,
     onChat
   }: {
     request: AskRequestSnapshot;
     session?: SessionSnapshot;
     form: QuestionForm;
+    answerDisabled?: boolean;
     chatButtonLabel?: "Chat";
     onChat?: () => void;
   } = $props();
@@ -66,7 +68,7 @@
   }
 
   function submitWithStamp(): void {
-    if (!form.canSubmit) return;
+    if (answerDisabled || !form.canSubmit) return;
     stamped = true;
     form.submit();
   }
@@ -170,6 +172,7 @@
         {#each request.options as option (option.value)}
           <button
             type="button"
+            disabled={answerDisabled}
             class="flex w-full items-start gap-3 rounded-lg border p-4 text-left shadow-postbox-section transition {form.isSelected(option.value)
               ? 'border-attention bg-attention/5 ring-1 ring-attention'
               : 'border-postbox-border bg-postbox-elevated hover:border-attention-border'}"
@@ -204,6 +207,7 @@
         {#if !hasExistingOther}
           <button
             type="button"
+            disabled={answerDisabled}
             class="flex w-full items-start gap-3 rounded-lg border border-dashed p-4 text-left transition {form.isSelected(OTHER_OPTION_VALUE)
               ? 'border-attention bg-attention/5 ring-1 ring-attention'
               : 'border-postbox-border-strong bg-postbox-elevated/60 hover:border-attention-border'}"
@@ -228,6 +232,7 @@
 
       {#if showNote}
         <textarea
+          disabled={answerDisabled}
           class="mt-4 min-h-24 w-full rounded-lg border border-postbox-border bg-postbox-elevated p-3 text-postbox-text outline-none ring-attention/30 placeholder:text-postbox-muted focus:ring-2"
           bind:value={form.note}
           placeholder="Add nuance for the coding agent…"
@@ -241,6 +246,7 @@
         <button
           class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-attention-foreground bg-attention px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-attention-contrast shadow-postbox-paper ring-2 ring-inset ring-white/25 transition hover:bg-attention-foreground sm:w-auto sm:shrink-0"
           type="submit"
+          disabled={answerDisabled || form.busy}
           onclick={submitWithStamp}
         >
           <span>Submit</span>
@@ -259,6 +265,7 @@
         <button
           class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-postbox-border-strong bg-postbox-elevated px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-postbox-text shadow-postbox-paper transition hover:border-history-border hover:text-history-foreground sm:w-auto sm:shrink-0"
           type="button"
+          disabled={answerDisabled}
           onclick={() => (showNote = !showNote)}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4 shrink-0" aria-hidden="true"><path d="M4 4h16v16H4z" /><path d="M8 9h8M8 13h5" /></svg>
@@ -267,7 +274,7 @@
         <button
           class="w-full rounded-full px-4 py-3 text-center text-sm text-postbox-muted transition hover:text-danger-foreground sm:w-auto sm:shrink-0"
           type="button"
-          disabled={form.busy}
+          disabled={answerDisabled || form.busy}
           onclick={() => form.cancel()}
         >
           Cancel

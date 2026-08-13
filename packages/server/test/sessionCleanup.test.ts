@@ -231,7 +231,7 @@ describe("session cleanup", () => {
     const answer = await app.inject({
       method: "POST",
       url: "/api/requests/ask-history/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answer.statusCode).toBe(200);
     await disconnect(app, socket);
@@ -261,7 +261,7 @@ describe("session cleanup", () => {
     const answer = await app.inject({
       method: "POST",
       url: "/api/requests/ask-pruned/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answer.statusCode).toBe(200);
     await disconnect(app, socket);

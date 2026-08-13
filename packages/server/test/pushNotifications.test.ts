@@ -333,7 +333,7 @@ describe("new pending ask push notifications", () => {
     const answered = await app.inject({
       method: "POST",
       url: "/api/requests/ask-resolve-1/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answered.statusCode).toBe(200);
 

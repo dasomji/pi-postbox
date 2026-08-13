@@ -37,6 +37,7 @@ export async function registerRequestRoutes(
 
   app.post("/api/requests/:requestId/answer", async (request, reply) => {
     const { requestId } = request.params as { requestId: string };
+    if (!request.body || typeof request.body !== "object" || !("expectedRevision" in request.body)) return reply.code(400).send({ error: "expected_revision_required" });
     const body = AskAnswerPayloadSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "invalid_answer", message: body.error.message });
 

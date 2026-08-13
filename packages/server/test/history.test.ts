@@ -223,7 +223,7 @@ describe("question history", () => {
       const answer = await app.inject({
         method: "POST",
         url: "/api/requests/ask-history/answer",
-        payload: { selectedValues: ["ship"], note: "Proceed", rationale: "The audit trail has enough context." }
+        payload: { expectedRevision: 1, selectedValues: ["ship"], note: "Proceed", rationale: "The audit trail has enough context." }
       });
       expect(answer.statusCode).toBe(200);
       await resolved;
@@ -325,7 +325,7 @@ describe("question history", () => {
 
     await createAsk(socket, "ask-old-terminal");
     const oldResolved = nextMessage(socket);
-    await app.inject({ method: "POST", url: "/api/requests/ask-old-terminal/answer", payload: { selectedValues: ["ship"] } });
+    await app.inject({ method: "POST", url: "/api/requests/ask-old-terminal/answer", payload: { expectedRevision: 1, selectedValues: ["ship"] } });
     await oldResolved;
 
     await createAsk(socket, "ask-still-pending");
@@ -356,7 +356,7 @@ describe("question history", () => {
     for (const requestId of ["ask-count-1", "ask-count-2", "ask-count-3"]) {
       await createAsk(socket, requestId);
       const resolved = nextMessage(socket);
-      await app.inject({ method: "POST", url: `/api/requests/${requestId}/answer`, payload: { selectedValues: ["ship"] } });
+      await app.inject({ method: "POST", url: `/api/requests/${requestId}/answer`, payload: { expectedRevision: 1, selectedValues: ["ship"] } });
       await resolved;
       now += 1_000;
     }
