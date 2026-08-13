@@ -198,6 +198,7 @@ export const AskResultSchema = z.discriminatedUnion("status", [
     note: LongTextSchema.optional(),
     rationale: LongTextSchema.optional(),
     affectedDescendantIds: z.array(RequestIdSchema).optional(),
+    descendantGuidance: LongTextSchema.optional(),
     resolvedAt: z.string().datetime()
   }),
   z.object({

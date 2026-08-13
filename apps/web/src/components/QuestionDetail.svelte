@@ -10,6 +10,8 @@
   let {
     request,
     unansweredAncestors = [],
+    latestRequest,
+    revisionChanges = [],
     session,
     isMock = false,
     layoutState = layout,
@@ -18,6 +20,8 @@
   }: {
     request: AskRequestSnapshot;
     unansweredAncestors?: AskRequestSnapshot[];
+    latestRequest?: AskRequestSnapshot;
+    revisionChanges?: string[];
     session?: SessionSnapshot;
     isMock?: boolean;
     layoutState?: BrowserLayoutState;
@@ -163,6 +167,14 @@
         <a class="mt-1 inline-block text-attention-foreground underline" href="?question={encodeURIComponent(nearestAncestor.requestId)}">
           {nearestAncestor.question.prompt} ({nearestAncestor.requestId})
         </a>
+      </div>
+    {/if}
+    {#if latestRequest && latestRequest.revision > request.revision}
+      <div class="mx-4 mt-4 rounded-lg border border-warning-border bg-warning/5 p-4 text-sm sm:mx-6" role="alert">
+        <p class="font-medium text-warning-foreground">A newer revision is available. This obsolete revision cannot be answered.</p>
+        <ul class="mt-2 list-disc pl-5">{#each revisionChanges as change}<li>{change}</li>{/each}</ul>
+        <a class="mt-2 inline-block underline" href="?question={encodeURIComponent(request.requestId)}&revision=latest">Refresh to latest content</a>
+        <span class="hidden" aria-hidden="true">disabled</span>
       </div>
     {/if}
     {#if activationError && !chatStarting}

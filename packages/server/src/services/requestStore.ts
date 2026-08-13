@@ -2,12 +2,15 @@ import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
+  UpdateQuestionPayloadSchema,
   ProposeAnswerPayloadSchema,
   compareAskUrgency,
   OTHER_OPTION_VALUE,
   type AskAnswerPayload,
   type AskCancelPayload,
   type AskCreatePayload,
+  type UpdateQuestionPayload,
+  type QuestionHistory,
   type AskQuestionDraft,
   type AskBatchReceipt,
   type AskRequestSnapshot,
@@ -513,6 +516,57 @@ export class RequestStore {
     return appended;
   }
 
+  updateQuestion(questionId: string, actor: { harness: string; ownerId: string }, payload: UpdateQuestionPayload): Record<string, unknown> {
+    const parsed = UpdateQuestionPayloadSchema.parse(payload);
+    let output: Record<string, unknown> | undefined;
+    this.db.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM questions WHERE question_id = ?").get(questionId) as any;
+      if (!row) throw new RequestStoreError("request_not_found", "Question not found");
+      if (row.owner_harness !== actor.harness || row.owner_owner_id !== actor.ownerId) throw new RequestStoreError("wrong_owner", "Only the current owner may update this Question");
+      if (row.status !== "pending") throw new RequestStoreError("question_terminal", "Terminal Questions are immutable");
+      if (row.revision !== parsed.expectedRevision) throw new RequestStoreError("stale_revision", "Question revision is stale");
+      const revision = row.revision + 1;
+      const at = new Date(this.now()).toISOString();
+      let type: string; let facts: Record<string, unknown> = {};
+      if (parsed.action === "revise") {
+        const changes = ["question"];
+        if (parsed.options) changes.push("options");
+        if (parsed.context) changes.push("context");
+        this.db.prepare(`UPDATE questions SET revision=?, question_json=?, options_json=COALESCE(?, options_json), context_json=COALESCE(?, context_json), updated_at=? WHERE question_id=?`)
+          .run(revision, JSON.stringify(parsed.question), parsed.options ? JSON.stringify(parsed.options) : null, parsed.context ? JSON.stringify(parsed.context) : null, at, questionId);
+        this.db.prepare(`UPDATE ask_requests SET question_json=?, prompt=?, options_json=COALESCE(?, options_json), context_json=COALESCE(?, context_json), updated_at=? WHERE request_id=?`)
+          .run(JSON.stringify(parsed.question), parsed.question.prompt, parsed.options ? JSON.stringify(parsed.options) : null, parsed.context ? JSON.stringify(parsed.context) : null, at, questionId);
+        type = "revision"; facts = { changes };
+      } else if (parsed.action === "reparent") {
+        this.db.prepare("UPDATE questions SET revision=?, parent_question_id=?, updated_at=? WHERE question_id=?").run(revision, parsed.parentQuestionId, at, questionId);
+        this.db.prepare("UPDATE ask_requests SET parent_question_id=?, updated_at=? WHERE request_id=?").run(parsed.parentQuestionId, at, questionId);
+        type = "parent_changed"; facts = { parentQuestionId: parsed.parentQuestionId };
+      } else {
+        const status = parsed.action === "cancel" ? "cancelled" : "superseded";
+        const replacement = parsed.action === "supersede" ? parsed.replacementQuestionId : null;
+        if (replacement && !this.db.prepare("SELECT 1 FROM questions WHERE question_id=?").get(replacement)) throw new RequestStoreError("replacement_not_found", "Replacement Question not found");
+        this.db.prepare("UPDATE questions SET revision=?, status=?, replacement_question_id=?, resolved_at=?, updated_at=? WHERE question_id=?").run(revision, status, replacement, at, at, questionId);
+        this.db.prepare("UPDATE ask_requests SET status='cancelled', rationale=?, resolved_at=?, updated_at=? WHERE request_id=?").run(parsed.action === "cancel" ? parsed.rationale ?? null : `Superseded by ${replacement}`, at, at, questionId);
+        type = status; facts = replacement ? { replacementQuestionId: replacement } : {};
+      }
+      this.recordQuestionEvent(questionId, type, revision, actor, facts, at);
+      const updated = this.db.prepare("SELECT question_json, status, parent_question_id, replacement_question_id FROM questions WHERE question_id=?").get(questionId) as any;
+      output = { questionId, revision, status: updated.status, question: JSON.parse(updated.question_json), parentQuestionId: updated.parent_question_id ?? undefined, replacementQuestionId: updated.replacement_question_id ?? undefined };
+    })();
+    return output!;
+  }
+
+  getQuestionHistory(questionId: string): QuestionHistory {
+    const events = (this.db.prepare("SELECT type, revision, actor_harness, actor_owner_id, facts_json, created_at FROM question_events WHERE question_id=? ORDER BY event_id").all(questionId) as any[])
+      .map((row) => ({ type: row.type, revision: row.revision, actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at, ...JSON.parse(row.facts_json) }));
+    return { questionId, events } as QuestionHistory;
+  }
+
+  private recordQuestionEvent(questionId: string, type: string, revision: number, actor: { harness: string; ownerId: string }, facts: Record<string, unknown>, at: string): void {
+    this.db.prepare("INSERT INTO question_events (question_id,type,revision,actor_harness,actor_owner_id,facts_json,created_at) VALUES (?,?,?,?,?,?,?)")
+      .run(questionId, type, revision, actor.harness, actor.ownerId, JSON.stringify(facts), at);
+  }
+
   answer(requestId: string, payload: AskAnswerPayload): AskResult {
     this.expireDue();
     const parsed = AskAnswerPayloadSchema.parse(payload);
@@ -521,6 +575,10 @@ export class RequestStore {
 
     const transaction = this.db.transaction(() => {
       const existing = this.getPending(requestId);
+      if (parsed.expectedRevision !== undefined) {
+        const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(requestId) as { revision: number } | undefined)?.revision;
+        if (revision !== parsed.expectedRevision) throw new RequestStoreError("stale_revision", "Question revision is stale");
+      }
       this.validateSelectedValues(existing, parsed.selectedValues);
       const resolvedAt = new Date(this.now()).toISOString();
 
@@ -563,6 +621,7 @@ export class RequestStore {
         note: parsed.note,
         rationale: parsed.rationale,
         affectedDescendantIds,
+        descendantGuidance: affectedDescendantIds.length ? "Review affected descendants and revise, supersede, or cancel only those whose assumptions changed." : undefined,
         resolvedAt
       };
       if (question) available = {
@@ -572,6 +631,7 @@ export class RequestStore {
         ownerHarness: question.owner_harness,
         ownerId: question.owner_owner_id
       };
+      if (question) this.recordQuestionEvent(question.question_id, "answered", question.revision, { harness: question.owner_harness, ownerId: question.owner_owner_id }, {}, resolvedAt);
     });
 
     transaction();
