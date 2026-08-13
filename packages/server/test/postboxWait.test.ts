@@ -136,12 +136,19 @@ describe("owner-wide explicit Postbox wait", () => {
   });
 
   it("wakes the displaced owner through the explicit transfer seam and frees the new owner to wait", async () => {
-    const { requests, waitable, create } = setup();
+    const { requests, waitable, create, sessions } = setup();
     create("transfer");
     const nextOwner = { harness: "pi", ownerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+    sessions.register("next-connection", { machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
+      session: { sessionId: "next-session", cwd: "/repo", semanticState: "working", owner: nextOwner } });
     const displaced = waitable.waitForPostbox({ owner: OWNER });
-    requests.notifyOwnerTransfer(OWNER, nextOwner, "transfer");
+    requests.transferQuestionOwner("transfer", OWNER, nextOwner);
     await expect(displaced).resolves.toEqual({ type: "lifecycle", questionId: "transfer", event: "transferred", owner: nextOwner });
     expect(waitable.activeWaitCount(OWNER)).toBe(0);
+    expect(requests.getQuestions({ questionIds: ["transfer"] })[0]).toMatchObject({ owner: nextOwner });
+    const nextWait = waitable.waitForPostbox({ owner: nextOwner });
+    expect(waitable.activeWaitCount(nextOwner)).toBe(1);
+    requests.cancel("transfer");
+    await expect(nextWait).resolves.toMatchObject({ type: "lifecycle", event: "cancelled" });
   });
 });

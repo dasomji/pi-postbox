@@ -85,6 +85,18 @@ async function createQuestion(socket: WebSocket): Promise<Record<string, unknown
 }
 
 describe("one asynchronous Question-to-Answer loop", () => {
+  it("settles a displaced correlated wait when the same session connection is replaced", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
+    apps.push(app);
+    const first = await connectOwner(app);
+    await createQuestion(first);
+    const displaced = nextMessage(first);
+    first.send(JSON.stringify({ type: "postbox.wait", requestId: "wait-displaced", payload: { sessionId: "control-session-1" } } satisfies ExtensionClientMessage));
+    await connectOwner(app);
+    await expect(displaced).resolves.toMatchObject({ type: "postbox.wait.result", requestId: "wait-displaced",
+      payload: { type: "lifecycle", event: "connection_replaced", sessionId: "control-session-1" } });
+  });
+
   it("replays the durable notification after disconnect/restart and waits while the owner is blocked", async () => {
     const directory = await mkdtemp(join(tmpdir(), "postbox-answer-outbox-"));
     directories.push(directory);

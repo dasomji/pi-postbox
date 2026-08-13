@@ -68,7 +68,7 @@ export async function registerExtensionSocket(
   pushNotifier?: PushNotifier,
   questionChatRelay?: QuestionChatRelay
 ): Promise<void> {
-  const activeSessionWaits = new Map<string, { connectionId: string; requestId: string; controller: AbortController }>();
+  const activeSessionWaits = new Map<string, { connectionId: string; requestId: string; controller: AbortController; socket: WebSocket }>();
   app.get("/api/extension/ws", { websocket: true }, (socket, request) => {
     const origin = request.headers.origin;
     if (origin) {
@@ -299,7 +299,12 @@ export async function registerExtensionSocket(
       }
 
       if (message.type === "session.register") {
-        activeSessionWaits.get(message.payload.session.sessionId)?.controller.abort();
+        const displacedWait = activeSessionWaits.get(message.payload.session.sessionId);
+        if (displacedWait) {
+          send(displacedWait.socket, { type: "postbox.wait.result", requestId: displacedWait.requestId,
+            payload: { type: "lifecycle", event: "connection_replaced", sessionId: message.payload.session.sessionId } });
+          displacedWait.controller.abort();
+        }
         try {
           const feature = sessionStore.register(connectionId, message.payload);
           registeredSessionId = message.payload.session.sessionId;
@@ -380,7 +385,7 @@ export async function registerExtensionSocket(
         if (!owner) { sendAskError(socket, message.requestId, "wait_owner_missing", new Error("Session has no owner identity")); return; }
         const waitAbortController = new AbortController();
         waitAbortControllers.set(message.requestId, waitAbortController);
-        activeSessionWaits.set(message.payload.sessionId, { connectionId, requestId: message.requestId, controller: waitAbortController });
+        activeSessionWaits.set(message.payload.sessionId, { connectionId, requestId: message.requestId, controller: waitAbortController, socket });
         const priorSemanticState = sessionStore.semanticStateForSession(message.payload.sessionId) ?? "working";
         void requestStore.waitForPostbox({ owner, signal: waitAbortController.signal,
           publishSemanticState: (semanticState) => sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: semanticState as any }) })
