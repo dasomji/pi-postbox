@@ -1,0 +1,32 @@
+import type { AskRequestSnapshot, SessionSnapshot } from "@pi-postbox/protocol";
+import { describe, expect, it } from "vitest";
+import { groupOpenQuestions } from "./openQuestionsQueue";
+
+function request(requestId: string, sessionId: string, urgency: AskRequestSnapshot["urgency"], createdAt: string): AskRequestSnapshot {
+  return { requestId, sessionId, mode: "single", urgency, question: { prompt: requestId },
+    options: [{ value: "yes", label: "Yes" }], status: "pending", createdAt };
+}
+
+function session(sessionId: string, worktreeId: string, featureId: string): SessionSnapshot {
+  return {
+    sessionId, machineId: "machine-1", machineName: "Workstation", hostname: "workstation", projectId: worktreeId,
+    projectName: worktreeId, cwd: `/workspace/${worktreeId}`, semanticState: "blocked", presence: "live",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    repository: { repositoryId: "repo-1", remote: "github.com/acme/postbox" },
+    worktree: { worktreeId, machineId: "machine-1", path: `/workspace/${worktreeId}` },
+    feature: { featureId, name: featureId }
+  } as SessionSnapshot;
+}
+
+describe("feature queue grouping", () => {
+  it("groups repository, then worktree/feature, without urgency changing group order", () => {
+    const groups = groupOpenQuestions([
+      request("zeta-high", "zeta-session", "high", "2026-08-13T11:00:00.000Z"),
+      request("alpha-low", "alpha-session", "low", "2026-08-13T08:00:00.000Z")
+    ], [session("zeta-session", "wt-zeta", "feature-zeta"), session("alpha-session", "wt-alpha", "feature-alpha")]) as any[];
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ repositoryId: "repo-1" });
+    expect(groups[0].worktreeFeatures.map((group: any) => group.feature.featureId)).toEqual(["feature-alpha", "feature-zeta"]);
+  });
+});
