@@ -17,7 +17,7 @@ export interface QuestionProjectGroup {
     feature: NonNullable<SessionSnapshot["feature"]>;
     questions: QuestionQueueItem[];
   }>;
-  questionTree: QuestionTreeNode[];
+  questionTree?: QuestionTreeNode[];
 }
 
 export interface QuestionTreeNode extends QuestionQueueItem { children: QuestionTreeNode[] }
