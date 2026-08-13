@@ -238,6 +238,38 @@ describe("PostboxClient pending ask resilience", () => {
     expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true);
     client.stop();
   });
+
+  it("keeps owner-visible delivery exactly once across crash-after-callback-before-markDelivered", async () => {
+    FakeSocket.instances = [];
+    let state: "pending" | "delivered" | undefined;
+    let failCommit = true;
+    const inbox = {
+      begin: async () => state ?? (state = "pending", "new" as const),
+      markDelivered: async () => {
+        if (failCommit) { failCommit = false; throw new Error("simulated crash before delivered commit"); }
+        state = "delivered";
+      }
+    };
+    const ownerVisible = new Set<string>();
+    const client = createClient({
+      answerNotificationInbox: inbox,
+      onAnswerAvailable: (_notification, deliveryId) => { ownerVisible.add(deliveryId); }
+    });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const message = { type: "answer.available" as const, requestId: "crash-seam", payload: {
+      questionId: "question-seam", question: "Exactly once?", answerId: "answer-seam"
+    } };
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(ownerVisible.size).toBe(1));
+    expect(state).toBe("pending");
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(state).toBe("delivered"));
+    expect(ownerVisible).toEqual(new Set(["answer-seam"]));
+    expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true);
+    client.stop();
+  });
   it("status snapshot enriches a real connected local client with Tailnet URL, remote export, and Tailscale diagnostics", async () => {
     FakeSocket.instances = [];
     const inspectTailscale = vi.fn(async () => ({

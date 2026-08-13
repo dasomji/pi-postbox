@@ -278,9 +278,11 @@ async function registerResolvedTarget(
       onLocalFallbackStatus: (status) => {
         void renderLocalFallbackStatus(uiScope, status);
       },
-      onAnswerAvailable: (notification) => {
-        uiScope.notify(`Postbox answer ready for “${notification.question}” (${notification.questionId}).`, "info");
-        pi.events?.emit?.("postbox:answer-available", notification);
+      onAnswerAvailable: (notification, deliveryId) => {
+        // Stable widget identity makes at-least-once transport replay owner-visible exactly once.
+        uiScope.setWidget(`postbox-answer-${deliveryId}`, [
+          `Postbox answer ready for “${notification.question}” (${notification.questionId}). Use get_answer.`
+        ]);
       },
       answerNotificationInbox: new FileAnswerNotificationInbox(env),
       questionChats

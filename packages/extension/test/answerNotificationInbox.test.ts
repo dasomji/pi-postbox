@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,5 +52,33 @@ describe("durable answer notification inbox", () => {
       expect(await new FileAnswerNotificationInbox(env).begin(`answer-${index}`)).toBe("delivered");
     }
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ machineId: "machine-safe", serverUrl: "http://postbox.local" });
+  });
+
+  it("reclaims a dead-owner lock but never steals a live-owner lock", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "postbox-answer-inbox-lock-"));
+    directories.push(directory);
+    const env = { PI_POSTBOX_CONFIG_PATH: join(directory, "config.json") };
+    const lockPath = join(directory, "answer-notification-inbox.json.lock");
+    await writeFile(lockPath, JSON.stringify({ pid: 999_999_999, nonce: randomUUID(), createdAt: new Date().toISOString() }));
+    expect(await new FileAnswerNotificationInbox(env, 100).begin("answer-dead-lock")).toBe("new");
+
+    const liveLock = { pid: process.pid, nonce: randomUUID(), createdAt: new Date().toISOString() };
+    await writeFile(lockPath, JSON.stringify(liveLock));
+    await expect(new FileAnswerNotificationInbox(env, 25).begin("answer-live-lock")).rejects.toThrow("Timed out");
+    expect(JSON.parse(await readFile(lockPath, "utf8"))).toEqual(liveLock);
+  });
+
+  it("selects the newest valid generation across primary and backup", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "postbox-answer-inbox-generations-"));
+    directories.push(directory);
+    const env = { PI_POSTBOX_CONFIG_PATH: join(directory, "config.json") };
+    const record = (generation: number, state: "pending" | "delivered") => {
+      const notifications = { "answer-generation": state };
+      const checksum = createHash("sha256").update(JSON.stringify({ generation, notifications })).digest("hex");
+      return JSON.stringify({ version: 2, generation, checksum, notifications });
+    };
+    await writeFile(join(directory, "answer-notification-inbox.json"), record(2, "pending"));
+    await writeFile(join(directory, "answer-notification-inbox.json.backup"), record(3, "delivered"));
+    expect(await new FileAnswerNotificationInbox(env).begin("answer-generation")).toBe("delivered");
   });
 });

@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { defaultConfigPath } from "./config.js";
@@ -11,17 +11,20 @@ export interface AnswerNotificationInbox {
 }
 
 const InboxSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
+  generation: z.number().int().nonnegative(),
+  checksum: z.string().regex(/^[a-f0-9]{64}$/),
   notifications: z.record(z.enum(["pending", "delivered"]))
 }).strict();
 type InboxData = z.infer<typeof InboxSchema>;
+const LockSchema = z.object({ pid: z.number().int().positive(), nonce: z.string().uuid(), createdAt: z.string().datetime() }).strict();
 
 export class FileAnswerNotificationInbox implements AnswerNotificationInbox {
   private readonly path: string;
   private readonly backupPath: string;
   private readonly lockPath: string;
 
-  constructor(env: NodeJS.ProcessEnv = process.env) {
+  constructor(env: NodeJS.ProcessEnv = process.env, private readonly lockTimeoutMs = 5_000) {
     const directory = dirname(defaultConfigPath(env));
     this.path = join(directory, "answer-notification-inbox.json");
     this.backupPath = `${this.path}.backup`;
@@ -34,7 +37,7 @@ export class FileAnswerNotificationInbox implements AnswerNotificationInbox {
       const existing = data.notifications[answerId];
       if (existing) return existing;
       data.notifications[answerId] = "pending";
-      this.write(data);
+      this.writeNext(data);
       return "new";
     });
   }
@@ -43,43 +46,72 @@ export class FileAnswerNotificationInbox implements AnswerNotificationInbox {
     await this.withLock(() => {
       const data = this.read();
       data.notifications[answerId] = "delivered";
-      this.write(data);
+      this.writeNext(data);
     });
   }
 
   private async withLock<T>(operation: () => T): Promise<T> {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const deadline = Date.now() + this.lockTimeoutMs;
+    const lock = { pid: process.pid, nonce: randomUUID(), createdAt: new Date().toISOString() };
     for (;;) {
       try {
-        mkdirSync(this.lockPath, { mode: 0o700 });
+        const descriptor = openSync(this.lockPath, "wx", 0o600);
+        try {
+          writeFileSync(descriptor, `${JSON.stringify(lock)}\n`);
+          fsyncSync(descriptor);
+        } finally { closeSync(descriptor); }
         break;
       } catch (error) {
         if (!isExists(error)) throw error;
+        if (this.lockIsReclaimable()) {
+          rmSync(this.lockPath, { force: true });
+          continue;
+        }
+        if (Date.now() >= deadline) throw new Error("Timed out waiting for answer notification inbox lock");
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
     }
     try {
       return operation();
     } finally {
-      rmSync(this.lockPath, { recursive: true, force: true });
+      try {
+        const current = LockSchema.parse(JSON.parse(readFileSync(this.lockPath, "utf8")));
+        if (current.nonce === lock.nonce) rmSync(this.lockPath, { force: true });
+      } catch { /* Never remove a lock now owned by somebody else. */ }
     }
   }
 
   private read(): InboxData {
+    const candidates: InboxData[] = [];
     for (const path of [this.path, this.backupPath]) {
       try {
-        return InboxSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+        const parsed = InboxSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+        if (parsed.checksum === checksum(parsed.generation, parsed.notifications)) candidates.push(parsed);
       } catch {
-        // Try the independently fsynced backup before starting empty.
+        // Ignore partial/corrupt copies when another valid generation exists.
       }
     }
-    return { version: 1, notifications: {} };
+    return candidates.sort((a, b) => b.generation - a.generation)[0]
+      ?? withChecksum(0, {});
   }
 
-  private write(data: InboxData): void {
-    const serialized = `${JSON.stringify(InboxSchema.parse(data))}\n`;
+  private writeNext(data: InboxData): void {
+    const next = withChecksum(data.generation + 1, data.notifications);
+    const serialized = `${JSON.stringify(next)}\n`;
     this.atomicWrite(this.backupPath, serialized);
     this.atomicWrite(this.path, serialized);
+  }
+
+  private lockIsReclaimable(): boolean {
+    try {
+      const lock = LockSchema.parse(JSON.parse(readFileSync(this.lockPath, "utf8")));
+      try { process.kill(lock.pid, 0); return false; }
+      catch (error) { return !!error && typeof error === "object" && "code" in error && error.code === "ESRCH"; }
+    } catch {
+      try { return Date.now() - statSync(this.lockPath).mtimeMs > 1_000; }
+      catch { return true; }
+    }
   }
 
   private atomicWrite(path: string, contents: string): void {
@@ -91,6 +123,14 @@ export class FileAnswerNotificationInbox implements AnswerNotificationInbox {
     const directory = openSync(dirname(path), "r");
     try { fsyncSync(directory); } finally { closeSync(directory); }
   }
+}
+
+function checksum(generation: number, notifications: Record<string, "pending" | "delivered">): string {
+  return createHash("sha256").update(JSON.stringify({ generation, notifications })).digest("hex");
+}
+
+function withChecksum(generation: number, notifications: Record<string, "pending" | "delivered">): InboxData {
+  return { version: 2, generation, notifications: { ...notifications }, checksum: checksum(generation, notifications) };
 }
 
 export class MemoryAnswerNotificationInbox implements AnswerNotificationInbox {

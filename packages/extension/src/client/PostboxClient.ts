@@ -76,7 +76,8 @@ export interface PostboxClientOptions {
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
-  onAnswerAvailable?: (notification: { questionId: string; question: string; answerId: string }) => void;
+  /** Transport is at-least-once. Consumer must apply the stable deliveryId idempotently. */
+  onAnswerAvailable?: (notification: { questionId: string; question: string; answerId: string }, deliveryId: string) => void;
   answerNotificationInbox?: AnswerNotificationInbox;
   questionChats?: {
     activate(input: { requestId: string; ownerSessionId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
@@ -928,7 +929,7 @@ export class PostboxClient {
     try {
       const state = await this.answerNotificationInbox.begin(notification.answerId);
       if (state !== "delivered") {
-        this.options.onAnswerAvailable?.(notification);
+        this.options.onAnswerAvailable?.(notification, notification.answerId);
         await this.answerNotificationInbox.markDelivered(notification.answerId);
       }
       if (commandId) this.send({ type: "answer.available.ack", requestId: commandId, payload: { answerId: notification.answerId } });
