@@ -5,6 +5,7 @@ import {
   type AskCreateHandoffContext,
   type AskOption,
   type AskReceipt,
+  type AskBatchReceipt,
   type AskResult,
   type AskUrgency,
   type ForkReference
@@ -26,10 +27,17 @@ export interface AskPostboxInput {
   expiresAt?: string;
 }
 
+export interface AskPostboxBatchInput {
+  mode: "batch";
+  questions: Array<AskPostboxInput & { localRef: string; parent?: { questionId: string } | { localRef: string } }>;
+}
+
 export const askPostboxParameters = {
   type: "object",
   additionalProperties: false,
   required: ["question", "options", "context"],
+  description: "Create Questions. A Question may have at most five direct children and the hierarchy may have at most four levels.",
+  oneOf: [{ required: ["question", "options", "context"] }, { required: ["mode", "questions"] }],
   properties: {
     question: { type: "string", minLength: 1, description: "Decision question to show in Pi Postbox." },
     questionContext: { type: "string", minLength: 1, description: "Concrete context for why this question is being asked." },
@@ -94,7 +102,8 @@ export const askPostboxParameters = {
         cwd: { type: "string", minLength: 1 },
         model: { type: "string", minLength: 1 }
       }
-    }
+    },
+    questions: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false } }
   }
 } as const;
 
@@ -138,23 +147,32 @@ export interface AskPostboxWaitLifecycle {
 }
 
 export async function executeAskPostbox(
-  input: AskPostboxInput,
-  client: Pick<PostboxClient, "createAsk"> | Pick<PostboxClient, "ask">,
+  input: AskPostboxInput | AskPostboxBatchInput,
+  client: Pick<PostboxClient, "createAsk"> | Pick<PostboxClient, "ask"> | { createAskBatch(payload: unknown, signal?: AbortSignal): Promise<AskBatchReceipt> },
   sessionId: string,
   signal?: AbortSignal,
   lifecycle?: AskPostboxWaitLifecycle
-): Promise<AskReceipt> {
+): Promise<AskReceipt | AskBatchReceipt> {
+  if (input.mode === "batch") {
+    if (!("createAskBatch" in client)) throw new Error("Postbox client does not support Question batches");
+    const questions = input.questions.map(({ localRef, parent, ...item }) => ({
+      ...createAskPayload(item, sessionId), localRef, parent
+    }));
+    return client.createAskBatch({ sessionId, questions }, signal);
+  }
   const payload = createAskPayload(input, sessionId);
   void lifecycle;
   if ("createAsk" in client) return client.createAsk(payload, signal);
   // Compatibility for embedders compiled against the synchronous v1 client.
-  return client.ask(payload, signal).then((result) => {
+  if (!("ask" in client)) throw new Error("Postbox client does not support single Questions");
+  return client.ask(payload, signal).then((result: AskResult) => {
     if (result.status !== "answered") throw new Error(`Question was not persisted: ${result.status}`);
     return { questionId: payload.requestId, revision: 1, status: "pending" as const };
   });
 }
 
-export function formatAskResult(result: AskReceipt | AskResult): string {
+export function formatAskResult(result: AskReceipt | AskResult | AskBatchReceipt): string {
+  if ("items" in result) return `Postbox processed ${result.items.length} Questions (${result.status}).`;
   if ("questionId" in result) return `Postbox persisted ${result.questionId} (revision ${result.revision}); the Answer will arrive asynchronously. Use get_answer with this questionId after notification.`;
   if (result.status === "answered") return `Postbox answered ${result.requestId}: ${result.selectedValues.join(", ")}.`;
   return `Postbox ${result.status} ${result.requestId}.${result.rationale ? ` ${result.rationale}` : ""}`;
