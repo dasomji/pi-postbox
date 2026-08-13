@@ -57,4 +57,16 @@ describe("selected Postbox Question detail", () => {
     expect(body.indexOf("SQLite")).toBeLessThan(body.indexOf("Stage first"));
     expect(body).toContain("Suggested in Chat");
   });
+
+  it("keeps a child answerable while linking to its nearest unanswered ancestor", () => {
+    const child = { ...REQUEST, requestId: "question-child", parentQuestionId: "question-root" } as AskRequestSnapshot;
+    const ancestor = { ...REQUEST, requestId: "question-root", question: { prompt: "Choose the overall rollout?" } };
+    const { body } = render(QuestionDetail, { props: { request: child, unansweredAncestors: [ancestor], isMock: true } as any });
+
+    expect(body).toMatch(/unanswered ancestor/i);
+    expect(body).toContain("Choose the overall rollout?");
+    expect(body).toContain("question-root");
+    expect(body).toContain("type=\"submit\"");
+    expect(body).not.toContain("disabled");
+  });
 });
