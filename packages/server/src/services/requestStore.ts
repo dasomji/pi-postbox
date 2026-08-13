@@ -124,8 +124,8 @@ export class RequestStore {
       ? undefined
       : new Date(this.now() + this.askTimeoutMs).toISOString());
 
-    const session = this.db.prepare("SELECT session_id, owner_harness, owner_id FROM sessions WHERE session_id = ?").get(parsed.sessionId) as
-      { session_id: string; owner_harness: string | null; owner_id: string | null } | undefined;
+    const session = this.db.prepare("SELECT session_id, owner_harness, owner_id, repository_id, worktree_id, feature_id FROM sessions WHERE session_id = ?").get(parsed.sessionId) as
+      { session_id: string; owner_harness: string | null; owner_id: string | null; repository_id: string | null; worktree_id: string | null; feature_id: string | null } | undefined;
     if (!session) throw new RequestStoreError("session_not_found", "Cannot create an ask for an unknown session");
 
     const insertLegacy = this.db.prepare(
@@ -745,6 +745,10 @@ export class RequestStore {
 
   private toSnapshot(row: AskRequestRow): AskRequestSnapshot {
     const result = this.toResult(row);
+    const grouping = this.db.prepare(`SELECT q.repository_id, q.worktree_id, q.feature_id, r.remote, r.machine_id, r.common_directory,
+      w.machine_id AS worktree_machine_id, w.canonical_path, f.name AS feature_name FROM questions q
+      LEFT JOIN repositories r ON r.repository_id=q.repository_id LEFT JOIN worktrees w ON w.worktree_id=q.worktree_id
+      LEFT JOIN features f ON f.feature_id=q.feature_id WHERE q.legacy_request_id=?`).get(row.request_id) as any;
     return {
       requestId: row.request_id,
       sessionId: row.session_id,
