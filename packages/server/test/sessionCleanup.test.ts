@@ -113,6 +113,32 @@ async function fetchSnapshot(app: FastifyInstance) {
 }
 
 describe("session cleanup", () => {
+  it("marks ordinary replacement shutdown offline without cancelling durable Questions", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
+    apps.push(app);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = await connectAndRegister(app);
+    await createAsk(socket, "ask-preserved");
+
+    const released = new Promise<unknown>((resolve, reject) => {
+      const onMessage = (raw: WebSocket.RawData) => {
+        const message = JSON.parse(raw.toString());
+        if (message.requestId === "shutdown-new") { socket.off("message", onMessage); resolve(message); }
+      };
+      socket.on("message", onMessage); socket.once("error", reject);
+    });
+    socket.send(JSON.stringify({ type: "session.shutdown", requestId: "shutdown-new", payload: {
+      sessionId: "session-1", reason: "new"
+    } } satisfies ExtensionClientMessage));
+    await expect(released).resolves.toMatchObject({ type: "ack", requestId: "shutdown-new" });
+
+    const history = (await app.inject({ method: "GET", url: "/api/history" })).json();
+    expect(history.history).toEqual([]);
+    const state = await fetchSnapshot(app);
+    expect(state.requests).toContainEqual(expect.objectContaining({ requestId: "ask-preserved", status: "pending" }));
+    expect(state.sessions[0]).toMatchObject({ presence: "offline" });
+  });
+
   it.each([
     { staleAfterMs: 5_000, expectedPresence: "live" as const },
     { staleAfterMs: 500, expectedPresence: "stale" as const }

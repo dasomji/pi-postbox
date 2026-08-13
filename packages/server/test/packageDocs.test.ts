@@ -344,6 +344,14 @@ describe("release packaging and operator docs", () => {
     );
   });
 
+  it("supersedes the replacement ADR to preserve unresolved Questions and unread Answers", async () => {
+    const adr = await readText(join("docs", "adr", "0001-pi-session-replacement-lifecycle.md"));
+    expect(adr).toMatch(/\/new[\s\S]*\/resume[\s\S]*\/fork[\s\S]*(preserve|retain)[\s\S]*(unresolved|pending) Questions/i);
+    expect(adr).toMatch(/quit[\s\S]*disconnect[\s\S]*(process (?:exit|death)|crash)[\s\S]*(unread Answers|Answers)/i);
+    expect(adr).toMatch(/heartbeat[\s\S]*(lease|stale)[\s\S]*offline/i);
+    expect(adr).not.toMatch(/cancels its unresolved Postbox Questions/i);
+  });
+
   it("documents the combined package install shape without stale split-package guidance", async () => {
     const docs = await Promise.all([
       readText("README.md"),
