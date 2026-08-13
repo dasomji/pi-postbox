@@ -177,3 +177,7 @@ While `ask_postbox` is pending, the extension shows compact command hints. Opera
 Use the exact user command `/postbox` to open the active Postbox dashboard in your browser. `/postbox` is a user-only/manual browser-opening command; browser opening is not exposed to LLM tools or agent tool side effects.
 
 Terminology note: an explicit non-loopback URL is a configured URL whose host is not localhost/loopback, typically a Tailnet or hosted Postbox URL.
+
+## Explicit agent waiting and capacity
+
+`wait_for_postbox` suspends until any Question owned by the calling agent has an Answer or another actionable lifecycle event. It accepts no Question IDs and is cancellable. In the Pi adapter an active wait retains one runnable-agent slot, so filling every available slot with waiting children can prevent unrelated work from starting. A parent or operator should cancel or abort a waiting child to release capacity; cancellation clears only the ephemeral wait and leaves Questions and Answers durable.

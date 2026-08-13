@@ -196,6 +196,17 @@ export default function postboxExtension(pi: PiLikeApi): void {
       owners: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
         required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } } }
     } }, "owner.status.get");
+  pi.registerTool?.({
+    name: "wait_for_postbox", label: "Wait for Postbox", annotations: { readOnlyHint: false },
+    description: "Cancellably wait for the first actionable event across every Question owned by this agent.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute(_id: string, _params: Record<string, never>, signal?: AbortSignal) {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env, signal);
+      if (!client || !currentRegistration) throw new Error(unavailableRationale);
+      const result = await client.waitForPostbox(currentRegistration.session.sessionId, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    }
+  });
 
   pi.on("session_start", (_event, ctx) => {
     activeUiScope?.deactivate();

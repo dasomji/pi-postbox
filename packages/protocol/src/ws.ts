@@ -94,6 +94,8 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("questions.get"), requestId: WsCorrelationIdSchema, payload: z.object({ questionIds: z.array(z.string().min(1)).min(1) }).strict() }),
   z.object({ type: z.literal("question.status.list"), requestId: WsCorrelationIdSchema, payload: z.object({ sessionId: z.string().min(1), owner: OwnerIdentitySchema.optional(), repository: z.string().optional(), worktree: z.string().optional(), feature: z.string().optional(), status: AskStatusSchema.optional(), global: z.boolean().optional(), readState: z.enum(["read", "unread"]).optional(), includeTerminal: z.boolean().optional() }).strict() }),
   z.object({ type: z.literal("owner.status.get"), requestId: WsCorrelationIdSchema, payload: z.object({ owners: z.array(OwnerIdentitySchema).min(1) }).strict() }),
+  z.object({ type: z.literal("postbox.wait"), requestId: WsCorrelationIdSchema,
+    payload: z.object({ sessionId: z.string().min(1) }).strict() }),
   z.object({
     type: z.literal("chat.ready"),
     requestId: WsCorrelationIdSchema,
@@ -190,6 +192,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     payload: z.object({ scope: z.object({ repositoryId: z.string(), worktreeId: z.string(), featureId: z.string() }).strict(),
       questions: z.array(z.object({ questionId: z.string(), question: z.string() }).strict()), nextCursor: z.string().optional() }).strict() }),
   z.object({ type: z.literal("query.result"), requestId: WsCorrelationIdSchema, payload: z.unknown() }),
+  z.object({ type: z.literal("postbox.wait.result"), requestId: WsCorrelationIdSchema, payload: z.record(z.unknown()) }),
   z.object({
     type: z.literal("ask.resolved"),
     requestId: z.string().min(1).optional(),

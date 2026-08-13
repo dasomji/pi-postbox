@@ -86,6 +86,7 @@ export async function registerExtensionSocket(
     const connectionId = randomUUID();
     const unsubscribers = new Set<() => void>();
     let registeredSessionId: string | undefined;
+    const waitAbortController = new AbortController();
     const flushAnswerNotifications = () => {
       if (!registeredSessionId || socket.readyState !== 1 || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
       const owner = sessionStore.ownerForSession(registeredSessionId);
@@ -360,6 +361,18 @@ export async function registerExtensionSocket(
         send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.listQuestionStatus({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload }) }); return;
       }
       if (message.type === "owner.status.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: sessionStore.getPostboxOwnerStatus(message.payload.owners) }); return; }
+      if (message.type === "postbox.wait") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "wait_not_owner", new Error("Postbox wait requires this connection's registered session")); return;
+        }
+        const owner = sessionStore.ownerForSession(message.payload.sessionId);
+        if (!owner) { sendAskError(socket, message.requestId, "wait_owner_missing", new Error("Session has no owner identity")); return; }
+        void requestStore.waitForPostbox({ owner, signal: waitAbortController.signal,
+          publishSemanticState: (semanticState) => sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: semanticState as any }) })
+          .then((payload) => send(socket, { type: "postbox.wait.result", requestId: message.requestId, payload }))
+          .catch((error) => { if (error instanceof Error && error.name !== "AbortError") sendAskError(socket, message.requestId, "wait_failed", error); });
+        return;
+      }
 
       if (message.type === "heartbeat") {
         sessionStore.heartbeat(connectionId, message.payload.sessionId, message.payload.semanticState);
@@ -455,6 +468,7 @@ export async function registerExtensionSocket(
     });
 
     socket.on("close", () => {
+      waitAbortController.abort();
       for (const unsubscribe of unsubscribers) unsubscribe();
       unsubscribers.clear();
       sessionStore.disconnectConnection(connectionId);

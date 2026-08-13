@@ -399,6 +399,17 @@ export class PostboxClient {
     });
   }
 
+  waitForPostbox(sessionId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const requestId = `wait_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      const abort = () => { this.pendingQueries.delete(requestId); reject(Object.assign(new Error("Postbox wait was aborted"), { name: "AbortError" })); };
+      if (signal?.aborted) return abort();
+      this.pendingQueries.set(requestId, { resolve: (value) => { signal?.removeEventListener("abort", abort); resolve(value as Record<string, unknown>); }, reject });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (!this.send({ type: "postbox.wait", requestId, payload: { sessionId } })) { this.pendingQueries.delete(requestId); reject(new Error("Postbox wait could not be sent.")); }
+    });
+  }
+
   listPendingAsks(): PendingAskSnapshot[] {
     return [...this.pendingAsks.values()].map((pending) => ({
       requestId: pending.payload.requestId,
@@ -531,7 +542,7 @@ export class PostboxClient {
           pending.resolve(AnswerReadResultSchema.parse(parsed.data.payload));
           return;
         }
-        if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result") {
+        if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result" || parsed.data.type === "postbox.wait.result") {
           const pending = this.pendingQueries.get(parsed.data.requestId);
           if (pending) { this.pendingQueries.delete(parsed.data.requestId); pending.resolve(parsed.data.payload); }
           return;
