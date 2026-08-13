@@ -188,7 +188,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
   });
 
   const registerQueryTool = (name: string, description: string, parameters: any, type: any, payload: (params: any) => any = (value) => value) => pi.registerTool?.({
-    name, label: name, description, annotations: { readOnlyHint: true }, parameters,
+    name, label: name, description, annotations: { readOnlyHint: !["update_question", "recover_question_answer"].includes(name) }, parameters,
     async execute(_id: string, params: any) {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
       if (!client || !currentRegistration) throw new Error(unavailableRationale);

@@ -11,6 +11,7 @@ describe("Question update contract", () => {
     expect(schema.safeParse({ action: "reparent", expectedRevision: 2, parentQuestionId: "new-parent" }).success).toBe(true);
     expect(schema.safeParse({ action: "patch", expectedRevision: 2, status: "answered" }).success).toBe(false);
     expect(schema.safeParse({ action: "cancel", expectedRevision: 2, extra: true }).success).toBe(false);
+    expect(schema.safeParse({ action: "takeover", expectedRevision: 2, expectedOwner: { harness: "pi", ownerId: "old" }, nativeCompleted: true }).success).toBe(false);
     expect(schema.safeParse({ action: "revise", question: { prompt: "Missing concurrency guard" } }).success).toBe(false);
   });
 

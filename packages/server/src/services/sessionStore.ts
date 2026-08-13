@@ -134,6 +134,14 @@ export class SessionStore {
     return this.getPostboxOwnerStatus([owner])[0]?.presence ?? "offline";
   }
 
+  hasOfflineLease(owner: { harness: string; ownerId: string }): boolean {
+    const cutoff = new Date(this.now() - this.presenceOptions.offlineAfterMs).toISOString();
+    const live = this.db.prepare(`SELECT 1 FROM sessions WHERE owner_harness=? AND owner_id=?
+      AND shutdown_at IS NULL AND disconnected_at IS NULL AND last_heartbeat_at > ? LIMIT 1`)
+      .get(owner.harness, owner.ownerId, cutoff);
+    return !live;
+  }
+
   getPostboxOwnerStatus(owners: ReadonlyArray<{ harness: string; ownerId: string }>): PostboxOwnerStatus[] {
     const sessionQuery = this.db.prepare(`SELECT session_id, semantic_state, last_heartbeat_at, connected_at,
         disconnected_at, shutdown_at, updated_at
@@ -170,7 +178,7 @@ export class SessionStore {
     if (!this.activeConnections.has(sessionId)) return false;
     const row = this.db.prepare(`SELECT owner_harness, owner_id, semantic_state FROM sessions WHERE session_id = ?`).get(sessionId) as
       { owner_harness: string | null; owner_id: string | null; semantic_state: SemanticState } | undefined;
-    return row?.owner_harness === owner.harness && row.owner_id === owner.ownerId && row.semantic_state !== "blocked";
+    return row?.owner_harness === owner.harness && row.owner_id === owner.ownerId && !["blocked", "waiting_for_postbox"].includes(row.semantic_state);
   }
 
   isCurrentConnection(sessionId: string, connectionId: string): boolean {

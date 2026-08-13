@@ -163,13 +163,26 @@ export class RequestStore {
   }
 
   takeoverQuestionOwner(questionId: string, expectedOwner: { harness: string; ownerId: string }, nextOwner: { harness: string; ownerId: string }, sessions: SessionStore, expectedRevision?: number): void {
-    if (sessions.presenceForOwner(expectedOwner) !== "offline") throw new RequestStoreError("owner_not_offline", "Current Question owner is not offline");
-    this.transferQuestionOwner(questionId, expectedOwner, nextOwner, "takeover", expectedRevision);
+    const at = new Date(this.now()).toISOString();
+    this.db.transaction(() => {
+      if (!sessions.hasOfflineLease(expectedOwner)) throw new RequestStoreError("owner_not_offline", "Current Question owner is not offline");
+      const nextExists = this.db.prepare("SELECT 1 FROM owners WHERE harness=? AND owner_id=?").get(nextOwner.harness, nextOwner.ownerId);
+      if (!nextExists) throw new RequestStoreError("owner_not_found", "The new Question owner does not exist");
+      const changed = this.db.prepare(`UPDATE questions SET owner_harness=?, owner_owner_id=?, updated_at=?
+        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending' AND (? IS NULL OR revision=?)`)
+        .run(nextOwner.harness, nextOwner.ownerId, at, questionId, expectedOwner.harness, expectedOwner.ownerId, expectedRevision ?? null, expectedRevision ?? null).changes;
+      if (changed !== 1) throw new RequestStoreError("owner_changed", "Question owner changed or Question is terminal");
+      const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(questionId) as { revision: number }).revision;
+      this.recordQuestionEvent(questionId, "owner_changed", revision, nextOwner, { previousOwner: expectedOwner, owner: nextOwner, reason: "takeover" }, at);
+    })();
+    this.notifyOwnerTransfer(expectedOwner, nextOwner, questionId);
   }
 
-  getAnswerForRecovery(questionId: string, _reader: { harness: string; ownerId: string }): Record<string, unknown> {
+  getAnswerForRecovery(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
     const question = this.db.prepare("SELECT owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(questionId) as any;
     if (!question) throw new RequestStoreError("request_not_found", "Question not found");
+    this.db.prepare(`UPDATE answers SET first_reader_harness=?, first_reader_owner_id=?, first_read_at=?
+      WHERE question_id=? AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, new Date(this.now()).toISOString(), questionId);
     return this.getAnswer(questionId, { harness: question.owner_harness, ownerId: question.owner_owner_id });
   }
 

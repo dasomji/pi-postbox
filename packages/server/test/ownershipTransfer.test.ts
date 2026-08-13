@@ -45,6 +45,9 @@ describe("deliberate Question ownership transfer and recovery", () => {
     advance(5_000);
     expect(sessions.getPostboxOwnerStatus([CREATOR])[0]?.presence).toBe("offline");
     expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions)).not.toThrow();
+    expect(store.getQuestionHistory("question").events).toContainEqual(expect.objectContaining({
+      type: "owner_changed", actor: RECOVERY, previousOwner: CREATOR, owner: RECOVERY, reason: "takeover"
+    }));
   });
 
   it("uses expected-owner compare-and-swap so exactly one racing takeover wins", () => {
@@ -54,6 +57,18 @@ describe("deliberate Question ownership transfer and recovery", () => {
       catch { return "lost"; }
     });
     expect(outcomes.sort()).toEqual(["lost", "won"]);
+  });
+
+  it("loses takeover authority when the expected owner reconnects before the atomic CAS", () => {
+    const { sessions, store, advance } = setup(); advance(10_000);
+    expect(sessions.getPostboxOwnerStatus([CREATOR])[0]?.presence).toBe("offline");
+    sessions.register("creator-reconnected", {
+      machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
+      session: { sessionId: "creator-session", cwd: "/repo", semanticState: "working", owner: CREATOR }
+    });
+    expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions, 1))
+      .toThrowError(expect.objectContaining({ code: "owner_not_offline" }));
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ owner: CREATOR });
   });
 
   it("does not grant siblings, parents, roots, or shared lineage owner-only authority or automatic succession", () => {
@@ -79,7 +94,8 @@ describe("deliberate Question ownership transfer and recovery", () => {
     store.answer("question", { expectedRevision: 1, selectedValues: ["yes"] });
     advance(10_000);
     expect(store.getAnswerForRecovery("question", RECOVERY)).toMatchObject({
-      question: { questionId: "question" }, answer: { selectedValues: ["yes"] }
+      question: { questionId: "question" }, answer: { selectedValues: ["yes"] },
+      firstRead: { reader: RECOVERY }
     });
     expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ creator: CREATOR, owner: CREATOR });
   });
