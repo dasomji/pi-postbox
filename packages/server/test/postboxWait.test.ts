@@ -123,4 +123,25 @@ describe("owner-wide explicit Postbox wait", () => {
     expect(db.prepare("SELECT status FROM questions WHERE question_id = ?").get("durable")).toEqual({ status: "pending" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM answers").get()).toEqual({ count: 0 });
   });
+
+  it("does not let an aborting wait consume a racing late Answer", async () => {
+    const { requests, waitable, create } = setup();
+    create("race");
+    const controller = new AbortController();
+    const abandoned = waitable.waitForPostbox({ owner: OWNER, signal: controller.signal });
+    controller.abort();
+    requests.answer("race", { expectedRevision: 1, selectedValues: ["yes"] });
+    await expect(abandoned).rejects.toMatchObject({ name: "AbortError" });
+    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toMatchObject({ type: "answer", question: { questionId: "race" } });
+  });
+
+  it("wakes the displaced owner through the explicit transfer seam and frees the new owner to wait", async () => {
+    const { requests, waitable, create } = setup();
+    create("transfer");
+    const nextOwner = { harness: "pi", ownerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+    const displaced = waitable.waitForPostbox({ owner: OWNER });
+    requests.notifyOwnerTransfer(OWNER, nextOwner, "transfer");
+    await expect(displaced).resolves.toEqual({ type: "lifecycle", questionId: "transfer", event: "transferred", owner: nextOwner });
+    expect(waitable.activeWaitCount(OWNER)).toBe(0);
+  });
 });

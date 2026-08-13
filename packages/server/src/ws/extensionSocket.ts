@@ -68,6 +68,7 @@ export async function registerExtensionSocket(
   pushNotifier?: PushNotifier,
   questionChatRelay?: QuestionChatRelay
 ): Promise<void> {
+  const activeSessionWaits = new Map<string, { connectionId: string; requestId: string; controller: AbortController }>();
   app.get("/api/extension/ws", { websocket: true }, (socket, request) => {
     const origin = request.headers.origin;
     if (origin) {
@@ -298,6 +299,7 @@ export async function registerExtensionSocket(
       }
 
       if (message.type === "session.register") {
+        activeSessionWaits.get(message.payload.session.sessionId)?.controller.abort();
         try {
           const feature = sessionStore.register(connectionId, message.payload);
           registeredSessionId = message.payload.session.sessionId;
@@ -378,6 +380,7 @@ export async function registerExtensionSocket(
         if (!owner) { sendAskError(socket, message.requestId, "wait_owner_missing", new Error("Session has no owner identity")); return; }
         const waitAbortController = new AbortController();
         waitAbortControllers.set(message.requestId, waitAbortController);
+        activeSessionWaits.set(message.payload.sessionId, { connectionId, requestId: message.requestId, controller: waitAbortController });
         const priorSemanticState = sessionStore.semanticStateForSession(message.payload.sessionId) ?? "working";
         void requestStore.waitForPostbox({ owner, signal: waitAbortController.signal,
           publishSemanticState: (semanticState) => sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: semanticState as any }) })
@@ -385,6 +388,8 @@ export async function registerExtensionSocket(
           .catch((error) => { if (error instanceof Error && error.name !== "AbortError") sendAskError(socket, message.requestId, "wait_failed", error); })
           .finally(() => {
             waitAbortControllers.delete(message.requestId);
+            const active = activeSessionWaits.get(message.payload.sessionId);
+            if (active?.connectionId === connectionId && active.requestId === message.requestId) activeSessionWaits.delete(message.payload.sessionId);
             if (sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
               sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: priorSemanticState });
               broadcaster.broadcast();

@@ -127,6 +127,19 @@ export class RequestStore {
     return this.ownerWaits.has(this.ownerKey(owner)) ? 1 : 0;
   }
 
+  notifyOwnerTransfer(
+    previousOwner: { harness: string; ownerId: string },
+    nextOwner: { harness: string; ownerId: string },
+    questionId: string
+  ): void {
+    const key = this.ownerKey(previousOwner);
+    const wait = this.ownerWaits.get(key);
+    if (!wait) return;
+    this.ownerWaits.delete(key);
+    wait.cleanup();
+    wait.resolve({ type: "lifecycle", questionId, event: "transferred", owner: nextOwner });
+  }
+
   async waitForPostbox(input: {
     owner: { harness: string; ownerId: string };
     signal?: AbortSignal;
@@ -216,6 +229,12 @@ export class RequestStore {
           featureId: session.feature_id,
           expiresAt,
           nowIso
+        });
+      if (session.owner_harness && session.owner_id) this.db.prepare(`INSERT INTO question_revisions
+        (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+        VALUES (@requestId, 1, @questionJson, @optionsJson, @contextJson, @harness, @ownerId, @nowIso)`).run({
+          requestId: parsed.requestId, questionJson: JSON.stringify(parsed.question), optionsJson: JSON.stringify(parsed.options),
+          contextJson: parsed.context ? JSON.stringify(parsed.context) : null, harness: session.owner_harness, ownerId: session.owner_id, nowIso
         });
     });
     createDecision();
@@ -525,6 +544,7 @@ export class RequestStore {
       if (row.owner_harness !== actor.harness || row.owner_owner_id !== actor.ownerId) throw new RequestStoreError("wrong_owner", "Only the current owner may update this Question");
       if (row.status !== "pending") throw new RequestStoreError("question_terminal", "Terminal Questions are immutable");
       if (row.revision !== parsed.expectedRevision) throw new RequestStoreError("stale_revision", "Question revision is stale");
+      this.seedQuestionRevision(row, actor);
       const revision = row.revision + 1;
       const at = new Date(this.now()).toISOString();
       let type: string; let facts: Record<string, unknown> = {};
@@ -552,7 +572,7 @@ export class RequestStore {
         type = status; facts = replacement ? { replacementQuestionId: replacement } : {};
       }
       this.recordQuestionEvent(questionId, type, revision, actor, facts, at);
-      if (parsed.action === "revise") this.db.prepare(`INSERT INTO question_revisions
+      this.db.prepare(`INSERT INTO question_revisions
         (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
         SELECT question_id, revision, question_json, options_json, context_json, ?, ?, ? FROM questions WHERE question_id=?`)
         .run(actor.harness, actor.ownerId, at, questionId);
@@ -564,9 +584,20 @@ export class RequestStore {
   }
 
   getQuestionHistory(questionId: string): QuestionHistory {
+    const revisions = (this.db.prepare("SELECT revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at FROM question_revisions WHERE question_id=? ORDER BY revision").all(questionId) as any[])
+      .map((row) => ({ revision: row.revision, question: JSON.parse(row.question_json), options: JSON.parse(row.options_json),
+        context: row.context_json ? JSON.parse(row.context_json) : undefined,
+        actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at }));
     const events = (this.db.prepare("SELECT type, revision, actor_harness, actor_owner_id, facts_json, created_at FROM question_events WHERE question_id=? ORDER BY event_id").all(questionId) as any[])
       .map((row) => ({ type: row.type, revision: row.revision, actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at, ...JSON.parse(row.facts_json) }));
-    return { questionId, events } as QuestionHistory;
+    return { questionId, revisions, events };
+  }
+
+  private seedQuestionRevision(row: any, actor: { harness: string; ownerId: string }): void {
+    this.db.prepare(`INSERT OR IGNORE INTO question_revisions
+      (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(row.question_id, row.revision, row.question_json, row.options_json,
+        row.context_json, row.creator_harness ?? actor.harness, row.creator_owner_id ?? actor.ownerId, row.created_at ?? new Date(this.now()).toISOString());
   }
 
   private recordQuestionEvent(questionId: string, type: string, revision: number, actor: { harness: string; ownerId: string }, facts: Record<string, unknown>, at: string): void {
@@ -577,6 +608,13 @@ export class RequestStore {
   private validateNewParent(questionId: string, parentQuestionId: string | null): void {
     if (!parentQuestionId) return;
     if (parentQuestionId === questionId) throw new RequestStoreError("invalid_parent", "A Question cannot parent itself");
+    const owners = this.db.prepare(`SELECT child.owner_harness child_harness, child.owner_owner_id child_owner,
+      parent.owner_harness parent_harness, parent.owner_owner_id parent_owner
+      FROM questions child JOIN questions parent ON parent.question_id=? WHERE child.question_id=?`).get(parentQuestionId, questionId) as any;
+    if (!owners) throw new RequestStoreError("parent_not_found", "Parent Question was not found.");
+    if (owners.child_harness !== owners.parent_harness || owners.child_owner !== owners.parent_owner) {
+      throw new RequestStoreError("wrong_owner", "A Question may only be reparented within its owner scope");
+    }
     this.validateHierarchy(parentQuestionId);
     const descendants = new Set(this.db.prepare(`WITH RECURSIVE d(question_id) AS (SELECT question_id FROM questions WHERE parent_question_id=? UNION ALL SELECT q.question_id FROM questions q JOIN d ON q.parent_question_id=d.question_id) SELECT question_id FROM d`).all(questionId).map((row: any) => row.question_id));
     if (descendants.has(parentQuestionId)) throw new RequestStoreError("invalid_parent", "A Question cannot be reparented beneath its descendant");
@@ -756,6 +794,9 @@ export class RequestStore {
       if (changes !== 1) throw new RequestStoreError("request_already_resolved", "Ask request is already resolved");
       this.db.prepare(`UPDATE questions SET status = 'cancelled', resolved_at = @resolvedAt, updated_at = @resolvedAt
         WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId, resolvedAt });
+      const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE legacy_request_id=?").get(requestId) as any;
+      if (question) this.recordQuestionEvent(question.question_id, "cancelled", question.revision,
+        { harness: question.owner_harness, ownerId: question.owner_owner_id }, {}, resolvedAt);
       result = {
         status: "cancelled",
         requestId,
@@ -799,6 +840,9 @@ export class RequestStore {
         if (changes === 1) {
           this.db.prepare(`UPDATE questions SET status = 'cancelled', resolved_at = @resolvedAt, updated_at = @resolvedAt
             WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId: row.request_id, resolvedAt: nowIso });
+          const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE legacy_request_id=?").get(row.request_id) as any;
+          if (question) this.recordQuestionEvent(question.question_id, "cancelled", question.revision,
+            { harness: question.owner_harness, ownerId: question.owner_owner_id }, {}, nowIso);
           results.push({ status: "cancelled", requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso });
         }
       }
@@ -835,6 +879,9 @@ export class RequestStore {
         if (changes === 1) {
           this.db.prepare(`UPDATE questions SET status = 'expired', resolved_at = @resolvedAt, updated_at = @resolvedAt
             WHERE legacy_request_id = @requestId AND status = 'pending'`).run({ requestId: row.request_id, resolvedAt: nowIso });
+          const question = this.db.prepare("SELECT question_id, revision FROM questions WHERE legacy_request_id=?").get(row.request_id) as any;
+          if (question) this.recordQuestionEvent(question.question_id, "expired", question.revision,
+            { harness: "postbox", ownerId: "expiry" }, {}, nowIso);
           results.push({ status: "expired", requestId: row.request_id, rationale: EXPIRED_RATIONALE, resolvedAt: nowIso });
         }
       }
