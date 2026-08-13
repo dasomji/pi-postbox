@@ -39,10 +39,8 @@ export {
   AnswerReadResultSchema,
   AskResultSchema,
   AskStatusSchema,
-  AskUrgencySchema,
   UpdateQuestionPayloadSchema,
   QuestionHistorySchema,
-  compareAskUrgency,
   ForkReferenceSchema,
   HandoffContextSchema,
   OTHER_OPTION_VALUE,
@@ -69,7 +67,6 @@ export type {
   AnswerReadResult,
   AskResult,
   AskStatus,
-  AskUrgency,
   UpdateQuestionPayload,
   QuestionHistory,
   ForkReference,
@@ -165,13 +162,11 @@ export type {
   QuestionChatUnavailableResponse
 } from "./chat.js";
 export {
-  HistoryPruneResponseSchema,
   HistoryRecordSchema,
   HistoryResponseSchema,
-  HistoryRetentionSchema,
   HistorySessionMetadataSchema
 } from "./history.js";
-export type { HistoryPruneResponse, HistoryRecord, HistoryResponse, HistoryRetention, HistorySessionMetadata } from "./history.js";
+export type { HistoryRecord, HistoryResponse, HistorySessionMetadata } from "./history.js";
 export {
   FcmTokenDeletePayloadSchema,
   FcmTokenPayloadSchema,
@@ -220,3 +215,5 @@ export type {
 } from "./session.js";
 export { ExtensionClientMessageSchema, ExtensionServerMessageSchema } from "./ws.js";
 export type { ExtensionClientMessage, ExtensionServerMessage } from "./ws.js";
+export { QuestionTelemetryEventSchema } from "./questionTelemetry.js";
+export type { QuestionTelemetryEvent } from "./questionTelemetry.js";

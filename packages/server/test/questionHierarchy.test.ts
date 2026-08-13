@@ -16,7 +16,7 @@ function setup() {
 }
 
 const question = (localRef: string, parent?: unknown) => ({
-  localRef, requestId: `question-${localRef}`, parent, mode: "single", urgency: "normal",
+  localRef, requestId: `question-${localRef}`, parent, mode: "single",
   question: { prompt: `Resolve ${localRef}?` }, options: [{ value: "yes", label: "Yes" }],
   context: { codebaseContext: "Postbox", problemContext: "Preserve a deterministic hierarchy." }
 });

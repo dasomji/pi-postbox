@@ -218,9 +218,6 @@ describe("pi-postbox-server CLI", () => {
           "--active-local-role=dev",
           "--database=:memory:",
           "--ui-dist-dir=/tmp/ui",
-          "--ask-timeout-ms=5000",
-          "--history-retention-max-age-ms=6000",
-          "--history-retention-max-records=7",
           "--session-hide-offline-after-ms=8000",
           "--session-retention-ms=9000"
         ],
@@ -232,9 +229,6 @@ describe("pi-postbox-server CLI", () => {
       activeLocalRole: "dev",
       databasePath: ":memory:",
       uiDistDir: "/tmp/ui",
-      askTimeoutMs: 5000,
-      historyRetentionMaxAgeMs: 6000,
-      historyRetentionMaxRecords: 7,
       sessionHideOfflineAfterMs: 8000,
       sessionRetentionMs: 9000
     });

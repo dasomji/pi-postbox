@@ -937,8 +937,7 @@ export class PostboxClient {
   private sendPendingAsk(pending: PendingAsk): boolean {
     if (pending.originServerUrl && pending.originServerUrl !== this.currentServerUrl) return false;
     const sent = this.send({
-      type: "ask.create", requestId: pending.createCommandId,
-      awaitAnswer: !this.asynchronousAskCreates.has(pending.payload.requestId), payload: pending.payload
+      type: "ask.create", requestId: pending.createCommandId, payload: pending.payload
     });
     if (sent) {
       pending.sentAtLeastOnce = true;

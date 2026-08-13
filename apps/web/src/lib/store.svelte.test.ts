@@ -33,16 +33,14 @@ function session(overrides: Partial<SessionSnapshot> & Pick<SessionSnapshot, "se
 }
 
 describe("open question queue ordering", () => {
-  it("puts higher urgency first and older questions first within the same urgency", () => {
+  it("puts older questions first", () => {
     const request = (
       requestId: string,
-      urgency: AskRequestSnapshot["urgency"],
       createdAt: string
     ): AskRequestSnapshot => ({
       requestId,
       sessionId: "queue-session",
       mode: "single",
-      urgency,
       question: { prompt: `Resolve ${requestId}?` },
       options: [{ value: "yes", label: "Yes" }],
       status: "pending",
@@ -53,18 +51,13 @@ describe("open question queue ordering", () => {
       timestamp: SNAPSHOT_TIME,
       sessions: [],
       requests: [
-        request("normal-oldest", "normal", "2026-06-24T08:00:00.000Z"),
-        request("high-newer", "high", "2026-06-24T11:00:00.000Z"),
-        request("low-old", "low", "2026-06-24T09:00:00.000Z"),
-        request("high-older", "high", "2026-06-24T10:00:00.000Z")
+        request("oldest", "2026-06-24T08:00:00.000Z"), request("newest", "2026-06-24T11:00:00.000Z"),
+        request("older", "2026-06-24T09:00:00.000Z"), request("newer", "2026-06-24T10:00:00.000Z")
       ]
     });
 
     expect(store.pendingRequests.map((entry) => entry.requestId)).toEqual([
-      "high-older",
-      "high-newer",
-      "normal-oldest",
-      "low-old"
+      "oldest", "older", "newer", "newest"
     ]);
   });
 });
@@ -199,7 +192,6 @@ describe("store deselection of questions resolved on another device", () => {
       requestId,
       sessionId: "session-remote",
       mode: "single",
-      urgency: "normal",
       question: { prompt: `Prompt for ${requestId}` },
       options: [{ value: "yes", label: "Yes" }],
       context: {
@@ -269,7 +261,6 @@ describe("store notification navigation", () => {
       requestId: "ask-notification",
       sessionId: liveSession.sessionId,
       mode: "single",
-      urgency: "normal",
       question: { prompt: "Still need an answer?" },
       options: [{ value: "yes", label: "Yes" }],
       context: {

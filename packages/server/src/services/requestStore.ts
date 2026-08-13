@@ -4,7 +4,6 @@ import {
   AskCreatePayloadSchema,
   UpdateQuestionPayloadSchema,
   ProposeAnswerPayloadSchema,
-  compareAskUrgency,
   OTHER_OPTION_VALUE,
   type AskAnswerPayload,
   type AskCancelPayload,
@@ -16,10 +15,10 @@ import {
   type AskRequestSnapshot,
   type AskResult,
   type AskStatus,
-  type AskUrgency,
   type AskOption,
   type ProposeAnswerPayload,
-  type ProposedAnswerOption
+  type ProposedAnswerOption,
+  type QuestionTelemetryEvent
 } from "@pi-postbox/protocol";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
@@ -31,7 +30,6 @@ interface AskRequestRow {
   request_id: string;
   session_id: string;
   mode: "single" | "multi";
-  urgency: AskUrgency;
   prompt: string;
   question_json: string | null;
   options_json: string;
@@ -59,8 +57,8 @@ export interface AnswerAvailable {
 type AnswerAvailableListener = (answer: AnswerAvailable) => void;
 
 export interface RequestStoreOptions {
-  askTimeoutMs?: number;
   generateProposedOptionValue?: () => string;
+  recordTelemetry?: (event: QuestionTelemetryEvent) => void;
 }
 
 export interface ProposedAnswerAppend {
@@ -103,16 +101,16 @@ export class RequestStore {
     cleanup: () => void;
   }>();
   private closed = false;
-  private readonly askTimeoutMs: number | undefined;
   private readonly generateProposedOptionValue: () => string;
+  private readonly recordTelemetry: (event: QuestionTelemetryEvent) => void;
 
   constructor(
     private readonly db: SqliteDatabase,
     private readonly now: () => number,
     options: RequestStoreOptions = {}
   ) {
-    this.askTimeoutMs = options.askTimeoutMs;
     this.generateProposedOptionValue = options.generateProposedOptionValue ?? (() => `chat_${randomUUID()}`);
+    this.recordTelemetry = options.recordTelemetry ?? (() => undefined);
   }
 
   close(): void {
@@ -221,9 +219,7 @@ export class RequestStore {
     if (existing) return existing;
 
     const nowIso = new Date(this.now()).toISOString();
-    const expiresAt = parsed.expiresAt ?? (this.askTimeoutMs === undefined
-      ? undefined
-      : new Date(this.now() + this.askTimeoutMs).toISOString());
+    const expiresAt = parsed.expiresAt;
 
     const session = this.db.prepare("SELECT session_id, owner_harness, owner_id, repository_id, worktree_id, feature_id FROM sessions WHERE session_id = ?").get(parsed.sessionId) as
       { session_id: string; owner_harness: string | null; owner_id: string | null; repository_id: string | null; worktree_id: string | null; feature_id: string | null } | undefined;
@@ -231,10 +227,10 @@ export class RequestStore {
 
     const insertLegacy = this.db.prepare(
         `INSERT INTO ask_requests (
-          request_id, session_id, mode, urgency, prompt, question_json, options_json, context_json, fork_reference_json, parent_question_id, status,
+          request_id, session_id, mode, prompt, question_json, options_json, context_json, fork_reference_json, parent_question_id, status,
           selected_values_json, note, rationale, created_at, expires_at, resolved_at, updated_at
         ) VALUES (
-          @requestId, @sessionId, @mode, @urgency, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, @parentQuestionId, 'pending',
+          @requestId, @sessionId, @mode, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, @parentQuestionId, 'pending',
           NULL, NULL, NULL, @nowIso, @expiresAt, NULL, @nowIso
         )`
       );
@@ -243,7 +239,6 @@ export class RequestStore {
         requestId: parsed.requestId,
         sessionId: parsed.sessionId,
         mode: parsed.mode,
-        urgency: parsed.urgency,
         prompt: parsed.question.prompt,
         questionJson: JSON.stringify(parsed.question),
         optionsJson: JSON.stringify(parsed.options),
@@ -255,17 +250,16 @@ export class RequestStore {
       });
       if (session.owner_harness && session.owner_id) this.db.prepare(`INSERT INTO questions (
         question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
-        revision, mode, urgency, question_json, options_json, context_json, parent_question_id, status, expires_at, resolved_at,
+        revision, mode, question_json, options_json, context_json, parent_question_id, status, expires_at, resolved_at,
         repository_id, worktree_id, feature_id, created_at, updated_at
       ) VALUES (@requestId, @requestId, @harness, @ownerId, @harness, @ownerId,
-        1, @mode, @urgency, @questionJson, @optionsJson, @contextJson, @parentQuestionId, 'pending', @expiresAt, NULL,
+        1, @mode, @questionJson, @optionsJson, @contextJson, @parentQuestionId, 'pending', @expiresAt, NULL,
         @repositoryId, @worktreeId, @featureId, @nowIso, @nowIso)`)
         .run({
           requestId: parsed.requestId,
           harness: session.owner_harness,
           ownerId: session.owner_id,
           mode: parsed.mode,
-          urgency: parsed.urgency,
           questionJson: JSON.stringify(parsed.question),
           optionsJson: JSON.stringify(parsed.options),
           contextJson: JSON.stringify(parsed.context),
@@ -287,6 +281,9 @@ export class RequestStore {
 
     const snapshot = this.get(parsed.requestId);
     if (!snapshot) throw new Error("created request could not be loaded");
+    this.recordTelemetry({ operation: "question.create", questionLength: parsed.question.prompt.length,
+      contextSerializedBytes: Buffer.byteLength(JSON.stringify(parsed.context)), optionsSerializedBytes: Buffer.byteLength(JSON.stringify(parsed.options)),
+      responseCharacterCount: JSON.stringify(snapshot).length });
     return snapshot;
   }
 
@@ -298,7 +295,8 @@ export class RequestStore {
     const existing = this.get(draft.requestId);
     if (existing) return { questionId: existing.requestId, revision: 1, status: "created" };
     const hierarchy = this.validateHierarchy(parentQuestionId);
-    const request = this.create({ ...draft, sessionId, parentQuestionId });
+    const { localRef: _localRef, parent: _parent, ...createDraft } = draft;
+    const request = this.create({ ...createDraft, sessionId, parentQuestionId });
     const nudge = hierarchy.childCount === 3 ? "This is the fourth direct child Question." : hierarchy.depth === 3 ? "This is a level-four Question." : undefined;
     return { questionId: request.requestId, revision: 1, status: "created", ...(nudge ? { nudge } : {}) };
   }
@@ -330,7 +328,8 @@ export class RequestStore {
         } else if (draft.parent && "questionId" in draft.parent) parentQuestionId = draft.parent.questionId;
         try {
           this.validateHierarchy(parentQuestionId);
-          const request = this.create({ ...draft, sessionId, parentQuestionId });
+          const { localRef: _localRef, parent: _parent, ...createDraft } = draft;
+          const request = this.create({ ...createDraft, sessionId, parentQuestionId });
           localIds.set(draft.localRef, request.requestId);
           items.push({ localRef: draft.localRef, status: "created", questionId: request.requestId, revision: 1 });
         } catch (error) {
@@ -342,7 +341,12 @@ export class RequestStore {
       }
     })();
     const created = items.filter((item) => item.status === "created").length;
-    return { status: created === items.length ? "created" : created ? "partial" : "rejected", items };
+    const receipt: AskBatchReceipt = { status: created === items.length ? "created" : created ? "partial" : "rejected", items };
+    this.recordTelemetry({ operation: "question.batch.create", batchSize: drafts.length,
+      questionLength: drafts.reduce((sum, draft) => sum + draft.question.prompt.length, 0),
+      contextSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.context))),
+      optionsSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.options))), responseCharacterCount: JSON.stringify(receipt).length });
+    return receipt;
   }
 
   private validateHierarchy(parentQuestionId?: string): { childCount: number; depth: number } {
@@ -367,7 +371,7 @@ export class RequestStore {
       filters.status === "pending"
         ? (this.db
             .prepare("SELECT * FROM ask_requests WHERE status = 'pending' ORDER BY created_at ASC")
-            .all() as AskRequestRow[]).sort((a, b) => compareAskUrgency(a.urgency, b.urgency))
+            .all() as AskRequestRow[])
         : filters.status
           ? (this.db
               .prepare("SELECT * FROM ask_requests WHERE status = ? ORDER BY created_at ASC")
@@ -431,7 +435,9 @@ export class RequestStore {
       question: (JSON.parse(row.question_json) as { prompt: string }).prompt
     }));
     const last = rows[Math.min(pageSize, rows.length) - 1] as any;
-    return { questions, ...(hasMore && last ? { nextCursor: this.encodeQuestionCursor(fingerprint, last.created_at, last.question_id) } : {}) };
+    const result = { questions, ...(hasMore && last ? { nextCursor: this.encodeQuestionCursor(fingerprint, last.created_at, last.question_id) } : {}) };
+    this.recordTelemetry({ operation: "question.list", responseCharacterCount: JSON.stringify(result).length });
+    return result;
   }
 
   getQuestions(input: { questionIds: string[] }): Array<Record<string, unknown>> {
@@ -446,7 +452,6 @@ export class RequestStore {
         questionId: row.question_id,
         revision: row.revision,
         mode: row.mode,
-        urgency: row.urgency,
         question: JSON.parse(row.question_json as string),
         options: JSON.parse(row.options_json as string),
         ...(row.context_json ? { context: JSON.parse(row.context_json as string) } : {}),
@@ -760,6 +765,8 @@ export class RequestStore {
 
     transaction();
     if (!result) throw new Error("answer transaction did not produce a result");
+    this.recordTelemetry({ operation: "answer.create", selectedIdCount: parsed.selectedValues.length,
+      answerResponseBytes: Buffer.byteLength(JSON.stringify(result)) });
     if (available) for (const listener of [...this.answerAvailableListeners]) listener(available);
     if (available) this.wakeOwnerWithAnswer({ harness: available.ownerHarness, ownerId: available.ownerId });
     this.notify(requestId, result);
@@ -815,10 +822,10 @@ export class RequestStore {
   getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
-      const question = this.db.prepare(`SELECT question_id, revision, mode, urgency, question_json, options_json, context_json,
+      const question = this.db.prepare(`SELECT question_id, revision, mode, question_json, options_json, context_json,
           owner_harness, owner_owner_id, created_at, resolved_at
         FROM questions WHERE question_id = ?`).get(questionId) as {
-          question_id: string; revision: number; mode: "single" | "multi"; urgency: "low" | "normal" | "high";
+          question_id: string; revision: number; mode: "single" | "multi";
           question_json: string; options_json: string; context_json: string | null; owner_harness: string; owner_owner_id: string;
           created_at: string; resolved_at: string | null
         } | undefined;
@@ -841,7 +848,7 @@ export class RequestStore {
       output = {
         alreadyRead,
         question: {
-          questionId: question.question_id, revision: question.revision, mode: question.mode, urgency: question.urgency,
+          questionId: question.question_id, revision: question.revision, mode: question.mode,
           question: JSON.parse(question.question_json), options: JSON.parse(question.options_json),
           ...(question.context_json ? { context: JSON.parse(question.context_json) } : {}),
           createdAt: question.created_at, resolvedAt: question.resolved_at
@@ -858,6 +865,7 @@ export class RequestStore {
         firstRead: { reader: firstReader, readAt }
       };
     })();
+    this.recordTelemetry({ operation: "answer.read", answerResponseBytes: Buffer.byteLength(JSON.stringify(output)) });
     return output!;
   }
 
@@ -1031,7 +1039,6 @@ export class RequestStore {
       requestId: row.request_id,
       sessionId: row.session_id,
       mode: row.mode,
-      urgency: row.urgency ?? "normal",
       question: this.parseJson(row.question_json, { prompt: row.prompt }) as AskRequestSnapshot["question"],
       options: JSON.parse(row.options_json) as AskRequestSnapshot["options"],
       context: row.context_json ? (this.parseJson(row.context_json, undefined) as AskRequestSnapshot["context"]) : undefined,

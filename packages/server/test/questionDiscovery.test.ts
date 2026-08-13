@@ -43,7 +43,6 @@ function setup() {
     requestId: questionId,
     sessionId,
     mode: "single",
-    urgency: "normal",
     question: { prompt, context, relevance: "relevance", decisionImpact: "impact" },
     options: [{ value: "yes", label: "Yes", description: "description", meaning: "meaning", context: "option context" }],
     context: { codebaseContext: context, problemContext: "problem" }

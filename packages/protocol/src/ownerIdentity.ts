@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const HarnessSchema = z.enum(["pi", "codex", "claude-code"]);
+export const HarnessSchema = z.enum(["pi", "codex", "claude-code", "legacy"]);
 
 export const OwnerIdentitySchema = z.object({
   harness: HarnessSchema,

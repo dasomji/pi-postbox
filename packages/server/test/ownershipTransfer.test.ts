@@ -21,7 +21,7 @@ function setup() {
   register("sibling-session", SIBLING, { harnessSessionId: "shared", parentOwnerId: CREATOR.ownerId, rootOwnerId: CREATOR.ownerId });
   register("recovery-session", RECOVERY);
   const store = new RequestStore(db, () => now) as any;
-  store.create({ requestId: "question", sessionId: "creator-session", mode: "single", urgency: "normal",
+  store.create({ requestId: "question", sessionId: "creator-session", mode: "single",
     question: { prompt: "Recover this?" }, options: [{ value: "yes", label: "Yes" }],
     context: { codebaseContext: "Postbox", problemContext: "Owner recovery" } });
   return { db, sessions, store, advance: (ms: number) => { now += ms; } };

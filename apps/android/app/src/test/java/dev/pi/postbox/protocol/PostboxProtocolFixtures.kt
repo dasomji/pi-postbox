@@ -4,7 +4,6 @@ internal fun representativeStateJson(
     timestamp: String = "2026-06-25T12:00:00.000Z",
     requestId: String = "ask-protocol-1",
     requestStatus: String = "pending",
-    requestUrgency: String? = null,
     firstOptionProvenance: String? = null,
     resolvedAt: String? = null,
     resultJson: String? = null
@@ -47,7 +46,7 @@ internal fun representativeStateJson(
         {
           "requestId": "$requestId",
           "sessionId": "session-1",
-          "mode": "multi",${requestUrgency?.let { "\n          \"urgency\": \"$it\"," }.orEmpty()}
+          "mode": "multi",
           "question": {
             "prompt": "Choose protocol client behavior",
             "context": "Native app needs to match the server contract.",

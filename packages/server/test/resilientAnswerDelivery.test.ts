@@ -19,7 +19,7 @@ function setup(state: "working" | "idle" | "waiting_for_postbox" = "working") {
   register("owner-connection", "owner-session", OWNER);
   register("next-connection", "next-session", NEXT, "idle");
   const store = new RequestStore(db, () => now) as any;
-  const create = (id: string) => store.create({ requestId: id, sessionId: "owner-session", mode: "single", urgency: "normal",
+  const create = (id: string) => store.create({ requestId: id, sessionId: "owner-session", mode: "single",
     question: { prompt: `${id}?` }, options: [{ value: "yes", label: "Yes" }], context: { codebaseContext: "Postbox", problemContext: "Delivery" },
     forkReference: { agentSessionPath: "/tmp/owner-session.jsonl", leafId: "leaf" } });
   return { db, sessions, store, create, register, advance: (ms: number) => { now += ms; } };

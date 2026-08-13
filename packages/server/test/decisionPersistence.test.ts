@@ -75,7 +75,7 @@ describe("durable decision compatibility migration", () => {
     });
 
     requests.create({
-      requestId: "question-complete", sessionId: "session-left", mode: "single", urgency: "high",
+      requestId: "question-complete", sessionId: "session-left", mode: "single",
       question: { prompt: "Which deployment?", context: "Release window", relevance: "Production", decisionImpact: "Chooses rollout" },
       options: [{ value: "blue", label: "Blue", description: "Blue pool", meaning: "Low risk", context: "Already warm" }],
       context: { codebaseContext: "Deployment service", problemContext: "Pick a production pool" }
@@ -104,7 +104,7 @@ describe("durable decision compatibility migration", () => {
     });
 
     requests.create({
-      requestId: "question-transferred", sessionId: "session-left", mode: "single", urgency: "normal",
+      requestId: "question-transferred", sessionId: "session-left", mode: "single",
       question: { prompt: "Transferred choice?" }, options: [{ value: "yes", label: "Yes" }],
       context: { codebaseContext: "Ownership", problemContext: "Successor must mutate" }
     });

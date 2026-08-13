@@ -86,7 +86,6 @@ data class AskRequestSnapshot(
     val requestId: String,
     val sessionId: String,
     val mode: AskMode,
-    val urgency: AskUrgency = AskUrgency.NORMAL,
     val question: AskQuestion,
     val options: List<AskOption>,
     val context: HandoffContext? = null,
@@ -102,13 +101,6 @@ data class AskRequestSnapshot(
 enum class AskMode {
     @SerialName("single") SINGLE,
     @SerialName("multi") MULTI
-}
-
-@Serializable
-enum class AskUrgency {
-    @SerialName("low") LOW,
-    @SerialName("normal") NORMAL,
-    @SerialName("high") HIGH
 }
 
 @Serializable

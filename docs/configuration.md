@@ -34,9 +34,6 @@ Supported flags and environment variables:
 | `--no-tailscale` | `PI_POSTBOX_TAILSCALE=off` | automatic Tailnet-private Serve enabled | Disable Tailscale Serve mutation for this run while keeping local startup. |
 | `--ui-dist-dir` | `PI_POSTBOX_UI_DIST_DIR` | packaged `dist/public` beside the server CLI | Built Vite UI assets served by the server. Override this for source-checkout development if needed. |
 | `--database` | `PI_POSTBOX_DATABASE` | `~/.pi-postbox/postbox.sqlite` | SQLite database path. Parent directories are created automatically. |
-| `--ask-timeout-ms` | `PI_POSTBOX_ASK_TIMEOUT_MS` | 12 hours | Default expiry for pending asks. |
-| `--history-retention-max-age-ms` | `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS` | unset | Optional terminal-history max age. Pending asks are never pruned. |
-| `--history-retention-max-records` | `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS` | unset | Optional maximum number of terminal history records to keep. |
 | `--session-hide-offline-after-ms` | `PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS` | 24 hours | Offline sessions older than this are omitted from state snapshots. A session with a pending question stays visible regardless. |
 | `--session-retention-ms` | `PI_POSTBOX_SESSION_RETENTION_MS` | 30 days | Offline sessions older than this are deleted, unless ask requests (pending or history) still reference them. Machines and projects left without sessions are swept too. |
 | `--fcm-service-account` | `PI_POSTBOX_FCM_SERVICE_ACCOUNT` | `~/.pi-postbox/fcm-service-account.json` when that file exists, else unset | Path to a Firebase service-account JSON file. When set, new pending questions are also pushed to Android devices registered via `POST /api/push/fcm-tokens`. See [Android push notifications (FCM)](#android-push-notifications-fcm). |
@@ -145,7 +142,6 @@ Useful endpoints for wrappers and manual checks:
 - `GET /api/state/events` — SSE stream of validated state snapshots.
 - `GET /api/requests?status=pending` — request list, optionally filtered by status.
 - `GET /api/history` — terminal decision history.
-- `POST /api/history/prune` — apply configured terminal-history retention.
 
 ## Manual configuration check
 

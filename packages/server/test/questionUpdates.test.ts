@@ -13,7 +13,7 @@ function setup() {
   sessions.register("connection", { machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
     session: { sessionId: "session", cwd: "/repo", semanticState: "working", owner: { harness: "pi", ownerId: "agent" } } });
   const store = new RequestStore(db, () => now) as any;
-  const create = (id: string, parentQuestionId?: string) => store.create({ requestId: id, sessionId: "session", mode: "single", urgency: "normal",
+  const create = (id: string, parentQuestionId?: string) => store.create({ requestId: id, sessionId: "session", mode: "single",
     question: { prompt: `${id}?` }, options: [{ value: "yes", label: "Yes" }], context: { codebaseContext: "Postbox", problemContext: "Keep Question accurate" }, parentQuestionId });
   return { db, sessions, store, create, tick: () => { now += 1_000; } };
 }
@@ -100,7 +100,7 @@ describe("immutable Question updates", () => {
     create("child");
     sessions.register("other-connection", { machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
       session: { sessionId: "other-session", cwd: "/repo", semanticState: "working", owner: { harness: "pi", ownerId: "other-agent" } } });
-    store.create({ requestId: "foreign-parent", sessionId: "other-session", mode: "single", urgency: "normal",
+    store.create({ requestId: "foreign-parent", sessionId: "other-session", mode: "single",
       question: { prompt: "foreign-parent?" }, options: [{ value: "yes", label: "Yes" }],
       context: { codebaseContext: "Postbox", problemContext: "Different owner" } });
     expect(() => store.updateQuestion("child", { harness: "pi", ownerId: "agent" }, {

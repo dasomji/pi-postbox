@@ -70,12 +70,10 @@ async function createQuestion(socket: WebSocket): Promise<Record<string, unknown
   socket.send(JSON.stringify({
     type: "ask.create",
     requestId: "wire-question-1",
-    awaitAnswer: false,
     payload: {
       requestId: "question-1",
       sessionId: "control-session-1",
       mode: "single",
-      urgency: "normal",
       question: { prompt: "Which database should v1 use?" },
       options: [{ value: "sqlite", label: "SQLite" }],
       context: { codebaseContext: "Fastify server.", problemContext: "Choose durable storage." }

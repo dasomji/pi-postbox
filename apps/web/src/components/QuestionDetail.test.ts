@@ -7,7 +7,6 @@ const REQUEST: AskRequestSnapshot = {
   requestId: "request-rich-options",
   sessionId: "session-rich-options",
   mode: "single",
-  urgency: "normal",
   question: { prompt: "Which storage strategy should we use?" },
   options: [
     {

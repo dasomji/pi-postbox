@@ -5,7 +5,6 @@ const draft = {
   localRef: "root",
   requestId: "question-root",
   mode: "single",
-  urgency: "normal",
   question: { prompt: "Choose a rollout?" },
   options: [{ value: "blue", label: "Blue" }],
   context: { codebaseContext: "Deployment service", problemContext: "Choose a rollout." }

@@ -39,7 +39,7 @@ describe("complete asynchronous adapter/browser/API loop", () => {
     await connection;
 
     await expect(client.createAsk({
-      requestId: "question-complete", sessionId: "session-complete", mode: "single", urgency: "normal",
+      requestId: "question-complete", sessionId: "session-complete", mode: "single",
       question: { prompt: "Ship the complete loop?" }, options: [{ value: "ship", label: "Ship" }],
       context: { codebaseContext: "Real extension client and Fastify server.", problemContext: "Prove the asynchronous loop." }
     })).resolves.toMatchObject({ questionId: "question-complete", revision: 1, status: "pending" });

@@ -118,32 +118,28 @@ class SidebarGroupsTest {
     }
 
     @Test
-    fun sortsSidebarQuestionsByUrgencyThenAgeAndStableRequestId() {
+    fun sortsSidebarQuestionsByAgeAndStableRequestId() {
         val groups = buildSidebarGroups(
             sessions = listOf(session("session-a", projectName = "Airmail")),
             questions = listOf(
                 question(
                     "low-old",
                     sessionId = "session-a",
-                    urgency = QuestionUrgency.LOW,
                     createdAt = "2026-06-25T10:00:00.000Z"
                 ),
                 question(
                     "high-b",
                     sessionId = "session-a",
-                    urgency = QuestionUrgency.HIGH,
                     createdAt = "2026-06-25T11:00:00.000Z"
                 ),
                 question(
                     "normal-old",
                     sessionId = "session-a",
-                    urgency = QuestionUrgency.NORMAL,
                     createdAt = "2026-06-25T09:00:00.000Z"
                 ),
                 question(
                     "high-a",
                     sessionId = "session-a",
-                    urgency = QuestionUrgency.HIGH,
                     createdAt = "2026-06-25T11:00:00.000Z"
                 )
             ),
@@ -151,7 +147,7 @@ class SidebarGroupsTest {
         )
 
         assertEquals(
-            listOf("high-a", "high-b", "normal-old", "low-old"),
+            listOf("normal-old", "low-old", "high-a", "high-b"),
             groups.single().questions.map { it.requestId }
         )
     }
@@ -196,15 +192,13 @@ class SidebarGroupsTest {
     private fun question(
         requestId: String,
         sessionId: String,
-        createdAt: String = "2026-06-25T11:59:00.000Z",
-        urgency: QuestionUrgency = QuestionUrgency.NORMAL
+        createdAt: String = "2026-06-25T11:59:00.000Z"
     ): QuestionListItemUiState = QuestionListItemUiState(
         requestId = requestId,
         sessionId = sessionId,
         prompt = "Prompt for $requestId",
         mode = QuestionMode.SINGLE,
         createdAt = createdAt,
-        expiresAt = null,
-        urgency = urgency
+        expiresAt = null
     )
 }

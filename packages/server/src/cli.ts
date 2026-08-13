@@ -43,9 +43,6 @@ export interface CliOptions {
   uiDistDir?: string;
   databasePath?: string;
   activeLocalRole: ActiveLocalRole;
-  askTimeoutMs?: number;
-  historyRetentionMaxAgeMs?: number;
-  historyRetentionMaxRecords?: number;
   sessionHideOfflineAfterMs?: number;
   sessionRetentionMs?: number;
   fcmServiceAccountPath?: string;
@@ -99,35 +96,6 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     throw new Error(`Invalid active-local role: ${activeLocalRoleText}`);
   }
 
-  const askTimeoutText = getFlagValue("--ask-timeout-ms") ?? env.PI_POSTBOX_ASK_TIMEOUT_MS;
-  let askTimeoutMs: number | undefined;
-  if (askTimeoutText !== undefined) {
-    const parsedAskTimeoutMs = Number.parseInt(askTimeoutText, 10);
-    if (!Number.isInteger(parsedAskTimeoutMs) || parsedAskTimeoutMs <= 0) {
-      throw new Error(`Invalid ask timeout: ${askTimeoutText}`);
-    }
-    askTimeoutMs = parsedAskTimeoutMs;
-  }
-
-  const historyRetentionMaxAgeText = getFlagValue("--history-retention-max-age-ms") ?? env.PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS;
-  let historyRetentionMaxAgeMs: number | undefined;
-  if (historyRetentionMaxAgeText !== undefined) {
-    const parsed = Number.parseInt(historyRetentionMaxAgeText, 10);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      throw new Error(`Invalid history retention max age: ${historyRetentionMaxAgeText}`);
-    }
-    historyRetentionMaxAgeMs = parsed;
-  }
-
-  const historyRetentionMaxRecordsText = getFlagValue("--history-retention-max-records") ?? env.PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS;
-  let historyRetentionMaxRecords: number | undefined;
-  if (historyRetentionMaxRecordsText !== undefined) {
-    const parsed = Number.parseInt(historyRetentionMaxRecordsText, 10);
-    if (!Number.isInteger(parsed) || parsed < 0) {
-      throw new Error(`Invalid history retention max records: ${historyRetentionMaxRecordsText}`);
-    }
-    historyRetentionMaxRecords = parsed;
-  }
 
   const sessionHideOfflineAfterText =
     getFlagValue("--session-hide-offline-after-ms") ?? env.PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS;
@@ -149,9 +117,6 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     uiDistDir: getFlagValue("--ui-dist-dir") ?? env.PI_POSTBOX_UI_DIST_DIR,
     databasePath: getFlagValue("--database") ?? env.PI_POSTBOX_DATABASE ?? defaultCliDatabasePath(),
     activeLocalRole: activeLocalRole.data,
-    askTimeoutMs,
-    historyRetentionMaxAgeMs,
-    historyRetentionMaxRecords,
     sessionHideOfflineAfterMs,
     sessionRetentionMs,
     fcmServiceAccountPath:
@@ -473,9 +438,6 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
     logger: true,
     uiDistDir: options.uiDistDir,
     databasePath: options.databasePath,
-    askTimeoutMs: options.askTimeoutMs,
-    historyRetentionMaxAgeMs: options.historyRetentionMaxAgeMs,
-    historyRetentionMaxRecords: options.historyRetentionMaxRecords,
     sessionHideOfflineAfterMs: options.sessionHideOfflineAfterMs,
     sessionRetentionMs: options.sessionRetentionMs,
     fcmServiceAccountPath: options.fcmServiceAccountPath,

@@ -52,7 +52,7 @@ describe("ask_postbox protocol", () => {
     ).toMatchObject({ status: "appended", option: { provenance: "chat" } });
   });
 
-  it("accepts finite urgency levels and defaults legacy asks to normal urgency", () => {
+  it("rejects the removed priority field", () => {
     const basePayload = {
       requestId: "ask-urgency",
       sessionId: "session-1",
@@ -65,16 +65,15 @@ describe("ask_postbox protocol", () => {
       }
     } as const;
 
-    expect(AskCreatePayloadSchema.parse({ ...basePayload, urgency: "high" }).urgency).toBe("high");
-    expect(AskCreatePayloadSchema.parse(basePayload).urgency).toBe("normal");
-    expect(() => AskCreatePayloadSchema.parse({ ...basePayload, urgency: "immediate" })).toThrow();
+    expect(() => AskCreatePayloadSchema.strict().parse({ ...basePayload, urgency: "high" })).toThrow();
+    expect(AskCreatePayloadSchema.parse(basePayload)).not.toHaveProperty("urgency");
 
     const legacySnapshot = StateSnapshotSchema.parse({
       sessions: [],
       requests: [{ ...basePayload, status: "pending", createdAt: "2026-06-03T00:00:00.000Z" }],
       timestamp: "2026-06-03T00:00:01.000Z"
     });
-    expect(legacySnapshot.requests[0]?.urgency).toBe("normal");
+    expect(legacySnapshot.requests[0]).not.toHaveProperty("urgency");
   });
 
   it("requires non-blank interviewer context for newly created asks", () => {

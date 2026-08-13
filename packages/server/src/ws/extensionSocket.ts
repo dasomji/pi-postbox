@@ -460,7 +460,9 @@ export async function registerExtensionSocket(
               app.log.warn({ error, requestId: snapshot.requestId }, "failed to send new ask push notification");
             });
           }
-          if (message.awaitAnswer !== false) {
+          // Pre-owner clients are retained only as a migration bridge while their
+          // durable rows are converted; owner-addressed clients use discovery/read.
+          if (!sessionStore.ownerForSession(snapshot.sessionId)) {
             const unsubscribe = requestStore.onResolved(snapshot.requestId, (result) => {
               if (socket.readyState === 1) send(socket, { type: "ask.resolved", requestId: snapshot.requestId, payload: result });
             });

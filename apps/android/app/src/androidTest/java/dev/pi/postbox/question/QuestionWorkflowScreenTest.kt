@@ -28,13 +28,12 @@ class QuestionWorkflowScreenTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun questionDetailShowsUrgencyRichOptionFieldsAndChatProvenanceAccessibly() {
+    fun questionDetailShowsRichOptionFieldsAndChatProvenanceAccessibly() {
         var toggledValue: String? = null
         val question = QuestionDetailUiState(
             requestId = "ask-high",
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
-            urgency = QuestionUrgency.HIGH,
             prompt = "Choose a storage strategy",
             questionContext = null,
             relevance = null,
@@ -75,8 +74,7 @@ class QuestionWorkflowScreenTest {
                             prompt = question.prompt,
                             mode = question.mode,
                             createdAt = "2026-07-29T10:00:00.000Z",
-                            expiresAt = null,
-                            urgency = question.urgency
+                            expiresAt = null
                         )
                     ),
                     visibleQuestion = question,
@@ -86,10 +84,6 @@ class QuestionWorkflowScreenTest {
             onToggleOption = { toggledValue = it }
         )
 
-        composeRule.onNode(
-            hasText("High urgency", substring = true) and
-                hasContentDescription("Question detail priority: High urgency")
-        ).assertIsDisplayed()
         composeRule.onNodeWithText("Keep deployment self-contained.").assertIsDisplayed()
         composeRule.onNodeWithText("Meaning: Persist decisions beside session state.").assertIsDisplayed()
         composeRule.onNodeWithText("Context: No second service is required.").assertIsDisplayed()
@@ -178,7 +172,7 @@ class QuestionWorkflowScreenTest {
                     isLoading = false,
                     isSyncing = false,
                     connectionState = QuestionConnectionState.CONNECTED,
-                    pendingQuestions = listOf(question("normal", QuestionUrgency.NORMAL)),
+                    pendingQuestions = listOf(question("normal")),
                     navigationSelection = QuestionNavigationSelection.Queue
                 )
             },
@@ -192,7 +186,7 @@ class QuestionWorkflowScreenTest {
     }
 
     @Test
-    fun queueShowsEveryUrgencyLevel() {
+    fun queueShowsEveryPendingQuestion() {
         setQuestionScreen(
             stateProvider = {
                 QuestionWorkflowState(
@@ -201,23 +195,15 @@ class QuestionWorkflowScreenTest {
                     isSyncing = false,
                     connectionState = QuestionConnectionState.CONNECTED,
                     pendingQuestions = listOf(
-                        question("high", QuestionUrgency.HIGH),
-                        question("normal", QuestionUrgency.NORMAL),
-                        question("low", QuestionUrgency.LOW)
+                        question("first"), question("second"), question("third")
                     ),
                     navigationSelection = QuestionNavigationSelection.Queue
                 )
             }
         )
 
-        listOf("High urgency", "Normal urgency", "Low urgency").forEach { urgencyLabel ->
-            composeRule.onNode(
-                hasTestTag(QUESTION_QUEUE_TEST_TAG) and
-                    hasAnyDescendant(hasText(urgencyLabel, substring = true)) and
-                    hasAnyDescendant(
-                        hasContentDescription("Question priority: $urgencyLabel", substring = true)
-                    )
-            ).assertIsDisplayed()
+        listOf("first question", "second question", "third question").forEach {
+            composeRule.onNodeWithText(it).assertIsDisplayed()
         }
     }
 
@@ -245,13 +231,12 @@ class QuestionWorkflowScreenTest {
         }
     }
 
-    private fun question(requestId: String, urgency: QuestionUrgency) = QuestionListItemUiState(
+    private fun question(requestId: String) = QuestionListItemUiState(
         requestId = requestId,
         sessionId = "session-1",
         prompt = "$requestId question",
         mode = QuestionMode.SINGLE,
         createdAt = "2026-07-29T10:00:00.000Z",
-        expiresAt = null,
-        urgency = urgency
+        expiresAt = null
     )
 }

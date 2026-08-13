@@ -75,7 +75,6 @@ function runMigrations(db: SqliteDatabase): void {
       request_id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES sessions(session_id),
       mode TEXT NOT NULL,
-      urgency TEXT NOT NULL DEFAULT 'normal',
       prompt TEXT NOT NULL,
       question_json TEXT,
       options_json TEXT NOT NULL,
@@ -115,7 +114,6 @@ function runMigrations(db: SqliteDatabase): void {
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
       legacy_request_id TEXT UNIQUE,
       mode TEXT NOT NULL DEFAULT 'single',
-      urgency TEXT NOT NULL DEFAULT 'normal',
       question_json TEXT NOT NULL DEFAULT '{}',
       options_json TEXT NOT NULL DEFAULT '[]',
       context_json TEXT,
@@ -232,7 +230,6 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "projects", "icon_size_bytes", "INTEGER");
 
   ensureColumn(db, "ask_requests", "question_json", "TEXT");
-  ensureColumn(db, "ask_requests", "urgency", "TEXT NOT NULL DEFAULT 'normal'");
   ensureColumn(db, "ask_requests", "context_json", "TEXT");
   ensureColumn(db, "ask_requests", "fork_reference_json", "TEXT");
   ensureColumn(db, "ask_requests", "parent_question_id", "TEXT");
@@ -244,7 +241,6 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "sessions", "feature_id", "TEXT");
   ensureColumn(db, "questions", "legacy_request_id", "TEXT");
   ensureColumn(db, "questions", "mode", "TEXT NOT NULL DEFAULT 'single'");
-  ensureColumn(db, "questions", "urgency", "TEXT NOT NULL DEFAULT 'normal'");
   ensureColumn(db, "questions", "question_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, "questions", "options_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "questions", "context_json", "TEXT");
@@ -272,6 +268,38 @@ function runMigrations(db: SqliteDatabase): void {
     (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
     SELECT question_id, revision, question_json, options_json, context_json, creator_harness, creator_owner_id, created_at
     FROM questions`);
+  migrateLegacyDecisions(db);
+}
+
+function migrateLegacyDecisions(db: SqliteDatabase): void {
+  db.transaction(() => {
+    db.prepare(`UPDATE ask_requests SET expires_at = NULL WHERE expires_at IS NOT NULL
+      AND abs((julianday(expires_at) - julianday(created_at)) - 0.5) < 0.000001`).run();
+    db.prepare(`INSERT OR IGNORE INTO owners (harness, owner_id, harness_session_id, created_at, updated_at)
+      SELECT 'legacy', session_id, session_id, MIN(created_at), MAX(updated_at) FROM ask_requests GROUP BY session_id`)
+      .run();
+    db.prepare(`INSERT OR IGNORE INTO questions (
+      question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
+      revision, mode, question_json, options_json, context_json, parent_question_id, status, expires_at, resolved_at,
+      created_at, updated_at)
+      SELECT request_id, request_id, 'legacy', session_id, 'legacy', session_id, 1, mode,
+        COALESCE(question_json, json_object('prompt', prompt)), options_json, context_json, parent_question_id,
+        status, CASE WHEN expires_at IS NOT NULL AND abs((julianday(expires_at) - julianday(created_at)) - 0.5) < 0.000001
+          THEN NULL ELSE expires_at END, resolved_at, created_at, updated_at FROM ask_requests`)
+      .run();
+    db.prepare(`INSERT OR IGNORE INTO question_revisions
+      (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+      SELECT request_id, 1, COALESCE(question_json, json_object('prompt', prompt)), options_json, context_json,
+        'legacy', session_id, created_at FROM ask_requests`)
+      .run();
+    db.prepare(`INSERT OR IGNORE INTO answers (
+      answer_id, question_id, question_revision, status, selected_values_json, note, rationale,
+      first_reader_harness, first_reader_owner_id, first_read_at, owner_notification_delivered_at, created_at)
+      SELECT 'legacy-answer-' || request_id, request_id, 1, 'answered', selected_values_json, note, rationale,
+        'legacy', session_id, COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at)
+      FROM ask_requests WHERE status = 'answered'`)
+      .run();
+  })();
 }
 
 function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {

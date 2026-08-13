@@ -79,7 +79,7 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
-function askCreateMessage(requestId: string, prompt = `Question ${requestId}`): ExtensionClientMessage {
+function askCreateMessage(requestId: string, prompt = `Question ${requestId}`, expiresAt?: string): ExtensionClientMessage {
   return {
     type: "ask.create",
     requestId: `wire-${requestId}`,
@@ -107,14 +107,15 @@ function askCreateMessage(requestId: string, prompt = `Question ${requestId}`): 
         problemContext: "The user needs decision audit records without full chat transcripts.",
         additionalInfo: [{ kind: "code", title: "No transcript", content: "history stores ask payloads, not chats", language: "text" }]
       },
-      forkReference: { agentSessionId: "agent-history", leafId: "leaf-history", cwd: "/worktrees/history" }
+      forkReference: { agentSessionId: "agent-history", leafId: "leaf-history", cwd: "/worktrees/history" },
+      expiresAt
     }
   };
 }
 
-async function createAsk(socket: WebSocket, requestId: string): Promise<void> {
+async function createAsk(socket: WebSocket, requestId: string, expiresAt?: string): Promise<void> {
   const created = nextMessage(socket);
-  socket.send(JSON.stringify(askCreateMessage(requestId)));
+  socket.send(JSON.stringify(askCreateMessage(requestId, `Question ${requestId}`, expiresAt)));
   await expect(created).resolves.toMatchObject({ type: "ask.created", payload: { requestId, status: "pending" } });
 }
 
@@ -187,7 +188,6 @@ describe("question history", () => {
       const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
       const pending = state.requests.find((request) => request.requestId === "legacy-pending");
       expect(pending).toMatchObject({
-        urgency: "normal",
         question: { prompt: "Legacy pending question" },
         forkReference: { leafId: "legacy-leaf" }
       });
@@ -283,7 +283,7 @@ describe("question history", () => {
 
   it("includes cancelled and expired terminal requests in history", async () => {
     let now = 5_000;
-    const app = await createPostboxApp({ databasePath: ":memory:", now: () => now, askTimeoutMs: 500, expirySweepMs: 0 });
+    const app = await createPostboxApp({ databasePath: ":memory:", now: () => now, expirySweepMs: 0 });
     apps.push(app);
     const socket = await connectAndRegister(app);
 
@@ -293,7 +293,7 @@ describe("question history", () => {
     expect(cancelResponse.statusCode).toBe(200);
     await cancelled;
 
-    await createAsk(socket, "ask-expired");
+    await createAsk(socket, "ask-expired", new Date(5_500).toISOString());
     const expired = nextMessage(socket);
     now = 5_501;
     const historyResponse = await app.inject({ method: "GET", url: "/api/history" });
@@ -312,13 +312,12 @@ describe("question history", () => {
     });
   });
 
-  it("prunes terminal history by max age without deleting pending requests", async () => {
+  it("retains terminal history regardless of age", async () => {
     let now = 10_000;
     const app = await createPostboxApp({
       databasePath: ":memory:",
       now: () => now,
-      expirySweepMs: 0,
-      historyRetentionMaxAgeMs: 1_000
+      expirySweepMs: 0
     });
     apps.push(app);
     const socket = await connectAndRegister(app);
@@ -332,23 +331,21 @@ describe("question history", () => {
     now = 12_001;
 
     const pruneResponse = await app.inject({ method: "POST", url: "/api/history/prune" });
-    expect(pruneResponse.statusCode).toBe(200);
-    expect(pruneResponse.json()).toMatchObject({ pruned: 1 });
+    expect(pruneResponse.statusCode).toBe(404);
 
     const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
-    expect(history.history).toHaveLength(0);
+    expect(history.history).toHaveLength(1);
 
     const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
     expect(state.requests).toEqual([expect.objectContaining({ requestId: "ask-still-pending", status: "pending" })]);
   });
 
-  it("prunes terminal history by max record count while keeping the newest terminal records", async () => {
+  it("retains all terminal history without a record cap", async () => {
     let now = 20_000;
     const app = await createPostboxApp({
       databasePath: ":memory:",
       now: () => now,
-      expirySweepMs: 0,
-      historyRetentionMaxRecords: 2
+      expirySweepMs: 0
     });
     apps.push(app);
     const socket = await connectAndRegister(app);
@@ -362,10 +359,9 @@ describe("question history", () => {
     }
 
     const pruneResponse = await app.inject({ method: "POST", url: "/api/history/prune" });
-    expect(pruneResponse.statusCode).toBe(200);
-    expect(pruneResponse.json()).toMatchObject({ pruned: 1 });
+    expect(pruneResponse.statusCode).toBe(404);
 
     const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
-    expect(history.history.map((record) => record.request.requestId)).toEqual(["ask-count-3", "ask-count-2"]);
+    expect(history.history.map((record) => record.request.requestId)).toEqual(["ask-count-3", "ask-count-2", "ask-count-1"]);
   });
 });

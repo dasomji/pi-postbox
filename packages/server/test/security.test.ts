@@ -47,7 +47,7 @@ describe("browser-origin and payload safety", () => {
       url: "/api/history/prune",
       headers: { host: "postbox.local", origin: "http://postbox.local" }
     });
-    expect(allowed.statusCode).toBe(200);
+    expect(allowed.statusCode).toBe(404);
   });
 
   it("protects every Question Chat control route while preserving same-host proxy and no-Origin CLI access", async () => {

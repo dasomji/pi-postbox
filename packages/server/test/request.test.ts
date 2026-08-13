@@ -67,8 +67,8 @@ function interviewerContext() {
 }
 
 describe("ask_postbox request loop", () => {
-  it("persists urgency across restart and lists pending requests by urgency then age", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-postbox-urgency-db-"));
+  it("lists pending requests oldest first across restart without priority metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-postbox-order-db-"));
     const databasePath = join(dir, "postbox.sqlite");
 
     try {
@@ -78,10 +78,8 @@ describe("ask_postbox request loop", () => {
       const socket = await connectAndRegister(app);
 
       const asks = [
-        { requestId: "normal-old", urgency: "normal", now: 1_000 },
-        { requestId: "high-old", urgency: "high", now: 2_000 },
-        { requestId: "high-new", urgency: "high", now: 3_000 },
-        { requestId: "low-new", urgency: "low", now: 4_000 }
+        { requestId: "oldest", now: 1_000 }, { requestId: "older", now: 2_000 },
+        { requestId: "newer", now: 3_000 }, { requestId: "newest", now: 4_000 }
       ] as const;
 
       for (const ask of asks) {
@@ -95,7 +93,6 @@ describe("ask_postbox request loop", () => {
               requestId: ask.requestId,
               sessionId: "session-1",
               mode: "single",
-              urgency: ask.urgency,
               question: { prompt: `Resolve ${ask.requestId}?` },
               options: [{ value: "yes", label: "Yes" }],
               context: interviewerContext()
@@ -114,12 +111,9 @@ describe("ask_postbox request loop", () => {
       const pending = (await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json().requests;
 
       expect(pending.map((request: { requestId: string }) => request.requestId)).toEqual([
-        "high-old",
-        "high-new",
-        "normal-old",
-        "low-new"
+        "oldest", "older", "newer", "newest"
       ]);
-      expect(pending.map((request: { urgency: string }) => request.urgency)).toEqual(["high", "high", "normal", "low"]);
+      expect(pending.every((request: object) => !("urgency" in request))).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

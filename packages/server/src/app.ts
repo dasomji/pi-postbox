@@ -41,10 +41,7 @@ export interface CreatePostboxAppOptions {
   offlineAfterMs?: number;
   sessionHideOfflineAfterMs?: number;
   sessionRetentionMs?: number;
-  askTimeoutMs?: number;
   expirySweepMs?: number;
-  historyRetentionMaxAgeMs?: number;
-  historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
   compressionThresholdBytes?: number;
@@ -121,7 +118,9 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     db.close();
     throw error;
   }
-  const requestStore = new RequestStore(db, now, { askTimeoutMs: options.askTimeoutMs });
+  const requestStore = new RequestStore(db, now, {
+    recordTelemetry: (event) => app.log.info({ questionTelemetry: event }, "question telemetry")
+  });
   const questionChatRelay = new QuestionChatRelay({
     commandTimeoutMs: options.chatCommandTimeoutMs,
     commandRateLimitMax: options.chatCommandRateLimitMax,
@@ -158,15 +157,8 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
       questionChatRelay.cleanup(result.requestId, terminalRequest.sessionId, result.status);
     }
   });
-  const historyService = new HistoryService(db, requestStore, now, {
-    maxAgeMs: options.historyRetentionMaxAgeMs,
-    maxRecords: options.historyRetentionMaxRecords
-  });
+  const historyService = new HistoryService(db, requestStore, now);
   let broadcaster: StateBroadcaster;
-  const pruneHistory = () => {
-    requestStore.expireDue();
-    return historyService.prune();
-  };
   const expireDueAndBroadcast = () => {
     const expired = requestStore.expireDue();
     if (expired.length > 0) broadcaster.broadcast();
@@ -176,7 +168,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     requestStore.expireDue();
     // History pruning first: it deletes old terminal requests, which is what
     // frees their sessions for the retention purge below.
-    pruneHistory();
+    requestStore.expireDue();
     sessionStore.pruneOfflineSessions();
     return StateSnapshotSchema.parse({
       ...sessionStore.snapshot(),
@@ -224,7 +216,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   await registerStateRoutes(app, getSnapshot);
   await registerSseRoutes(app, broadcaster);
   await registerMetadataRoutes(app, sessionStore, broadcaster);
-  await registerHistoryRoutes(app, historyService, broadcaster, pruneHistory);
+  await registerHistoryRoutes(app, historyService, expireDueAndBroadcast);
   await registerPushRoutes(app, pushStore);
   await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast, {
     relay: questionChatRelay,

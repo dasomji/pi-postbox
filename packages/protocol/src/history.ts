@@ -34,25 +34,11 @@ export const HistoryRecordSchema = z.object({
   session: HistorySessionMetadataSchema
 });
 
-export const HistoryRetentionSchema = z.object({
-  maxAgeMs: z.number().int().positive().optional(),
-  maxRecords: z.number().int().nonnegative().optional()
-});
-
 export const HistoryResponseSchema = z.object({
   history: z.array(HistoryRecordSchema),
-  retention: HistoryRetentionSchema,
-  timestamp: z.string().datetime()
-});
-
-export const HistoryPruneResponseSchema = z.object({
-  pruned: z.number().int().nonnegative(),
-  retention: HistoryRetentionSchema,
   timestamp: z.string().datetime()
 });
 
 export type HistorySessionMetadata = z.infer<typeof HistorySessionMetadataSchema>;
 export type HistoryRecord = z.infer<typeof HistoryRecordSchema>;
-export type HistoryRetention = z.infer<typeof HistoryRetentionSchema>;
 export type HistoryResponse = z.infer<typeof HistoryResponseSchema>;
-export type HistoryPruneResponse = z.infer<typeof HistoryPruneResponseSchema>;

@@ -1,5 +1,4 @@
 import {
-  compareAskUrgency,
   StateSnapshotSchema,
   type AskRequestSnapshot,
   type HealthResponse,
@@ -35,7 +34,7 @@ export interface ProjectGroup {
 }
 
 export function comparePendingRequests(a: AskRequestSnapshot, b: AskRequestSnapshot): number {
-  return compareAskUrgency(a.urgency, b.urgency) || Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  return Date.parse(a.createdAt) - Date.parse(b.createdAt);
 }
 
 class PostboxStore {

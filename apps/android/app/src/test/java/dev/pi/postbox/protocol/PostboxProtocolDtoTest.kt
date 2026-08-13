@@ -29,7 +29,6 @@ class PostboxProtocolDtoTest {
         assertEquals("ask-protocol-1", request.requestId)
         assertEquals("session-1", request.sessionId)
         assertEquals(AskMode.MULTI, request.mode)
-        assertEquals(AskUrgency.NORMAL, request.urgency)
         assertEquals(AskStatus.PENDING, request.status)
         assertEquals("Choose protocol client behavior", request.question.prompt)
         assertEquals("Defines the first public client boundary.", request.question.decisionImpact)
@@ -41,33 +40,18 @@ class PostboxProtocolDtoTest {
     }
 
     @Test
-    fun parsesUrgencyRichOptionFieldsAndAuthoritativeChatProvenance() {
+    fun parsesRichOptionFieldsAndAuthoritativeChatProvenance() {
         val json = representativeStateJson(
-            requestUrgency = "high",
             firstOptionProvenance = "chat"
         )
 
         val request = PostboxProtocolJson.decodeStateSnapshot(json).requests.single()
         val option = request.options.first()
 
-        assertEquals(AskUrgency.HIGH, request.urgency)
         assertEquals("Generate small DTOs backed by kotlinx.serialization.", option.description)
         assertEquals("Stay idiomatic on Android.", option.meaning)
         assertEquals("Existing project already has the dependency.", option.context)
         assertEquals(AskOptionProvenance.CHAT, option.provenance)
-    }
-
-    @Test
-    fun parsesEveryAuthoritativeUrgencyValue() {
-        listOf(
-            "low" to AskUrgency.LOW,
-            "normal" to AskUrgency.NORMAL,
-            "high" to AskUrgency.HIGH
-        ).forEach { (wireValue, expected) ->
-            val json = representativeStateJson(requestUrgency = wireValue)
-
-            assertEquals(expected, PostboxProtocolJson.decodeStateSnapshot(json).requests.single().urgency)
-        }
     }
 
     @Test

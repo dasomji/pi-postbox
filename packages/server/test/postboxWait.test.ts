@@ -18,11 +18,12 @@ function setup() {
     project: { projectId: "project", name: "repo", cwd: "/repo" },
     session: { sessionId: "session", cwd: "/repo", semanticState: "working", owner: OWNER }
   });
-  const requests = new RequestStore(db, () => now, { askTimeoutMs: 30_000 });
+  const requests = new RequestStore(db, () => now);
   const create = (id: string, parentQuestionId?: string) => requests.create({
-    requestId: id, sessionId: "session", mode: "single", urgency: "normal", parentQuestionId,
+    requestId: id, sessionId: "session", mode: "single", parentQuestionId,
     question: { prompt: `Question ${id}?` }, options: [{ value: "yes", label: "Yes" }],
-    context: { codebaseContext: "Postbox", problemContext: "Wait for an owner-wide decision." }
+    context: { codebaseContext: "Postbox", problemContext: "Wait for an owner-wide decision." },
+    expiresAt: new Date(now + 30_000).toISOString()
   });
   type WaitResult = Record<string, unknown>;
   const waitable = requests as RequestStore & {

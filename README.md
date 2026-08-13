@@ -99,9 +99,6 @@ Supported server flags and environment variables:
 - `--ui-dist-dir` or `PI_POSTBOX_UI_DIST_DIR` (default packaged `dist/public` beside the server CLI)
 - `--database` or `PI_POSTBOX_DATABASE` (default `~/.pi-postbox/postbox.sqlite`)
 - `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` (`production` by default; `npm run dev` launches the backend as `dev`)
-- `--ask-timeout-ms` or `PI_POSTBOX_ASK_TIMEOUT_MS` (default 12 hours)
-- `--history-retention-max-age-ms` or `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS`
-- `--history-retention-max-records` or `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS`
 - `--session-hide-offline-after-ms` or `PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS` (default 24 hours; offline sessions older than this leave state snapshots)
 - `--session-retention-ms` or `PI_POSTBOX_SESSION_RETENTION_MS` (default 30 days; offline sessions older than this are deleted unless ask requests still reference them)
 
@@ -140,7 +137,6 @@ Icon paths are resolved by the extension and uploaded as small data URLs plus ha
 - `GET /api/state/events` — authoritative SSE bootstrap and live pending-state snapshots.
 - `GET /api/requests?status=pending` — ask request list.
 - `GET /api/history` — recent terminal decision history.
-- `POST /api/history/prune` — apply configured retention.
 
 ## Tailscale Serve deployment
 

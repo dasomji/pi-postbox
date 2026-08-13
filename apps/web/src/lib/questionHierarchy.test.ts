@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { groupOpenQuestions } from "./openQuestionsQueue";
 
 const request = (requestId: string, createdAt: string, parentQuestionId?: string) => ({
-  requestId, sessionId: "session", mode: "single", urgency: "normal",
+  requestId, sessionId: "session", mode: "single",
   question: { prompt: `Resolve ${requestId}?` }, options: [{ value: "yes", label: "Yes" }], status: "pending", createdAt,
   parentQuestionId
 }) as AskRequestSnapshot;

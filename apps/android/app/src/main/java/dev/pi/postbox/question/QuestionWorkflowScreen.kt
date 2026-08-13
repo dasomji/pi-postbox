@@ -234,7 +234,7 @@ fun QuestionWorkflowScreen(
                             when (val selection = state.navigationSelection) {
                                 QuestionNavigationSelection.Queue -> QuestionQueueView(
                                     title = "Questions waiting for you",
-                                    subtitle = "All pending Postbox decisions, highest urgency and oldest first.",
+                                    subtitle = "All pending Postbox decisions, oldest first.",
                                     questions = state.pendingQuestions,
                                     dismissEnabled = state.dismissingRequestId == null,
                                     isSyncing = state.isSyncing,
@@ -248,7 +248,7 @@ fun QuestionWorkflowScreen(
                                     val sessionIds = sessions.mapTo(mutableSetOf()) { it.sessionId }
                                     QuestionQueueView(
                                         title = sessions.firstOrNull()?.projectName ?: "Project",
-                                        subtitle = "Pending Postbox decisions for this project, highest urgency and oldest first.",
+                                        subtitle = "Pending Postbox decisions for this project, oldest first.",
                                         questions = state.pendingQuestions.filter { it.sessionId in sessionIds },
                                         dismissEnabled = state.dismissingRequestId == null,
                                         isSyncing = state.isSyncing,
@@ -832,13 +832,6 @@ internal fun visibleSidebarSessions(
     snapshotTimestamp: String?
 ): List<QuestionSessionUiState> = sessions.filter { isSidebarSessionVisible(it, snapshotTimestamp) }
 
-private val QuestionUrgency.displayLabel: String
-    get() = when (this) {
-        QuestionUrgency.HIGH -> "High urgency"
-        QuestionUrgency.NORMAL -> "Normal urgency"
-        QuestionUrgency.LOW -> "Low urgency"
-    }
-
 internal fun buildSidebarGroups(
     sessions: List<QuestionSessionUiState>,
     questions: List<QuestionListItemUiState>,
@@ -902,7 +895,6 @@ private fun QuestionListItem(
                     this.selected = selected
                     contentDescription = listOf(
                         question.prompt,
-                        "Question priority: ${question.urgency.displayLabel}",
                         if (question.mode == QuestionMode.SINGLE) "Single choice" else "Multiple choice",
                         "Asked ${formatTimeAgo(question.createdAt)}"
                     ).joinToString(". ")
@@ -931,7 +923,6 @@ private fun QuestionListItem(
                 Text(
                     text = listOf(
                         if (question.mode == QuestionMode.SINGLE) "Single choice" else "Multiple choice",
-                        question.urgency.displayLabel,
                         "asked ${formatTimeAgo(question.createdAt)}"
                     ).joinToString(" · "),
                     fontSize = 12.sp,
@@ -1209,13 +1200,10 @@ private fun QuestionDetailCard(
         Text(
             text = listOfNotNull(
                 if (question.mode == QuestionMode.SINGLE) "Choose one" else "Choose one or more",
-                question.urgency.displayLabel,
                 askedAgo?.let { "asked $it" }
             ).joinToString(" · "),
             style = PostalCaptionStyle,
-            modifier = Modifier.semantics {
-                contentDescription = "Question detail priority: ${question.urgency.displayLabel}"
-            }
+            modifier = Modifier
         )
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

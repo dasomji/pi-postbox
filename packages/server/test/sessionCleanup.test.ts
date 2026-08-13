@@ -272,12 +272,11 @@ describe("session cleanup", () => {
     });
   });
 
-  it("purges a session once history pruning has dropped its resolved questions", async () => {
+  it("retains a session referenced by uncapped resolved history", async () => {
     let nowMs = START_MS;
     const app = await createPostboxApp({
       databasePath: ":memory:",
-      now: () => nowMs,
-      historyRetentionMaxAgeMs: 40 * DAY_MS
+      now: () => nowMs
     });
     apps.push(app);
     await app.listen({ host: "127.0.0.1", port: 0 });
@@ -292,20 +291,20 @@ describe("session cleanup", () => {
     expect(answer.statusCode).toBe(200);
     await disconnect(app, socket);
 
-    // Within history retention the session row must survive the purge.
+    // Resolved decisions retain their session provenance without an age cap.
     nowMs += 35 * DAY_MS;
     await fetchSnapshot(app);
     expect((await app.inject({ method: "GET", url: "/api/history" })).json().history).toHaveLength(1);
 
-    // After history retention lapses, the request is pruned and the session follows.
+    // Advancing time does not prune the decision or its referenced session.
     nowMs += 10 * DAY_MS;
     await fetchSnapshot(app);
-    expect((await app.inject({ method: "GET", url: "/api/history" })).json().history).toHaveLength(0);
+    expect((await app.inject({ method: "GET", url: "/api/history" })).json().history).toHaveLength(1);
     const rename = await app.inject({
       method: "POST",
       url: "/api/projects/project-1/rename",
       payload: { displayName: "Renamed" }
     });
-    expect(rename.statusCode).toBe(404);
+    expect(rename.statusCode).toBe(200);
   });
 });

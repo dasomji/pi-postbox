@@ -143,13 +143,13 @@ describe("pending ask resilience", () => {
 
   it("moves expired requests from live state to History and resolves waiting extension callers", async () => {
     let now = 30_000;
-    const app = await createPostboxApp({ databasePath: ":memory:", now: () => now, askTimeoutMs: 1_000, expirySweepMs: 0 });
+    const app = await createPostboxApp({ databasePath: ":memory:", now: () => now, expirySweepMs: 0 });
     apps.push(app);
     const port = await listen(app);
     const socket = await connectAndRegister(port);
 
     const created = nextMessage(socket);
-    socket.send(JSON.stringify(askCreateMessage("ask-expire")));
+    socket.send(JSON.stringify(askCreateMessage("ask-expire", new Date(31_000).toISOString())));
     await created;
 
     const expiredMessage = nextMessage(socket);

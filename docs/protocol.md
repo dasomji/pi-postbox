@@ -22,7 +22,6 @@ All process-boundary payloads are defined in `@pi-postbox/protocol` and validate
 | `POST /api/machines/:machineId/rename` | Persist dashboard-side machine alias. |
 | `POST /api/projects/:projectId/rename` | Persist dashboard-side project alias. |
 | `GET /api/history` | Recent terminal decision history. |
-| `POST /api/history/prune` | Apply configured terminal-history retention. |
 | `POST /admin/shutdown` | Gracefully stop the server. Loopback-only: rejected (403) unless the request comes straight from `127.0.0.1`/`::1` with no proxy-forwarding headers, so it is unreachable through Tailscale/lizardtail. Returns `202` then closes the app and exits. Used by `npm run dev` to stop a production server holding the canonical port. |
 
 Dynamic `/api/*` responses declare `Cache-Control: no-store`. Eligible non-streaming responses negotiate Brotli or gzip above the server compression threshold; hijacked event streams preserve immediate streaming semantics. Dashboard startup and notification routing use the state event stream's initial snapshot rather than also fetching `/api/state`. A reconnect receives a new authoritative snapshot, replacing state that may have gone stale while disconnected.

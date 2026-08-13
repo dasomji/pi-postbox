@@ -250,7 +250,6 @@ async function main() {
     "--port", String(port),
     "--database", databasePath,
     "--ask-timeout-ms", "600000",
-    "--history-retention-max-records", "100",
     "--no-tailscale"
   ];
   const serverOptions = {
@@ -364,6 +363,7 @@ async function main() {
           cwd: root,
           branch: "smoke",
           semanticState: "working",
+          owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" },
           agentSessionPath: join(tmp, "fake-source.jsonl"),
           leafId: "smoke-source-leaf"
         }
@@ -598,7 +598,7 @@ async function main() {
       payload: {
         machine: { machineId: "smoke-machine", hostname: "smoke-host", displayName: "Smoke Host" },
         project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
-        session: { sessionId, cwd: root, semanticState: "working" }
+        session: { sessionId, cwd: root, semanticState: "working", owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" } }
       }
     }));
     assert((await restartRegistered).type === "registered", "Fake extension did not re-register after server restart");
@@ -714,7 +714,7 @@ async function main() {
     const continued = await continueResponse;
     assert(continued.status === 200 && (await continued.json()).mode === "turn", "Stopped Chat did not resume with an ordinary turn");
 
-    const terminalMessagesPromise = nextMessages(socket, 2);
+    const terminalMessagesPromise = nextMessages(socket, 1);
     const answerResponse = await fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/answer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -723,8 +723,6 @@ async function main() {
     assert(answerResponse.status === 200, `Answer returned ${answerResponse.status}`);
     const terminalMessages = await terminalMessagesPromise;
     assert(terminalMessages.some((message) => message.type === "chat.cleanup" && message.payload.requestId === requestId), "Extension did not receive terminal Chat cleanup");
-    const resolvedMessage = terminalMessages.find((message) => message.type === "ask.resolved");
-    assert(resolvedMessage?.type === "ask.resolved" && resolvedMessage.payload.status === "answered", "Extension did not receive answered result");
     await sse.nextStateMatching((snapshot) => !snapshot.requests.some((request) => request.requestId === requestId));
 
     const state = await fetch(`${baseUrl}/api/state`).then((response) => response.json());

@@ -18,7 +18,6 @@ const REQUEST: AskRequestSnapshot = {
   requestId: "question-one",
   sessionId: "session-one",
   mode: "single",
-  urgency: "normal",
   question: { prompt: "Which path should we take?" },
   options: [{ value: "a", label: "Path A" }],
   status: "pending",

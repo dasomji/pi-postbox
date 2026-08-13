@@ -67,7 +67,6 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("ask.create"),
     requestId: z.string().min(1).optional(),
-    awaitAnswer: z.boolean().optional(),
     payload: AskCreatePayloadSchema
   }),
   z.object({

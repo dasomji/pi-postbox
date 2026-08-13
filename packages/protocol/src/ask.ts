@@ -21,13 +21,6 @@ const RequestIdSchema = z.string().min(1).max(REQUEST_ID_MAX);
 
 export const AskModeSchema = z.enum(["single", "multi"]);
 export const AskStatusSchema = z.enum(["pending", "answered", "cancelled", "expired"]);
-export const AskUrgencySchema = z.enum(["low", "normal", "high"]);
-
-const ASK_URGENCY_RANK = { high: 0, normal: 1, low: 2 } as const;
-
-export function compareAskUrgency(a: z.infer<typeof AskUrgencySchema>, b: z.infer<typeof AskUrgencySchema>): number {
-  return ASK_URGENCY_RANK[a] - ASK_URGENCY_RANK[b];
-}
 
 export const RichContextItemSchema = z.object({
   kind: z.enum(["text", "code", "diagram", "link"]).default("text"),
@@ -114,7 +107,6 @@ export const AskCreatePayloadSchema = z.object({
   requestId: RequestIdSchema,
   sessionId: z.string().min(1).max(200),
   mode: AskModeSchema,
-  urgency: AskUrgencySchema.default("normal"),
   question: AskQuestionSchema,
   options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
   context: AskCreateHandoffContextSchema,
@@ -124,7 +116,7 @@ export const AskCreatePayloadSchema = z.object({
   repository: RepositoryIdentitySchema.optional(),
   worktree: WorktreeIdentitySchema.optional(),
   feature: FeatureIdentitySchema.optional()
-});
+}).strict();
 
 export const AskParentReferenceSchema = z.union([
   z.object({ questionId: RequestIdSchema }).strict(),
@@ -135,7 +127,6 @@ export const AskQuestionDraftSchema = z.object({
   localRef: RequestIdSchema,
   requestId: RequestIdSchema,
   mode: AskModeSchema.default("single"),
-  urgency: AskUrgencySchema.default("normal"),
   question: AskQuestionSchema,
   options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
   context: AskCreateHandoffContextSchema,
@@ -243,7 +234,6 @@ export const AnswerReadResultSchema = z.object({
     questionId: RequestIdSchema,
     revision: z.number().int().min(1),
     mode: AskModeSchema,
-    urgency: AskUrgencySchema,
     question: AskQuestionSchema,
     options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
     context: HandoffContextSchema.optional(),
@@ -269,7 +259,6 @@ export const AskRequestSnapshotSchema = z.object({
   requestId: RequestIdSchema,
   sessionId: z.string().min(1).max(200),
   mode: AskModeSchema,
-  urgency: AskUrgencySchema.default("normal"),
   question: AskQuestionSchema,
   options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
   context: HandoffContextSchema.optional(),
@@ -283,11 +272,10 @@ export const AskRequestSnapshotSchema = z.object({
   repository: RepositoryIdentitySchema.optional(),
   worktree: WorktreeIdentitySchema.optional(),
   feature: FeatureIdentitySchema.optional()
-});
+}).strict();
 
 export type AskMode = z.infer<typeof AskModeSchema>;
 export type AskStatus = z.infer<typeof AskStatusSchema>;
-export type AskUrgency = z.infer<typeof AskUrgencySchema>;
 export type RichContextItem = z.infer<typeof RichContextItemSchema>;
 export type ForkReference = z.infer<typeof ForkReferenceSchema>;
 export type HandoffContext = z.infer<typeof HandoffContextSchema>;

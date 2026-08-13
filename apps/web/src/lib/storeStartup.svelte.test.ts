@@ -22,7 +22,6 @@ const SNAPSHOT: StateSnapshot = {
     requestId: "ask-notification",
     sessionId: "session-notification",
     mode: "single",
-    urgency: "normal",
     question: { prompt: "Choose the rollout?" },
     options: [{ value: "ship", label: "Ship" }],
     status: "pending",
