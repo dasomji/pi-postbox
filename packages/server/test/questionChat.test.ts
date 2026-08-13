@@ -87,7 +87,8 @@ async function registerOtherSession(app: FastifyInstance): Promise<WebSocket> {
     payload: {
       machine: { machineId: "machine-other", hostname: "other-host" },
       project: { projectId: "project-other", name: "Other project", cwd: "/other" },
-      session: { sessionId: "session-other", cwd: "/other", semanticState: "blocked" }
+      session: { sessionId: "session-other", cwd: "/other", semanticState: "blocked",
+        owner: { harness: "pi", ownerId: "native-pi-session-other" } }
     }
   } satisfies ExtensionClientMessage));
   await expect(nextMessage(socket, "other session registration")).resolves.toMatchObject({ type: "registered" });
@@ -138,6 +139,7 @@ async function setup(options: {
           sessionId: "session-chat-owner",
           cwd: "/repo",
           semanticState: "blocked",
+          owner: { harness: "pi", ownerId: "native-pi-session-chat-owner" },
           agentSessionPath: options.sessionPath === null ? undefined : "/private/session-start.jsonl",
           leafId: options.leafId === null ? undefined : "leaf-at-session-start"
         }
@@ -186,7 +188,7 @@ async function setup(options: {
   await nextMessage(socket);
   if ("legacyContext" in options) {
     const db = openPostboxDatabase(databasePath);
-    db.prepare("UPDATE ask_requests SET context_json = ? WHERE request_id = 'ask-chat'").run(
+    db.prepare("UPDATE questions SET context_json = ? WHERE question_id = 'ask-chat'").run(
       options.legacyContext === null ? null : JSON.stringify(options.legacyContext)
     );
     db.close();
@@ -276,7 +278,7 @@ describe("Question Chat activation relay", () => {
     });
 
     const db = openPostboxDatabase(databasePath);
-    const stored = db.prepare("SELECT options_json FROM ask_requests WHERE request_id = ?").get("ask-chat") as { options_json: string };
+    const stored = db.prepare("SELECT options_json FROM questions WHERE question_id = ?").get("ask-chat") as { options_json: string };
     db.close();
     expect(stored.options_json).not.toContain("proposal-command-1");
     expect(stored.options_json).not.toContain("tool");
@@ -372,7 +374,7 @@ describe("Question Chat activation relay", () => {
     const { app, socket } = await setup();
     await activateChat(app, socket);
 
-    const messagesPromise = nextMessages(socket, 3, "proposal race result and terminal messages");
+    const messagesPromise = nextMessages(socket, 2, "proposal race result and terminal cleanup");
     const answerPromise = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
@@ -433,7 +435,8 @@ describe("Question Chat activation relay", () => {
       payload: {
         machine: { machineId: "machine-chat", hostname: "chat-host" },
         project: { projectId: "project-chat", name: "Chat project", cwd: "/repo" },
-        session: { sessionId: "session-chat-owner", cwd: "/repo", semanticState: "blocked" }
+        session: { sessionId: "session-chat-owner", cwd: "/repo", semanticState: "blocked",
+          owner: { harness: "pi", ownerId: "native-pi-session-chat-owner" } }
       }
     } satisfies ExtensionClientMessage));
     await expect(nextMessage(socket, "restart registration")).resolves.toMatchObject({ type: "registered" });
@@ -1198,16 +1201,13 @@ describe("Question Chat activation relay", () => {
     const command = await nextMessage(socket, "terminal-race send command");
     if (command.type !== "chat.send") throw new Error("Expected Chat send command");
 
-    const terminalMessages = nextMessages(socket, 2, "terminal cleanup messages");
+    const terminalMessage = nextMessage(socket, "terminal cleanup message");
     const answer = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
       payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
-    expect(await terminalMessages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "chat.cleanup", payload: expect.objectContaining({ requestId: "ask-chat" }) }),
-      expect.objectContaining({ type: "ask.resolved", payload: expect.objectContaining({ requestId: "ask-chat" }) })
-    ]));
+    expect(await terminalMessage).toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
     expect((await answer).statusCode).toBe(200);
     expect((await send).json()).toEqual({
       status: "unavailable",
@@ -1260,9 +1260,9 @@ describe("Question Chat activation relay", () => {
     expect(missing.statusCode).toBe(404);
     expect(missing.json()).toMatchObject({ status: "unavailable", error: { code: "request_missing" } });
 
-    const unstartedTerminalMessage = nextMessage(socket);
+    const noLegacyBlockingResolution = expectNoMessage(socket);
     await app.inject({ method: "POST", url: "/api/requests/ask-chat/cancel", payload: {} });
-    await expect(unstartedTerminalMessage).resolves.toMatchObject({ type: "ask.resolved", payload: { requestId: "ask-chat" } });
+    await noLegacyBlockingResolution;
     const terminal = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
     expect(terminal.statusCode).toBe(409);
     expect(terminal.json()).toMatchObject({ status: "unavailable", error: { code: "request_not_pending" } });
@@ -1373,6 +1373,7 @@ describe("Question Chat activation relay", () => {
           sessionId: "session-chat-owner",
           cwd: "/repo",
           semanticState: "blocked",
+          owner: { harness: "pi", ownerId: "native-pi-session-chat-owner" },
           agentSessionPath: "/private/question-time.jsonl",
           leafId: "leaf-at-question"
         }
@@ -1483,7 +1484,7 @@ describe("Question Chat activation relay", () => {
     expect(JSON.stringify(history)).not.toContain("server-must-not-store-this-live-tool-output");
 
     const database = openPostboxDatabase(databasePath);
-    const durableRow = database.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get("ask-chat") as Record<string, unknown>;
+    const durableRow = database.prepare("SELECT * FROM questions WHERE question_id = ?").get("ask-chat") as Record<string, unknown>;
     database.close();
     expect(Object.keys(durableRow)).not.toContain("chat");
     expect(Object.keys(durableRow)).not.toContain("messages");

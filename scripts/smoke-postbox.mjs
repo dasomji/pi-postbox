@@ -946,6 +946,15 @@ async function main() {
     claudeSocket.close();
     await new Promise((resolvePromise) => claudeSocket.once("close", resolvePromise));
     claudeSocket = undefined;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const presence = nextMessage(codexSocket);
+      codexSocket.send(JSON.stringify({ type: "owner.status.get", requestId: `claude-offline-${attempt}`,
+        payload: { owners: [{ harness: "claude-code", ownerId: "claude-smoke-owner" }] } }));
+      const status = await presence;
+      if (status.type === "query.result" && Array.isArray(status.payload) && status.payload[0]?.presence === "offline") break;
+      if (attempt === 19) throw new Error("Claude Code owner did not become offline before takeover");
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
     const takeover = nextMessage(codexSocket);
     codexSocket.send(JSON.stringify({ type: "question.update", requestId: "offline-takeover", payload: {
       sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1,
