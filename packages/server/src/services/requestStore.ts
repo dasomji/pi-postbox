@@ -8,6 +8,8 @@ import {
   type AskAnswerPayload,
   type AskCancelPayload,
   type AskCreatePayload,
+  type AskQuestionDraft,
+  type AskBatchReceipt,
   type AskRequestSnapshot,
   type AskResult,
   type AskStatus,
@@ -30,6 +32,7 @@ interface AskRequestRow {
   options_json: string;
   context_json: string | null;
   fork_reference_json: string | null;
+  parent_question_id: string | null;
   status: AskStatus;
   selected_values_json: string | null;
   note: string | null;
@@ -108,10 +111,10 @@ export class RequestStore {
 
     const insertLegacy = this.db.prepare(
         `INSERT INTO ask_requests (
-          request_id, session_id, mode, urgency, prompt, question_json, options_json, context_json, fork_reference_json, status,
+          request_id, session_id, mode, urgency, prompt, question_json, options_json, context_json, fork_reference_json, parent_question_id, status,
           selected_values_json, note, rationale, created_at, expires_at, resolved_at, updated_at
         ) VALUES (
-          @requestId, @sessionId, @mode, @urgency, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, 'pending',
+          @requestId, @sessionId, @mode, @urgency, @prompt, @questionJson, @optionsJson, @contextJson, @forkReferenceJson, @parentQuestionId, 'pending',
           NULL, NULL, NULL, @nowIso, @expiresAt, NULL, @nowIso
         )`
       );
@@ -126,14 +129,17 @@ export class RequestStore {
         optionsJson: JSON.stringify(parsed.options),
         contextJson: parsed.context ? JSON.stringify(parsed.context) : null,
         forkReferenceJson: parsed.forkReference ? JSON.stringify(parsed.forkReference) : null,
+        parentQuestionId: parsed.parentQuestionId ?? null,
         nowIso,
         expiresAt
       });
       if (session.owner_harness && session.owner_id) this.db.prepare(`INSERT INTO questions (
         question_id, legacy_request_id, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
-        revision, mode, urgency, question_json, options_json, context_json, status, expires_at, resolved_at, created_at, updated_at
+        revision, mode, urgency, question_json, options_json, context_json, parent_question_id, status, expires_at, resolved_at,
+        repository_id, worktree_id, feature_id, created_at, updated_at
       ) VALUES (@requestId, @requestId, @harness, @ownerId, @harness, @ownerId,
-        1, @mode, @urgency, @questionJson, @optionsJson, @contextJson, 'pending', @expiresAt, NULL, @nowIso, @nowIso)`)
+        1, @mode, @urgency, @questionJson, @optionsJson, @contextJson, @parentQuestionId, 'pending', @expiresAt, NULL,
+        @repositoryId, @worktreeId, @featureId, @nowIso, @nowIso)`)
         .run({
           requestId: parsed.requestId,
           harness: session.owner_harness,
@@ -143,6 +149,10 @@ export class RequestStore {
           questionJson: JSON.stringify(parsed.question),
           optionsJson: JSON.stringify(parsed.options),
           contextJson: JSON.stringify(parsed.context),
+          parentQuestionId: parsed.parentQuestionId ?? null,
+          repositoryId: session.repository_id,
+          worktreeId: session.worktree_id,
+          featureId: session.feature_id,
           expiresAt,
           nowIso
         });
@@ -152,6 +162,67 @@ export class RequestStore {
     const snapshot = this.get(parsed.requestId);
     if (!snapshot) throw new Error("created request could not be loaded");
     return snapshot;
+  }
+
+  createOne(sessionId: string, draft: AskQuestionDraft): { questionId: string; revision: number; status: "created"; nudge?: string } {
+    const parentQuestionId = draft.parent && "questionId" in draft.parent ? draft.parent.questionId : undefined;
+    const hierarchy = this.validateHierarchy(parentQuestionId);
+    const request = this.create({ ...draft, sessionId, parentQuestionId });
+    const nudge = hierarchy.childCount === 3 ? "This is the fourth direct child Question." : hierarchy.depth === 3 ? "This is a level-four Question." : undefined;
+    return { questionId: request.requestId, revision: 1, status: "created", ...(nudge ? { nudge } : {}) };
+  }
+
+  createBatch(sessionId: string, drafts: AskQuestionDraft[]): AskBatchReceipt {
+    const items: AskBatchReceipt["items"] = [];
+    const localIds = new Map<string, string>();
+    let aborted = false;
+    this.db.transaction(() => {
+      for (const draft of drafts) {
+        if (aborted) {
+          items.push({ localRef: draft.localRef, status: "rejected", reason: { code: "batch_aborted", message: "An earlier Question violated the hierarchy contract." } });
+          continue;
+        }
+        let parentQuestionId: string | undefined;
+        if (draft.parent && "localRef" in draft.parent) {
+          parentQuestionId = localIds.get(draft.parent.localRef);
+          if (!parentQuestionId) {
+            aborted = true;
+            items.push({ localRef: draft.localRef, status: "rejected", reason: { code: "forward_parent_reference", message: "A batch parent must appear before its child." } });
+            continue;
+          }
+        } else if (draft.parent && "questionId" in draft.parent) parentQuestionId = draft.parent.questionId;
+        try {
+          this.validateHierarchy(parentQuestionId);
+          const request = this.create({ ...draft, sessionId, parentQuestionId });
+          localIds.set(draft.localRef, request.requestId);
+          items.push({ localRef: draft.localRef, status: "created", questionId: request.requestId, revision: 1 });
+        } catch (error) {
+          const code = error instanceof RequestStoreError && ["parent_not_found", "child_limit_reached", "depth_limit_reached"].includes(error.code)
+            ? error.code as "parent_not_found" | "child_limit_reached" | "depth_limit_reached" : "invalid_draft";
+          aborted = true;
+          items.push({ localRef: draft.localRef, status: "rejected", reason: { code, message: error instanceof Error ? error.message : "Question was rejected." } });
+        }
+      }
+    })();
+    const created = items.filter((item) => item.status === "created").length;
+    return { status: created === items.length ? "created" : created ? "partial" : "rejected", items };
+  }
+
+  private validateHierarchy(parentQuestionId?: string): { childCount: number; depth: number } {
+    if (!parentQuestionId) return { childCount: 0, depth: 1 };
+    const parent = this.db.prepare("SELECT question_id, parent_question_id FROM questions WHERE question_id = ?").get(parentQuestionId) as
+      { question_id: string; parent_question_id: string | null } | undefined;
+    if (!parent) throw new RequestStoreError("parent_not_found", "Parent Question was not found.");
+    const childCount = (this.db.prepare("SELECT COUNT(*) AS count FROM questions WHERE parent_question_id = ?").get(parentQuestionId) as { count: number }).count;
+    if (childCount >= 5) throw new RequestStoreError("child_limit_reached", "A Question may have no more than five direct children.");
+    let depth = 2;
+    let ancestorId = parent.parent_question_id;
+    while (ancestorId) {
+      depth += 1;
+      ancestorId = (this.db.prepare("SELECT parent_question_id FROM questions WHERE question_id = ?").get(ancestorId) as { parent_question_id: string | null } | undefined)?.parent_question_id ?? null;
+    }
+    if (depth > 4) throw new RequestStoreError("depth_limit_reached", "A Question hierarchy may have no more than four levels.");
+    return { childCount, depth };
   }
 
   list(filters: { status?: AskStatus } = {}): AskRequestSnapshot[] {
@@ -285,6 +356,7 @@ export class RequestStore {
         RETURNING question_id, revision, question_json, owner_harness, owner_owner_id`)
         .get({ requestId, resolvedAt }) as { question_id: string; revision: number; question_json: string; owner_harness: string; owner_owner_id: string } | undefined;
       const answerId = randomUUID();
+      const affectedDescendantIds = question ? this.openDescendantIds(question.question_id) : [];
       if (question) this.db.prepare(`INSERT INTO answers (
         answer_id, question_id, question_revision, status, selected_values_json, note, rationale, created_at
       ) VALUES (@answerId, @questionId, @revision, 'answered', @selectedValuesJson, @note, @rationale, @resolvedAt)`)
@@ -297,6 +369,7 @@ export class RequestStore {
         selectedValues: parsed.selectedValues,
         note: parsed.note,
         rationale: parsed.rationale,
+        affectedDescendantIds,
         resolvedAt
       };
       if (question) available = {
@@ -555,6 +628,14 @@ export class RequestStore {
       resolvedAt: row.resolved_at ?? undefined,
       result
     };
+  }
+
+  private openDescendantIds(questionId: string): string[] {
+    return (this.db.prepare(`WITH RECURSIVE descendants(question_id) AS (
+      SELECT question_id FROM questions WHERE parent_question_id = ?
+      UNION ALL SELECT q.question_id FROM questions q JOIN descendants d ON q.parent_question_id = d.question_id
+    ) SELECT q.question_id FROM questions q JOIN descendants d ON d.question_id = q.question_id
+      WHERE q.status = 'pending' ORDER BY q.created_at, q.question_id`).all(questionId) as Array<{ question_id: string }>).map((row) => row.question_id);
   }
 
   private parseJson(value: string | null, fallback: unknown): unknown {
