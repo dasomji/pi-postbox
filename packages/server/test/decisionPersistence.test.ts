@@ -152,6 +152,7 @@ describe("durable decision compatibility migration", () => {
       INSERT INTO projects (project_id, name, cwd, created_at, updated_at) VALUES ('legacy-project', 'legacy-repo', '/legacy', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
       INSERT INTO sessions (session_id, machine_id, project_id, cwd, semantic_state, created_at, updated_at) VALUES ('legacy-session', 'legacy-machine', 'legacy-project', '/legacy', 'idle', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
       INSERT INTO ask_requests (request_id, session_id, mode, prompt, options_json, status, selected_values_json, note, rationale, created_at, resolved_at, updated_at) VALUES ('legacy-request', 'legacy-session', 'single', 'Legacy choice?', '[{"value":"yes","label":"Yes"}]', 'answered', '["yes"]', 'old note', 'old rationale', '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z', '2026-01-01T00:01:00.000Z');
+      INSERT INTO ask_requests (request_id, session_id, mode, prompt, options_json, status, selected_values_json, created_at, updated_at) VALUES ('legacy-pending', 'legacy-session', 'single', 'Pending legacy choice?', '[{"value":"wait","label":"Wait"}]', 'pending', '[]', '2026-01-01T00:02:00.000Z', '2026-01-01T00:02:00.000Z');
     `);
     legacy.close();
 
@@ -165,7 +166,24 @@ describe("durable decision compatibility migration", () => {
     expect(tableColumns(reopened, "owners")).toContain("owner_id");
     expect(tableColumns(reopened, "questions")).toContain("revision");
     expect(tableColumns(reopened, "answers")).toContain("answer_id");
-    expect(reopened.prepare("SELECT * FROM questions WHERE question_id = 'legacy-request'").get()).toBeUndefined();
-    expect(reopened.prepare("SELECT * FROM answers WHERE question_id = 'legacy-request'").get()).toBeUndefined();
+    expect(reopened.prepare(`SELECT question_id, revision, owner_harness, owner_owner_id, status, expires_at
+      FROM questions ORDER BY question_id`).all()).toEqual([
+      { question_id: "legacy-pending", revision: 1, owner_harness: "legacy", owner_owner_id: "legacy-session", status: "pending", expires_at: null },
+      { question_id: "legacy-request", revision: 1, owner_harness: "legacy", owner_owner_id: "legacy-session", status: "answered", expires_at: null }
+    ]);
+    expect(reopened.prepare(`SELECT question_id, selected_values_json, first_reader_harness, first_reader_owner_id,
+      first_read_at, owner_notification_delivered_at FROM answers WHERE question_id = 'legacy-request'`).get()).toMatchObject({
+      question_id: "legacy-request", selected_values_json: '["yes"]', first_reader_harness: "legacy",
+      first_reader_owner_id: "legacy-session", first_read_at: "2026-01-01T00:01:00.000Z",
+      owner_notification_delivered_at: "2026-01-01T00:01:00.000Z"
+    });
+    expect(reopened.prepare("SELECT question_id, revision FROM question_revisions ORDER BY question_id").all()).toEqual([
+      { question_id: "legacy-pending", revision: 1 }, { question_id: "legacy-request", revision: 1 }
+    ]);
+    reopened.close(); databases.pop();
+    const third = openPostboxDatabase(databasePath); databases.push(third);
+    expect(third.prepare("SELECT count(*) AS count FROM questions").get()).toEqual({ count: 2 });
+    expect(third.prepare("SELECT count(*) AS count FROM answers").get()).toEqual({ count: 1 });
+    expect(third.prepare("SELECT count(*) AS count FROM question_revisions").get()).toEqual({ count: 2 });
   });
 });

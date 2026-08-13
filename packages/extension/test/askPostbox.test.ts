@@ -45,7 +45,7 @@ describe("ask_postbox tool", () => {
     });
   });
 
-  it("exposes finite urgency input and defaults omitted urgency to normal", () => {
+  it("does not expose or manufacture the removed urgency compatibility field", () => {
     const baseInput = {
       requestId: "ask-urgent",
       question: "Which request should be answered first?",
@@ -56,9 +56,9 @@ describe("ask_postbox tool", () => {
       options: [{ value: "this-one", label: "This one" }]
     };
 
-    expect(askPostboxParameters.properties.urgency).toMatchObject({ enum: ["low", "normal", "high"] });
-    expect(createAskPayload({ ...baseInput, urgency: "high" } as AskPostboxInput, "session-1").urgency).toBe("high");
-    expect(createAskPayload(baseInput, "session-1").urgency).toBe("normal");
+    expect(askPostboxParameters.properties).not.toHaveProperty("urgency");
+    expect(createAskPayload({ ...baseInput, urgency: "high" } as AskPostboxInput, "session-1")).not.toHaveProperty("urgency");
+    expect(createAskPayload(baseInput, "session-1")).not.toHaveProperty("urgency");
   });
 
   it("reports which required interviewer context field is missing or blank", () => {
