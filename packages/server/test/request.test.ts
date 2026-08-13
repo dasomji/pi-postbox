@@ -363,7 +363,7 @@ describe("ask_postbox request loop", () => {
     });
   });
 
-  it("cancels all pending asks for a session when the originating Pi session is replaced", async () => {
+  it("preserves all pending asks while marking a replaced Pi session offline", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 3_500 });
     apps.push(app);
     const socket = await connectAndRegister(app);
@@ -386,7 +386,7 @@ describe("ask_postbox request loop", () => {
       await expect(created).resolves.toMatchObject({ type: "ask.created", payload: { requestId, status: "pending" } });
     }
 
-    const firstResolved = nextMessage(socket);
+    const shutdownAck = nextMessage(socket);
     socket.send(
       JSON.stringify({
         type: "session.shutdown",
@@ -395,26 +395,17 @@ describe("ask_postbox request loop", () => {
       } satisfies ExtensionClientMessage)
     );
 
-    await expect(firstResolved).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: {
-        status: "cancelled",
-        requestId: "ask-old-1",
-        note: "Originating Pi session shut down.",
-        rationale: "Originating Pi session was replaced by /new."
-      }
-    });
+    await expect(shutdownAck).resolves.toMatchObject({ type: "ack", requestId: "shutdown-new" });
 
     const snapshot = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
     expect(snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", presence: "offline" });
-    expect(snapshot.requests).toEqual([]);
+    expect(snapshot.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requestId: "ask-old-1", status: "pending" }),
+      expect.objectContaining({ requestId: "ask-old-2", status: "pending" })
+    ]));
 
     const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
-    expect(history.history).toHaveLength(2);
-    expect(history.history.map((record) => record.request)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ requestId: "ask-old-1", status: "cancelled", result: expect.objectContaining({ status: "cancelled" }) }),
-      expect.objectContaining({ requestId: "ask-old-2", status: "cancelled", result: expect.objectContaining({ status: "cancelled" }) })
-    ]));
+    expect(history.history).toHaveLength(0);
   });
 
   it("treats reload shutdown reason as a reconnect path that does not cancel pending asks", async () => {
@@ -449,7 +440,7 @@ describe("ask_postbox request loop", () => {
     await expect(ack).resolves.toMatchObject({ type: "ack", payload: { type: "session.shutdown" } });
 
     const snapshot = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", presence: "live" });
+    expect(snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", presence: "offline" });
     expect(snapshot.requests).toEqual([expect.objectContaining({ requestId: "ask-survives-reload", status: "pending" })]);
   });
 

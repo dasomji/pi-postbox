@@ -1384,7 +1384,7 @@ describe("Question Chat activation relay", () => {
     });
   });
 
-  it("sends cleanup on expiry and owning Pi session shutdown", async () => {
+  it("sends cleanup on expiry but preserves a Question on owning Pi session shutdown", async () => {
     let nowMs = Date.parse("2026-07-17T12:00:00.000Z");
     const expiredSetup = await setup({
       expiresAt: "2026-07-17T12:00:01.000Z",
@@ -1408,10 +1408,9 @@ describe("Question Chat activation relay", () => {
         payload: { sessionId: "session-chat-owner", reason: "quit" }
       } satisfies ExtensionClientMessage)
     );
-    await expect(nextMessage(shutdownSetup.socket)).resolves.toMatchObject({
-      type: "chat.cleanup",
-      payload: { requestId: "ask-chat", reason: "cancelled" }
-    });
+    await expect(nextMessage(shutdownSetup.socket)).resolves.toMatchObject({ type: "ack" });
+    expect((await shutdownSetup.app.inject({ method: "GET", url: "/api/state" })).json().requests)
+      .toContainEqual(expect.objectContaining({ requestId: "ask-chat", status: "pending" }));
   });
 
   it("relays private tool activity but does not add Chat transcript or tool data to durable state after cleanup", async () => {

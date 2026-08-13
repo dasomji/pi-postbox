@@ -234,7 +234,7 @@ describe("new pending ask FCM notifications", () => {
     expect(message.data).toEqual({ type: "ask.resolved", requestId: "ask-fcm-resolve-1" });
   });
 
-  it("sends an ask.resolved dismissal message when a pending ask is cancelled by session shutdown", async () => {
+  it("does not dismiss a durable pending ask on session shutdown", async () => {
     const send = vi.fn(async () => undefined);
     const app = await createAppWithFcmSender(send);
     await registerFcmToken(app, "device-token-1");
@@ -243,7 +243,7 @@ describe("new pending ask FCM notifications", () => {
     await createAsk(socket, "ask-fcm-shutdown-1", "Session shutdown should dismiss this ask's notification.");
     await waitForExpect(() => expect(send).toHaveBeenCalledTimes(1));
 
-    const cancelled = nextMessage(socket);
+    const shutdownAck = nextMessage(socket);
     socket.send(
       JSON.stringify({
         type: "session.shutdown",
@@ -251,14 +251,11 @@ describe("new pending ask FCM notifications", () => {
         payload: { sessionId: "session-1", reason: "quit" }
       })
     );
-    await expect(cancelled).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { requestId: "ask-fcm-shutdown-1", status: "cancelled" }
-    });
+    await expect(shutdownAck).resolves.toMatchObject({ type: "ack", requestId: "wire-shutdown-1" });
 
-    await waitForExpect(() => expect(send).toHaveBeenCalledTimes(2));
-    const message = send.mock.calls[1]?.[1] as FcmDataMessage;
-    expect(message.data).toEqual({ type: "ask.resolved", requestId: "ask-fcm-shutdown-1" });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((await app.inject({ method: "GET", url: "/api/state" })).json().requests)
+      .toContainEqual(expect.objectContaining({ requestId: "ask-fcm-shutdown-1", status: "pending" }));
   });
 
   it("does not attempt FCM fanout when no FCM sender is configured", async () => {
