@@ -80,6 +80,45 @@ async function createQuestion(socket: WebSocket): Promise<Record<string, unknown
 }
 
 describe("one asynchronous Question-to-Answer loop", () => {
+  it("replays the durable notification after disconnect/restart and waits while the owner is blocked", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "postbox-answer-outbox-"));
+    directories.push(directory);
+    const databasePath = join(directory, "postbox.sqlite");
+    let app = await createPostboxApp({ databasePath, expirySweepMs: 0 });
+    apps.push(app);
+    const creator = await connectOwner(app);
+    await createQuestion(creator);
+    creator.close();
+    await app.inject({ method: "POST", url: "/api/requests/question-1/answer", payload: { selectedValues: ["sqlite"] } });
+    await app.close();
+    apps.pop();
+
+    app = await createPostboxApp({ databasePath, expirySweepMs: 0 });
+    apps.push(app);
+    const owner = await connectOwner(app);
+    let notified = false;
+    owner.once("message", () => { notified = true; });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(notified).toBe(false);
+
+    const notification = new Promise<Record<string, unknown>>((resolve) => {
+      const listener = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (message.type === "answer.available") { owner.off("message", listener); resolve(message); }
+      };
+      owner.on("message", listener);
+    });
+    const updated = nextMessage(owner);
+    owner.send(JSON.stringify({ type: "session.update", payload: { sessionId: "control-session-1", semanticState: "working" } } satisfies ExtensionClientMessage));
+    expect(await updated).toMatchObject({ type: "ack", payload: { type: "session.update" } });
+    const replay = await notification;
+    expect(replay).toMatchObject({ type: "answer.available", payload: {
+      questionId: "question-1", question: "Which database should v1 use?", answerId: expect.any(String)
+    } });
+    owner.send(JSON.stringify({ type: "answer.available.ack", requestId: replay.requestId as string,
+      payload: { answerId: (replay.payload as { answerId: string }).answerId } } satisfies ExtensionClientMessage));
+  });
+
   it("keeps a pending owner-addressed Question across disconnect and restart with no default expiry", async () => {
     const directory = await mkdtemp(join(tmpdir(), "postbox-async-question-"));
     directories.push(directory);
@@ -126,8 +165,10 @@ describe("one asynchronous Question-to-Answer loop", () => {
     expect(response.json().result.answerId).not.toBe("question-1");
     expect(await ping).toEqual({
       type: "answer.available",
+      requestId: `answer_available_${response.json().result.answerId}`,
       payload: {
         questionId: "question-1",
+        question: "Which database should v1 use?",
         answerId: response.json().result.answerId
       }
     });

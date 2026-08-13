@@ -43,6 +43,7 @@ interface AskRequestRow {
 type ResolutionListener = (result: AskResult) => void;
 export interface AnswerAvailable {
   questionId: string;
+  question: string;
   answerId: string;
   ownerHarness: string;
   ownerId: string;
@@ -300,6 +301,7 @@ export class RequestStore {
       };
       if (question) available = {
         questionId: question.question_id,
+        question: (JSON.parse(question.question_json) as { prompt: string }).prompt,
         answerId,
         ownerHarness: question.owner_harness,
         ownerId: question.owner_owner_id
@@ -318,9 +320,23 @@ export class RequestStore {
     return () => this.answerAvailableListeners.delete(listener);
   }
 
-  claimOwnerNotification(answerId: string): boolean {
-    return this.db.prepare(`UPDATE answers SET owner_notification_delivered_at = ?
-      WHERE answer_id = ? AND owner_notification_delivered_at IS NULL`).run(new Date(this.now()).toISOString(), answerId).changes === 1;
+  pendingOwnerNotifications(owner: { harness: string; ownerId: string }): AnswerAvailable[] {
+    const rows = this.db.prepare(`SELECT a.answer_id, q.question_id, q.question_json, q.owner_harness, q.owner_owner_id
+      FROM answers a JOIN questions q ON q.question_id = a.question_id
+      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND a.owner_notification_delivered_at IS NULL
+      ORDER BY a.created_at ASC`).all(owner.harness, owner.ownerId) as Array<{
+        answer_id: string; question_id: string; question_json: string; owner_harness: string; owner_owner_id: string
+      }>;
+    return rows.map((row) => ({ answerId: row.answer_id, questionId: row.question_id,
+      question: (JSON.parse(row.question_json) as { prompt: string }).prompt,
+      ownerHarness: row.owner_harness, ownerId: row.owner_owner_id }));
+  }
+
+  acknowledgeOwnerNotification(answerId: string, owner: { harness: string; ownerId: string }): boolean {
+    return this.db.prepare(`UPDATE answers SET owner_notification_delivered_at = ? WHERE answer_id = ?
+      AND owner_notification_delivered_at IS NULL AND question_id IN
+      (SELECT question_id FROM questions WHERE owner_harness = ? AND owner_owner_id = ?)`)
+      .run(new Date(this.now()).toISOString(), answerId, owner.harness, owner.ownerId).changes === 1;
   }
 
   getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {

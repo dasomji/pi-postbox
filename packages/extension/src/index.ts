@@ -277,6 +277,10 @@ async function registerResolvedTarget(
       onLocalFallbackStatus: (status) => {
         void renderLocalFallbackStatus(uiScope, status);
       },
+      onAnswerAvailable: (notification) => {
+        uiScope.notify(`Postbox answer ready for “${notification.question}” (${notification.questionId}).`, "info");
+        pi.events?.emit?.("postbox:answer-available", notification);
+      },
       questionChats
     });
     client.start();

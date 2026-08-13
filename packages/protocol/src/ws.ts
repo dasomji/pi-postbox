@@ -76,6 +76,11 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     payload: z.object({ questionId: z.string().min(1).max(200) }).strict()
   }),
   z.object({
+    type: z.literal("answer.available.ack"),
+    requestId: WsCorrelationIdSchema,
+    payload: z.object({ answerId: z.string().min(1).max(200) }).strict()
+  }),
+  z.object({
     type: z.literal("chat.ready"),
     requestId: WsCorrelationIdSchema,
     payload: QuestionChatSnapshotSchema
@@ -158,6 +163,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1).optional(),
     payload: z.object({
       questionId: z.string().min(1),
+      question: z.string().min(1),
       answerId: z.string().min(1)
     }).strict()
   }),

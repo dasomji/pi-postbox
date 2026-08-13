@@ -118,6 +118,10 @@ export class SessionStore {
     return row?.owner_harness === owner.harness && row.owner_id === owner.ownerId && row.semantic_state !== "blocked";
   }
 
+  isCurrentConnection(sessionId: string, connectionId: string): boolean {
+    return this.activeConnections.get(sessionId) === connectionId;
+  }
+
   register(connectionId: string, payload: SessionRegisterPayload): void {
     if (this.closed) return;
     const nowIso = new Date(this.now()).toISOString();

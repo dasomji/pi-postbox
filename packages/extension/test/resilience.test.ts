@@ -110,6 +110,70 @@ function socketUrl(serverUrl: string): string {
 }
 
 describe("PostboxClient pending ask resilience", () => {
+  it("settles create receipts only from persistence evidence and survives lost ack through terminal replay", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ registration: { ...registration, session: { ...registration.session, semanticState: "working" } } });
+    client.start();
+    const first = FakeSocket.instances[0];
+    first.open();
+    const receipt = client.createAsk({ ...askPayload, requestId: "ask-receipt" });
+    let settled = false;
+    void receipt.finally(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    first.close();
+    await vi.advanceTimersByTimeAsync(100);
+    const second = FakeSocket.instances[1];
+    second.open();
+    const replay = second.sent.find((value) => (value as { type?: string }).type === "ask.create") as { requestId: string };
+    second.serverMessage({ type: "ask.resolved", requestId: replay.requestId, payload: {
+      status: "answered", requestId: "ask-receipt", selectedValues: ["yes"], resolvedAt: "2026-06-03T00:00:01.000Z"
+    } });
+    await expect(receipt).resolves.toEqual({ questionId: "ask-receipt", revision: 1, status: "pending" });
+    client.stop();
+  });
+
+  it("rejects create receipts on abort, stop, and correlated server rejection", async () => {
+    FakeSocket.instances = [];
+    const client = createClient({ registration: { ...registration, session: { ...registration.session, semanticState: "working" } } });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    await expect(client.createAsk({ ...askPayload, requestId: "create-pre-abort" }, alreadyAborted.signal)).rejects.toThrow("aborted");
+    const aborter = new AbortController();
+    const aborted = client.createAsk({ ...askPayload, requestId: "create-abort" }, aborter.signal);
+    aborter.abort();
+    await expect(aborted).rejects.toThrow("aborted");
+
+    const rejected = client.createAsk({ ...askPayload, requestId: "create-rejected" });
+    const command = socket.sent.find((value) => (value as { payload?: { requestId?: string } }).payload?.requestId === "create-rejected") as { requestId: string };
+    socket.serverMessage({ type: "error", requestId: command.requestId, error: { code: "ask_create_failed", message: "rejected" } });
+    await expect(rejected).rejects.toThrow("rejected");
+
+    const stopped = client.createAsk({ ...askPayload, requestId: "create-stop" });
+    client.stop();
+    await expect(stopped).rejects.toThrow("stopped");
+  });
+
+  it("delivers each lightweight answer notification once and acknowledges replays", () => {
+    FakeSocket.instances = [];
+    const notifications: unknown[] = [];
+    const client = createClient({ onAnswerAvailable: (value) => notifications.push(value) });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const message = { type: "answer.available" as const, requestId: "notification-1", payload: {
+      questionId: "question-1", question: "Ship?", answerId: "answer-1"
+    } };
+    socket.serverMessage(message);
+    socket.serverMessage(message);
+    expect(notifications).toEqual([message.payload]);
+    expect(socket.sent.filter((value) => (value as { type?: string }).type === "answer.available.ack")).toHaveLength(2);
+    client.stop();
+  });
   it("status snapshot enriches a real connected local client with Tailnet URL, remote export, and Tailscale diagnostics", async () => {
     FakeSocket.instances = [];
     const inspectTailscale = vi.fn(async () => ({

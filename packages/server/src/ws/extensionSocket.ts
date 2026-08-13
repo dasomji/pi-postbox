@@ -85,17 +85,20 @@ export async function registerExtensionSocket(
 
     const connectionId = randomUUID();
     const unsubscribers = new Set<() => void>();
-    unsubscribers.add(requestStore.onAnswerAvailable((answer) => {
-      if (!registeredSessionId || socket.readyState !== 1) return;
-      const owner = { harness: answer.ownerHarness, ownerId: answer.ownerId };
-      if (!sessionStore.isConnectedNonWaitingOwner(registeredSessionId, owner)) return;
-      if (!requestStore.claimOwnerNotification(answer.answerId)) return;
-      send(socket, {
-        type: "answer.available",
-        payload: { questionId: answer.questionId, answerId: answer.answerId }
-      });
-    }));
     let registeredSessionId: string | undefined;
+    const flushAnswerNotifications = () => {
+      if (!registeredSessionId || socket.readyState !== 1 || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
+      const owner = sessionStore.ownerForSession(registeredSessionId);
+      if (!owner || !sessionStore.isConnectedNonWaitingOwner(registeredSessionId, owner)) return;
+      for (const answer of requestStore.pendingOwnerNotifications(owner)) {
+        send(socket, {
+          type: "answer.available",
+          requestId: `answer_available_${answer.answerId}`,
+          payload: { questionId: answer.questionId, question: answer.question, answerId: answer.answerId }
+        });
+      }
+    };
+    unsubscribers.add(requestStore.onAnswerAvailable(() => flushAnswerNotifications()));
     let recoveryOffersComplete = false;
     const pendingRecoveries = new Map<string, {
       requestId: string;
@@ -305,6 +308,14 @@ export async function registerExtensionSocket(
           requestId: message.requestId,
           payload: { sessionId: message.payload.session.sessionId, presence: "live" }
         });
+        flushAnswerNotifications();
+        return;
+      }
+
+      if (message.type === "answer.available.ack") {
+        if (!registeredSessionId || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
+        const owner = sessionStore.ownerForSession(registeredSessionId);
+        if (owner) requestStore.acknowledgeOwnerNotification(message.payload.answerId, owner);
         return;
       }
 
@@ -312,6 +323,7 @@ export async function registerExtensionSocket(
         sessionStore.heartbeat(connectionId, message.payload.sessionId, message.payload.semanticState);
         broadcaster.broadcast();
         send(socket, { type: "ack", requestId: message.requestId, payload: { type: "heartbeat" } });
+        flushAnswerNotifications();
         return;
       }
 
@@ -319,6 +331,7 @@ export async function registerExtensionSocket(
         sessionStore.updateSession(message.payload);
         broadcaster.broadcast();
         send(socket, { type: "ack", requestId: message.requestId, payload: { type: "session.update" } });
+        flushAnswerNotifications();
         return;
       }
 
