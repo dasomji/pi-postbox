@@ -9,6 +9,7 @@
 
   let {
     request,
+    unansweredAncestors = [],
     session,
     isMock = false,
     layoutState = layout,
@@ -16,6 +17,7 @@
     chatApi = {}
   }: {
     request: AskRequestSnapshot;
+    unansweredAncestors?: AskRequestSnapshot[];
     session?: SessionSnapshot;
     isMock?: boolean;
     layoutState?: BrowserLayoutState;
@@ -154,6 +156,15 @@
     class="min-h-0 min-w-0 flex-1 overflow-y-auto bg-postbox-canvas"
     class:pb-24={mobile && presentation.started}
   >
+    {#if unansweredAncestors.length > 0}
+      {@const nearestAncestor = unansweredAncestors[unansweredAncestors.length - 1]!}
+      <div class="mx-4 mt-4 rounded-lg border border-warning-border bg-warning/5 p-4 text-sm sm:mx-6" role="status">
+        <p class="font-medium text-warning-foreground">This Question has an unanswered ancestor.</p>
+        <a class="mt-1 inline-block text-attention-foreground underline" href="?question={encodeURIComponent(nearestAncestor.requestId)}">
+          {nearestAncestor.question.prompt} ({nearestAncestor.requestId})
+        </a>
+      </div>
+    {/if}
     {#if activationError && !chatStarting}
       <div class="mx-4 mt-4 rounded-lg border border-danger-border bg-danger/5 p-4 text-sm sm:mx-6" role="alert">
         <p class="font-medium text-danger-foreground">{activationError.message}</p>
