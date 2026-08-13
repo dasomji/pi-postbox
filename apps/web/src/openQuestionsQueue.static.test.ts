@@ -15,6 +15,7 @@ describe("open questions queue", () => {
     const queuePath = resolve(srcDir, "components/OpenQuestionsQueue.svelte");
     const queue = existsSync(queuePath) ? readFileSync(queuePath, "utf8") : "";
     const queueLogic = readSource("lib/openQuestionsQueue.ts");
+    const tree = readSource("components/QuestionTreeList.svelte");
 
     expect({
       queueComponentExists: existsSync(queuePath),
@@ -26,14 +27,16 @@ describe("open questions queue", () => {
         /projectName/.test(queueLogic),
       usesPendingRequests: /store\.pendingRequests/.test(queue),
       rendersProjectSections: /{#each groups as group/.test(queue) && /<section/.test(queue),
-      selectingQuestionOpensDetail: /onclick=\{\(\)\s*=>\s*store\.selectRequest\(item\.request\.requestId\)\}/.test(queue)
+      selectingQuestionOpensDetail: /QuestionTreeList/.test(queue) && /store\.selectRequest\(node\.request\.requestId\)/.test(tree),
+      rendersNestedHierarchy: /import QuestionTreeList from/.test(tree) && /<QuestionTreeList nodes=\{node\.children\}/.test(tree) && /data-question-depth=\{depth\}/.test(tree)
     }).toEqual({
       queueComponentExists: true,
       mainRendersQueueWhenNothingSelected: true,
       groupsByProject: true,
       usesPendingRequests: true,
       rendersProjectSections: true,
-      selectingQuestionOpensDetail: true
+      selectingQuestionOpensDetail: true,
+      rendersNestedHierarchy: true
     });
   });
 });

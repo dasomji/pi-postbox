@@ -1,9 +1,9 @@
 <script lang="ts">
   import { postJson } from "../api/postboxApi";
   import { groupOpenQuestions } from "../lib/openQuestionsQueue";
-  import { branchLabel } from "../lib/status";
   import { store } from "../lib/store.svelte";
   import ProjectIcon from "./ProjectIcon.svelte";
+  import QuestionTreeList from "./QuestionTreeList.svelte";
 
   /** When projectId is set, the queue shows only that project's questions. */
   let { projectId: projectFilter }: { projectId?: string } = $props();
@@ -18,12 +18,6 @@
   const heading = $derived(
     projectFilter ? (filteredProject?.projectName ?? groups[0]?.projectName ?? "Project") : "Questions waiting for you"
   );
-
-  function formatCreatedAt(value: string): string {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "Waiting";
-    return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
-  }
 
   // Manual escape hatch for stuck questions, e.g. when the agent abandoned an
   // ask without telling the server. Cancels the request server-side.
@@ -57,8 +51,8 @@
         <h1 class="font-display text-3xl font-semibold tracking-tight text-postbox-text">{heading}</h1>
         <p class="mt-2 max-w-2xl text-sm leading-6 text-postbox-subtle">
           {projectFilter
-            ? "Pending Postbox decisions for this project, highest urgency and oldest first."
-            : "All pending Postbox decisions, grouped by project and ordered by urgency and age."}
+            ? "Pending Postbox decisions for this project, arranged as oldest-first parent trees."
+            : "All pending Postbox decisions, grouped by repository and arranged as oldest-first parent trees."}
         </p>
       </div>
       <div class="rounded-full border border-attention-border bg-attention/10 px-3 py-1 text-sm font-semibold text-attention-foreground">
@@ -99,42 +93,9 @@
             </div>
           {/if}
 
-          <ul class="divide-y divide-postbox-border/70 {projectFilter ? '' : 'mt-3'}">
-            {#each group.questions as item (item.request.requestId)}
-              {@const active = store.selection.kind === "request" && store.selection.requestId === item.request.requestId}
-              <li class="flex items-start gap-1">
-                <button
-                  type="button"
-                  class="group flex min-w-0 flex-1 items-start gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-postbox-text/5 focus:outline-none focus:ring-2 focus:ring-attention/60 {active
-                    ? 'bg-attention/5 ring-1 ring-attention-border'
-                    : ''}"
-                  onclick={() => store.selectRequest(item.request.requestId)}
-                >
-                  <span class="mt-1 h-2 w-2 shrink-0 rounded-full bg-attention"></span>
-                  <span class="min-w-0 flex-1">
-                    <span class="line-clamp-2 text-sm font-medium leading-5 text-postbox-text group-hover:text-attention-foreground">
-                      {item.request.question.prompt}
-                    </span>
-                    <span class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-postbox-muted">
-                      <span>{item.session ? branchLabel(item.session) : "Detached session"}</span>
-                      <span>{item.request.mode === "multi" ? "Multiple choice" : "Single choice"}</span>
-                      <span>Asked {formatCreatedAt(item.request.createdAt)}</span>
-                    </span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  class="mt-2 shrink-0 rounded-full p-1.5 text-postbox-muted transition hover:bg-attention/10 hover:text-attention-foreground disabled:cursor-wait disabled:opacity-50"
-                  title="Dismiss this question (cancels it without answering)"
-                  aria-label="Dismiss question: {item.request.question.prompt}"
-                  disabled={dismissingRequestId !== undefined}
-                  onclick={() => dismissRequest(item.request.requestId)}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-                </button>
-              </li>
-            {/each}
-          </ul>
+          <div class={projectFilter ? "" : "mt-3"}>
+            <QuestionTreeList nodes={group.questionTree ?? []} {dismissingRequestId} onDismiss={dismissRequest} />
+          </div>
         </section>
       {/each}
     </div>

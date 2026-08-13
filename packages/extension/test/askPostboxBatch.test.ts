@@ -19,6 +19,9 @@ describe("ask_postbox ordered batches", () => {
     expect(schema.required).toBeUndefined();
     expect(schema.properties.questions.items.required).toEqual(["localRef", "question", "options", "context"]);
     expect(schema.properties.questions.items.properties.parent.oneOf).toHaveLength(2);
+    expect(schema.properties.parent.required).toEqual(["questionId"]);
+    expect(schema.properties.parent.properties.localRef).toBeUndefined();
+    expect(schema.properties.questions.items.properties.forkReference).toEqual(schema.properties.forkReference);
   });
 
   it("sends an ordered batch once and returns every created and rejected receipt", async () => {
@@ -38,5 +41,15 @@ describe("ask_postbox ordered batches", () => {
     await expect((executeAskPostbox as any)(input, { createAskBatch }, "session-1")).resolves.toEqual(receipt);
     expect(createAskBatch).toHaveBeenCalledOnce();
     expect(createAskBatch.mock.calls[0]?.[0].questions.map((item: any) => item.localRef)).toEqual(["root", "child"]);
+  });
+
+  it("maps a single existing parent Question ID and fork provenance into the create payload", async () => {
+    const createAsk = vi.fn(async (payload) => ({ questionId: payload.requestId, revision: 1, status: "pending" as const }));
+    await (executeAskPostbox as any)({ ...draft, parent: { questionId: "existing-parent" },
+      forkReference: { agentSessionId: "session-source", leafId: "leaf-source" } }, { createAsk }, "session-1");
+    expect(createAsk).toHaveBeenCalledWith(expect.objectContaining({
+      parentQuestionId: "existing-parent",
+      forkReference: { agentSessionId: "session-source", leafId: "leaf-source" }
+    }), undefined);
   });
 });

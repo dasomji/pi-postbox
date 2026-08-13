@@ -69,4 +69,14 @@ describe("selected Postbox Question detail", () => {
     expect(body).toContain("type=\"submit\"");
     expect(body).not.toContain("disabled");
   });
+
+  it("links the direct unanswered parent when multiple ancestors remain open", () => {
+    const direct = { ...REQUEST, requestId: "direct-parent", question: { prompt: "Direct parent?" } };
+    const root = { ...REQUEST, requestId: "root-parent", question: { prompt: "Root parent?" } };
+    const child = { ...REQUEST, requestId: "child", parentQuestionId: direct.requestId };
+    const { body } = render(QuestionDetail, { props: { request: child, unansweredAncestors: [direct, root], isMock: true } as any });
+    expect(body).toContain("Direct parent?");
+    expect(body).not.toContain("Root parent?");
+    expect(body).toContain("question=direct-parent");
+  });
 });

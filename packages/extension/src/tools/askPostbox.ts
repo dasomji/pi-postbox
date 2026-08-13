@@ -22,6 +22,7 @@ export interface AskPostboxInput {
   options: AskOption[];
   context: AskCreateHandoffContext;
   forkReference?: ForkReference;
+  parent?: { questionId: string };
   requestId?: string;
   timeoutMs?: number;
   expiresAt?: string;
@@ -50,12 +51,19 @@ const contextParameters = {
     } } }
   }
 } as const;
+const forkReferenceParameters = {
+  type: "object", additionalProperties: false, properties: {
+    agentSessionId: { type: "string", minLength: 1 }, agentSessionPath: { type: "string", minLength: 1 },
+    leafId: { type: "string", minLength: 1 }, cwd: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1 }
+  }
+} as const;
 const sharedDraftProperties = {
   question: { type: "string", minLength: 1 }, questionContext: { type: "string", minLength: 1 },
   relevance: { type: "string", minLength: 1 }, decisionImpact: { type: "string", minLength: 1 },
   urgency: { type: "string", enum: ["low", "normal", "high"] }, requestId: { type: "string", minLength: 1 },
   timeoutMs: { type: "number", minimum: 1 }, expiresAt: { type: "string", minLength: 1 },
-  options: { type: "array", minItems: 1, items: optionParameters }, context: contextParameters
+  options: { type: "array", minItems: 1, items: optionParameters }, context: contextParameters,
+  forkReference: forkReferenceParameters
 } as const;
 
 export const askPostboxParameters = {
@@ -81,17 +89,9 @@ export const askPostboxParameters = {
     requestId: { type: "string", minLength: 1, description: "Optional stable request id for this ask." },
     timeoutMs: { type: "number", minimum: 1, description: "Optional request expiry timeout in milliseconds." },
     expiresAt: { type: "string", minLength: 1, description: "Optional ISO datetime when this request expires." },
-    forkReference: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        agentSessionId: { type: "string", minLength: 1 },
-        agentSessionPath: { type: "string", minLength: 1 },
-        leafId: { type: "string", minLength: 1 },
-        cwd: { type: "string", minLength: 1 },
-        model: { type: "string", minLength: 1 }
-      }
-    },
+    parent: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
+      questionId: { type: "string", minLength: 1 }
+    } },
     questions: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
       required: ["localRef", "question", "options", "context"], properties: {
         ...sharedDraftProperties, localRef: { type: "string", minLength: 1 },
@@ -121,6 +121,7 @@ export function createAskPayload(input: AskPostboxInput, sessionId: string): Ask
     options: input.options,
     context,
     forkReference: input.forkReference,
+    parentQuestionId: input.parent?.questionId,
     expiresAt: input.expiresAt ?? (input.timeoutMs ? new Date(Date.now() + input.timeoutMs).toISOString() : undefined)
   });
 }

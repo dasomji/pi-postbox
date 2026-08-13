@@ -157,7 +157,7 @@
     class:pb-24={mobile && presentation.started}
   >
     {#if unansweredAncestors.length > 0}
-      {@const nearestAncestor = unansweredAncestors[unansweredAncestors.length - 1]!}
+      {@const nearestAncestor = unansweredAncestors[0]!}
       <div class="mx-4 mt-4 rounded-lg border border-warning-border bg-warning/5 p-4 text-sm sm:mx-6" role="status">
         <p class="font-medium text-warning-foreground">This Question has an unanswered ancestor.</p>
         <a class="mt-1 inline-block text-attention-foreground underline" href="?question={encodeURIComponent(nearestAncestor.requestId)}">
