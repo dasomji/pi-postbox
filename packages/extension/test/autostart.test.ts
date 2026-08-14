@@ -1,15 +1,17 @@
 import {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
-  createHealthResponse,
-  type ActiveLocalRole,
-  type ActiveLocalTargetIdentity
+  PROTOCOL_VERSION,
+  SERVER_PROFILE_METADATA_VERSION,
+  createHealthResponse
 } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveServerProfile } from "../src/serverProfile.js";
+
+type TestLocalRole = "dev" | "production";
+type TestLocalTarget = { role: TestLocalRole; instanceId: string; url: string };
 
 const childProcessMock = vi.hoisted(() => ({
   children: [] as Array<{
@@ -469,18 +471,40 @@ async function withProcessEnv<T>(env: NodeJS.ProcessEnv, fn: () => Promise<T>): 
 
 async function writeMetadata(
   env: NodeJS.ProcessEnv,
-  record: { role: ActiveLocalRole; instanceId: string; url: string; updatedAt: string }
+  record: { role: TestLocalRole; instanceId: string; url: string; updatedAt: string }
 ): Promise<void> {
-  const activeLocalDir = join(dirname(env.PI_POSTBOX_CONFIG_PATH!), ACTIVE_LOCAL_METADATA_DIRECTORY);
-  await mkdir(activeLocalDir, { recursive: true });
+  const profile = resolveServerProfile({ env });
+  await mkdir(dirname(profile.metadataPath), { recursive: true });
   await writeFile(
-    join(activeLocalDir, ACTIVE_LOCAL_METADATA_FILENAMES[record.role]),
-    `${JSON.stringify({ version: 1, ...record }, null, 2)}\n`
+    profile.metadataPath,
+    `${JSON.stringify({
+      version: SERVER_PROFILE_METADATA_VERSION,
+      profile: { kind: profile.kind, id: profile.id },
+      instanceId: record.instanceId,
+      url: record.url,
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build",
+      updatedAt: record.updatedAt
+    }, null, 2)}\n`
   );
 }
 
-function healthResponse(localTarget: ActiveLocalTargetIdentity) {
-  return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget });
+function healthResponse(localTarget: TestLocalTarget) {
+  const profile = resolveServerProfile();
+  const profileIdentity = { kind: profile.kind, id: profile.id } as const;
+  return createHealthResponse({
+    startedAtMs: NOW_MS - 1_000,
+    nowMs: NOW_MS,
+    profile: profileIdentity,
+    buildId: "test-build",
+    instance: {
+      profile: profileIdentity,
+      instanceId: localTarget.instanceId,
+      url: localTarget.url,
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build"
+    }
+  });
 }
 
 function healthFetch(responses: Record<string, unknown | Error>) {
@@ -505,15 +529,20 @@ function healthFetch(responses: Record<string, unknown | Error>) {
 function expectPackageLocalSpawn(): void {
   const call = vi.mocked(spawn).mock.calls[0];
   expect(call?.[0]).toBe(process.execPath);
-  expect(call?.[1]).toEqual(expect.arrayContaining([expect.stringMatching(/packages[/\\]server[/\\]dist[/\\]cli\.js$/), "serve", "--active-local-role", "production"]));
-  expect(call?.[1]).not.toContain("--no-tailscale");
+  expect(call?.[1]).toEqual(expect.arrayContaining([
+    expect.stringMatching(/packages[/\\]server[/\\]dist[/\\]cli\.js$/),
+    "serve",
+    "--profile",
+    expect.stringMatching(/^development:[a-f0-9]{16}$/),
+    "--no-tailscale"
+  ]));
+  expect(call?.[1]).not.toContain("--active-local-role");
 }
 
 function expectPathFallbackSpawn(callIndex = 0): void {
   const call = vi.mocked(spawn).mock.calls[callIndex];
   expect(call?.[0]).toBe("pi-postbox-server");
-  expect(call?.[1]).toEqual(expect.arrayContaining(["serve", "--active-local-role", "production"]));
-  expect(call?.[1]).not.toContain("--no-tailscale");
+  expect(call?.[1]).toEqual(expect.arrayContaining(["serve", "--profile", expect.stringMatching(/^development:/), "--no-tailscale"]));
 }
 
 function resetExtensionModuleState(): void {

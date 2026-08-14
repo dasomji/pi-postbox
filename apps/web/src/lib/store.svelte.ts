@@ -310,14 +310,6 @@ class PostboxStore {
     let fallbackTimer: ReturnType<typeof setInterval> | undefined;
     let events: EventSource | undefined;
 
-    void fetchHealth()
-      .then((health) => {
-        if (!cancelled) this.connection = { status: "connected", health };
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
-      });
-
     const applySnapshot = (next: StateSnapshot) => {
       if (!cancelled) this.applyStateSnapshot(next);
     };
@@ -336,19 +328,33 @@ class PostboxStore {
       fallbackTimer = setInterval(load, 5_000);
     };
 
-    if (!("EventSource" in window)) {
-      startPollingFallback();
-    } else {
-      events = new EventSource("/api/state/events");
-      events.addEventListener("state", (event) => {
-        try {
-          applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
-        } catch (error) {
-          if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
-        }
+    const startStateTransport = () => {
+      if (!("EventSource" in window)) {
+        startPollingFallback();
+      } else {
+        events = new EventSource("/api/state/events");
+        events.addEventListener("state", (event) => {
+          try {
+            applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
+          } catch (error) {
+            if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
+          }
+        });
+        events.onerror = () => startPollingFallback();
+      }
+    };
+
+    // Compatibility is negotiated before any state payload is parsed. This turns an
+    // old API/new UI mismatch into a targeted health diagnostic instead of a Zod error.
+    void fetchHealth()
+      .then((health) => {
+        if (cancelled) return;
+        this.connection = { status: "connected", health };
+        startStateTransport();
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
       });
-      events.onerror = () => startPollingFallback();
-    }
 
     // Returning from the background: the SSE stream may be dead or throttled, so refetch right
     // away, and stop claiming "no open questions" if what we show is more than briefly stale.

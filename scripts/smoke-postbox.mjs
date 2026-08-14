@@ -54,13 +54,14 @@ function normalizedUrl(url) {
 }
 
 function assertCompatibleLocalTarget(health, expectedBaseUrl) {
-  const { localTarget } = health;
-  if (localTarget === undefined) return;
-
-  assert(localTarget && typeof localTarget === "object", "health localTarget must be an object when present");
-  assert(localTarget.role === "production", `health localTarget role mismatch: ${localTarget.role}`);
-  assert(typeof localTarget.instanceId === "string" && localTarget.instanceId.length > 0, "health localTarget instanceId missing");
-  assert(localTarget.url === normalizedUrl(expectedBaseUrl), `health localTarget url mismatch: ${localTarget.url}`);
+  const { profile, instance } = health;
+  assert(profile?.kind === "production" && profile?.id === "production", "health production profile identity mismatch");
+  assert(instance && typeof instance === "object", "health server instance identity missing");
+  assert(instance.profile?.id === "production", `health instance profile mismatch: ${instance.profile?.id}`);
+  assert(typeof instance.instanceId === "string" && instance.instanceId.length > 0, "health instanceId missing");
+  assert(instance.url === normalizedUrl(expectedBaseUrl), `health instance URL mismatch: ${instance.url}`);
+  assert(instance.protocolVersion === health.protocolVersion, "health instance protocol mismatch");
+  assert(instance.buildId === health.buildId, "health instance build mismatch");
 }
 
 function nextMessage(socket, timeoutMs = 3_000) {
@@ -281,6 +282,8 @@ async function main() {
     cliPath,
     "--host", "127.0.0.1",
     "--port", String(port),
+    "--profile", "production",
+    "--profile-state-dir", tmp,
     "--database", databasePath,
     "--ask-timeout-ms", "600000",
     "--no-tailscale"
@@ -291,7 +294,6 @@ async function main() {
       ...process.env,
       PI_POSTBOX_CONFIG_DIR: tmp,
       PI_POSTBOX_CONFIG_PATH: join(tmp, "config.json"),
-      PI_POSTBOX_ACTIVE_LOCAL_ROLE: "production",
       PI_POSTBOX_TAILSCALE: "off"
     },
     stdio: ["ignore", "pipe", "pipe"]

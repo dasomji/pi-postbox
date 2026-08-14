@@ -37,9 +37,12 @@ One ordinary Question Chat model invocation. The send acknowledgement uses `mode
 _Avoid_: Prompt, request, ask
 
 **Autostarted Postbox Server**:
-A reusable background `pi-postbox-server` process started by the Pi extension when the preferred configured server is unreachable and a Postbox Question needs to be sent. It is not an operating-system service; it may outlive the Pi Session that started it so other local Pi Sessions can reuse it through active-local discovery.
+A reusable background `pi-postbox-server` process started by the Pi extension for the extension's resolved Server Profile when a Postbox Question needs to be sent. It is not an operating-system service; it may outlive the Pi Session that started it so other Pi Sessions using that same profile can reuse it through profile-scoped metadata.
 _Avoid_: System daemon, service, sidecar
 
+**Server Profile**:
+The isolated runtime namespace selected from loaded package provenance: `production` for installed npm/git packages, or `development:<checkout-id>` for a trusted checkout-local package whose Pi cwd is inside that checkout. It owns config, database, metadata, process files, credentials, ports, assets, and Tailscale behavior.
+
 **Preferred Postbox Server**:
-The server URL configured through `PI_POSTBOX_URL` or config. The extension tries it first, but if it is unreachable the extension may start an Autostarted Postbox Server. Once a Pi Session registers with a fallback server, it stays with that server until reload or restart rather than migrating mid-session.
+The server URL explicitly configured through `PI_POSTBOX_URL` or the resolved Server Profile's config. The extension tries it first, but if it is unreachable it may start an Autostarted Postbox Server in the same profile. Once a Pi Session registers, it stays with that profile and instance while work is in flight rather than migrating across environments.
 _Avoid_: Authoritative server, required server

@@ -115,15 +115,19 @@ describe("release packaging and operator docs", () => {
       "package.json",
       "packages/extension/package.json",
       "packages/extension/src/index.ts",
+      "packages/extension/src/serverProfile.ts",
+      "packages/extension/src/serverTargetResolver.ts",
       "packages/extension/src/questionChatRuntime.ts",
       "packages/extension/src/repositoryEvidenceTools.ts",
       "packages/extension/src/proposeAnswerTool.ts",
       "packages/protocol/package.json",
       "packages/protocol/dist/index.js",
+      "packages/protocol/dist/serverProfile.js",
       "packages/protocol/dist/chat.js",
       "packages/protocol/dist/ws.js",
       "packages/server/package.json",
       "packages/server/dist/cli.js",
+      "packages/server/dist/profileTarget.js",
       "packages/server/dist/routes/requestRoutes.js",
       "packages/server/dist/services/questionChatRelay.js",
       "packages/server/dist/public/index.html",
@@ -141,6 +145,7 @@ describe("release packaging and operator docs", () => {
         path.startsWith(".pi/") ||
         path.startsWith("node_modules/") ||
         path.startsWith("tmp/") ||
+        /(?:^|\/)(?:activeLocal|activeLocalTarget)(?:\.|$)/.test(path) ||
         path === ".env" ||
         path.endsWith("/.env") ||
         path.endsWith("/.DS_Store")
@@ -470,7 +475,7 @@ describe("release packaging and operator docs", () => {
     );
   });
 
-  it("documents active-local routing, role configuration, and local diagnostics for operators", async () => {
+  it("documents profile-scoped routing, configuration, and local diagnostics for operators", async () => {
     const docs = await Promise.all([
       readText("README.md"),
       readText(join("docs", "configuration.md")),
@@ -479,20 +484,19 @@ describe("release packaging and operator docs", () => {
 
     expectConcepts(docs, [
       "32187",
-      "--active-local-role",
-      "PI_POSTBOX_ACTIVE_LOCAL_ROLE",
-      "active-local/dev.json",
-      "active-local/production.json",
+      "--profile",
+      "PI_POSTBOX_PROFILE",
+      "development:<checkout-id>",
+      "active-local/server.json",
       "PI_POSTBOX_CONFIG_DIR",
       "PI_POSTBOX_CONFIG_PATH",
       "~/.pi-postbox",
-      "dev over production",
-      "production fallback",
+      "never orders or falls back across profiles",
       "stale",
       "unhealthy",
       "unsafe",
       "health mismatch",
-      "no broad discovery",
+      "no machine-global candidate ordering",
       "port scanning"
     ]);
     expect(docs, "operator docs should not still describe 3000 as the preferred/default Postbox port").not.toMatch(
@@ -524,7 +528,7 @@ describe("release packaging and operator docs", () => {
     );
   });
 
-  it("documents explicit remote authority plus live retargeting and origin affinity", async () => {
+  it("documents explicit remote authority plus profile-scoped retargeting and origin affinity", async () => {
     const docs = await Promise.all([
       readText("README.md"),
       readText(join("docs", "configuration.md")),
@@ -538,30 +542,30 @@ describe("release packaging and operator docs", () => {
       "Tailscale",
       "hosted",
       "authoritative",
-      "not local recovery candidates",
-      "live retargeting",
+      "explicit override",
+      "reconnect only within their resolved profile",
       "sent asks",
       "local fallback",
-      "pin their origin",
+      "pin their origin instance",
       "bounded",
       "deferred switching"
     ]);
   });
 
-  it("documents optional health local target identity and exact metadata matching", async () => {
+  it("documents authoritative health profile identity and exact metadata matching", async () => {
     const protocol = await readText(join("docs", "protocol.md"));
 
-    expectConcepts(protocol, ["/healthz", "localTarget", "optional", "active-local", "exact", "identity"]);
+    expectConcepts(protocol, ["/healthz", "profile", "instance", "buildId", "active-local/server.json", "exact", "identity"]);
   });
 
-  it("keeps the release smoke isolated from operator config and compatible with active-local health", async () => {
+  it("keeps the release smoke isolated from operator config and compatible with profile health", async () => {
     const smoke = await readText(join("scripts", "smoke-postbox.mjs"));
 
-    expect(smoke, "smoke must force active-local/config/machine-id writes into its temp directory").toContain("PI_POSTBOX_CONFIG_DIR");
+    expect(smoke, "smoke must force profile/config/machine-id writes into its temp directory").toContain("PI_POSTBOX_CONFIG_DIR");
     expect(smoke, "smoke should set PI_POSTBOX_CONFIG_DIR to its mkdtemp directory").toMatch(/PI_POSTBOX_CONFIG_DIR[\s\S]{0,120}tmp/);
     expect(smoke, "smoke must not mutate real operator Tailscale Serve state").toContain("--no-tailscale");
     expect(smoke, "smoke child environment must force Tailscale off").toMatch(/PI_POSTBOX_TAILSCALE[\s\S]{0,40}["']off["']/);
-    expectConcepts(smoke, ["localTarget", "instanceId", "role", "url"]);
+    expectConcepts(smoke, ["profile", "instanceId", "buildId", "url"]);
   });
 
   it("makes the release smoke exercise packaged Question Chat UI and privacy invariants", async () => {

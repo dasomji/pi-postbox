@@ -3,6 +3,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rm
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { defaultConfigPath } from "./config.js";
+import { resolveServerProfile, type ResolvedServerProfile } from "./serverProfile.js";
 
 export type AnswerNotificationState = "new" | "pending" | "delivered";
 export interface AnswerNotificationInbox {
@@ -24,8 +25,12 @@ export class FileAnswerNotificationInbox implements AnswerNotificationInbox {
   private readonly backupPath: string;
   private readonly lockPath: string;
 
-  constructor(env: NodeJS.ProcessEnv = process.env, private readonly lockTimeoutMs = 5_000) {
-    const directory = dirname(defaultConfigPath(env));
+  constructor(
+    env: NodeJS.ProcessEnv = process.env,
+    private readonly lockTimeoutMs = 5_000,
+    profile: ResolvedServerProfile = resolveServerProfile({ env })
+  ) {
+    const directory = dirname(defaultConfigPath(env, profile));
     this.path = join(directory, "answer-notification-inbox.json");
     this.backupPath = `${this.path}.backup`;
     this.lockPath = `${this.path}.lock`;

@@ -1,8 +1,8 @@
-import type { ActiveLocalDiagnostic, ActiveLocalRole } from "@pi-postbox/protocol";
+import type { ServerProfileIdentity, ServerProfileMetadataDiagnostic } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import type { ResolveActiveLocalTargetResult } from "./activeLocalTargetResolver.js";
-import { resolveActiveLocalTarget } from "./activeLocalTargetResolver.js";
+import type { ResolveServerTargetResult } from "./serverTargetResolver.js";
+import { resolveServerTarget } from "./serverTargetResolver.js";
 import { getPostboxAutostartStatus, type PostboxAutostartStatusSnapshot } from "./autostart.js";
 
 export type PostboxConnectionState = "connected" | "disconnected" | "unavailable";
@@ -16,6 +16,7 @@ export interface PostboxConnectionStatus {
 
 export interface PostboxStatusSnapshot {
   connection: PostboxConnectionStatus;
+  profile?: ServerProfileIdentity;
   remoteConfig?: string;
   openQuestionCount: number;
   autostart: PostboxAutostartStatusSnapshot;
@@ -30,7 +31,7 @@ export interface PostboxStatusSnapshot {
 
 export interface PostboxStatusTailscaleOptions {
   localUrl: string;
-  role?: ActiveLocalRole;
+  profile?: ServerProfileIdentity;
 }
 
 export interface PostboxStatusTailscaleSnapshot {
@@ -52,7 +53,7 @@ export interface CollectPostboxStatusOptions {
   client?: PostboxStatusClient;
   env?: NodeJS.ProcessEnv;
   unavailableRationale?: string;
-  resolveTarget?: (options: { env: NodeJS.ProcessEnv }) => Promise<ResolveActiveLocalTargetResult>;
+  resolveTarget?: (options: { env: NodeJS.ProcessEnv }) => Promise<ResolveServerTargetResult>;
 }
 
 export async function collectPostboxStatusSnapshot(options: CollectPostboxStatusOptions = {}): Promise<PostboxStatusSnapshot> {
@@ -73,11 +74,11 @@ export async function collectPostboxStatusSnapshot(options: CollectPostboxStatus
     });
   }
 
-  const resolveTarget = options.resolveTarget ?? ((input: { env: NodeJS.ProcessEnv }) => resolveActiveLocalTarget(input));
+  const resolveTarget = options.resolveTarget ?? ((input: { env: NodeJS.ProcessEnv }) => resolveServerTarget(input));
   const result = await resolveTarget({ env });
   const diagnostics = [
     ...(options.unavailableRationale ? [options.unavailableRationale] : []),
-    ...result.diagnostics.map(formatActiveLocalDiagnostic)
+    ...result.diagnostics.map(formatProfileDiagnostic)
   ].filter(Boolean);
 
   if (result.status === "selected") {
@@ -87,7 +88,8 @@ export async function collectPostboxStatusSnapshot(options: CollectPostboxStatus
       openQuestionCount: 0,
       autostart,
       diagnostics,
-      source: result.target.source
+      source: result.target.source,
+      profile: result.target.profile
     });
   }
 
@@ -110,6 +112,7 @@ export function createUrlStatusSnapshot(options: {
   autostart: PostboxAutostartStatusSnapshot;
   diagnostics?: string[];
   source?: string;
+  profile?: ServerProfileIdentity;
 }): PostboxStatusSnapshot {
   const classified = classifyStatusUrl(options.activeUrl, options.source);
   return {
@@ -119,6 +122,7 @@ export function createUrlStatusSnapshot(options: {
       localUrl: classified.localUrl,
       tailnetUrl: classified.tailnetUrl
     },
+    profile: options.profile,
     remoteConfig: classified.tailnetUrl ? `export PI_POSTBOX_URL=${classified.tailnetUrl}` : undefined,
     openQuestionCount: options.openQuestionCount,
     autostart: options.autostart,
@@ -128,13 +132,21 @@ export function createUrlStatusSnapshot(options: {
 
 export async function enrichStatusSnapshotFromLocalServer(
   snapshot: PostboxStatusSnapshot,
-  options: { role?: ActiveLocalRole; inspectTailscale?: PostboxStatusTailscaleInspector } = {}
+  options: { profile?: ServerProfileIdentity; inspectTailscale?: PostboxStatusTailscaleInspector } = {}
 ): Promise<PostboxStatusSnapshot> {
   const localUrl = snapshot.connection.localUrl;
   if (!localUrl) return snapshot;
 
+  if (options.profile?.kind === "development") {
+    return {
+      ...snapshot,
+      profile: options.profile,
+      tailscale: { state: "disabled", diagnostic: "Development profiles do not mutate Tailscale Serve automatically." }
+    };
+  }
+
   const inspectTailscale = options.inspectTailscale ?? inspectPostboxTailscaleStatus;
-  const tailscale = await inspectTailscale({ localUrl, role: options.role });
+  const tailscale = await inspectTailscale({ localUrl, profile: options.profile });
   const tailnetUrl = snapshot.connection.tailnetUrl ?? tailscale.tailnetUrl;
   const diagnostics = [...snapshot.diagnostics];
   if (tailscale.diagnostic) diagnostics.push(`tailscale:${tailscale.state}:${tailscale.diagnostic}`);
@@ -162,6 +174,7 @@ export function formatPostboxStatusSnapshot(snapshot: PostboxStatusSnapshot): st
   if (snapshot.connection.activeUrl) lines.push(`Active URL: ${snapshot.connection.activeUrl}`);
   if (snapshot.connection.localUrl) lines.push(`Local URL: ${snapshot.connection.localUrl}`);
   if (snapshot.connection.tailnetUrl) lines.push(`Tailnet URL: ${snapshot.connection.tailnetUrl}`);
+  if (snapshot.profile) lines.push(`Profile: ${snapshot.profile.id} (${snapshot.profile.kind})`);
   if (snapshot.remoteConfig) {
     lines.push("Remote config:");
     lines.push(snapshot.remoteConfig);
@@ -202,7 +215,7 @@ function safePendingCount(client: PostboxStatusClient): number {
 
 function classifyStatusUrl(url: string | undefined, source?: string): { localUrl?: string; tailnetUrl?: string } {
   if (!url) return {};
-  if (source === "active-local" || source === "configured-loopback" || isLoopbackUrl(url)) return { localUrl: url };
+  if (source === "profile-metadata" || source === "profile-config" || isLoopbackUrl(url)) return { localUrl: url };
   return { tailnetUrl: url };
 }
 
@@ -258,8 +271,8 @@ function isLoopbackUrl(input: string): boolean {
   }
 }
 
-function formatActiveLocalDiagnostic(diagnostic: ActiveLocalDiagnostic): string {
-  const parts = [diagnostic.source, diagnostic.role, diagnostic.code, diagnostic.field].filter(Boolean);
+function formatProfileDiagnostic(diagnostic: ServerProfileMetadataDiagnostic): string {
+  const parts = [diagnostic.source, diagnostic.code, diagnostic.field].filter(Boolean);
   return parts.join(":");
 }
 

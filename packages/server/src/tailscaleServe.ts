@@ -1,4 +1,4 @@
-import type { ActiveLocalRole } from "@pi-postbox/protocol";
+import type { ServerProfileIdentity } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 
@@ -13,14 +13,14 @@ export type TailscaleExec = (command: string, args: string[]) => Promise<Tailsca
 
 export interface PostboxTailscaleOptions {
   localUrl: string;
-  role: ActiveLocalRole;
+  profile: ServerProfileIdentity;
   exec?: TailscaleExec;
 }
 
 export interface PostboxTailscaleStatus {
   state: TailscaleServeState;
   localUrl: string;
-  role: ActiveLocalRole;
+  profile: ServerProfileIdentity;
   httpsPort?: number;
   tailnetUrl?: string;
   diagnostic?: string;
@@ -58,7 +58,7 @@ export async function exposePostboxWithTailscale(options: PostboxTailscaleOption
       return {
         state: "idempotent",
         localUrl: options.localUrl,
-        role: options.role,
+        profile: options.profile,
         httpsPort: target.port,
         tailnetUrl,
         diagnostic: "Tailscale Serve already points at this Postbox instance."
@@ -68,7 +68,7 @@ export async function exposePostboxWithTailscale(options: PostboxTailscaleOption
     return {
       state: "conflict",
       localUrl: options.localUrl,
-      role: options.role,
+      profile: options.profile,
       httpsPort: target.port,
       tailnetUrl,
       diagnostic: `Tailscale Serve conflict: HTTPS port ${target.port} already proxies to another target.`,
@@ -102,7 +102,7 @@ export async function exposePostboxWithTailscale(options: PostboxTailscaleOption
   return {
     state: "served",
     localUrl: options.localUrl,
-    role: options.role,
+    profile: options.profile,
     httpsPort: target.port,
     tailnetUrl: postServeHost ? formatTailnetUrl(postServeHost, target.port) : undefined,
     diagnostic: "Tailscale Serve is exposing Postbox to Tailnet devices."
@@ -128,7 +128,7 @@ export async function inspectPostboxTailscaleStatus(options: PostboxTailscaleOpt
     return {
       state: "unavailable",
       localUrl: options.localUrl,
-      role: options.role,
+      profile: options.profile,
       httpsPort: target.port,
       tailnetUrl,
       diagnostic: `Tailscale Serve has no mapping for HTTPS port ${target.port}.`,
@@ -140,7 +140,7 @@ export async function inspectPostboxTailscaleStatus(options: PostboxTailscaleOpt
     return {
       state: "served",
       localUrl: options.localUrl,
-      role: options.role,
+      profile: options.profile,
       httpsPort: target.port,
       tailnetUrl,
       diagnostic: "Tailscale Serve points at this Postbox instance."
@@ -150,7 +150,7 @@ export async function inspectPostboxTailscaleStatus(options: PostboxTailscaleOpt
   return {
     state: "conflict",
     localUrl: options.localUrl,
-    role: options.role,
+    profile: options.profile,
     httpsPort: target.port,
     tailnetUrl,
     diagnostic: `Tailscale Serve conflict: HTTPS port ${target.port} already proxies to another target.`,
@@ -277,7 +277,7 @@ function unavailable(
   return {
     state: "unavailable",
     localUrl: options.localUrl,
-    role: options.role,
+    profile: options.profile,
     httpsPort,
     diagnostic,
     remediation

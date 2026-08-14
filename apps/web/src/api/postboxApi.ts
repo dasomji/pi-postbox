@@ -1,5 +1,6 @@
 import {
   HealthResponseSchema,
+  PROTOCOL_VERSION,
   HistoryResponseSchema,
   PushConfigResponseSchema,
   StateSnapshotSchema,
@@ -27,7 +28,16 @@ import {
 export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch("/healthz");
   if (!response.ok) throw new Error(`Health check failed with ${response.status}`);
-  return HealthResponseSchema.parse(await response.json());
+  const body: unknown = await response.json();
+  if (
+    body && typeof body === "object" && "protocolVersion" in body
+    && (body as { protocolVersion?: unknown }).protocolVersion !== PROTOCOL_VERSION
+  ) {
+    throw new Error(
+      `Incompatible Pi Postbox server protocol: dashboard requires ${PROTOCOL_VERSION}, server reports ${String((body as { protocolVersion?: unknown }).protocolVersion)}.`
+    );
+  }
+  return HealthResponseSchema.parse(body);
 }
 
 export async function fetchSnapshot(): Promise<StateSnapshot> {

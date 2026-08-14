@@ -4,6 +4,7 @@
   import NotificationSubscriptionControl from "./NotificationSubscriptionControl.svelte";
   import PwaInstallButton from "./PwaInstallButton.svelte";
   import SidebarProject from "./SidebarProject.svelte";
+  import ServerEnvironmentBadge from "./ServerEnvironmentBadge.svelte";
 
   let { onNavigate }: { onNavigate?: () => void } = $props();
 
@@ -32,6 +33,7 @@
         Pi Postbox
       </button>
       <ConnectionBadge />
+      <ServerEnvironmentBadge />
     </div>
   </header>
 

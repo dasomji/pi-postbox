@@ -10,7 +10,7 @@ The owner-contract migration preserves expiry timestamps from databases written 
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /healthz` | Health/status check for wrappers, smoke tests, and operators. May include optional `localTarget` identity for active-local routing. |
+| `GET /healthz` | Health/status check and authoritative server profile identity for clients, wrappers, smoke tests, and operators. |
 | `GET /` | Built Svelte UI shell served by `pi-postbox-server`. |
 | `GET /api/state` | Current live-state snapshot: sessions plus pending ask request snapshots only. Terminal requests remain available through History. |
 | `GET /api/state/events` | Authoritative live-state SSE bootstrap. Sends one fresh pending-only `state` event on connection/reconnection, then snapshots after changes. |
@@ -53,11 +53,11 @@ Public Question Chat failures use the structured error codes `forbidden_origin`,
 
 Context-only commands are created only from the stored Question, all options, required non-blank `codebaseContext` and `problemContext`, bounded optional handoff details, owning session cwd, and optional recorded model. Browser-supplied interviewer context is ignored. A successful proposed answer is appended as an option with authoritative `provenance: "chat"`; proposal does not select or resolve the Question.
 
-## Health active-local identity
+## Health profile identity
 
-`/healthz` always reports basic service health and may include optional `localTarget` when the server has published active-local metadata. That identity contains `role`, `instanceId`, and normalized `url`.
+`/healthz` always reports `profile` and `buildId`. A listening server also reports its `instance`, containing the instance id and normalized loopback URL. Production uses the literal `production` profile; trusted source checkouts use `development:<checkout-id>`.
 
-Active-local metadata candidates require an exact identity match: the candidate role, instance id, and URL must match `/healthz.localTarget` exactly before the extension trusts the target. Missing or mismatched identity is treated as a health mismatch. This keeps stale or unsafe metadata from redirecting clients to an unrelated loopback server.
+The single profile-local `active-local/server.json` record requires an exact identity match: profile, instance id, URL, protocol version, and build id must match `/healthz` before the extension trusts the target. Missing or mismatched identity is a health mismatch. This keeps stale or unsafe metadata from redirecting clients to another server or profile.
 
 ## Extension WebSocket
 
@@ -164,13 +164,13 @@ Presence is derived by the server from WebSocket connection and heartbeat timing
 
 `ask_postbox` waits explicitly mark semantic state as blocked/waiting. Observed local `ask_user` calls also mark blocked. Herdr-compatible blocked events are best-effort; Postbox does not depend on Herdr.
 
-## Active-local client routing compatibility
+## Profile-scoped client routing compatibility
 
-Active-local routing has no broad discovery and performs no port scanning. Clients read only `active-local/dev.json` and `active-local/production.json` from the configured Postbox base, prefer dev over production while fresh and healthy, and use production fallback when dev is stale or unhealthy.
+Profile routing has no broad discovery and performs no port scanning. A client reads only its resolved profile's config and `active-local/server.json`; it never orders or falls back across profiles.
 
-Effective env-over-config precedence is preserved. A configured `PI_POSTBOX_URL` or configured Tailscale/hosted URL is a preferred Postbox server. The client verifies preferred-server health first; when healthy, the preferred target is authoritative for that registration. If the preferred server is unreachable or unavailable, clients may use local fallback through health-verified active-local metadata or package-local autostart. Remote URLs themselves are not local recovery candidates; metadata and autostart are the recovery paths. Missing or loopback config can use health-verified metadata; a configured loopback fallback is also health-verified.
+Effective env-over-config precedence is preserved. `PI_POSTBOX_URL` is an intentional explicit override and may identify a Tailscale or hosted server. Without it, health-verified profile metadata and package-local autostart are the local recovery paths. A global production loopback configuration is not visible to a checkout development profile.
 
-For active-local sessions, live retargeting may move a running client to a newly selected local target when safe. Sent asks and local fallback resolutions pin their origin until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching. A session that has registered with a fallback/autostarted server is sticky and remains attached until `/reload` or restart rather than polling back to a recovered preferred server mid-session.
+Running sessions may reconnect only within their resolved profile. Unresolved sent asks and local fallback resolutions pin their origin instance until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching. Another profile is never a retarget candidate.
 
 Package-local autostart is a client recovery behavior for `ask_postbox` and the user-only `/postbox` command. It can be disabled with `PI_POSTBOX_AUTOSTART=off`; `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` sets the wait time and defaults to 10 seconds (`10000` ms).
 

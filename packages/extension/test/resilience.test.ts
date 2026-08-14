@@ -88,14 +88,19 @@ function createClient(options: Partial<ConstructorParameters<typeof PostboxClien
 }
 
 function selectedTarget(url: string, role: "dev" | "production" = "dev", instanceId = `${role}-instance`) {
+  const profile = role === "dev"
+    ? { kind: "development" as const, id: "development:0123456789abcdef" as const }
+    : { kind: "production" as const, id: "production" as const };
   return {
     status: "selected" as const,
+    profile: {} as never,
     target: {
-      source: "active-local" as const,
+      source: "profile-metadata" as const,
       url,
-      role,
+      profile,
       instanceId,
-      activeLocalPollingEnabled: true
+      buildId: "test-build",
+      profilePollingEnabled: true
     },
     diagnostics: []
   };
@@ -324,7 +329,7 @@ describe("PostboxClient pending ask resilience", () => {
     const client = createClient({
       serverUrl: LOCAL_POSTBOX_URL,
       targetSource: "active-local",
-      targetRole: "production",
+      targetProfile: { kind: "production", id: "production" },
       inspectTailscale
     });
     client.start();
@@ -332,7 +337,10 @@ describe("PostboxClient pending ask resilience", () => {
 
     const snapshot = await client.getStatusSnapshot({ enabled: true, startedByThisSession: true });
 
-    expect(inspectTailscale).toHaveBeenCalledWith({ localUrl: LOCAL_POSTBOX_URL, role: "production" });
+    expect(inspectTailscale).toHaveBeenCalledWith({
+      localUrl: LOCAL_POSTBOX_URL,
+      profile: { kind: "production", id: "production" }
+    });
     expect(snapshot).toMatchObject({
       connection: {
         state: "connected",
@@ -501,7 +509,7 @@ describe("PostboxClient pending ask resilience", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 50
+      profilePollMs: 50
     } as never);
     client.start();
     const productionSocket = FakeSocket.instances[0];
@@ -553,8 +561,8 @@ describe("PostboxClient pending ask resilience", () => {
     const client = createClient({
       serverUrl: remoteUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
-      activeLocalPollingEnabled: false
+      profilePollMs: 25,
+      profilePollingEnabled: false
     } as never);
     client.start();
     const remoteSocket = FakeSocket.instances[0];

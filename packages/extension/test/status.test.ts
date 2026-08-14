@@ -1,4 +1,4 @@
-import { createHealthResponse } from "@pi-postbox/protocol";
+import { PROTOCOL_VERSION, createHealthResponse } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -268,10 +268,13 @@ async function startConnectedHarness(env: NodeJS.ProcessEnv): Promise<ReturnType
           createHealthResponse({
             startedAtMs: NOW_MS - 1_000,
             nowMs: NOW_MS,
-            localTarget: {
-              role: "dev",
+            profile: { kind: "production", id: "production" },
+            instance: {
+              profile: { kind: "production", id: "production" },
               instanceId: "11111111-1111-4111-8111-111111111111",
-              url: LOCAL_URL
+              url: LOCAL_URL,
+              protocolVersion: PROTOCOL_VERSION,
+              buildId: PROTOCOL_VERSION
             }
           })
         ),

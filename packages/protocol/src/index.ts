@@ -1,26 +1,8 @@
 export {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
-  ACTIVE_LOCAL_METADATA_VERSION,
-  ActiveLocalInstanceIdSchema,
-  ActiveLocalMetadataRecordSchema,
-  ActiveLocalRoleSchema,
-  ActiveLocalTargetIdentitySchema,
-  normalizeActiveLocalMetadataUrl,
-  parseActiveLocalMetadataRecord,
-  selectActiveLocalTarget
-} from "./activeLocal.js";
-export type {
-  ActiveLocalDiagnostic,
-  ActiveLocalMetadataRecord,
-  ActiveLocalRole,
-  ActiveLocalTargetIdentity,
-  NormalizeActiveLocalMetadataUrlResult,
-  ParseActiveLocalMetadataRecordOptions,
-  ParseActiveLocalMetadataRecordResult,
-  SelectActiveLocalTargetOptions,
-  SelectActiveLocalTargetResult
-} from "./activeLocal.js";
+  ServerInstanceIdSchema,
+  normalizeLoopbackUrl
+} from "./loopback.js";
+export type { NormalizeLoopbackUrlResult } from "./loopback.js";
 export {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
@@ -84,6 +66,20 @@ export {
   SERVICE_NAME
 } from "./health.js";
 export type { CreateHealthResponseOptions, HealthResponse } from "./health.js";
+export {
+  SERVER_PROFILE_METADATA_VERSION,
+  ServerInstanceIdentitySchema,
+  ServerProfileIdentitySchema,
+  ServerProfileMetadataRecordSchema,
+  parseServerProfileMetadataRecord
+} from "./serverProfile.js";
+export type {
+  ParseServerProfileMetadataRecordResult,
+  ServerInstanceIdentity,
+  ServerProfileIdentity,
+  ServerProfileMetadataDiagnostic,
+  ServerProfileMetadataRecord
+} from "./serverProfile.js";
 export { FeatureActionSchema, FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
 export type { FeatureAction, FeatureIdentity, RepositoryIdentity, WorktreeIdentity } from "./grouping.js";
 export {

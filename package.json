@@ -8,7 +8,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "tsc -b && npm run build -w @pi-postbox/web && node scripts/copy-web-to-server.mjs",
+    "build": "tsc -b && npm run build -w @pi-postbox/web && node scripts/copy-web-to-server.mjs && node scripts/prune-obsolete-build.mjs",
     "dev": "node scripts/dev.mjs",
     "typecheck": "tsc -b",
     "test": "vitest run",

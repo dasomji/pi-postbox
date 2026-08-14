@@ -5,11 +5,11 @@ import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
 import { ensurePostboxServerAutostarted, getPostboxAutostartFailureDiagnostic, postboxAutostartTimeoutMs } from "./autostart.js";
 import {
-  resolveActiveLocalTarget,
-  type ResolveActiveLocalTargetOptions,
-  type ResolveActiveLocalTargetResult,
-  type ResolvedActiveLocalTarget
-} from "./activeLocalTargetResolver.js";
+  resolveServerTarget,
+  type ResolveServerTargetOptions,
+  type ResolveServerTargetResult,
+  type ResolvedServerTarget
+} from "./serverTargetResolver.js";
 import { createSemanticStateController, installSemanticStateHandlers, type SemanticStateController } from "./lifecycle.js";
 import { getMachineIdentity } from "./machineIdentity.js";
 import { collectProjectMetadata } from "./projectMetadata.js";
@@ -18,6 +18,7 @@ import { askPostboxParameters, executeAskPostbox, formatAskResult, type AskPostb
 import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./status.js";
 import { PiQuestionChatRuntimeAdapter, QuestionChatRuntimeRegistry } from "./questionChatRuntime.js";
 import { FileAnswerNotificationInbox } from "./answerNotificationInbox.js";
+import { resolveServerProfile, type ResolvedServerProfile } from "./serverProfile.js";
 
 interface PiLikeApi {
   on(event: string, handler: (event: unknown, ctx: PiLikeContext) => unknown): void;
@@ -85,14 +86,14 @@ interface SessionUiScope {
 }
 
 export interface StartRegistrationOptions {
-  resolveOptions?: Omit<ResolveActiveLocalTargetOptions, "env">;
+  resolveOptions?: Omit<ResolveServerTargetOptions, "env">;
   supervisor?: {
     initialDelayMs?: number;
     maxDelayMs?: number;
   };
 }
 
-interface ActiveLocalSupervisor {
+interface ProfileSupervisor {
   stop(): void;
 }
 
@@ -117,7 +118,7 @@ let client: PostboxClient | undefined;
 let currentRegistration: SessionRegisterPayload | undefined;
 let semanticStateController: SemanticStateController | undefined;
 let activeUiScope: SessionUiScope | undefined;
-let activeLocalSupervisor: ActiveLocalSupervisor | undefined;
+let profileSupervisor: ProfileSupervisor | undefined;
 let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
 let unavailableRationale = "Pi Postbox is not connected.";
 const registrationWaiters = new Set<() => void>();
@@ -295,7 +296,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
 
   pi.on("session_start", (_event, ctx) => {
     activeUiScope?.deactivate();
-    stopActiveLocalSupervisor();
+    stopProfileSupervisor();
     activeUiScope = createSessionUiScope(ctx);
     const fallbackSessionIdentity = consumeReloadFallbackIdentity() ?? randomUUID();
     const options: StartRegistrationOptions = {};
@@ -315,7 +316,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     ).sessionId;
     const chatCleanup = reason === "reload" ? questionChats.suspendAll() : questionChats.cleanupAll(ownerSessionId);
     activeUiScope?.deactivate();
-    stopActiveLocalSupervisor();
+    stopProfileSupervisor();
     activeUiScope = undefined;
     activeSessionRegistrationContext = undefined;
     client?.stop();
@@ -354,17 +355,21 @@ export async function startRegistration(
   fallbackSessionIdentity?: string,
   options: StartRegistrationOptions = {}
 ): Promise<void> {
-  stopActiveLocalSupervisor();
-  const targetResult = await resolveActiveLocalTarget({ ...options.resolveOptions, env });
+  stopProfileSupervisor();
+  const targetResult = await resolveServerTarget({
+    ...options.resolveOptions,
+    cwd: options.resolveOptions?.cwd ?? ctx.cwd,
+    env
+  });
   if (!uiScope.isActive()) return;
   if (targetResult.status === "unavailable") {
     unavailableRationale = formatUnavailableRationale(targetResult);
     uiScope.setStatus("postbox", "Postbox unavailable");
-    startNoClientActiveLocalSupervisor(pi, ctx, env, uiScope, fallbackSessionIdentity, options);
+    startNoClientProfileSupervisor(pi, ctx, env, uiScope, fallbackSessionIdentity, options);
     return;
   }
 
-  await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.target, options);
+  await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.profile, targetResult.target, options);
 }
 
 async function registerResolvedTarget(
@@ -373,25 +378,26 @@ async function registerResolvedTarget(
   env: NodeJS.ProcessEnv,
   uiScope: SessionUiScope,
   fallbackSessionIdentity: string | undefined,
-  target: ResolvedActiveLocalTarget,
+  profile: ResolvedServerProfile,
+  target: ResolvedServerTarget,
   options: StartRegistrationOptions
 ): Promise<void> {
   unavailableRationale = "Pi Postbox is not connected.";
 
   try {
-    const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity);
+    const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity, profile);
     if (!uiScope.isActive()) return;
     currentRegistration = registration;
     client?.stop();
     client = new PostboxClient({
       serverUrl: target.url,
       targetSource: target.source,
-      targetRole: target.role,
+      targetProfile: target.profile,
       registration,
-      ...(target.activeLocalPollingEnabled
+      ...(target.profilePollingEnabled
         ? {
-            resolveTarget: createSessionStickyActiveLocalResolver(env, options, target),
-            activeLocalPollingEnabled: true
+            resolveTarget: createSessionStickyProfileResolver(env, ctx.cwd, options, target),
+            profilePollingEnabled: true
           }
         : {}),
       onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
@@ -404,7 +410,7 @@ async function registerResolvedTarget(
           `Postbox answer ready for “${notification.question}” (${notification.questionId}). Use get_answer.`
         ]);
       },
-      answerNotificationInbox: new FileAnswerNotificationInbox(env),
+      answerNotificationInbox: new FileAnswerNotificationInbox(env, undefined, profile),
       questionChats
     });
     client.start();
@@ -417,7 +423,7 @@ async function registerResolvedTarget(
   }
 }
 
-function startNoClientActiveLocalSupervisor(
+function startNoClientProfileSupervisor(
   pi: PiLikeApi,
   ctx: PiLikeContext,
   env: NodeJS.ProcessEnv,
@@ -425,7 +431,7 @@ function startNoClientActiveLocalSupervisor(
   fallbackSessionIdentity: string | undefined,
   options: StartRegistrationOptions
 ): void {
-  if (activeLocalSupervisor || client) return;
+  if (profileSupervisor || client) return;
 
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -436,8 +442,8 @@ function startNoClientActiveLocalSupervisor(
     stopped = true;
     if (timer) clearTimeout(timer);
     timer = undefined;
-    if (activeLocalSupervisor?.stop === stop) {
-      activeLocalSupervisor = undefined;
+    if (profileSupervisor?.stop === stop) {
+      profileSupervisor = undefined;
     }
   };
 
@@ -454,8 +460,9 @@ function startNoClientActiveLocalSupervisor(
       return;
     }
 
-    const targetResult = await resolveActiveLocalTarget({
+    const targetResult = await resolveServerTarget({
       ...options.resolveOptions,
+      cwd: options.resolveOptions?.cwd ?? ctx.cwd,
       ttlMs: options.resolveOptions?.ttlMs ?? AUTOSTART_RECOVERY_METADATA_TTL_MS,
       env
     });
@@ -474,46 +481,63 @@ function startNoClientActiveLocalSupervisor(
     }
 
     stop();
-    await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.target, options);
+    await registerResolvedTarget(
+      pi,
+      ctx,
+      env,
+      uiScope,
+      fallbackSessionIdentity,
+      targetResult.profile,
+      targetResult.target,
+      options
+    );
   };
 
-  activeLocalSupervisor = { stop };
+  profileSupervisor = { stop };
   schedule(nextDelayMs);
 }
 
-function stopActiveLocalSupervisor(): void {
-  activeLocalSupervisor?.stop();
-  activeLocalSupervisor = undefined;
+function stopProfileSupervisor(): void {
+  profileSupervisor?.stop();
+  profileSupervisor = undefined;
 }
 
-function createSessionStickyActiveLocalResolver(
+function createSessionStickyProfileResolver(
   env: NodeJS.ProcessEnv,
+  cwd: string | undefined,
   options: StartRegistrationOptions,
-  originalTarget: ResolvedActiveLocalTarget
-): () => Promise<ResolveActiveLocalTargetResult> {
+  originalTarget: ResolvedServerTarget
+): () => Promise<ResolveServerTargetResult> {
   return async () => {
-    const result = await resolveActiveLocalTarget({ ...options.resolveOptions, env, skipConfiguredRemote: true });
+    const result = await resolveServerTarget({
+      ...options.resolveOptions,
+      cwd: options.resolveOptions?.cwd ?? cwd,
+      env,
+      skipConfiguredUrl: true
+    });
     if (result.status !== "selected") return result;
     if (isSameSessionStickyLocalTarget(originalTarget, result.target)) return result;
 
     return {
       status: "unavailable",
+      profile: result.profile,
       diagnostics: [
         ...result.diagnostics,
         {
           code: "session-sticky-target-mismatch",
-          source: result.target.source,
-          role: result.target.role
+          source: result.target.source
         }
       ]
     };
   };
 }
 
-function isSameSessionStickyLocalTarget(original: ResolvedActiveLocalTarget, next: ResolvedActiveLocalTarget): boolean {
+function isSameSessionStickyLocalTarget(original: ResolvedServerTarget, next: ResolvedServerTarget): boolean {
   if (next.source !== original.source || next.url !== original.url) return false;
-  if (original.source === "active-local") {
-    return next.role === original.role && next.instanceId === original.instanceId;
+  if (original.source === "profile-metadata") {
+    return next.profile.kind === original.profile.kind
+      && next.profile.id === original.profile.id
+      && next.instanceId === original.instanceId;
   }
   return true;
 }
@@ -522,7 +546,11 @@ async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promi
   const context = activeSessionRegistrationContext;
   if (!context || !context.uiScope.isActive()) return false;
 
-  const targetResult = await resolveActiveLocalTarget({ ...context.options.resolveOptions, env });
+  const targetResult = await resolveServerTarget({
+    ...context.options.resolveOptions,
+    cwd: context.options.resolveOptions?.cwd ?? context.ctx.cwd,
+    env
+  });
   if (!context.uiScope.isActive()) return false;
   if (client && (await isCurrentClientConnected())) return true;
   if (client) {
@@ -538,13 +566,14 @@ async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promi
     return false;
   }
 
-  stopActiveLocalSupervisor();
+  stopProfileSupervisor();
   await registerResolvedTarget(
     context.pi,
     context.ctx,
     env,
     context.uiScope,
     context.fallbackSessionIdentity,
+    targetResult.profile,
     targetResult.target,
     context.options
   );
@@ -558,6 +587,7 @@ async function ensureRegistrationForMutatingCaller(env: NodeJS.ProcessEnv, signa
 
   let asyncAutostartFailure: string | undefined;
   const autostartResult = ensurePostboxServerAutostarted(env, {
+    profile: resolveServerProfile({ env, cwd: activeSessionRegistrationContext?.ctx.cwd }),
     onFailure: (diagnostic) => {
       asyncAutostartFailure = diagnostic;
     }
@@ -638,8 +668,8 @@ function waitForRegistration(
     timeout = setTimeout(() => {
       const failureDiagnostic = getAsyncAutostartFailure() ?? getPostboxAutostartFailureDiagnostic(env);
       unavailableRationale = failureDiagnostic
-        ? `Pi Postbox autostart failed before healthy active-local metadata was available. ${failureDiagnostic}`
-        : `Pi Postbox autostart timed out after ${timeoutMs}ms waiting for healthy active-local metadata. ${autostartDiagnostic}`;
+        ? `Pi Postbox autostart failed before healthy profile metadata was available. ${failureDiagnostic}`
+        : `Pi Postbox autostart timed out after ${timeoutMs}ms waiting for healthy profile metadata. ${autostartDiagnostic}`;
       settle("resolve");
     }, timeoutMs);
     timeout.unref?.();
@@ -655,19 +685,20 @@ export async function collectRegistrationPayload(
   pi: PiLikeApi,
   ctx: PiLikeContext,
   env: NodeJS.ProcessEnv = process.env,
-  fallbackSessionIdentity?: string
+  fallbackSessionIdentity?: string,
+  profile: ResolvedServerProfile = resolveServerProfile({ env, cwd: ctx.cwd })
 ): Promise<SessionRegisterPayload> {
   const cwd = ctx.cwd ?? process.cwd();
   const project = collectProjectMetadata(cwd);
   const session = collectSessionMetadata(pi, ctx, project.branch, project.worktreePath, fallbackSessionIdentity);
-  const machine = await getMachineIdentity(env);
+  const machine = await getMachineIdentity(env, profile);
   return { machine, project, session };
 }
 
-function formatUnavailableRationale(result: Extract<ResolveActiveLocalTargetResult, { status: "unavailable" }>): string {
+function formatUnavailableRationale(result: Extract<ResolveServerTargetResult, { status: "unavailable" }>): string {
   const codes = [...new Set(result.diagnostics.map((diagnostic) => diagnostic.code))];
   if (codes.length === 0) return "Pi Postbox is not connected.";
-  return `Pi Postbox is unavailable after active-local target resolution (${codes.join(", ")}).`;
+  return `Pi Postbox is unavailable after profile target resolution (${codes.join(", ")}).`;
 }
 
 function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
@@ -676,7 +707,7 @@ function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
     isActive: () => active,
     deactivate: () => {
       active = false;
-      stopActiveLocalSupervisor();
+      stopProfileSupervisor();
     },
     notify(message, level) {
       if (!active) return;

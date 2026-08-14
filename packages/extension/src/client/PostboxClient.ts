@@ -17,7 +17,7 @@ import {
   type ProposeAnswerPayload,
   type ProposeAnswerResult,
   type SemanticState,
-  type ActiveLocalRole,
+  type ServerProfileIdentity,
   type SessionRegisterPayload,
   type SessionShutdownReason
 } from "@pi-postbox/protocol";
@@ -40,7 +40,7 @@ import {
 } from "../questionChatRuntime.js";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
+import type { ResolveServerTargetResult } from "../serverTargetResolver.js";
 import {
   createUrlStatusSnapshot,
   enrichStatusSnapshotFromLocalServer,
@@ -68,13 +68,13 @@ export interface PostboxClientOptions {
   reconnectMaxMs?: number;
   reconnect?: boolean;
   askUnavailableAfterMs?: number;
-  resolveTarget?: () => Promise<ResolveActiveLocalTargetResult>;
-  activeLocalPollingEnabled?: boolean;
-  activeLocalPollMs?: number;
+  resolveTarget?: () => Promise<ResolveServerTargetResult>;
+  profilePollingEnabled?: boolean;
+  profilePollMs?: number;
   targetAffinityTimeoutMs?: number;
   proposalTimeoutMs?: number;
   targetSource?: string;
-  targetRole?: ActiveLocalRole;
+  targetProfile?: ServerProfileIdentity;
   inspectTailscale?: PostboxStatusTailscaleInspector;
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
@@ -166,7 +166,7 @@ interface PendingProposal {
 
 const DEFAULT_UNAVAILABLE_AFTER_MS = 30_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
-const DEFAULT_ACTIVE_LOCAL_POLL_MS = 5_000;
+const DEFAULT_PROFILE_POLL_MS = 5_000;
 const DEFAULT_TARGET_AFFINITY_TIMEOUT_MS = 30_000;
 const DEFAULT_PROPOSAL_TIMEOUT_MS = 10_000;
 
@@ -193,8 +193,8 @@ export class PostboxClient {
   private connectionState: PostboxConnectionState = "disconnected";
   private connectionDiagnostics: string[] = ["websocket:disconnected"];
   private currentTargetSource: string | undefined;
-  private currentTargetRole: ActiveLocalRole | undefined;
-  private activeLocalPollTimer: NodeJS.Timeout | undefined;
+  private currentTargetProfile: ServerProfileIdentity | undefined;
+  private profilePollTimer: NodeJS.Timeout | undefined;
   private deferredTargetUrl: string | undefined;
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
   private readonly questionChatSubscriptions = new Map<string, () => void>();
@@ -221,13 +221,13 @@ export class PostboxClient {
     this.currentSemanticState = options.registration.session.semanticState;
     this.currentServerUrl = options.serverUrl;
     this.currentTargetSource = options.targetSource;
-    this.currentTargetRole = options.targetRole;
+    this.currentTargetProfile = options.targetProfile;
   }
 
   start(): void {
     this.stopped = false;
     this.connect();
-    this.startActiveLocalPolling();
+    this.startProfilePolling();
   }
 
   stop(): void {
@@ -235,7 +235,7 @@ export class PostboxClient {
     this.connectionState = "disconnected";
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.activeLocalPollTimer) clearInterval(this.activeLocalPollTimer);
+    if (this.profilePollTimer) clearInterval(this.profilePollTimer);
     for (const [, pending] of this.pendingAsks) {
       this.rejectCreateReceipt(pending.payload.requestId, new Error("Postbox client stopped before the Question was persisted."));
       pending.cleanup();
@@ -466,11 +466,12 @@ export class PostboxClient {
       openQuestionCount: this.pendingAsks.size,
       autostart,
       diagnostics: this.connectionState === "connected" ? [] : this.connectionDiagnostics,
-      source: this.currentTargetSource
+      source: this.currentTargetSource,
+      profile: this.currentTargetProfile
     });
 
     return enrichStatusSnapshotFromLocalServer(snapshot, {
-      role: this.currentTargetRole,
+      profile: this.currentTargetProfile,
       inspectTailscale: this.options.inspectTailscale
     });
   }
@@ -1151,31 +1152,31 @@ export class PostboxClient {
     this.reconnectTimer.unref?.();
   }
 
-  private activeLocalPollingEnabled(): boolean {
-    return !!this.options.resolveTarget && this.options.activeLocalPollingEnabled !== false;
+  private profilePollingEnabled(): boolean {
+    return !!this.options.resolveTarget && this.options.profilePollingEnabled !== false;
   }
 
-  private startActiveLocalPolling(): void {
-    if (!this.activeLocalPollingEnabled()) return;
-    if (this.activeLocalPollTimer) clearInterval(this.activeLocalPollTimer);
-    const intervalMs = this.options.activeLocalPollMs ?? DEFAULT_ACTIVE_LOCAL_POLL_MS;
-    this.activeLocalPollTimer = setInterval(() => {
-      void this.checkForActiveLocalTargetChange();
+  private startProfilePolling(): void {
+    if (!this.profilePollingEnabled()) return;
+    if (this.profilePollTimer) clearInterval(this.profilePollTimer);
+    const intervalMs = this.options.profilePollMs ?? DEFAULT_PROFILE_POLL_MS;
+    this.profilePollTimer = setInterval(() => {
+      void this.checkForProfileTargetChange();
     }, intervalMs);
-    this.activeLocalPollTimer.unref?.();
+    this.profilePollTimer.unref?.();
   }
 
   private async reconnectToResolvedTarget(): Promise<void> {
     if (this.stopped) return;
-    await this.checkForActiveLocalTargetChange({ connectWhenDisconnected: false });
+    await this.checkForProfileTargetChange({ connectWhenDisconnected: false });
     if (this.stopped) return;
     this.connect();
   }
 
-  private async checkForActiveLocalTargetChange(options: { connectWhenDisconnected?: boolean } = {}): Promise<void> {
-    if (this.stopped || !this.activeLocalPollingEnabled() || !this.options.resolveTarget) return;
+  private async checkForProfileTargetChange(options: { connectWhenDisconnected?: boolean } = {}): Promise<void> {
+    if (this.stopped || !this.profilePollingEnabled() || !this.options.resolveTarget) return;
 
-    let result: ResolveActiveLocalTargetResult;
+    let result: ResolveServerTargetResult;
     try {
       result = await this.options.resolveTarget();
     } catch (error) {
@@ -1194,7 +1195,7 @@ export class PostboxClient {
 
     this.deferredTargetUrl = undefined;
     this.currentTargetSource = result.target.source;
-    this.currentTargetRole = result.target.role;
+    this.currentTargetProfile = result.target.profile;
     if (targetUrl === this.currentServerUrl) return;
     this.retargetNow(targetUrl, options.connectWhenDisconnected ?? true);
   }

@@ -211,5 +211,7 @@ internal fun healthResponse(): HealthResponse = HealthResponse(
     ok = true,
     service = "pi-postbox",
     version = "0.1.0",
-    protocolVersion = "1"
+    buildId = "0.1.0",
+    protocolVersion = "0.1.0",
+    profile = dev.pi.postbox.protocol.ServerProfileIdentity(kind = "production", id = "production")
 )

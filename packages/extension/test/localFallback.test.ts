@@ -76,14 +76,19 @@ function createClient(options: Partial<ConstructorParameters<typeof PostboxClien
 }
 
 function selectedTarget(url: string, role: "dev" | "production" = "dev", instanceId = `${role}-instance`) {
+  const profile = role === "dev"
+    ? { kind: "development" as const, id: "development:0123456789abcdef" as const }
+    : { kind: "production" as const, id: "production" as const };
   return {
     status: "selected" as const,
+    profile: {} as never,
     target: {
-      source: "active-local" as const,
+      source: "profile-metadata" as const,
       url,
-      role,
+      profile,
       instanceId,
-      activeLocalPollingEnabled: true
+      buildId: "test-build",
+      profilePollingEnabled: true
     },
     diagnostics: []
   };
@@ -239,7 +244,7 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       targetAffinityTimeoutMs: 5_000,
       onStatus: (status) => statuses.push(status),
       onLocalFallbackStatus: (status) => localStatuses.push(status?.message ?? "cleared")
@@ -320,7 +325,7 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       reconnectMs: 100,
       onStatus: (status) => statuses.push(status)
     } as never);
@@ -360,7 +365,7 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       reconnectMs: 100,
       targetAffinityTimeoutMs: 250
     } as never);
@@ -400,7 +405,7 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       reconnectMs: 100,
       targetAffinityTimeoutMs: 250,
       onStatus: (status) => statuses.push(status)

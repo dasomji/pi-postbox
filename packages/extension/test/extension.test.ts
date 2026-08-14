@@ -1,15 +1,17 @@
 import {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
-  createHealthResponse,
-  type ActiveLocalRole,
-  type ActiveLocalTargetIdentity
+  PROTOCOL_VERSION,
+  SERVER_PROFILE_METADATA_VERSION,
+  createHealthResponse
 } from "@pi-postbox/protocol";
 import { createServer, type Server } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveServerProfile } from "../src/serverProfile.js";
+
+type TestLocalRole = "dev" | "production";
+type TestLocalTarget = { role: TestLocalRole; instanceId: string; url: string };
 
 const postboxClientMock = vi.hoisted(() => ({
   options: [] as Array<{
@@ -518,7 +520,7 @@ describe("Pi Postbox extension registration", () => {
     expect(options?.resolveTarget).toEqual(expect.any(Function));
     await expect(options?.resolveTarget?.()).resolves.toMatchObject({
       status: "selected",
-      target: { url: server.url, activeLocalPollingEnabled: true, source: "active-local" }
+      target: { url: server.url, profilePollingEnabled: true, source: "profile-metadata" }
     });
   });
 
@@ -552,7 +554,7 @@ describe("Pi Postbox extension registration", () => {
     );
 
     const options = postboxClientMock.options.at(-1);
-    expect(options).toMatchObject({ serverUrl: originalUrl, activeLocalPollingEnabled: true });
+    expect(options).toMatchObject({ serverUrl: originalUrl, profilePollingEnabled: true });
     expect(options?.resolveTarget).toEqual(expect.any(Function));
 
     await writeMetadata(env, {
@@ -609,7 +611,7 @@ describe("Pi Postbox extension registration", () => {
 
     await expect(options?.resolveTarget?.()).resolves.toMatchObject({
       status: "selected",
-      target: { source: "active-local", url: localUrl, activeLocalPollingEnabled: true }
+      target: { source: "profile-metadata", url: localUrl, profilePollingEnabled: true }
     });
     expect(health.fetch).not.toHaveBeenCalledWith(new URL("https://postbox.tailnet.example:32187/healthz"), expect.any(Object));
     expect(health.fetch).toHaveBeenCalledWith(new URL("http://127.0.0.1:3500/healthz"), expect.any(Object));
@@ -641,18 +643,35 @@ describe("Pi Postbox extension registration", () => {
 
 async function writeMetadata(
   env: NodeJS.ProcessEnv,
-  record: { role: ActiveLocalRole; instanceId: string; url: string; updatedAt: string }
+  record: { role: TestLocalRole; instanceId: string; url: string; updatedAt: string }
 ): Promise<void> {
-  const activeLocalDir = join(dirname(env.PI_POSTBOX_CONFIG_PATH!), ACTIVE_LOCAL_METADATA_DIRECTORY);
-  await mkdir(activeLocalDir, { recursive: true });
+  const profile = resolveServerProfile({ env });
+  await mkdir(dirname(profile.metadataPath), { recursive: true });
   await writeFile(
-    join(activeLocalDir, ACTIVE_LOCAL_METADATA_FILENAMES[record.role]),
-    `${JSON.stringify({ version: 1, ...record }, null, 2)}\n`
+    profile.metadataPath,
+    `${JSON.stringify({
+      version: SERVER_PROFILE_METADATA_VERSION,
+      profile: { kind: profile.kind, id: profile.id },
+      instanceId: record.instanceId,
+      url: record.url,
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build",
+      updatedAt: record.updatedAt
+    }, null, 2)}\n`
   );
 }
 
-function healthResponse(localTarget: ActiveLocalTargetIdentity) {
-  return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget });
+function healthResponse(localTarget: TestLocalTarget) {
+  const profile = resolveServerProfile();
+  const profileIdentity = { kind: profile.kind, id: profile.id } as const;
+  const instance = {
+    profile: profileIdentity,
+    instanceId: localTarget.instanceId,
+    url: localTarget.url,
+    protocolVersion: PROTOCOL_VERSION,
+    buildId: "test-build"
+  };
+  return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, profile: profileIdentity, buildId: "test-build", instance });
 }
 
 function healthFetch(responses: Record<string, unknown | Error>) {
@@ -674,7 +693,7 @@ function healthFetch(responses: Record<string, unknown | Error>) {
   return { fetch };
 }
 
-async function startHealthServer(localTarget: Omit<ActiveLocalTargetIdentity, "url">): Promise<{ url: string }> {
+async function startHealthServer(localTarget: Omit<TestLocalTarget, "url">): Promise<{ url: string }> {
   const server = createServer((request, response) => {
     if (request.url !== "/healthz") {
       response.writeHead(404);
@@ -693,7 +712,7 @@ async function startHealthServer(localTarget: Omit<ActiveLocalTargetIdentity, "u
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify(
-        createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget: { ...localTarget, url } })
+        healthResponse({ ...localTarget, url })
       )
     );
   });

@@ -6,6 +6,7 @@
   import DevMockToggle from "./components/DevMockToggle.svelte";
   import MainView from "./components/MainView.svelte";
   import Sidebar from "./components/Sidebar.svelte";
+  import ServerEnvironmentBadge from "./components/ServerEnvironmentBadge.svelte";
 
   type ShortcutPlatform = "mac" | "other";
 
@@ -23,6 +24,12 @@
 
   let mobileNavigationOpen = $state(false);
   let mobileNavigationOpener = $state<HTMLElement | null>(null);
+
+  $effect(() => {
+    document.title = store.connection.status === "connected" && store.connection.health.profile.kind === "development"
+      ? "Pi Postbox — DEV"
+      : "Pi Postbox";
+  });
 
   function openMobileNavigation(event: MouseEvent): void {
     mobileNavigationOpener = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
@@ -108,6 +115,7 @@
     >
       Pi Postbox
     </button>
+    <ServerEnvironmentBadge />
   </div>
 
   <div

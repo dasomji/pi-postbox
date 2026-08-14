@@ -86,7 +86,7 @@ describe("dashboard live-state bootstrap", () => {
     const navigation = store.openRequestFromNotification("ask-notification");
 
     await vi.waitFor(() => expect(requestedUrls).toEqual(["/healthz"]));
-    expect(FakeEventSource.instances.map((source) => source.url)).toEqual(["/api/state/events"]);
+    await vi.waitFor(() => expect(FakeEventSource.instances.map((source) => source.url)).toEqual(["/api/state/events"]));
     expect(store.selection).toEqual({ kind: "none" });
 
     FakeEventSource.instances[0]?.emitState(SNAPSHOT);
@@ -117,6 +117,7 @@ describe("dashboard live-state bootstrap", () => {
 
     const stop = store.start();
     const failedNavigation = store.openRequestFromNotification("ask-notification");
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     FakeEventSource.instances[0]?.onerror?.(new Event("error"));
     await failedNavigation;
 

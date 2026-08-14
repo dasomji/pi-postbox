@@ -6,7 +6,8 @@ import {
   HealthResponseSchema,
   QuestionChatUnavailableResponseSchema,
   StateSnapshotSchema,
-  type ActiveLocalTargetIdentity
+  type ServerInstanceIdentity,
+  type ServerProfileIdentity
 } from "@pi-postbox/protocol";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 import { existsSync } from "node:fs";
@@ -35,6 +36,8 @@ export interface CreatePostboxAppOptions {
   startedAtMs?: number;
   now?: () => number;
   version?: string;
+  buildId?: string;
+  profile?: ServerProfileIdentity;
   uiDistDir?: string;
   databasePath?: string;
   staleAfterMs?: number;
@@ -55,13 +58,13 @@ export interface CreatePostboxAppOptions {
   pushSender?: PushSender;
   fcmSender?: FcmSender;
   fcmServiceAccountPath?: string;
-  localTarget?: () => ActiveLocalTargetIdentity | undefined;
+  serverInstance?: () => ServerInstanceIdentity | undefined;
   // Supplied by the CLI so POST /admin/shutdown (loopback-only) can stop the process.
   onShutdownRequest?: () => void;
 }
 
-export interface ActiveLocalTargetAwareApp extends FastifyInstance {
-  setActiveLocalTarget?: (identity: ActiveLocalTargetIdentity | undefined) => void;
+export interface ServerInstanceAwareApp extends FastifyInstance {
+  setServerInstance?: (identity: ServerInstanceIdentity | undefined) => void;
 }
 
 const embeddedShell = `<!doctype html>
@@ -100,10 +103,11 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
 
   const startedAtMs = options.startedAtMs ?? Date.now();
   const now = options.now ?? (() => Date.now());
-  let mutableLocalTarget: ActiveLocalTargetIdentity | undefined;
-  const getLocalTarget = options.localTarget ?? (() => mutableLocalTarget);
-  (app as ActiveLocalTargetAwareApp).setActiveLocalTarget = (identity) => {
-    mutableLocalTarget = identity;
+  const profile = options.profile ?? { kind: "production", id: "production" };
+  let mutableServerInstance: ServerInstanceIdentity | undefined;
+  const getServerInstance = options.serverInstance ?? (() => mutableServerInstance);
+  (app as ServerInstanceAwareApp).setServerInstance = (identity) => {
+    mutableServerInstance = identity;
   };
   const db = openPostboxDatabase(options.databasePath ?? defaultDatabasePath());
   let sessionStore: SessionStore;
@@ -238,7 +242,9 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
       startedAtMs,
       nowMs: now(),
       version: options.version,
-      localTarget: getLocalTarget()
+      buildId: options.buildId,
+      profile,
+      instance: getServerInstance()
     });
 
     return HealthResponseSchema.parse(response);

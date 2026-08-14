@@ -29,7 +29,7 @@ The server binds to `127.0.0.1`, treats port `32187` as the canonical default, s
 ## Workspace commands
 
 ```bash
-npm run dev       # full-stack dev with HMR: backend + Vite UI (see docs/deployment.md)
+npm run dev       # isolated checkout profile: backend + Vite/HMR (see docs/deployment.md)
 npm test          # Vitest integration/behavior tests
 npm run typecheck # TypeScript project references
 npm run build     # build server/protocol/extension and Vite UI
@@ -98,13 +98,14 @@ Supported server flags and environment variables:
 - `--port` or `PI_POSTBOX_PORT` (preferred default `32187`; falls back to another local port if already in use)
 - `--ui-dist-dir` or `PI_POSTBOX_UI_DIST_DIR` (default packaged `dist/public` beside the server CLI)
 - `--database` or `PI_POSTBOX_DATABASE` (default `~/.pi-postbox/postbox.sqlite`)
-- `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` (`production` by default; `npm run dev` launches the backend as `dev`)
+- `--profile` or `PI_POSTBOX_PROFILE` (`production` or `development:<checkout-id>`)
+- `--profile-state-dir` or `PI_POSTBOX_PROFILE_STATE_DIR` (isolated state root)
 - `--session-hide-offline-after-ms` or `PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS` (default 24 hours; offline sessions older than this leave state snapshots)
 - `--session-retention-ms` or `PI_POSTBOX_SESSION_RETENTION_MS` (default 30 days; offline sessions older than this are deleted unless ask requests still reference them)
 
 ## Extension configuration
 
-The extension reads `PI_POSTBOX_URL` or `~/.pi-postbox/config.json`:
+The extension resolves a server profile from the loaded package. Installed npm/git packages use `production` and `~/.pi-postbox/config.json`; a trusted checkout-local package uses `development:<checkout-id>` and `~/.local/state/pi-postbox/dev/<checkout-id>/config.json`. `PI_POSTBOX_URL` remains an explicit override:
 
 ```json
 {
@@ -114,7 +115,9 @@ The extension reads `PI_POSTBOX_URL` or `~/.pi-postbox/config.json`:
 
 Override config location with `PI_POSTBOX_CONFIG_PATH` or `PI_POSTBOX_CONFIG_DIR`. The extension creates a generated machine id on first startup and persists it in this config file. That generated machine id is stable across sessions; hostname and dashboard aliases provide human-readable names.
 
-For local self-healing, the server publishes active-local metadata under the Postbox config base: `PI_POSTBOX_CONFIG_DIR`, else the dirname of `PI_POSTBOX_CONFIG_PATH`, else `~/.pi-postbox`. Role files are `<base>/active-local/dev.json` and `<base>/active-local/production.json`. The extension uses effective env-over-config precedence: a configured `PI_POSTBOX_URL` or `serverUrl` is a preferred Postbox server that is tried first. If that preferred server is unreachable or unavailable, the extension may fall back to fresh health-verified active-local metadata or package-local autostart. Once the Pi Session registers with a fallback/autostarted server, the session remains attached to that server until `/reload` or restart rather than switching mid-session.
+For local self-healing, each profile publishes only `<profile-state-dir>/active-local/server.json`. The extension validates that record against `/healthz` profile, instance, URL, protocol, and build identity. It never orders or falls back across profiles. A global production loopback `serverUrl` is therefore invisible to a checkout development profile, while `PI_POSTBOX_URL` remains an intentional escape hatch.
+
+`npm run dev` derives the checkout identity, selects independent backend/UI ports, uses its own database and metadata, disables Tailscale mutation, and never stops production. Separate clones and worktrees can run concurrently. The dashboard title and persistent accessible `Development server` badge come from authoritative `/healthz` profile state.
 
 Package-local autostart is enabled by default for `ask_postbox` and the user-only `/postbox` dashboard command. Set `PI_POSTBOX_AUTOSTART=off` to disable spawning a bundled server. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the recovery wait; the default is 10 seconds (`10000` ms).
 

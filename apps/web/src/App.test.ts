@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import { BrowserLayoutState } from "./lib/layout.svelte";
 import { store } from "./lib/store.svelte";
+import { createHealthResponse } from "@pi-postbox/protocol";
 
 beforeEach(() => {
   localStorage.clear();
+  store.connection = { status: "checking" };
   vi.stubGlobal("matchMedia", vi.fn((media: string) => ({
     matches: false,
     media,
@@ -24,6 +26,38 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("authoritative server environment", () => {
+  it("shows a persistent accessible development identity on desktop and mobile and changes the title", () => {
+    store.connection = {
+      status: "connected",
+      health: createHealthResponse({
+        startedAtMs: 1_000,
+        nowMs: 2_000,
+        profile: { kind: "development", id: "development:0123456789abcdef" },
+        buildId: "dev-build"
+      })
+    };
+
+    render(App, { props: { layoutState: new BrowserLayoutState(), shortcutPlatform: "other" } });
+
+    expect(document.title).toBe("Pi Postbox — DEV");
+    expect(screen.getAllByText("Development server")).toHaveLength(2);
+    expect(screen.getAllByText("Development server")[0]?.getAttribute("title")).toContain("development:0123456789abcdef");
+  });
+
+  it("keeps production title and omits the development indicator", () => {
+    store.connection = {
+      status: "connected",
+      health: createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 })
+    };
+
+    render(App, { props: { layoutState: new BrowserLayoutState(), shortcutPlatform: "other" } });
+
+    expect(document.title).toBe("Pi Postbox");
+    expect(screen.queryByText("Development server")).toBeNull();
+  });
 });
 
 describe("desktop navigation layout", () => {

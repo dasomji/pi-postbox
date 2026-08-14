@@ -199,17 +199,27 @@ data class HealthResponse(
     val ok: Boolean,
     val service: String,
     val version: String,
+    val buildId: String,
     val protocolVersion: String,
+    val profile: ServerProfileIdentity,
     val uptimeMs: Long? = null,
     val timestamp: String? = null,
-    val localTarget: ActiveLocalTargetIdentity? = null
+    val instance: ServerInstanceIdentity? = null
 )
 
 @Serializable
-data class ActiveLocalTargetIdentity(
-    val role: String,
+data class ServerProfileIdentity(
+    val kind: String,
+    val id: String
+)
+
+@Serializable
+data class ServerInstanceIdentity(
+    val profile: ServerProfileIdentity,
     val instanceId: String,
-    val url: String
+    val url: String,
+    val protocolVersion: String,
+    val buildId: String
 )
 
 @Serializable
