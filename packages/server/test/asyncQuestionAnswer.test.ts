@@ -256,6 +256,42 @@ describe("one asynchronous Question-to-Answer loop", () => {
     });
   });
 
+  it("returns an immediate explicit lifecycle result for a cancelled Question", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
+    apps.push(app);
+    const socket = await connectOwner(app, "idle");
+    await createQuestion(socket);
+
+    const cancellation = await app.inject({
+      method: "POST",
+      url: "/api/requests/question-1/cancel",
+      payload: { note: "Obsolete", rationale: "The decision is no longer needed" }
+    });
+    expect(cancellation.statusCode).toBe(200);
+
+    const response = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "answer.get",
+      requestId: "read-cancelled",
+      payload: { questionId: "question-1" }
+    } satisfies ExtensionClientMessage));
+    const result = await response;
+    expect(result).toMatchObject({
+      type: "answer.result",
+      requestId: "read-cancelled",
+      payload: {
+        type: "lifecycle",
+        status: "cancelled",
+        question: { questionId: "question-1", revision: 1 },
+        note: "Obsolete",
+        rationale: "The decision is no longer needed"
+      }
+    });
+    expect(result.payload).not.toHaveProperty("answer");
+    expect(result.payload).not.toHaveProperty("answerId");
+    expect(result.payload).not.toHaveProperty("alreadyRead");
+  });
+
   it("atomically records the first get_answer reader and retains full content for later readers", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);

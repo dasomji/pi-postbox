@@ -20,7 +20,7 @@ const NonBlankLongTextSchema = z
 const RequestIdSchema = z.string().min(1).max(REQUEST_ID_MAX);
 
 export const AskModeSchema = z.enum(["single", "multi"]);
-export const AskStatusSchema = z.enum(["pending", "answered", "cancelled", "expired"]);
+export const AskStatusSchema = z.enum(["pending", "answered", "cancelled", "expired", "superseded"]);
 
 export const RichContextItemSchema = z.object({
   kind: z.enum(["text", "code", "diagram", "link"]).default("text"),
@@ -229,18 +229,20 @@ export const AskReceiptSchema = z.object({
   status: z.literal("pending")
 });
 
-export const AnswerReadResultSchema = z.object({
+const AnswerReadQuestionSchema = z.object({
+  questionId: RequestIdSchema,
+  revision: z.number().int().min(1),
+  mode: AskModeSchema,
+  question: AskQuestionSchema,
+  options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
+  context: HandoffContextSchema.optional(),
+  createdAt: z.string().datetime(),
+  resolvedAt: z.string().datetime()
+}).strict();
+
+const HumanAnswerReadResultSchema = z.object({
   alreadyRead: z.boolean(),
-  question: z.object({
-    questionId: RequestIdSchema,
-    revision: z.number().int().min(1),
-    mode: AskModeSchema,
-    question: AskQuestionSchema,
-    options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
-    context: HandoffContextSchema.optional(),
-    createdAt: z.string().datetime(),
-    resolvedAt: z.string().datetime()
-  }).strict(),
+  question: AnswerReadQuestionSchema,
   answer: z.object({
     answerId: z.string().min(1).max(200),
     questionRevision: z.number().int().min(1),
@@ -255,6 +257,23 @@ export const AnswerReadResultSchema = z.object({
     readAt: z.string().datetime()
   }).strict()
 }).strict();
+
+const LifecycleReadBaseSchema = z.object({
+  type: z.literal("lifecycle"),
+  question: AnswerReadQuestionSchema,
+  rationale: LongTextSchema.optional()
+}).strict();
+
+export const LifecycleResolutionReadResultSchema = z.discriminatedUnion("status", [
+  LifecycleReadBaseSchema.extend({ status: z.literal("cancelled"), note: LongTextSchema.optional() }).strict(),
+  LifecycleReadBaseSchema.extend({ status: z.literal("expired") }).strict(),
+  LifecycleReadBaseSchema.extend({ status: z.literal("superseded"), replacementQuestionId: RequestIdSchema }).strict()
+]);
+
+export const AnswerReadResultSchema = z.union([
+  HumanAnswerReadResultSchema,
+  LifecycleResolutionReadResultSchema
+]);
 
 export const AskRequestSnapshotSchema = z.object({
   requestId: RequestIdSchema,
@@ -279,7 +298,14 @@ export const AskRequestSnapshotSchema = z.object({
   repository: RepositoryIdentitySchema.optional(),
   worktree: WorktreeIdentitySchema.optional(),
   feature: FeatureIdentitySchema.optional()
-}).strict();
+}).strict().superRefine((snapshot, context) => {
+  if (snapshot.status === "answered" || (snapshot.answerId === undefined && snapshot.answerRead === undefined)) return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["answerId"],
+    message: "Lifecycle-only Questions cannot expose human Answer metadata"
+  });
+});
 
 export type AskMode = z.infer<typeof AskModeSchema>;
 export type AskStatus = z.infer<typeof AskStatusSchema>;

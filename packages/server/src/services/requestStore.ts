@@ -242,7 +242,7 @@ export class RequestStore {
     const question = this.db.prepare("SELECT owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(questionId) as any;
     if (!question) throw new RequestStoreError("request_not_found", "Question not found");
     this.db.prepare(`UPDATE answers SET first_reader_harness=?, first_reader_owner_id=?, first_read_at=?
-      WHERE question_id=? AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, new Date(this.now()).toISOString(), questionId);
+      WHERE question_id=? AND status='answered' AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, new Date(this.now()).toISOString(), questionId);
     return this.getAnswer(questionId, { harness: question.owner_harness, ownerId: question.owner_owner_id });
   }
 
@@ -495,7 +495,9 @@ export class RequestStore {
         updatedAt: row.updated_at,
         ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
         ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
-        ...(row.answer_id ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null } : {})
+        ...(row.status === "answered" && row.answer_id
+          ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null }
+          : {})
       }];
     });
   }
@@ -509,9 +511,9 @@ export class RequestStore {
     const scope = resolveQuestionDiscoveryScope(filters);
     applyQuestionDiscoveryScope(clauses, parameters, filters, scope);
     if (filters.status) { clauses.push("q.status = @status"); parameters.status = filters.status; }
-    else if (filters.readState === "read") clauses.push("a.first_reader_harness IS NOT NULL");
-    else if (filters.readState === "unread") clauses.push("a.answer_id IS NOT NULL", "a.first_reader_harness IS NULL");
-    else clauses.push("(q.status = 'pending' OR (a.answer_id IS NOT NULL AND a.first_reader_harness IS NULL))");
+    else if (filters.readState === "read") clauses.push("q.status = 'answered'", "a.status = 'answered'", "a.first_reader_harness IS NOT NULL");
+    else if (filters.readState === "unread") clauses.push("q.status = 'answered'", "a.status = 'answered'", "a.first_reader_harness IS NULL");
+    else clauses.push("(q.status = 'pending' OR (q.status = 'answered' AND a.status = 'answered' AND a.first_reader_harness IS NULL))");
     const rows = this.db.prepare(`SELECT q.question_id, q.status, a.answer_id, a.first_reader_harness
       FROM questions q
       LEFT JOIN answers a ON a.question_id = q.question_id
@@ -524,7 +526,9 @@ export class RequestStore {
     return rows.map((row) => ({
       questionId: row.question_id,
       status: row.status,
-      ...(row.answer_id ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null } : {})
+      ...(row.status === "answered" && row.answer_id
+        ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null }
+        : {})
     }));
   }
 
@@ -798,7 +802,8 @@ export class RequestStore {
   pendingOwnerNotifications(owner: { harness: string; ownerId: string }): AnswerAvailable[] {
     const rows = this.db.prepare(`SELECT a.answer_id, q.question_id, q.question_json, q.owner_harness, q.owner_owner_id
       FROM answers a JOIN questions q ON q.question_id = a.question_id
-      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND a.owner_notification_delivered_at IS NULL AND a.first_reader_harness IS NULL
+      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND a.status = 'answered'
+        AND a.owner_notification_delivered_at IS NULL AND a.first_reader_harness IS NULL
       ORDER BY a.created_at ASC`).all(owner.harness, owner.ownerId) as Array<{
         answer_id: string; question_id: string; question_json: string; owner_harness: string; owner_owner_id: string
       }>;
@@ -840,36 +845,53 @@ export class RequestStore {
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
       const question = this.db.prepare(`SELECT question_id, revision, mode, question_json, options_json, context_json,
-          owner_harness, owner_owner_id, created_at, resolved_at
+          owner_harness, owner_owner_id, status, replacement_question_id, created_at, resolved_at
         FROM questions WHERE question_id = ?`).get(questionId) as {
           question_id: string; revision: number; mode: "single" | "multi";
           question_json: string; options_json: string; context_json: string | null; owner_harness: string; owner_owner_id: string;
-          created_at: string; resolved_at: string | null
+          status: AskStatus; replacement_question_id: string | null; created_at: string; resolved_at: string | null
         } | undefined;
       if (!question) throw new RequestStoreError("request_not_found", "Question not found");
       if (question.owner_harness !== reader.harness || question.owner_owner_id !== reader.ownerId) {
         throw new RequestStoreError("wrong_owner", "Reader does not own this Question");
       }
       const answer = this.db.prepare(`SELECT * FROM answers WHERE question_id = ? ORDER BY question_revision DESC, created_at DESC LIMIT 1`).get(questionId) as {
-        answer_id: string; question_revision: number; status: "answered"; selected_values_json: string; note: string | null; rationale: string | null;
+        answer_id: string; question_revision: number; status: AskStatus; selected_values_json: string; note: string | null; rationale: string | null;
         first_reader_harness: string | null; first_reader_owner_id: string | null; first_read_at: string | null; created_at: string
       } | undefined;
-      if (!answer) throw new RequestStoreError("answer_not_found", "Answer not found");
+      const questionResult = {
+        questionId: question.question_id, revision: question.revision, mode: question.mode,
+        question: JSON.parse(question.question_json), options: JSON.parse(question.options_json),
+        ...(question.context_json ? { context: JSON.parse(question.context_json) } : {}),
+        createdAt: question.created_at, resolvedAt: question.resolved_at
+      };
+      if (question.status !== "answered") {
+        if (question.status === "pending") throw new RequestStoreError("answer_not_found", "Answer not found");
+        if (!question.resolved_at) throw new RequestStoreError("resolution_invalid", "Terminal Question has no resolution timestamp");
+        if (question.status === "superseded" && !question.replacement_question_id) {
+          throw new RequestStoreError("resolution_invalid", "Superseded Question has no replacement");
+        }
+        output = {
+          type: "lifecycle",
+          status: question.status,
+          question: questionResult,
+          ...(answer?.note ? { note: answer.note } : {}),
+          ...(answer?.rationale ? { rationale: answer.rationale } : {}),
+          ...(question.status === "superseded" ? { replacementQuestionId: question.replacement_question_id } : {})
+        };
+        return;
+      }
+      if (!answer || answer.status !== "answered") throw new RequestStoreError("answer_not_found", "Answer not found");
       const alreadyRead = answer.first_reader_harness !== null;
       const readAt = answer.first_read_at ?? new Date(this.now()).toISOString();
       if (!alreadyRead) this.db.prepare(`UPDATE answers SET first_reader_harness = ?, first_reader_owner_id = ?, first_read_at = ?
-        WHERE answer_id = ? AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, readAt, answer.answer_id);
+        WHERE answer_id = ? AND status = 'answered' AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, readAt, answer.answer_id);
       const firstReader = alreadyRead
         ? { harness: answer.first_reader_harness!, ownerId: answer.first_reader_owner_id! }
         : reader;
       output = {
         alreadyRead,
-        question: {
-          questionId: question.question_id, revision: question.revision, mode: question.mode,
-          question: JSON.parse(question.question_json), options: JSON.parse(question.options_json),
-          ...(question.context_json ? { context: JSON.parse(question.context_json) } : {}),
-          createdAt: question.created_at, resolvedAt: question.resolved_at
-        },
+        question: questionResult,
         answer: {
           answerId: answer.answer_id,
           questionRevision: answer.question_revision,
@@ -1077,8 +1099,9 @@ export class RequestStore {
       expiresAt: row.expires_at ?? undefined,
       resolvedAt: row.resolved_at ?? undefined,
       result
-      ,answerId: row.answer_id ?? undefined
-      ,answerRead: row.answer_id ? row.first_reader_harness !== null : undefined
+      ,...(row.status === "answered" && row.answer_id
+        ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null }
+        : {})
       ,parentQuestionId: row.parent_question_id ?? undefined
       ,repository: grouping?.repository_id ? { repositoryId: grouping.repository_id, remote: grouping.remote ?? undefined,
         machineId: grouping.machine_id ?? undefined, commonDirectory: grouping.common_directory ?? undefined } : undefined
@@ -1106,7 +1129,8 @@ export class RequestStore {
 
   private nextUnreadQuestionId(owner: { harness: string; ownerId: string }): string | undefined {
     const row = this.db.prepare(`SELECT q.question_id FROM questions q JOIN answers a ON a.question_id = q.question_id
-      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND a.first_reader_harness IS NULL
+      WHERE q.owner_harness = ? AND q.owner_owner_id = ? AND q.status = 'answered' AND a.status = 'answered'
+        AND a.first_reader_harness IS NULL
       ORDER BY EXISTS (
         WITH RECURSIVE descendants(question_id) AS (
           SELECT question_id FROM questions WHERE parent_question_id = q.question_id

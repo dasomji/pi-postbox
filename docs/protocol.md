@@ -14,7 +14,7 @@ The owner-contract migration preserves expiry timestamps from databases written 
 | `GET /` | Built Svelte UI shell served by `pi-postbox-server`. |
 | `GET /api/state` | Current live-state snapshot: sessions plus pending ask request snapshots only. Terminal requests remain available through History. |
 | `GET /api/state/events` | Authoritative live-state SSE bootstrap. Sends one fresh pending-only `state` event on connection/reconnection, then snapshots after changes. |
-| `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired`. |
+| `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired|superseded`. |
 | `POST /api/requests/:requestId/answer` | Browser/user answer action. First pending answer wins. |
 | `POST /api/requests/:requestId/cancel` | Browser/user cancel action. |
 | `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned exact fork for Question Chat. Source-path/leaf failures disclose typed context-only interviewer availability. |
@@ -127,6 +127,31 @@ Browser snapshots are extension-backed. A fresh browser sees `extension_offline`
 6. Extension receives `ask.resolved` and returns a concise result to the coding agent.
 
 Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.
+
+### Human Answers and lifecycle-only resolutions
+
+`answerId` and `answerRead` are evidence of a human Answer and appear in complete or compact Question details only when `status` is `answered`. Cancelled, expired, and superseded Questions may use internal lifecycle records, but those records are never exposed as Answers.
+
+`get_answer` retains its existing Answer result for `answered` Questions. For any lifecycle-only terminal Question it returns immediately with an explicit result and no Answer/read fields:
+
+```json
+{
+  "type": "lifecycle",
+  "status": "superseded",
+  "question": {
+    "questionId": "question-old",
+    "revision": 2,
+    "mode": "single",
+    "question": { "prompt": "Which path?" },
+    "options": [{ "value": "next", "label": "Use the replacement" }],
+    "createdAt": "2026-08-15T12:00:00.000Z",
+    "resolvedAt": "2026-08-15T12:01:00.000Z"
+  },
+  "replacementQuestionId": "question-new"
+}
+```
+
+Cancelled results may additionally include `note` and `rationale`; expired results may include `rationale`. Superseded results require `replacementQuestionId`.
 
 ## Question update concurrency
 
