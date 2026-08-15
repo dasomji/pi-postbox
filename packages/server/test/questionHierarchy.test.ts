@@ -68,11 +68,38 @@ describe("Question hierarchy transaction", () => {
     db.close();
   });
 
-  it("replays accepted batch items idempotently at hierarchy limits and rejects batch-local parents in single mode", () => {
+  it("reports created versus idempotent dispositions and current revisions for caller-provided IDs", () => {
     const { db, store } = setup();
     const drafts = [question("root"), ...Array.from({ length: 5 }, (_, index) => question(`child-${index}`, { localRef: "root" }))];
-    expect(store.createBatch("session", drafts).status).toBe("created");
-    expect(store.createBatch("session", drafts)).toMatchObject({ status: "created", items: drafts.map((draft) => ({ localRef: draft.localRef, status: "created" })) });
+    expect(store.createBatch("session", drafts)).toMatchObject({
+      status: "created",
+      items: drafts.map((draft) => ({
+        localRef: draft.localRef,
+        status: "created",
+        questionId: draft.requestId,
+        revision: 1,
+        disposition: "created"
+      }))
+    });
+    store.updateQuestion("question-root", { harness: "pi", ownerId: "agent" }, {
+      action: "revise",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1,
+      question: { prompt: "Resolve the revised root?" }
+    });
+    expect(store.createBatch("session", drafts)).toMatchObject({
+      status: "created",
+      items: [
+        { localRef: "root", status: "created", questionId: "question-root", revision: 2, disposition: "idempotent" },
+        ...drafts.slice(1).map((draft) => ({
+          localRef: draft.localRef,
+          status: "created",
+          questionId: draft.requestId,
+          revision: 1,
+          disposition: "idempotent"
+        }))
+      ]
+    });
     expect(db.prepare("SELECT COUNT(*) AS count FROM questions").get()).toEqual({ count: 6 });
     expect(() => store.createOne("session", question("single-local", { localRef: "root" })))
       .toThrowError(expect.objectContaining({ code: "invalid_parent_reference" }));

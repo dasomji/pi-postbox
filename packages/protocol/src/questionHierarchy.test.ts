@@ -39,10 +39,14 @@ describe("ordered Question batch protocol", () => {
     expect(protocol.AskBatchReceiptSchema.safeParse({
       status: "partial",
       items: [
-        { localRef: "root", status: "created", questionId: "question-root", revision: 1 },
+        { localRef: "root", status: "created", questionId: "question-root", revision: 1, disposition: "created" },
         { localRef: "child", status: "rejected", reason: { code: "forward_parent_reference", message: "Parent must precede child." } }
       ]
     }).success).toBe(true);
+    expect(protocol.AskBatchReceiptSchema.safeParse({
+      status: "created",
+      items: [{ localRef: "root", status: "created", questionId: "question-root", revision: 1 }]
+    }).success).toBe(false);
     expect(protocol.AskAnswerEventSchema).toBeDefined();
     expect(protocol.AskAnswerEventSchema.safeParse({ questionId: "question-root", affectedDescendantIds: ["question-child", "question-grandchild"] }).success).toBe(true);
 

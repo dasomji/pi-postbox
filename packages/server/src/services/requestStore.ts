@@ -362,7 +362,13 @@ export class RequestStore {
         const existing = this.get(draft.requestId);
         if (existing) {
           localIds.set(draft.localRef, existing.requestId);
-          items.push({ localRef: draft.localRef, status: "created", questionId: existing.requestId, revision: 1 });
+          items.push({
+            localRef: draft.localRef,
+            status: "created",
+            questionId: existing.requestId,
+            revision: existing.revision,
+            disposition: "idempotent"
+          });
           continue;
         }
         if (draft.parent && "localRef" in draft.parent) {
@@ -378,7 +384,13 @@ export class RequestStore {
           const { localRef: _localRef, parent: _parent, ...createDraft } = draft;
           const request = this.create({ ...createDraft, sessionId, parentQuestionId });
           localIds.set(draft.localRef, request.requestId);
-          items.push({ localRef: draft.localRef, status: "created", questionId: request.requestId, revision: 1 });
+          items.push({
+            localRef: draft.localRef,
+            status: "created",
+            questionId: request.requestId,
+            revision: request.revision,
+            disposition: "created"
+          });
         } catch (error) {
           const code = error instanceof RequestStoreError && ["parent_not_found", "child_limit_reached", "depth_limit_reached"].includes(error.code)
             ? error.code as "parent_not_found" | "child_limit_reached" | "depth_limit_reached" : "invalid_draft";

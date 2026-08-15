@@ -164,7 +164,17 @@ export async function executeAskPostbox(
 }
 
 export function formatAskResult(result: AskReceipt | AskResult | AskBatchReceipt): string {
-  if ("items" in result) return `Postbox processed ${result.items.length} Questions (${result.status}).`;
+  if ("items" in result) {
+    const items = result.items.map((item) => item.status === "created"
+      ? {
+          localRef: item.localRef,
+          questionId: item.questionId,
+          revision: item.revision,
+          disposition: item.disposition
+        }
+      : { localRef: item.localRef, disposition: "rejected", reason: item.reason.code });
+    return `Postbox batch ${result.status}: ${JSON.stringify(items)}`;
+  }
   if ("questionId" in result) return `Postbox persisted ${result.questionId} (revision ${result.revision}); the Answer will arrive asynchronously. Use get_answer with this questionId after notification.`;
   if (result.status === "answered") return `Postbox answered ${result.requestId}: ${result.selectedValues.join(", ")}.`;
   return `Postbox ${result.status} ${result.requestId}.${result.rationale ? ` ${result.rationale}` : ""}`;

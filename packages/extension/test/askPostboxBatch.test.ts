@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { askPostboxParameters, executeAskPostbox } from "../src/tools/askPostbox.js";
+import { askPostboxParameters, executeAskPostbox, formatAskResult } from "../src/tools/askPostbox.js";
 
 const draft = {
   localRef: "root",
@@ -32,7 +32,7 @@ describe("ask_postbox ordered batches", () => {
     const receipt = {
       status: "partial",
       items: [
-        { localRef: "root", status: "created", questionId: "question-root", revision: 1 },
+        { localRef: "root", status: "created", questionId: "question-root", revision: 1, disposition: "created" },
         { localRef: "child", status: "rejected", reason: { code: "child_limit_reached", message: "Parent already has five children." } }
       ]
     };
@@ -41,6 +41,47 @@ describe("ask_postbox ordered batches", () => {
     await expect((executeAskPostbox as any)(input, { createAskBatch }, "session-1")).resolves.toEqual(receipt);
     expect(createAskBatch).toHaveBeenCalledOnce();
     expect(createAskBatch.mock.calls[0]?.[0].questions.map((item: any) => item.localRef)).toEqual(["root", "child"]);
+    expect(JSON.parse(formatAskResult(receipt as any).replace(/^Postbox batch partial: /, ""))).toEqual([
+      { localRef: "root", questionId: "question-root", revision: 1, disposition: "created" },
+      { localRef: "child", disposition: "rejected", reason: "child_limit_reached" }
+    ]);
+  });
+
+  it("returns compact ordered mappings for generated and caller-provided Question IDs", async () => {
+    const { requestId: _requestId, ...withoutRequestId } = draft;
+    const createAskBatch = vi.fn(async (payload: { questions: Array<{ localRef: string; requestId: string }> }) => ({
+      status: "created" as const,
+      items: payload.questions.map((question) => ({
+        localRef: question.localRef,
+        status: "created" as const,
+        questionId: question.requestId,
+        revision: 1,
+        disposition: "created" as const
+      }))
+    }));
+
+    const result = await (executeAskPostbox as any)({
+      mode: "batch",
+      questions: [
+        { ...withoutRequestId, localRef: "generated" },
+        { ...draft, localRef: "provided", requestId: "caller-question-id" }
+      ]
+    }, { createAskBatch }, "session-1");
+    const generatedId = result.items[0].questionId as string;
+    expect(generatedId).toMatch(/^ask_[0-9a-f-]{36}$/);
+    expect(result.items.map((item: { localRef: string; questionId: string }) => [item.localRef, item.questionId])).toEqual([
+      ["generated", generatedId],
+      ["provided", "caller-question-id"]
+    ]);
+
+    const prefix = "Postbox batch created: ";
+    const formatted = formatAskResult(result);
+    expect(formatted.startsWith(prefix)).toBe(true);
+    expect(JSON.parse(formatted.slice(prefix.length))).toEqual([
+      { localRef: "generated", questionId: generatedId, revision: 1, disposition: "created" },
+      { localRef: "provided", questionId: "caller-question-id", revision: 1, disposition: "created" }
+    ]);
+    expect(formatted.length).toBeLessThan(400);
   });
 
   it("maps a single existing parent Question ID and fork provenance into the create payload", async () => {

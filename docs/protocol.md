@@ -128,6 +128,16 @@ Browser snapshots are extension-backed. A fresh browser sees `extension_offline`
 
 Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.
 
+### Ordered batch creation receipts
+
+An `ask_postbox` batch receipt preserves input order. Every accepted item reports `localRef`, persisted `questionId`, current `revision`, and `disposition: "created" | "idempotent"`; rejected items report their `localRef` and typed reason. The top-level `status` remains `created`, `partial`, or `rejected`.
+
+The tool's text result is a compact JSON projection so generated IDs are immediately reusable without a discovery query:
+
+```text
+Postbox batch created: [{"localRef":"root","questionId":"ask_…","revision":1,"disposition":"created"}]
+```
+
 ### Human Answers and lifecycle-only resolutions
 
 `answerId` and `answerRead` are evidence of a human Answer and appear in complete or compact Question details only when `status` is `answered`. Cancelled, expired, and superseded Questions may use internal lifecycle records, but those records are never exposed as Answers.

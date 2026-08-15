@@ -148,7 +148,14 @@ export const AskPostboxInputSchema = z.union([AskSingleInputSchema, AskBatchInpu
 
 export const AskBatchRejectionCodeSchema = z.enum(["forward_parent_reference", "parent_not_found", "child_limit_reached", "depth_limit_reached", "batch_aborted", "invalid_draft"]);
 const AskBatchItemReceiptSchema = z.discriminatedUnion("status", [
-  z.object({ localRef: RequestIdSchema, status: z.literal("created"), questionId: RequestIdSchema, revision: z.number().int().min(1), nudge: z.string().optional() }).strict(),
+  z.object({
+    localRef: RequestIdSchema,
+    status: z.literal("created"),
+    questionId: RequestIdSchema,
+    revision: z.number().int().min(1),
+    disposition: z.enum(["created", "idempotent"]),
+    nudge: z.string().optional()
+  }).strict(),
   z.object({ localRef: RequestIdSchema, status: z.literal("rejected"), reason: z.object({ code: AskBatchRejectionCodeSchema, message: ShortTextSchema }).strict() }).strict()
 ]);
 export const AskBatchReceiptSchema = z.object({ status: z.enum(["created", "partial", "rejected"]), items: z.array(AskBatchItemReceiptSchema).min(1) }).strict();
