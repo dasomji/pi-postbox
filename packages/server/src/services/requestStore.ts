@@ -468,6 +468,7 @@ export class RequestStore {
         status: row.status,
         owner: { harness: row.owner_harness, ownerId: row.owner_owner_id },
         creator: { harness: row.creator_harness, ownerId: row.creator_owner_id },
+        ...(row.parent_question_id ? { parentQuestionId: row.parent_question_id } : {}),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         ...(row.expires_at ? { expiresAt: row.expires_at } : {}),

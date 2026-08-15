@@ -172,6 +172,55 @@ describe("token-cheap Question discovery", () => {
     expect((details[30].question as { context: string }).context).toHaveLength(largeContext.length);
   });
 
+  it("round-trips batch hierarchy changes through complete Question details", () => {
+    const { requests } = setup();
+    const draft = (localRef: string, parent?: { localRef: string }) => ({
+      localRef,
+      requestId: `hierarchy-${localRef}`,
+      ...(parent ? { parent } : {}),
+      mode: "single" as const,
+      question: { prompt: `Resolve ${localRef}?` },
+      options: [{ value: "yes", label: "Yes" }],
+      context: { codebaseContext: "Postbox", problemContext: "Preserve the current hierarchy." }
+    });
+    expect(requests.createBatch("current", [
+      draft("root"),
+      draft("child", { localRef: "root" }),
+      draft("grandchild", { localRef: "child" }),
+      draft("alternate")
+    ]).status).toBe("created");
+
+    const initial = requests.getQuestions({
+      questionIds: ["hierarchy-root", "hierarchy-child", "hierarchy-grandchild"]
+    });
+    expect(initial[0]).not.toHaveProperty("parentQuestionId");
+    expect(initial[1]).toMatchObject({ parentQuestionId: "hierarchy-root" });
+    expect(initial[2]).toMatchObject({ parentQuestionId: "hierarchy-child" });
+
+    const reparented = requests.updateQuestion("hierarchy-child", OWNER, {
+      action: "reparent",
+      expectedRevision: 1,
+      parentQuestionId: "hierarchy-alternate"
+    });
+    expect(reparented).toMatchObject({ revision: 2, parentQuestionId: "hierarchy-alternate" });
+    expect(requests.getQuestions({ questionIds: ["hierarchy-child"] })[0]).toMatchObject({
+      revision: 2,
+      parentQuestionId: "hierarchy-alternate"
+    });
+
+    const detached = requests.updateQuestion("hierarchy-child", OWNER, {
+      action: "reparent",
+      expectedRevision: 2,
+      parentQuestionId: null
+    });
+    const detachedResult = JSON.parse(JSON.stringify(detached)) as Record<string, unknown>;
+    expect(detachedResult).toMatchObject({ revision: 3 });
+    expect(detachedResult).not.toHaveProperty("parentQuestionId");
+    const detachedDetail = requests.getQuestions({ questionIds: ["hierarchy-child"] })[0];
+    expect(detachedDetail).toMatchObject({ revision: 3 });
+    expect(detachedDetail).not.toHaveProperty("parentQuestionId");
+  });
+
   it("lists only identifiers and status/read facts, defaulting to the caller's active Questions and unread Answers", () => {
     const { requests, create, caller } = setup();
     create("current", "pending", "Text that must never appear");
