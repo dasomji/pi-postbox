@@ -58,7 +58,7 @@ function setup() {
 }
 
 describe("token-cheap Question discovery", () => {
-  it("defaults to 25 active Questions in the caller's repository, worktree, and feature and paginates without leaking fields", () => {
+  it("returns 25 active Questions from an explicit feature scope and paginates without leaking fields", () => {
     const { requests, register, create, caller } = setup();
     for (let index = 0; index < 27; index += 1) {
       create("current", `current-${String(index).padStart(2, "0")}`, `Complete question ${index}`);
@@ -75,19 +75,45 @@ describe("token-cheap Question discovery", () => {
     const discovery = requests as RequestStore & {
       listQuestions(input: unknown): { questions: unknown[]; nextCursor?: string };
     };
-    const first = discovery.listQuestions({ caller });
+    const first = discovery.listQuestions({ caller, scope: "feature" });
     expect(first.questions).toHaveLength(25);
     expect(first.nextCursor).toEqual(expect.any(String));
     expect(first.questions[0]).toEqual({ questionId: "current-00", question: "Complete question 0" });
     for (const item of first.questions) expect(Object.keys(item as object).sort()).toEqual(["question", "questionId"]);
 
-    const second = discovery.listQuestions({ caller, cursor: first.nextCursor });
+    const second = discovery.listQuestions({ caller, scope: "feature", cursor: first.nextCursor });
     expect(second).toEqual({
       questions: [
         { questionId: "current-25", question: "Complete question 25" },
         { questionId: "current-26", question: "Complete question 26" }
       ]
     });
+  });
+
+  it("defaults both list tools to the current owner and broadens only through an explicit scope", () => {
+    const { requests, register, create, caller } = setup();
+    create("current", "mine", "My question");
+    create("other-owner", "same-feature", "Other owner in this feature");
+    register("other-feature", OTHER_OWNER, "dasomji/pi-postbox", "/worktrees/current", "feature/other");
+    create("other-feature", "same-worktree", "Other feature in this worktree");
+    register("other-worktree", OTHER_OWNER, "dasomji/pi-postbox", "/worktrees/other", "feature/other");
+    create("other-worktree", "same-repository", "Other worktree in this repository");
+    register("other-repository", OTHER_OWNER, "someone/else", "/worktrees/elsewhere", "feature/elsewhere");
+    create("other-repository", "global-question", "Question outside this repository");
+
+    expect(requests.listQuestions({ caller }).questions.map((question) => question.questionId)).toEqual(["mine"]);
+    expect(requests.listQuestions({ caller, scope: "feature" }).questions.map((question) => question.questionId))
+      .toEqual(["mine", "same-feature"]);
+    expect(requests.listQuestions({ caller, scope: "worktree" }).questions.map((question) => question.questionId))
+      .toEqual(["mine", "same-feature", "same-worktree"]);
+    expect(requests.listQuestions({ caller, scope: "repository" }).questions.map((question) => question.questionId))
+      .toEqual(["mine", "same-feature", "same-repository", "same-worktree"]);
+    expect(requests.listQuestions({ caller, scope: "global" }).questions.map((question) => question.questionId))
+      .toEqual(["global-question", "mine", "same-feature", "same-repository", "same-worktree"]);
+
+    expect(requests.listQuestionStatus({ caller })).toEqual([{ questionId: "mine", status: "pending" }]);
+    expect(requests.listQuestionStatus({ caller, scope: "feature" }).map((question) => question.questionId))
+      .toEqual(["mine", "same-feature"]);
   });
 
   it("uses a query-bound keyset cursor that remains stable when earlier Questions are inserted", () => {

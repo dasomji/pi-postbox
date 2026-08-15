@@ -80,16 +80,50 @@ export interface QuestionDiscoveryCaller {
   feature: string;
 }
 
+export type QuestionDiscoveryScope = "owner" | "feature" | "worktree" | "repository" | "global";
+
 export interface QuestionDiscoveryFilters {
   caller: QuestionDiscoveryCaller;
+  scope?: QuestionDiscoveryScope;
   owner?: { harness: string; ownerId: string };
   repository?: string;
   worktree?: string;
   feature?: string;
   status?: AskStatus;
+  /** @deprecated Use scope: "global". */
   global?: boolean;
   cursor?: string;
   pageSize?: number;
+}
+
+function resolveQuestionDiscoveryScope(filters: QuestionDiscoveryFilters): QuestionDiscoveryScope {
+  return filters.scope ?? (filters.global ? "global" : "owner");
+}
+
+function applyQuestionDiscoveryScope(
+  clauses: string[],
+  parameters: Record<string, unknown>,
+  filters: QuestionDiscoveryFilters,
+  scope: QuestionDiscoveryScope
+): void {
+  if (scope === "owner" || filters.owner) {
+    const owner = filters.owner ?? filters.caller.owner;
+    clauses.push("q.owner_harness = @ownerHarness", "q.owner_owner_id = @ownerId");
+    parameters.ownerHarness = owner.harness;
+    parameters.ownerId = owner.ownerId;
+  }
+  if (["feature", "worktree", "repository"].includes(scope) || filters.repository !== undefined) {
+    clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository");
+    parameters.repository = filters.repository ?? filters.caller.repository;
+  }
+  if (["feature", "worktree"].includes(scope) || filters.worktree !== undefined) {
+    clauses.push("COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree");
+    parameters.worktree = filters.worktree ?? filters.caller.worktree;
+  }
+  if (scope === "feature" || filters.feature !== undefined) {
+    clauses.push("COALESCE(q.feature_id, s.branch, p.branch) = @feature");
+    parameters.feature = filters.feature ?? filters.caller.feature;
+  }
 }
 
 const EXPIRED_RATIONALE = "Postbox request expired before an answer was submitted.";
@@ -384,9 +418,9 @@ export class RequestStore {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
       throw new RequestStoreError("invalid_page_size", "Question page size must be a positive integer");
     }
-    const fingerprint = createHash("sha256").update(JSON.stringify({ owner: filters.owner, repository: filters.repository,
-      worktree: filters.worktree, feature: filters.feature, status: filters.status ?? "pending", global: filters.global ?? false,
-      caller: filters.caller })).digest("hex");
+    const scope = resolveQuestionDiscoveryScope(filters);
+    const fingerprint = createHash("sha256").update(JSON.stringify({ scope, owner: filters.owner, repository: filters.repository,
+      worktree: filters.worktree, feature: filters.feature, status: filters.status ?? "pending", caller: filters.caller })).digest("hex");
     const cursor = this.decodeQuestionCursor(filters.cursor, fingerprint);
     const clauses: string[] = [];
     const parameters: Record<string, unknown> = { limit: pageSize + 1 };
@@ -395,21 +429,7 @@ export class RequestStore {
       parameters.cursorCreatedAt = cursor.createdAt;
       parameters.cursorQuestionId = cursor.questionId;
     }
-    if (!filters.global) {
-      clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository", "COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree", "COALESCE(q.feature_id, s.branch, p.branch) = @feature");
-      parameters.repository = filters.repository ?? filters.caller.repository;
-      parameters.worktree = filters.worktree ?? filters.caller.worktree;
-      parameters.feature = filters.feature ?? filters.caller.feature;
-    } else {
-      if (filters.repository !== undefined) { clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository"); parameters.repository = filters.repository; }
-      if (filters.worktree !== undefined) { clauses.push("COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree"); parameters.worktree = filters.worktree; }
-      if (filters.feature !== undefined) { clauses.push("COALESCE(q.feature_id, s.branch, p.branch) = @feature"); parameters.feature = filters.feature; }
-    }
-    if (filters.owner) {
-      clauses.push("q.owner_harness = @ownerHarness", "q.owner_owner_id = @ownerId");
-      parameters.ownerHarness = filters.owner.harness;
-      parameters.ownerId = filters.owner.ownerId;
-    }
+    applyQuestionDiscoveryScope(clauses, parameters, filters, scope);
     clauses.push("q.status = @status");
     parameters.status = filters.status ?? "pending";
     const rows = this.db.prepare(`SELECT q.question_id, q.question_json, q.created_at
@@ -463,22 +483,8 @@ export class RequestStore {
   }): Array<Record<string, unknown>> {
     const clauses: string[] = [];
     const parameters: Record<string, unknown> = {};
-    const owner = filters.owner ?? filters.caller.owner;
-    if (!filters.global || filters.owner) {
-      clauses.push("q.owner_harness = @ownerHarness", "q.owner_owner_id = @ownerId");
-      parameters.ownerHarness = owner.harness;
-      parameters.ownerId = owner.ownerId;
-    }
-    if (!filters.global) {
-      clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository", "COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree", "COALESCE(q.feature_id, s.branch, p.branch) = @feature");
-      parameters.repository = filters.repository ?? filters.caller.repository;
-      parameters.worktree = filters.worktree ?? filters.caller.worktree;
-      parameters.feature = filters.feature ?? filters.caller.feature;
-    } else {
-      if (filters.repository !== undefined) { clauses.push("COALESCE(q.repository_id, p.repo_name) = @repository"); parameters.repository = filters.repository; }
-      if (filters.worktree !== undefined) { clauses.push("COALESCE(q.worktree_id, s.worktree_path, p.worktree_path, s.cwd) = @worktree"); parameters.worktree = filters.worktree; }
-      if (filters.feature !== undefined) { clauses.push("COALESCE(q.feature_id, s.branch, p.branch) = @feature"); parameters.feature = filters.feature; }
-    }
+    const scope = resolveQuestionDiscoveryScope(filters);
+    applyQuestionDiscoveryScope(clauses, parameters, filters, scope);
     if (filters.status) { clauses.push("q.status = @status"); parameters.status = filters.status; }
     else if (filters.readState === "read") clauses.push("a.first_reader_harness IS NOT NULL");
     else if (filters.readState === "unread") clauses.push("a.answer_id IS NOT NULL", "a.first_reader_harness IS NULL");

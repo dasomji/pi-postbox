@@ -352,8 +352,10 @@ export async function registerExtensionSocket(
         const scope = sessionStore.groupingForSession(message.payload.sessionId);
         if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
         const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
+        const level = message.payload.scope ?? (message.payload.global ? "global" : "owner");
         const result = requestStore.listQuestions({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload });
-        send(socket, { type: "question.list.result", requestId: message.requestId, payload: { scope, ...result } });
+        const resultScope = { ...scope, level };
+        send(socket, { type: "question.list.result", requestId: message.requestId, payload: { scope: resultScope, ...result } });
         return;
       }
       if (message.type === "questions.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestions(message.payload) }); return; }

@@ -82,7 +82,12 @@ describe("server-managed active feature", () => {
 
     const list = next(socket);
     socket.send(JSON.stringify({ type: "question.list", requestId: "list-default", payload: { sessionId: "session-1" } }));
-    expect((await list).payload.scope).toEqual({ repositoryId: "repo-1", worktreeId: "wt-1", featureId: secondFeatureId });
+    expect((await list).payload.scope).toEqual({
+      repositoryId: "repo-1",
+      worktreeId: "wt-1",
+      featureId: secondFeatureId,
+      level: "owner"
+    });
   });
 
   it("rejects feature and discovery actions for another connection's session", async () => {

@@ -39,6 +39,8 @@ const QuestionChatRecoveryOfferSchema = z.object({
   forkKind: z.enum(["exact", "context-only"])
 });
 
+const QuestionDiscoveryScopeSchema = z.enum(["owner", "feature", "worktree", "repository", "global"]);
+
 export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("session.register"),
@@ -97,9 +99,9 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     payload: z.object({ answerId: z.string().min(1).max(200) }).strict()
   }),
   z.object({ type: z.literal("question.list"), requestId: WsCorrelationIdSchema,
-    payload: z.object({ sessionId: z.string().min(1), owner: OwnerIdentitySchema.optional(), repository: z.string().optional(), worktree: z.string().optional(), feature: z.string().optional(), status: AskStatusSchema.optional(), global: z.boolean().optional(), cursor: z.string().optional(), pageSize: z.number().int().positive().optional() }).strict() }),
+    payload: z.object({ sessionId: z.string().min(1), scope: QuestionDiscoveryScopeSchema.optional(), owner: OwnerIdentitySchema.optional(), repository: z.string().optional(), worktree: z.string().optional(), feature: z.string().optional(), status: AskStatusSchema.optional(), global: z.boolean().optional(), cursor: z.string().optional(), pageSize: z.number().int().positive().optional() }).strict() }),
   z.object({ type: z.literal("questions.get"), requestId: WsCorrelationIdSchema, payload: z.object({ questionIds: z.array(z.string().min(1)).min(1) }).strict() }),
-  z.object({ type: z.literal("question.status.list"), requestId: WsCorrelationIdSchema, payload: z.object({ sessionId: z.string().min(1), owner: OwnerIdentitySchema.optional(), repository: z.string().optional(), worktree: z.string().optional(), feature: z.string().optional(), status: AskStatusSchema.optional(), global: z.boolean().optional(), readState: z.enum(["read", "unread"]).optional(), includeTerminal: z.boolean().optional() }).strict() }),
+  z.object({ type: z.literal("question.status.list"), requestId: WsCorrelationIdSchema, payload: z.object({ sessionId: z.string().min(1), scope: QuestionDiscoveryScopeSchema.optional(), owner: OwnerIdentitySchema.optional(), repository: z.string().optional(), worktree: z.string().optional(), feature: z.string().optional(), status: AskStatusSchema.optional(), global: z.boolean().optional(), readState: z.enum(["read", "unread"]).optional(), includeTerminal: z.boolean().optional() }).strict() }),
   z.object({ type: z.literal("owner.status.get"), requestId: WsCorrelationIdSchema, payload: z.object({ owners: z.array(OwnerIdentitySchema).min(1) }).strict() }),
   z.object({ type: z.literal("question.update"), requestId: WsCorrelationIdSchema, payload: z.object({ sessionId: z.string().min(1), questionId: z.string().min(1), update: UpdateQuestionPayloadSchema }).strict() }),
   z.object({ type: z.literal("question.history.get"), requestId: WsCorrelationIdSchema, payload: z.object({ questionId: z.string().min(1) }).strict() }),
@@ -206,7 +208,8 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     payload: AnswerReadResultSchema
   }),
   z.object({ type: z.literal("question.list.result"), requestId: WsCorrelationIdSchema,
-    payload: z.object({ scope: z.object({ repositoryId: z.string(), worktreeId: z.string(), featureId: z.string() }).strict(),
+    payload: z.object({ scope: z.object({ repositoryId: z.string(), worktreeId: z.string(), featureId: z.string(),
+        level: QuestionDiscoveryScopeSchema }).strict(),
       questions: z.array(z.object({ questionId: z.string(), question: z.string() }).strict()), nextCursor: z.string().optional() }).strict() }),
   z.object({ type: z.literal("query.result"), requestId: WsCorrelationIdSchema, payload: z.unknown() }),
   z.object({ type: z.literal("postbox.wait.result"), requestId: WsCorrelationIdSchema, payload: z.record(z.unknown()) }),

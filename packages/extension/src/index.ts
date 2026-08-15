@@ -219,13 +219,18 @@ export default function postboxExtension(pi: PiLikeApi): void {
     }
   });
   const filters = { owner: { type: "object" }, repository: { type: "string" }, worktree: { type: "string" }, feature: { type: "string" }, status: { type: "string" }, global: { type: "boolean" } };
-  registerQueryTool("list_questions", "List compact active Postbox Question IDs and text in the current repository/worktree/feature unless deliberately broadened.",
-    { type: "object", additionalProperties: false, properties: { ...filters, cursor: { type: "string" }, pageSize: { type: "number" } } }, "question.list",
+  const discoveryScope = {
+    type: "string",
+    enum: ["owner", "feature", "worktree", "repository", "global"],
+    description: "Discovery breadth. Defaults to the current owner; broader values deliberately include other owners."
+  };
+  registerQueryTool("list_questions", "List compact pending Question IDs and text. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden across a feature, worktree, repository, or all Postbox Questions.",
+    { type: "object", additionalProperties: false, properties: { ...filters, scope: discoveryScope, cursor: { type: "string" }, pageSize: { type: "number" } } }, "question.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   registerQueryTool("get_questions", "Get complete latest Question details for explicit IDs without Answer content.",
     { type: "object", additionalProperties: false, required: ["questionIds"], properties: { questionIds: { type: "array", minItems: 1, items: { type: "string" } } } }, "questions.get");
-  registerQueryTool("list_question_status", "List compact actionable Question and unread Answer status.",
-    { type: "object", additionalProperties: false, properties: { ...filters, readState: { type: "string", enum: ["read", "unread"] }, includeTerminal: { type: "boolean" } } }, "question.status.list",
+  registerQueryTool("list_question_status", "List compact actionable Question and unread Answer status. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden.",
+    { type: "object", additionalProperties: false, properties: { ...filters, scope: discoveryScope, readState: { type: "string", enum: ["read", "unread"] }, includeTerminal: { type: "boolean" } } }, "question.status.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   registerQueryTool("get_postbox_owner_status", "Get compact presence and queue counts for exact harness-neutral owners.",
     { type: "object", additionalProperties: false, required: ["owners"], properties: {
