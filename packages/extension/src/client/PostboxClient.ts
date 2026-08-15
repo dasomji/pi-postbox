@@ -73,6 +73,7 @@ export interface PostboxClientOptions {
   profilePollMs?: number;
   targetAffinityTimeoutMs?: number;
   proposalTimeoutMs?: number;
+  answerReadTimeoutMs?: number;
   targetSource?: string;
   targetProfile?: ServerProfileIdentity;
   inspectTailscale?: PostboxStatusTailscaleInspector;
@@ -154,6 +155,7 @@ interface PendingAnswerRead {
   questionId: string;
   resolve: (result: AnswerReadResult) => void;
   reject: (error: Error) => void;
+  cleanup: () => void;
 }
 
 interface PendingProposal {
@@ -169,6 +171,7 @@ const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_PROFILE_POLL_MS = 5_000;
 const DEFAULT_TARGET_AFFINITY_TIMEOUT_MS = 30_000;
 const DEFAULT_PROPOSAL_TIMEOUT_MS = 10_000;
+const DEFAULT_ANSWER_READ_TIMEOUT_MS = 10_000;
 
 export class PostboxClient {
   private socket: WebSocketLike | undefined;
@@ -181,6 +184,7 @@ export class PostboxClient {
   private nextReconnectMs: number;
   private readonly reconnect: boolean;
   private readonly askUnavailableAfterMs: number;
+  private readonly answerReadTimeoutMs: number;
   private readonly WebSocketImpl: WebSocketConstructor;
   private readonly pendingAsks = new Map<string, PendingAsk>();
   private readonly asynchronousAskCreates = new Set<string>();
@@ -216,6 +220,7 @@ export class PostboxClient {
     this.nextReconnectMs = this.reconnectMs;
     this.reconnect = options.reconnect ?? true;
     this.askUnavailableAfterMs = options.askUnavailableAfterMs ?? DEFAULT_UNAVAILABLE_AFTER_MS;
+    this.answerReadTimeoutMs = options.answerReadTimeoutMs ?? DEFAULT_ANSWER_READ_TIMEOUT_MS;
     this.WebSocketImpl = options.WebSocketImpl ?? (WebSocket as unknown as WebSocketConstructor);
     this.answerNotificationInbox = options.answerNotificationInbox ?? new MemoryAnswerNotificationInbox();
     this.currentSemanticState = options.registration.session.semanticState;
@@ -408,13 +413,37 @@ export class PostboxClient {
     });
   }
 
-  getAnswer(questionId: string): Promise<AnswerReadResult> {
+  getAnswer(questionId: string, signal?: AbortSignal): Promise<AnswerReadResult> {
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Answer cannot be read."));
+    if (signal?.aborted) return Promise.reject(Object.assign(new Error("get_answer was aborted before the Answer was read."), { name: "AbortError" }));
     const commandId = `answer_get_${randomUUID()}`;
     return new Promise((resolve, reject) => {
-      this.pendingAnswerReads.set(commandId, { questionId, resolve, reject });
+      let timer: NodeJS.Timeout | undefined;
+      const abort = () => {
+        if (!this.pendingAnswerReads.delete(commandId)) return;
+        pending.cleanup();
+        reject(Object.assign(new Error("get_answer was aborted before the Answer was read."), { name: "AbortError" }));
+      };
+      const pending: PendingAnswerRead = {
+        questionId,
+        resolve,
+        reject,
+        cleanup: () => {
+          if (timer) clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
+        }
+      };
+      this.pendingAnswerReads.set(commandId, pending);
+      signal?.addEventListener("abort", abort, { once: true });
+      timer = setTimeout(() => {
+        if (!this.pendingAnswerReads.delete(commandId)) return;
+        pending.cleanup();
+        reject(new Error("get_answer timed out; the Question may not exist or may belong to another Postbox session."));
+      }, this.answerReadTimeoutMs);
+      timer.unref?.();
       if (!this.send({ type: "answer.get", requestId: commandId, payload: { questionId } })) {
         this.pendingAnswerReads.delete(commandId);
+        pending.cleanup();
         reject(new Error("Pi Postbox disconnected before get_answer could be sent."));
       }
     });
@@ -576,6 +605,7 @@ export class PostboxClient {
           const pending = this.pendingAnswerReads.get(parsed.data.requestId);
           if (!pending || pending.questionId !== parsed.data.payload.question.questionId) return;
           this.pendingAnswerReads.delete(parsed.data.requestId);
+          pending.cleanup();
           pending.resolve(AnswerReadResultSchema.parse(parsed.data.payload));
           return;
         }
@@ -631,6 +661,7 @@ export class PostboxClient {
             const read = this.pendingAnswerReads.get(parsed.data.requestId);
             if (read) {
               this.pendingAnswerReads.delete(parsed.data.requestId);
+              read.cleanup();
               read.reject(error);
             }
             const query = this.pendingQueries.get(parsed.data.requestId);
@@ -1014,6 +1045,7 @@ export class PostboxClient {
   private failPendingAnswerReads(message: string): void {
     for (const [commandId, pending] of this.pendingAnswerReads) {
       this.pendingAnswerReads.delete(commandId);
+      pending.cleanup();
       pending.reject(new Error(message));
     }
   }

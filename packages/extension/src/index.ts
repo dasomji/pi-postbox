@@ -201,10 +201,10 @@ export default function postboxExtension(pi: PiLikeApi): void {
     parameters: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
       questionId: { type: "string", minLength: 1, description: "Question ID returned by ask_postbox." }
     } },
-    async execute(_toolCallId: string, params: { questionId: string }) {
+    async execute(_toolCallId: string, params: { questionId: string }, signal?: AbortSignal) {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
       if (!client) throw new Error(unavailableRationale);
-      const result = AnswerReadResultSchema.parse(await client.getAnswer(params.questionId));
+      const result = AnswerReadResultSchema.parse(await client.getAnswer(params.questionId, signal));
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
   });

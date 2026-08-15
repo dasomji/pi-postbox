@@ -133,6 +133,61 @@ describe("PostboxClient pending ask resilience", () => {
     restarted.stop();
     await expect(stopped).rejects.toThrow("stopped");
   });
+
+  it("bounds get_answer when the server never returns a correlated result", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ answerReadTimeoutMs: 1_000 });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-owned-by-another-session");
+    const rejected = expect(answer).rejects.toThrow(
+      "get_answer timed out; the Question may not exist or may belong to another Postbox session"
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await rejected;
+    client.stop();
+  });
+
+  it("returns a correlated get_answer ownership error without waiting for the timeout", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ answerReadTimeoutMs: 1_000 });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-owned-by-another-session");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "error",
+      requestId: command.requestId,
+      error: { code: "wrong_owner", message: "Reader does not own this Question" }
+    });
+
+    await expect(answer).rejects.toThrow("Reader does not own this Question");
+    await vi.advanceTimersByTimeAsync(1_000);
+    client.stop();
+  });
+
+  it("aborts a pending get_answer without leaving it for the response timeout", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ answerReadTimeoutMs: 1_000 });
+    client.start();
+    FakeSocket.instances[0]!.open();
+    const controller = new AbortController();
+
+    const answer = client.getAnswer("question-1", controller.signal);
+    controller.abort();
+
+    await expect(answer).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    client.stop();
+  });
   it("settles create receipts only from persistence evidence and survives lost ack through terminal replay", async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];
