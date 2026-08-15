@@ -113,6 +113,7 @@ function runMigrations(db: SqliteDatabase): void {
       owner_harness TEXT NOT NULL,
       owner_owner_id TEXT NOT NULL,
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      owner_revision INTEGER NOT NULL DEFAULT 1 CHECK (owner_revision >= 1),
       legacy_request_id TEXT UNIQUE,
       source_session_id TEXT REFERENCES sessions(session_id),
       fork_reference_json TEXT,
@@ -249,6 +250,7 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "sessions", "repository_id", "TEXT");
   ensureColumn(db, "sessions", "worktree_id", "TEXT");
   ensureColumn(db, "sessions", "feature_id", "TEXT");
+  ensureColumn(db, "questions", "owner_revision", "INTEGER NOT NULL DEFAULT 1 CHECK (owner_revision >= 1)");
   ensureColumn(db, "questions", "legacy_request_id", "TEXT");
   ensureColumn(db, "questions", "source_session_id", "TEXT REFERENCES sessions(session_id)");
   ensureColumn(db, "questions", "fork_reference_json", "TEXT");

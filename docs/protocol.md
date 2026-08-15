@@ -128,6 +128,15 @@ Browser snapshots are extension-backed. A fresh browser sees `extension_offline`
 
 Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.
 
+## Question update concurrency
+
+Question details expose two independent optimistic-concurrency tokens:
+
+- `revision` changes when Question content or hierarchy changes, and for lifecycle transitions made through `update_question`.
+- `ownerRevision` changes only when ownership is transferred or taken over.
+
+Every `update_question` action supplies both `expectedRevision` and `expectedOwnerRevision` from a fresh complete detail read. The server rejects a mismatch before applying the update. Transfer and takeover leave `revision` unchanged, increment `ownerRevision`, and record both versions on the immutable `owner_changed` history event. This invalidates snapshots captured before an ownership change without treating ownership as content.
+
 ## Status and browser command boundaries
 
 The `/postbox-status` user command and read-only `postbox_status` tool expose privacy-preserving operational status: connection state, active/local URL when known, Tailnet/export guidance when available, open-question count, autostart state, and diagnostics. They do not expose pending question contents, options, answers, notes, or history.

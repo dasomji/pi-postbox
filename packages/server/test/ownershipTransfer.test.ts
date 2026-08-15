@@ -28,13 +28,57 @@ function setup() {
 }
 
 describe("deliberate Question ownership transfer and recovery", () => {
-  it("transfers from the current live owner to one exact target and records immutable ownership audit", () => {
+  it("versions ownership independently and rejects stale owner snapshots after transfer", () => {
     const { store } = setup();
-    store.transferQuestionOwner("question", CREATOR, SIBLING);
-    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ creator: CREATOR, owner: SIBLING });
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({
+      creator: CREATOR,
+      owner: CREATOR,
+      revision: 1,
+      ownerRevision: 1
+    });
+
+    expect(store.updateQuestion("question", CREATOR, {
+      action: "transfer",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1,
+      expectedOwner: CREATOR,
+      owner: SIBLING
+    })).toMatchObject({ owner: SIBLING, revision: 1, ownerRevision: 2 });
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({
+      creator: CREATOR,
+      owner: SIBLING,
+      revision: 1,
+      ownerRevision: 2
+    });
     expect(store.getQuestionHistory("question").events).toContainEqual(expect.objectContaining({
-      type: "owner_changed", previousOwner: CREATOR, owner: SIBLING, actor: CREATOR, at: expect.any(String)
+      type: "owner_changed",
+      revision: 1,
+      ownerRevision: 2,
+      previousOwner: CREATOR,
+      owner: SIBLING,
+      actor: CREATOR,
+      at: expect.any(String)
     }));
+
+    expect(() => store.updateQuestion("question", SIBLING, {
+      action: "cancel",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1
+    })).toThrowError(expect.objectContaining({ code: "stale_owner_revision" }));
+    expect(() => store.updateQuestion("question", SIBLING, {
+      action: "transfer",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1,
+      expectedOwner: SIBLING,
+      owner: RECOVERY
+    })).toThrowError(expect.objectContaining({ code: "stale_owner_revision" }));
+
+    expect(store.updateQuestion("question", SIBLING, {
+      action: "revise",
+      expectedRevision: 1,
+      expectedOwnerRevision: 2,
+      question: { prompt: "Recovered?" }
+    })).toMatchObject({ revision: 2, ownerRevision: 2 });
   });
 
   it("allows takeover only when the expected owner is offline, never merely stale", () => {
@@ -44,10 +88,18 @@ describe("deliberate Question ownership transfer and recovery", () => {
     expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions)).toThrowError(expect.objectContaining({ code: "owner_not_offline" }));
     advance(5_000);
     expect(sessions.getPostboxOwnerStatus([CREATOR])[0]?.presence).toBe("offline");
-    expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions)).not.toThrow();
+    expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions, 1, 1)).not.toThrow();
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({
+      revision: 1,
+      ownerRevision: 2,
+      owner: RECOVERY
+    });
     expect(store.getQuestionHistory("question").events).toContainEqual(expect.objectContaining({
-      type: "owner_changed", actor: RECOVERY, previousOwner: CREATOR, owner: RECOVERY, reason: "takeover"
+      type: "owner_changed", revision: 1, ownerRevision: 2,
+      actor: RECOVERY, previousOwner: CREATOR, owner: RECOVERY, reason: "takeover"
     }));
+    expect(() => store.takeoverQuestionOwner("question", RECOVERY, SIBLING, sessions, 1, 1))
+      .toThrowError(expect.objectContaining({ code: "stale_owner_revision" }));
   });
 
   it("uses expected-owner compare-and-swap so exactly one racing takeover wins", () => {
@@ -73,7 +125,9 @@ describe("deliberate Question ownership transfer and recovery", () => {
 
   it("does not grant siblings, parents, roots, or shared lineage owner-only authority or automatic succession", () => {
     const { store } = setup();
-    expect(() => store.updateQuestion("question", SIBLING, { action: "cancel", expectedRevision: 1 })).toThrowError(expect.objectContaining({ code: "wrong_owner" }));
+    expect(() => store.updateQuestion("question", SIBLING, {
+      action: "cancel", expectedRevision: 1, expectedOwnerRevision: 1
+    })).toThrowError(expect.objectContaining({ code: "wrong_owner" }));
     expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ owner: CREATOR });
   });
 

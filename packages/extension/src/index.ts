@@ -237,11 +237,15 @@ export default function postboxExtension(pi: PiLikeApi): void {
       owners: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
         required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } } }
     } }, "owner.status.get");
-  registerQueryTool("update_question", "Revise, cancel, supersede, or reparent an owned Question with expected-revision concurrency.",
+  const questionUpdateVersions = {
+    expectedRevision: { type: "integer", minimum: 1, description: "Current content revision from complete Question details." },
+    expectedOwnerRevision: { type: "integer", minimum: 1, description: "Current owner revision from complete Question details." }
+  };
+  registerQueryTool("update_question", "Revise, cancel, supersede, reparent, transfer, or take over an owned Question with separate content and owner concurrency revisions.",
     { type: "object", additionalProperties: false, required: ["questionId", "update"], properties: { questionId: { type: "string" }, update: {
       oneOf: [
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "question"], properties: {
-          action: { const: "revise" }, expectedRevision: { type: "integer", minimum: 1 },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "question"], properties: {
+          action: { const: "revise" }, ...questionUpdateVersions,
           question: { type: "object", additionalProperties: false, required: ["prompt"], properties: {
             prompt: { type: "string" }, context: { type: "string" }, relevance: { type: "string" }, decisionImpact: { type: "string" }
           } },
@@ -256,22 +260,22 @@ export default function postboxExtension(pi: PiLikeApi): void {
             } }
           } }
         } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision"], properties: {
-          action: { const: "cancel" }, expectedRevision: { type: "integer", minimum: 1 }, rationale: { type: "string" }
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision"], properties: {
+          action: { const: "cancel" }, ...questionUpdateVersions, rationale: { type: "string" }
         } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "replacementQuestionId"], properties: {
-          action: { const: "supersede" }, expectedRevision: { type: "integer", minimum: 1 }, replacementQuestionId: { type: "string" }
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "replacementQuestionId"], properties: {
+          action: { const: "supersede" }, ...questionUpdateVersions, replacementQuestionId: { type: "string" }
         } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "parentQuestionId"], properties: {
-          action: { const: "reparent" }, expectedRevision: { type: "integer", minimum: 1 }, parentQuestionId: { type: ["string", "null"] }
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "parentQuestionId"], properties: {
+          action: { const: "reparent" }, ...questionUpdateVersions, parentQuestionId: { type: ["string", "null"] }
         } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwner", "owner"], properties: {
-          action: { const: "transfer" }, expectedRevision: { type: "integer", minimum: 1 },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "expectedOwner", "owner"], properties: {
+          action: { const: "transfer" }, ...questionUpdateVersions,
           expectedOwner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } },
           owner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } }
         } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwner"], properties: {
-          action: { const: "takeover" }, expectedRevision: { type: "integer", minimum: 1 },
+        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "expectedOwner"], properties: {
+          action: { const: "takeover" }, ...questionUpdateVersions,
           expectedOwner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } }
         } }
       ]

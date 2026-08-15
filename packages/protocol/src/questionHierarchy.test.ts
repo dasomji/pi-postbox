@@ -50,6 +50,7 @@ describe("ordered Question batch protocol", () => {
       requestId: "question-child",
       sessionId: "session",
       revision: 1,
+      ownerRevision: 1,
       creator: { harness: "pi", ownerId: "creator" },
       owner: { harness: "pi", ownerId: "owner" },
       mode: "single",

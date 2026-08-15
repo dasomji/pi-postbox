@@ -162,13 +162,14 @@ export const AskAnswerPayloadSchema = z.object({
 });
 
 const ExpectedRevisionSchema = z.number().int().min(1);
+const ExpectedOwnerRevisionSchema = z.number().int().min(1);
 export const UpdateQuestionPayloadSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, question: AskQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional(), context: AskCreateHandoffContextSchema.optional() }).strict(),
-  z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, rationale: LongTextSchema.optional() }).strict(),
-  z.object({ action: z.literal("supersede"), expectedRevision: ExpectedRevisionSchema, replacementQuestionId: RequestIdSchema }).strict(),
-  z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict(),
-  z.object({ action: z.literal("transfer"), expectedRevision: ExpectedRevisionSchema, expectedOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema }).strict(),
-  z.object({ action: z.literal("takeover"), expectedRevision: ExpectedRevisionSchema, expectedOwner: OwnerIdentitySchema }).strict()
+  z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, question: AskQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional(), context: AskCreateHandoffContextSchema.optional() }).strict(),
+  z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, rationale: LongTextSchema.optional() }).strict(),
+  z.object({ action: z.literal("supersede"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, replacementQuestionId: RequestIdSchema }).strict(),
+  z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict(),
+  z.object({ action: z.literal("transfer"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, expectedOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema }).strict(),
+  z.object({ action: z.literal("takeover"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, expectedOwner: OwnerIdentitySchema }).strict()
 ]);
 const HistoryActorSchema = z.object({ harness: ShortTextSchema, ownerId: ShortTextSchema }).strict();
 const HistoryBaseSchema = z.object({ revision: ExpectedRevisionSchema, actor: HistoryActorSchema, at: z.string().datetime() });
@@ -182,7 +183,7 @@ export const QuestionHistorySchema = z.object({ questionId: RequestIdSchema, rev
   HistoryBaseSchema.extend({ type: z.literal("parent_changed"), parentQuestionId: RequestIdSchema.nullable() }).strict(),
   HistoryBaseSchema.extend({ type: z.enum(["cancelled", "answered", "expired"]), replacementQuestionId: RequestIdSchema.optional() }).strict(),
   HistoryBaseSchema.extend({ type: z.literal("superseded"), replacementQuestionId: RequestIdSchema }).strict()
-  ,HistoryBaseSchema.extend({ type: z.literal("owner_changed"), previousOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema, reason: z.enum(["transfer", "takeover"]) }).strict()
+  ,HistoryBaseSchema.extend({ type: z.literal("owner_changed"), ownerRevision: ExpectedOwnerRevisionSchema, previousOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema, reason: z.enum(["transfer", "takeover"]) }).strict()
 ])) }).strict();
 
 export const AskCancelPayloadSchema = z.object({
@@ -259,6 +260,7 @@ export const AskRequestSnapshotSchema = z.object({
   requestId: RequestIdSchema,
   sessionId: z.string().min(1).max(200),
   revision: z.number().int().min(1),
+  ownerRevision: z.number().int().min(1).default(1),
   creator: OwnerIdentitySchema,
   owner: OwnerIdentitySchema,
   mode: AskModeSchema,

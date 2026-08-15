@@ -30,6 +30,7 @@ interface AskRequestRow {
   request_id: string;
   session_id: string;
   revision: number;
+  owner_revision: number;
   creator_harness: string;
   creator_owner_id: string;
   owner_harness: string;
@@ -185,36 +186,56 @@ export class RequestStore {
     expectedOwner: { harness: string; ownerId: string },
     nextOwner: { harness: string; ownerId: string },
     reason: "transfer" | "takeover" = "transfer",
-    expectedRevision?: number
-  ): void {
+    expectedRevision?: number,
+    expectedOwnerRevision = 1
+  ): { revision: number; ownerRevision: number } {
     const at = new Date(this.now()).toISOString();
-    this.db.transaction(() => {
+    const versions = this.db.transaction(() => {
       const nextExists = this.db.prepare("SELECT 1 FROM owners WHERE harness=? AND owner_id=?").get(nextOwner.harness, nextOwner.ownerId);
       if (!nextExists) throw new RequestStoreError("owner_not_found", "The new Question owner does not exist");
-      const changed = this.db.prepare(`UPDATE questions SET owner_harness=?, owner_owner_id=?, updated_at=?
-        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending' AND (? IS NULL OR revision=?)`)
-        .run(nextOwner.harness, nextOwner.ownerId, at, questionId, expectedOwner.harness, expectedOwner.ownerId, expectedRevision ?? null, expectedRevision ?? null).changes;
-      if (changed !== 1) throw new RequestStoreError("owner_changed", "Question owner changed or Question is terminal");
-      const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(questionId) as { revision: number }).revision;
-      this.recordQuestionEvent(questionId, "owner_changed", revision, expectedOwner, { previousOwner: expectedOwner, owner: nextOwner, reason }, at);
+      const changed = this.db.prepare(`UPDATE questions SET owner_harness=?, owner_owner_id=?, owner_revision=owner_revision+1, updated_at=?
+        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending'
+          AND owner_revision=? AND (? IS NULL OR revision=?)`)
+        .run(nextOwner.harness, nextOwner.ownerId, at, questionId, expectedOwner.harness, expectedOwner.ownerId,
+          expectedOwnerRevision, expectedRevision ?? null, expectedRevision ?? null).changes;
+      if (changed !== 1) this.throwOwnerTransferConflict(questionId, expectedOwner, expectedRevision, expectedOwnerRevision);
+      const row = this.db.prepare("SELECT revision, owner_revision FROM questions WHERE question_id=?").get(questionId) as { revision: number; owner_revision: number };
+      this.recordQuestionEvent(questionId, "owner_changed", row.revision, expectedOwner, {
+        ownerRevision: row.owner_revision, previousOwner: expectedOwner, owner: nextOwner, reason
+      }, at);
+      return { revision: row.revision, ownerRevision: row.owner_revision };
     })();
     this.notifyOwnerTransfer(expectedOwner, nextOwner, questionId);
+    return versions;
   }
 
-  takeoverQuestionOwner(questionId: string, expectedOwner: { harness: string; ownerId: string }, nextOwner: { harness: string; ownerId: string }, sessions: SessionStore, expectedRevision?: number): void {
+  takeoverQuestionOwner(
+    questionId: string,
+    expectedOwner: { harness: string; ownerId: string },
+    nextOwner: { harness: string; ownerId: string },
+    sessions: SessionStore,
+    expectedRevision?: number,
+    expectedOwnerRevision = 1
+  ): { revision: number; ownerRevision: number } {
     const at = new Date(this.now()).toISOString();
-    this.db.transaction(() => {
+    const versions = this.db.transaction(() => {
       if (!sessions.hasOfflineLease(expectedOwner)) throw new RequestStoreError("owner_not_offline", "Current Question owner is not offline");
       const nextExists = this.db.prepare("SELECT 1 FROM owners WHERE harness=? AND owner_id=?").get(nextOwner.harness, nextOwner.ownerId);
       if (!nextExists) throw new RequestStoreError("owner_not_found", "The new Question owner does not exist");
-      const changed = this.db.prepare(`UPDATE questions SET owner_harness=?, owner_owner_id=?, updated_at=?
-        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending' AND (? IS NULL OR revision=?)`)
-        .run(nextOwner.harness, nextOwner.ownerId, at, questionId, expectedOwner.harness, expectedOwner.ownerId, expectedRevision ?? null, expectedRevision ?? null).changes;
-      if (changed !== 1) throw new RequestStoreError("owner_changed", "Question owner changed or Question is terminal");
-      const revision = (this.db.prepare("SELECT revision FROM questions WHERE question_id=?").get(questionId) as { revision: number }).revision;
-      this.recordQuestionEvent(questionId, "owner_changed", revision, nextOwner, { previousOwner: expectedOwner, owner: nextOwner, reason: "takeover" }, at);
+      const changed = this.db.prepare(`UPDATE questions SET owner_harness=?, owner_owner_id=?, owner_revision=owner_revision+1, updated_at=?
+        WHERE question_id=? AND owner_harness=? AND owner_owner_id=? AND status='pending'
+          AND owner_revision=? AND (? IS NULL OR revision=?)`)
+        .run(nextOwner.harness, nextOwner.ownerId, at, questionId, expectedOwner.harness, expectedOwner.ownerId,
+          expectedOwnerRevision, expectedRevision ?? null, expectedRevision ?? null).changes;
+      if (changed !== 1) this.throwOwnerTransferConflict(questionId, expectedOwner, expectedRevision, expectedOwnerRevision);
+      const row = this.db.prepare("SELECT revision, owner_revision FROM questions WHERE question_id=?").get(questionId) as { revision: number; owner_revision: number };
+      this.recordQuestionEvent(questionId, "owner_changed", row.revision, nextOwner, {
+        ownerRevision: row.owner_revision, previousOwner: expectedOwner, owner: nextOwner, reason: "takeover"
+      }, at);
+      return { revision: row.revision, ownerRevision: row.owner_revision };
     })();
     this.notifyOwnerTransfer(expectedOwner, nextOwner, questionId);
+    return versions;
   }
 
   getAnswerForRecovery(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
@@ -461,6 +482,7 @@ export class RequestStore {
       return [{
         questionId: row.question_id,
         revision: row.revision,
+        ownerRevision: row.owner_revision,
         mode: row.mode,
         question: JSON.parse(row.question_json as string),
         options: JSON.parse(row.options_json as string),
@@ -585,13 +607,13 @@ export class RequestStore {
     const parsed = UpdateQuestionPayloadSchema.parse(payload);
     if (parsed.action === "transfer") {
       if (actor.harness !== parsed.expectedOwner.harness || actor.ownerId !== parsed.expectedOwner.ownerId) throw new RequestStoreError("wrong_owner", "Only the current owner may transfer this Question");
-      this.transferQuestionOwner(questionId, parsed.expectedOwner, parsed.owner, "transfer", parsed.expectedRevision);
-      return { questionId, owner: parsed.owner, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator };
+      const versions = this.transferQuestionOwner(questionId, parsed.expectedOwner, parsed.owner, "transfer", parsed.expectedRevision, parsed.expectedOwnerRevision);
+      return { questionId, owner: parsed.owner, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator, ...versions };
     }
     if (parsed.action === "takeover") {
       if (!sessions) throw new RequestStoreError("presence_unavailable", "Owner presence is unavailable");
-      this.takeoverQuestionOwner(questionId, parsed.expectedOwner, actor, sessions, parsed.expectedRevision);
-      return { questionId, owner: actor, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator };
+      const versions = this.takeoverQuestionOwner(questionId, parsed.expectedOwner, actor, sessions, parsed.expectedRevision, parsed.expectedOwnerRevision);
+      return { questionId, owner: actor, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator, ...versions };
     }
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
@@ -600,6 +622,7 @@ export class RequestStore {
       if (row.owner_harness !== actor.harness || row.owner_owner_id !== actor.ownerId) throw new RequestStoreError("wrong_owner", "Only the current owner may update this Question");
       if (row.status !== "pending") throw new RequestStoreError("question_terminal", "Terminal Questions are immutable");
       if (row.revision !== parsed.expectedRevision) throw new RequestStoreError("stale_revision", "Question revision is stale");
+      if (row.owner_revision !== parsed.expectedOwnerRevision) throw new RequestStoreError("stale_owner_revision", "Question owner revision is stale");
       this.seedQuestionRevision(row, actor);
       const revision = row.revision + 1;
       const at = new Date(this.now()).toISOString();
@@ -634,7 +657,7 @@ export class RequestStore {
         SELECT question_id, revision, question_json, options_json, context_json, ?, ?, ? FROM questions WHERE question_id=?`)
         .run(actor.harness, actor.ownerId, at, questionId);
       const updated = this.db.prepare("SELECT question_json, status, parent_question_id, replacement_question_id FROM questions WHERE question_id=?").get(questionId) as any;
-      output = { questionId, revision, status: updated.status, question: JSON.parse(updated.question_json), parentQuestionId: updated.parent_question_id ?? undefined, replacementQuestionId: updated.replacement_question_id ?? undefined };
+      output = { questionId, revision, ownerRevision: row.owner_revision, status: updated.status, question: JSON.parse(updated.question_json), parentQuestionId: updated.parent_question_id ?? undefined, replacementQuestionId: updated.replacement_question_id ?? undefined };
     })();
     if (parsed.action === "cancel" || parsed.action === "supersede") this.wakeOwnerWithLifecycle(questionId, parsed.action === "cancel" ? "cancelled" : "superseded");
     return output!;
@@ -660,6 +683,34 @@ export class RequestStore {
   private recordQuestionEvent(questionId: string, type: string, revision: number, actor: { harness: string; ownerId: string }, facts: Record<string, unknown>, at: string): void {
     this.db.prepare("INSERT INTO question_events (question_id,type,revision,actor_harness,actor_owner_id,facts_json,created_at) VALUES (?,?,?,?,?,?,?)")
       .run(questionId, type, revision, actor.harness, actor.ownerId, JSON.stringify(facts), at);
+  }
+
+  private throwOwnerTransferConflict(
+    questionId: string,
+    expectedOwner: { harness: string; ownerId: string },
+    expectedRevision: number | undefined,
+    expectedOwnerRevision: number
+  ): never {
+    const row = this.db.prepare(`SELECT owner_harness, owner_owner_id, revision, owner_revision, status
+      FROM questions WHERE question_id=?`).get(questionId) as {
+        owner_harness: string;
+        owner_owner_id: string;
+        revision: number;
+        owner_revision: number;
+        status: AskStatus;
+      } | undefined;
+    if (!row) throw new RequestStoreError("request_not_found", "Question not found");
+    if (row.owner_harness !== expectedOwner.harness || row.owner_owner_id !== expectedOwner.ownerId) {
+      throw new RequestStoreError("owner_changed", "Question owner changed");
+    }
+    if (row.status !== "pending") throw new RequestStoreError("question_terminal", "Question is terminal");
+    if (expectedRevision !== undefined && row.revision !== expectedRevision) {
+      throw new RequestStoreError("stale_revision", "Question revision is stale");
+    }
+    if (row.owner_revision !== expectedOwnerRevision) {
+      throw new RequestStoreError("stale_owner_revision", "Question owner revision is stale");
+    }
+    throw new RequestStoreError("owner_changed", "Question ownership compare-and-swap failed");
   }
 
   private validateNewParent(questionId: string, parentQuestionId: string | null): void {
@@ -977,7 +1028,7 @@ export class RequestStore {
 
   /** Compatibility snapshots are derived from the owner Question/Answer records. */
   private snapshotSelect(): string {
-    return `SELECT q.question_id AS request_id, q.source_session_id AS session_id, q.revision,
+    return `SELECT q.question_id AS request_id, q.source_session_id AS session_id, q.revision, q.owner_revision,
       q.creator_harness, q.creator_owner_id, q.owner_harness, q.owner_owner_id, a.answer_id, a.first_reader_harness, q.mode,
       json_extract(q.question_json, '$.prompt') AS prompt, q.question_json, q.options_json, q.context_json,
       q.fork_reference_json, q.parent_question_id, q.status, a.selected_values_json, a.note, a.rationale,
@@ -1011,6 +1062,7 @@ export class RequestStore {
       requestId: row.request_id,
       sessionId: row.session_id,
       revision: row.revision,
+      ownerRevision: row.owner_revision,
       creator: { harness: row.creator_harness as AskRequestSnapshot["creator"]["harness"], ownerId: row.creator_owner_id },
       owner: { harness: row.owner_harness as AskRequestSnapshot["owner"]["harness"], ownerId: row.owner_owner_id },
       mode: row.mode,

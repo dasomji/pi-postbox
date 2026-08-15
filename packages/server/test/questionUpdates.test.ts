@@ -22,10 +22,10 @@ describe("immutable Question updates", () => {
   it("appends revisions under a stable ID and atomically rejects stale agent and browser writes", () => {
     const { store, create, tick } = setup(); create("question"); tick();
     expect(store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, {
-      action: "revise", expectedRevision: 1, question: { prompt: "Updated question?" }
+      action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Updated question?" }
     })).toMatchObject({ questionId: "question", revision: 2, question: { prompt: "Updated question?" } });
     expect(() => store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, {
-      action: "cancel", expectedRevision: 1, rationale: "stale"
+      action: "cancel", expectedRevision: 1, expectedOwnerRevision: 1, rationale: "stale"
     })).toThrowError(expect.objectContaining({ code: "stale_revision" } satisfies Partial<RequestStoreError>));
     expect(() => store.answer("question", { expectedRevision: 1, selectedValues: ["yes"] })).toThrowError(expect.objectContaining({ code: "stale_revision" }));
     expect(store.get("question")).toMatchObject({ requestId: "question", status: "pending" });
@@ -36,25 +36,25 @@ describe("immutable Question updates", () => {
     for (const action of terminalActions) {
       const { store, create } = setup(); create("question"); if (action === "supersede") create("replacement");
       const terminal = store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, action === "cancel"
-        ? { action, expectedRevision: 1, rationale: "obsolete" }
-        : { action, expectedRevision: 1, replacementQuestionId: "replacement" });
+        ? { action, expectedRevision: 1, expectedOwnerRevision: 1, rationale: "obsolete" }
+        : { action, expectedRevision: 1, expectedOwnerRevision: 1, replacementQuestionId: "replacement" });
       expect(terminal).toMatchObject(action === "supersede" ? { status: "superseded", replacementQuestionId: "replacement" } : { status: "cancelled" });
-      expect(() => store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, { action: "reparent", expectedRevision: 2, parentQuestionId: null }))
+      expect(() => store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, { action: "reparent", expectedRevision: 2, expectedOwnerRevision: 1, parentQuestionId: null }))
         .toThrowError(expect.objectContaining({ code: "question_terminal" }));
     }
     for (const terminal of ["answered", "expired"] as const) {
       const { db, store, create } = setup(); create(`question-${terminal}`);
       if (terminal === "answered") store.answer(`question-${terminal}`, { expectedRevision: 1, selectedValues: ["yes"] });
       else db.prepare("UPDATE questions SET status = 'expired' WHERE question_id = ?").run(`question-${terminal}`);
-      expect(() => store.updateQuestion(`question-${terminal}`, { harness: "pi", ownerId: "agent" }, { action: "cancel", expectedRevision: 1 }))
+      expect(() => store.updateQuestion(`question-${terminal}`, { harness: "pi", ownerId: "agent" }, { action: "cancel", expectedRevision: 1, expectedOwnerRevision: 1 }))
         .toThrowError(expect.objectContaining({ code: "question_terminal" }));
     }
   });
 
   it("records revision, parent, and terminal history while leaving descendants unchanged", () => {
     const { store, create, tick } = setup(); create("root"); create("child", "root"); tick();
-    store.updateQuestion("root", { harness: "pi", ownerId: "agent" }, { action: "revise", expectedRevision: 1, question: { prompt: "Revised root?" } });
-    store.updateQuestion("root", { harness: "pi", ownerId: "agent" }, { action: "reparent", expectedRevision: 2, parentQuestionId: null });
+    store.updateQuestion("root", { harness: "pi", ownerId: "agent" }, { action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Revised root?" } });
+    store.updateQuestion("root", { harness: "pi", ownerId: "agent" }, { action: "reparent", expectedRevision: 2, expectedOwnerRevision: 1, parentQuestionId: null });
     const answer = store.answer("root", { expectedRevision: 3, selectedValues: ["yes"] });
     expect(answer).toMatchObject({ affectedDescendantIds: ["child"], descendantGuidance: expect.stringMatching(/revise|supersede|cancel/i) });
     expect(store.get("child")).toMatchObject({ status: "pending", parentQuestionId: "root" });
@@ -104,7 +104,7 @@ describe("immutable Question updates", () => {
       question: { prompt: "foreign-parent?" }, options: [{ value: "yes", label: "Yes" }],
       context: { codebaseContext: "Postbox", problemContext: "Different owner" } });
     expect(() => store.updateQuestion("child", { harness: "pi", ownerId: "agent" }, {
-      action: "reparent", expectedRevision: 1, parentQuestionId: "foreign-parent"
+      action: "reparent", expectedRevision: 1, expectedOwnerRevision: 1, parentQuestionId: "foreign-parent"
     })).toThrowError(expect.objectContaining({ code: "wrong_owner" }));
   });
 });

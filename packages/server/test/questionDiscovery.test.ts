@@ -200,6 +200,7 @@ describe("token-cheap Question discovery", () => {
     const reparented = requests.updateQuestion("hierarchy-child", OWNER, {
       action: "reparent",
       expectedRevision: 1,
+      expectedOwnerRevision: 1,
       parentQuestionId: "hierarchy-alternate"
     });
     expect(reparented).toMatchObject({ revision: 2, parentQuestionId: "hierarchy-alternate" });
@@ -211,6 +212,7 @@ describe("token-cheap Question discovery", () => {
     const detached = requests.updateQuestion("hierarchy-child", OWNER, {
       action: "reparent",
       expectedRevision: 2,
+      expectedOwnerRevision: 1,
       parentQuestionId: null
     });
     const detachedResult = JSON.parse(JSON.stringify(detached)) as Record<string, unknown>;

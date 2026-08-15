@@ -927,7 +927,7 @@ async function main() {
     const revised = nextMessage(codexSocket);
     codexSocket.send(JSON.stringify({ type: "question.update", requestId: "authoritative-browser-update", payload: {
       sessionId: codexSessionId, questionId: revisionId,
-      update: { action: "revise", expectedRevision: 1, question: { prompt: "Authoritative browser revision?" } }
+      update: { action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Authoritative browser revision?" } }
     } }));
     assert((await revised).type === "query.result", "Authoritative revision was rejected");
     await revisionState;
@@ -941,7 +941,7 @@ async function main() {
     await sendCreate(claudeSocket, takeoverId, claudeSessionId);
     const onlineTakeover = nextMessage(codexSocket);
     codexSocket.send(JSON.stringify({ type: "question.update", requestId: "online-takeover-rejected", payload: {
-      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1,
+      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1, expectedOwnerRevision: 1,
         expectedOwner: { harness: "claude-code", ownerId: "claude-smoke-owner" } }
     } }));
     assert((await onlineTakeover).type === "error", "owner_not_offline takeover was accepted while Claude Code was live");
@@ -959,7 +959,7 @@ async function main() {
     }
     const takeover = nextMessage(codexSocket);
     codexSocket.send(JSON.stringify({ type: "question.update", requestId: "offline-takeover", payload: {
-      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1,
+      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1, expectedOwnerRevision: 1,
         expectedOwner: { harness: "claude-code", ownerId: "claude-smoke-owner" } }
     } }));
     assert((await takeover).type === "query.result", "Codex could not take over the offline Claude Code owner");
