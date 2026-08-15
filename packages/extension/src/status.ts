@@ -19,6 +19,7 @@ export interface PostboxStatusSnapshot {
   profile?: ServerProfileIdentity;
   remoteConfig?: string;
   openQuestionCount: number;
+  openQuestionCountScope: "current_owner";
   autostart: PostboxAutostartStatusSnapshot;
   diagnostics: string[];
   tailscale?: {
@@ -96,6 +97,7 @@ export async function collectPostboxStatusSnapshot(options: CollectPostboxStatus
   return {
     connection: { state: "unavailable" },
     openQuestionCount: 0,
+    openQuestionCountScope: "current_owner",
     autostart,
     diagnostics: diagnostics.length > 0 ? diagnostics : ["Pi Postbox is unavailable."],
     tailscale: {
@@ -125,6 +127,7 @@ export function createUrlStatusSnapshot(options: {
     profile: options.profile,
     remoteConfig: classified.tailnetUrl ? `export PI_POSTBOX_URL=${classified.tailnetUrl}` : undefined,
     openQuestionCount: options.openQuestionCount,
+    openQuestionCountScope: "current_owner",
     autostart: options.autostart,
     diagnostics: options.diagnostics ?? []
   };
@@ -179,7 +182,7 @@ export function formatPostboxStatusSnapshot(snapshot: PostboxStatusSnapshot): st
     lines.push("Remote config:");
     lines.push(snapshot.remoteConfig);
   }
-  lines.push(`Open questions: ${snapshot.openQuestionCount}`);
+  lines.push(`Current owner open questions: ${snapshot.openQuestionCount}`);
   lines.push(`Autostart: ${snapshot.autostart.enabled ? "enabled" : "disabled"}${snapshot.autostart.startedByThisSession ? " (started by this session)" : ""}`);
   if (snapshot.tailscale) {
     lines.push(`Tailscale: ${snapshot.tailscale.state}${snapshot.tailscale.diagnostic ? ` - ${snapshot.tailscale.diagnostic}` : ""}`);
@@ -199,6 +202,7 @@ function normalizeStatusSnapshot(
     ...snapshot,
     connection: { ...snapshot.connection },
     openQuestionCount: Number.isInteger(snapshot.openQuestionCount) ? snapshot.openQuestionCount : safePendingCount(client),
+    openQuestionCountScope: "current_owner",
     autostart: snapshot.autostart ?? autostart,
     remoteConfig: snapshot.remoteConfig ?? (tailnetUrl ? `export PI_POSTBOX_URL=${tailnetUrl}` : undefined),
     diagnostics: Array.isArray(snapshot.diagnostics) ? snapshot.diagnostics : []

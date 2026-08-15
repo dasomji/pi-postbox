@@ -142,7 +142,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
   pi.registerTool?.({
     name: "postbox_status",
     label: "Postbox Status",
-    description: "Return privacy-preserving Pi Postbox connectivity, operator, and open-question count status.",
+    description: "Return privacy-preserving Pi Postbox connectivity, operator, and current-owner open-question count status.",
     annotations: { readOnlyHint: true },
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
