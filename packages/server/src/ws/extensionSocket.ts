@@ -369,6 +369,19 @@ export async function registerExtensionSocket(
         if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
         send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.listQuestionStatus({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload }) }); return;
       }
+      if (message.type === "owner.list") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "scope_not_found", new Error("Owner discovery requires this connection's registered session"));
+          return;
+        }
+        try {
+          send(socket, { type: "query.result", requestId: message.requestId,
+            payload: sessionStore.listPostboxOwners(message.payload.sessionId, message.payload.scope) });
+        } catch (error) {
+          sendAskError(socket, message.requestId, "scope_not_found", error);
+        }
+        return;
+      }
       if (message.type === "owner.status.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: sessionStore.getPostboxOwnerStatus(message.payload.owners) }); return; }
       if (message.type === "question.update") {
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Question updates require this connection's registered session")); return; }
@@ -383,7 +396,7 @@ export async function registerExtensionSocket(
         catch (error) { sendAskError(socket, message.requestId, "question_update_failed", error); }
         return;
       }
-      if (message.type === "question.history.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestionHistory(message.payload.questionId) }); return; }
+      if (message.type === "question.history.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestionHistory(message.payload.questionId, message.payload.view) }); return; }
       if (message.type === "question.answer.recover") {
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Recovery reads require this connection's registered session")); return; }
         const reader = sessionStore.ownerForSession(message.payload.sessionId);
@@ -475,7 +488,7 @@ export async function registerExtensionSocket(
             throw new RequestStoreError("wrong_owner", "Question batches require this connection's registered session");
           }
           expireDue();
-          const receipt = requestStore.createBatch(message.payload.sessionId, message.payload.questions);
+          const receipt = requestStore.createBatch(message.payload.sessionId, message.payload.questions, message.payload.defaults);
           broadcaster.broadcast();
           send(socket, { type: "ask.batch.result", requestId: message.requestId, payload: receipt });
         } catch (error) {

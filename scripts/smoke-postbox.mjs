@@ -855,9 +855,11 @@ async function main() {
     } });
     batchClient.start();
     await batchReady;
-    const batchReceipt = await executeAskPostbox({ mode: "batch", questions: [
-      { localRef: "parent", requestId: parentId, question: `${parentId}?`, options: [{ value: "yes", label: "Yes" }],
-        context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise the published batch tool." } },
+    const batchReceipt = await executeAskPostbox({
+      mode: "batch",
+      defaults: { context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise the published batch tool." } },
+      questions: [
+      { localRef: "parent", requestId: parentId, question: `${parentId}?`, options: [{ value: "yes", label: "Yes" }] },
       { localRef: "child", requestId: childId, parent: { localRef: "parent" }, question: `${childId}?`, options: [{ value: "yes", label: "Yes" }],
         context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise ordered localRef parenting." } }
     ] }, batchClient, batchSessionId);

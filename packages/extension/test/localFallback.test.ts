@@ -86,6 +86,8 @@ function selectedTarget(url: string, role: "dev" | "production" = "dev", instanc
       source: "profile-metadata" as const,
       url,
       profile,
+      version: "0.1.3",
+      protocolVersion: "0.1.3",
       instanceId,
       buildId: "test-build",
       profilePollingEnabled: true
@@ -246,6 +248,7 @@ describe("local Postbox fallback", () => {
       resolveTarget,
       profilePollMs: 25,
       targetAffinityTimeoutMs: 5_000,
+      inspectTailscale: async () => ({ state: "unavailable" }),
       onStatus: (status) => statuses.push(status),
       onLocalFallbackStatus: (status) => localStatuses.push(status?.message ?? "cleared")
     } as never);
@@ -261,6 +264,9 @@ describe("local Postbox fallback", () => {
 
     expect(FakeSocket.instances).toHaveLength(1);
     expect(statuses.some((status) => status.includes("deferred") && status.includes("3500"))).toBe(true);
+    expect((await client.getStatusSnapshot()).diagnostics).toContain(
+      "target-switch-deferred:http://127.0.0.1:3500/:pinned-origin-affinity<=5000ms"
+    );
     expect(localStatuses.at(-1)).toContain("ask-pinned");
     expect(messagesOfType(productionSocket, "ask.create")).toHaveLength(1);
 

@@ -2,6 +2,7 @@ import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
   AskCreatePayloadSchema,
+  AskQuestionDraftSchema,
   UpdateQuestionPayloadSchema,
   ProposeAnswerPayloadSchema,
   OTHER_OPTION_VALUE,
@@ -9,8 +10,13 @@ import {
   type AskCancelPayload,
   type AskCreatePayload,
   type UpdateQuestionPayload,
+  type QuestionContentRevision,
+  type QuestionEventHistory,
   type QuestionHistory,
+  type QuestionNonContentEvent,
   type AskQuestionDraft,
+  type AskBatchDefaults,
+  type AskBatchQuestionDraft,
   type AskBatchReceipt,
   type AskRequestSnapshot,
   type AskResult,
@@ -239,11 +245,15 @@ export class RequestStore {
   }
 
   getAnswerForRecovery(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
-    const question = this.db.prepare("SELECT owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(questionId) as any;
+    const question = this.db.prepare("SELECT owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(questionId) as {
+      owner_harness: string; owner_owner_id: string
+    } | undefined;
     if (!question) throw new RequestStoreError("request_not_found", "Question not found");
-    this.db.prepare(`UPDATE answers SET first_reader_harness=?, first_reader_owner_id=?, first_read_at=?
-      WHERE question_id=? AND status='answered' AND first_reader_harness IS NULL`).run(reader.harness, reader.ownerId, new Date(this.now()).toISOString(), questionId);
-    return this.getAnswer(questionId, { harness: question.owner_harness, ownerId: question.owner_owner_id });
+    return this.readAnswer(
+      questionId,
+      { harness: question.owner_harness, ownerId: question.owner_owner_id },
+      reader
+    );
   }
 
   async waitForPostbox(input: {
@@ -348,7 +358,11 @@ export class RequestStore {
     return { questionId: request.requestId, revision: 1, status: "created", ...(nudge ? { nudge } : {}) };
   }
 
-  createBatch(sessionId: string, drafts: AskQuestionDraft[]): AskBatchReceipt {
+  createBatch(sessionId: string, compactDrafts: AskBatchQuestionDraft[], defaults?: AskBatchDefaults): AskBatchReceipt {
+    const drafts = compactDrafts.map((draft) => AskQuestionDraftSchema.parse({
+      ...draft,
+      context: draft.context ?? defaults?.context
+    }));
     const items: AskBatchReceipt["items"] = [];
     const localIds = new Map<string, string>();
     let aborted = false;
@@ -411,7 +425,8 @@ export class RequestStore {
       optionContextLength: total("optionContextLength"),
       contextSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.context))),
       optionsSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.options))),
-      batchSerializedBytes: Buffer.byteLength(JSON.stringify(drafts)), responseCharacterCount: JSON.stringify(receipt).length });
+      batchSerializedBytes: Buffer.byteLength(JSON.stringify({ ...(defaults ? { defaults } : {}), questions: compactDrafts })),
+      responseCharacterCount: JSON.stringify(receipt).length });
     return receipt;
   }
 
@@ -483,7 +498,7 @@ export class RequestStore {
     return result;
   }
 
-  getQuestions(input: { questionIds: string[] }): Array<Record<string, unknown>> {
+  getQuestions(input: { questionIds: string[]; view?: "control" | "full" }): Array<Record<string, unknown>> {
     if (input.questionIds.length === 0) return [];
     const select = this.db.prepare(`SELECT q.*, a.answer_id, a.first_reader_harness
       FROM questions q LEFT JOIN answers a ON a.question_id = q.question_id
@@ -491,20 +506,24 @@ export class RequestStore {
     return input.questionIds.flatMap((questionId) => {
       const row = select.get(questionId) as Record<string, unknown> | undefined;
       if (!row) return [];
-      return [{
+      const control = {
         questionId: row.question_id,
         revision: row.revision,
         ownerRevision: row.owner_revision,
-        mode: row.mode,
-        question: JSON.parse(row.question_json as string),
-        options: JSON.parse(row.options_json as string),
-        ...(row.context_json ? { context: JSON.parse(row.context_json as string) } : {}),
         status: row.status,
         owner: { harness: row.owner_harness, ownerId: row.owner_owner_id },
         creator: { harness: row.creator_harness, ownerId: row.creator_owner_id },
         ...(row.parent_question_id ? { parentQuestionId: row.parent_question_id } : {}),
+        updatedAt: row.updated_at
+      };
+      if (input.view !== "full") return [control];
+      return [{
+        ...control,
+        mode: row.mode,
+        question: JSON.parse(row.question_json as string),
+        options: JSON.parse(row.options_json as string),
+        ...(row.context_json ? { context: JSON.parse(row.context_json as string) } : {}),
         createdAt: row.created_at,
-        updatedAt: row.updated_at,
         ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
         ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
         ...(row.status === "answered" && row.answer_id
@@ -523,9 +542,11 @@ export class RequestStore {
     const scope = resolveQuestionDiscoveryScope(filters);
     applyQuestionDiscoveryScope(clauses, parameters, filters, scope);
     if (filters.status) { clauses.push("q.status = @status"); parameters.status = filters.status; }
-    else if (filters.readState === "read") clauses.push("q.status = 'answered'", "a.status = 'answered'", "a.first_reader_harness IS NOT NULL");
+    if (filters.readState === "read") clauses.push("q.status = 'answered'", "a.status = 'answered'", "a.first_reader_harness IS NOT NULL");
     else if (filters.readState === "unread") clauses.push("q.status = 'answered'", "a.status = 'answered'", "a.first_reader_harness IS NULL");
-    else clauses.push("(q.status = 'pending' OR (q.status = 'answered' AND a.status = 'answered' AND a.first_reader_harness IS NULL))");
+    else if (!filters.status && !filters.includeTerminal) {
+      clauses.push("(q.status = 'pending' OR (q.status = 'answered' AND a.status = 'answered' AND a.first_reader_harness IS NULL))");
+    }
     const rows = this.db.prepare(`SELECT q.question_id, q.status, a.answer_id, a.first_reader_harness
       FROM questions q
       LEFT JOIN answers a ON a.question_id = q.question_id
@@ -679,14 +700,36 @@ export class RequestStore {
     return output!;
   }
 
-  getQuestionHistory(questionId: string): QuestionHistory {
+  getQuestionHistory(questionId: string, view: "events" | "full" = "events"): QuestionEventHistory | QuestionHistory {
     const revisions = (this.db.prepare("SELECT revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at FROM question_revisions WHERE question_id=? ORDER BY revision").all(questionId) as any[])
       .map((row) => ({ revision: row.revision, question: JSON.parse(row.question_json), options: JSON.parse(row.options_json),
         context: row.context_json ? JSON.parse(row.context_json) : undefined,
-        actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at }));
+        actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at })) as QuestionHistory["revisions"];
     const events = (this.db.prepare("SELECT type, revision, actor_harness, actor_owner_id, facts_json, created_at FROM question_events WHERE question_id=? ORDER BY event_id").all(questionId) as any[])
-      .map((row) => ({ type: row.type, revision: row.revision, actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at, ...JSON.parse(row.facts_json) }));
-    return { questionId, revisions, events };
+      .map((row) => ({ type: row.type, revision: row.revision, actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at, ...JSON.parse(row.facts_json) })) as QuestionHistory["events"];
+    if (view === "full") return { questionId, revisions, events };
+
+    const initial = revisions[0];
+    if (!initial) throw new RequestStoreError("request_not_found", "Question not found");
+    const changesByRevision = new Map<number, Set<string>>();
+    for (const event of events) {
+      if (event.type === "revision") changesByRevision.set(event.revision, new Set(event.changes));
+    }
+    const contentRevisions = revisions.slice(1).flatMap((snapshot): QuestionContentRevision[] => {
+      const changes = changesByRevision.get(snapshot.revision);
+      if (!changes) return [];
+      const revision: QuestionContentRevision = {
+        revision: snapshot.revision,
+        actor: snapshot.actor,
+        at: snapshot.at
+      };
+      if (changes.has("question")) revision.question = snapshot.question;
+      if (changes.has("options")) revision.options = snapshot.options;
+      if (changes.has("context") && snapshot.context) revision.context = snapshot.context;
+      return [revision];
+    });
+    const nonContentEvents = events.filter((event) => event.type !== "revision") as QuestionNonContentEvent[];
+    return { questionId, initial, revisions: contentRevisions, events: nonContentEvents };
   }
 
   private seedQuestionRevision(row: any, actor: { harness: string; ownerId: string }): void {
@@ -854,6 +897,14 @@ export class RequestStore {
   }
 
   getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
+    return this.readAnswer(questionId, reader, reader);
+  }
+
+  private readAnswer(
+    questionId: string,
+    authorizedOwner: { harness: string; ownerId: string },
+    reader: { harness: string; ownerId: string }
+  ): Record<string, unknown> {
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
       const question = this.db.prepare(`SELECT question_id, revision, mode, question_json, options_json, context_json,
@@ -864,8 +915,12 @@ export class RequestStore {
           status: AskStatus; replacement_question_id: string | null; created_at: string; resolved_at: string | null
         } | undefined;
       if (!question) throw new RequestStoreError("request_not_found", "Question not found");
-      if (question.owner_harness !== reader.harness || question.owner_owner_id !== reader.ownerId) {
+      if (question.owner_harness !== authorizedOwner.harness || question.owner_owner_id !== authorizedOwner.ownerId) {
         throw new RequestStoreError("wrong_owner", "Reader does not own this Question");
+      }
+      if (question.status === "pending") {
+        output = { type: "pending", status: "pending", questionId: question.question_id };
+        return;
       }
       const answer = this.db.prepare(`SELECT * FROM answers WHERE question_id = ? ORDER BY question_revision DESC, created_at DESC LIMIT 1`).get(questionId) as {
         answer_id: string; question_revision: number; status: AskStatus; selected_values_json: string; note: string | null; rationale: string | null;
@@ -878,7 +933,6 @@ export class RequestStore {
         createdAt: question.created_at, resolvedAt: question.resolved_at
       };
       if (question.status !== "answered") {
-        if (question.status === "pending") throw new RequestStoreError("answer_not_found", "Answer not found");
         if (!question.resolved_at) throw new RequestStoreError("resolution_invalid", "Terminal Question has no resolution timestamp");
         if (question.status === "superseded" && !question.replacement_question_id) {
           throw new RequestStoreError("resolution_invalid", "Superseded Question has no replacement");

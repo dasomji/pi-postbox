@@ -533,16 +533,17 @@ function expectPackageLocalSpawn(): void {
     expect.stringMatching(/packages[/\\]server[/\\]dist[/\\]cli\.js$/),
     "serve",
     "--profile",
-    expect.stringMatching(/^development:[a-f0-9]{16}$/),
-    "--no-tailscale"
+    expect.stringMatching(/^development:[a-f0-9]{16}$/)
   ]));
+  expect(call?.[1]).not.toContain("--no-tailscale");
   expect(call?.[1]).not.toContain("--active-local-role");
 }
 
 function expectPathFallbackSpawn(callIndex = 0): void {
   const call = vi.mocked(spawn).mock.calls[callIndex];
   expect(call?.[0]).toBe("pi-postbox-server");
-  expect(call?.[1]).toEqual(expect.arrayContaining(["serve", "--profile", expect.stringMatching(/^development:/), "--no-tailscale"]));
+  expect(call?.[1]).toEqual(expect.arrayContaining(["serve", "--profile", expect.stringMatching(/^development:/)]));
+  expect(call?.[1]).not.toContain("--no-tailscale");
 }
 
 function resetExtensionModuleState(): void {

@@ -74,11 +74,14 @@ describe("RequestStore Chat-proposed options", () => {
     expect(row.options_json).not.toContain("toolCall");
     expect(row.options_json).not.toContain("transcript");
     expect(store.getQuestionHistory("ask-success")).toMatchObject({
-      revisions: [
-        { revision: 1, options: [{ value: "ship", label: "Ship now" }] },
-        { revision: 2, options: [{ value: "ship", label: "Ship now" }, expect.objectContaining({ value: "chat_opaque_1" })] }
-      ],
-      events: [expect.objectContaining({ type: "revision", revision: 2, changes: ["options"], actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String) })]
+      initial: { revision: 1, options: [{ value: "ship", label: "Ship now" }] },
+      revisions: [{
+        revision: 2,
+        options: [{ value: "ship", label: "Ship now" }, expect.objectContaining({ value: "chat_opaque_1" })],
+        actor: { harness: "pi", ownerId: "agent" },
+        at: expect.any(String)
+      }],
+      events: []
     });
     expect(JSON.stringify(store.getQuestionHistory("ask-success"))).not.toMatch(/selectedValues|rationale|draft-note/);
 

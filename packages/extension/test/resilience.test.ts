@@ -1,4 +1,4 @@
-import type { AskCreatePayload, AskResult, ExtensionServerMessage, SessionRegisterPayload } from "@pi-postbox/protocol";
+import { PROTOCOL_VERSION, type AskCreatePayload, type AskResult, type ExtensionServerMessage, type SessionRegisterPayload } from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PostboxClient } from "../src/client/PostboxClient.js";
 import { formatPostboxStatusSnapshot } from "../src/status.js";
@@ -98,6 +98,8 @@ function selectedTarget(url: string, role: "dev" | "production" = "dev", instanc
       source: "profile-metadata" as const,
       url,
       profile,
+      version: "0.1.3",
+      protocolVersion: PROTOCOL_VERSION,
       instanceId,
       buildId: "test-build",
       profilePollingEnabled: true
@@ -115,6 +117,34 @@ function socketUrl(serverUrl: string): string {
 }
 
 describe("PostboxClient pending ask resilience", () => {
+  it("restores the durable owner question count in a fresh client after reload", async () => {
+    FakeSocket.instances = [];
+    const owner = { harness: "pi", ownerId: "session-1" };
+    const client = createClient({
+      serverUrl: LOCAL_POSTBOX_URL,
+      registration: { ...registration, session: { ...registration.session, owner } },
+      targetProfile: { kind: "development", id: "development:0123456789abcdef" },
+      inspectTailscale: async () => ({ state: "unavailable" })
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const snapshotPromise = client.getStatusSnapshot();
+    const query = socket.sent.find((message) => (message as { type?: string }).type === "owner.status.get") as
+      | { requestId: string; payload: { owners: typeof owner[] } }
+      | undefined;
+    expect(query?.payload).toEqual({ owners: [owner] });
+    socket.serverMessage({
+      type: "query.result",
+      requestId: query!.requestId,
+      payload: [{ owner, activeQuestionCount: 1, unreadAnswerCount: 0 }]
+    });
+
+    await expect(snapshotPromise).resolves.toMatchObject({ openQuestionCount: 1 });
+    client.stop();
+  });
+
   it("settles discovery queries on correlated error, disconnect, and stop", async () => {
     FakeSocket.instances = [];
     const client = createClient(); client.start();
@@ -170,6 +200,29 @@ describe("PostboxClient pending ask resilience", () => {
 
     await expect(answer).rejects.toThrow("Reader does not own this Question");
     await vi.advanceTimersByTimeAsync(1_000);
+    client.stop();
+  });
+
+  it("correlates and returns a compact pending get_answer result", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-pending");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "answer.result",
+      requestId: command.requestId,
+      payload: { type: "pending", status: "pending", questionId: "question-pending" }
+    });
+
+    await expect(answer).resolves.toEqual({
+      type: "pending",
+      status: "pending",
+      questionId: "question-pending"
+    });
     client.stop();
   });
 
@@ -373,7 +426,7 @@ describe("PostboxClient pending ask resilience", () => {
     expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true);
     client.stop();
   });
-  it("status snapshot enriches a real connected local client with Tailnet URL, remote export, and Tailscale diagnostics", async () => {
+  it("status snapshot enriches a development client with its Tailnet URL, remote export, and Tailscale diagnostics", async () => {
     FakeSocket.instances = [];
     const inspectTailscale = vi.fn(async () => ({
       state: "served",
@@ -384,7 +437,13 @@ describe("PostboxClient pending ask resilience", () => {
     const client = createClient({
       serverUrl: LOCAL_POSTBOX_URL,
       targetSource: "active-local",
-      targetProfile: { kind: "production", id: "production" },
+      targetProfile: { kind: "development", id: "development:0123456789abcdef" },
+      targetIdentity: {
+        version: "0.1.3",
+        protocolVersion: PROTOCOL_VERSION,
+        instanceId: "dev-instance",
+        buildId: "0.1.3+sha256.0123456789abcdef"
+      },
       inspectTailscale
     });
     client.start();
@@ -394,7 +453,7 @@ describe("PostboxClient pending ask resilience", () => {
 
     expect(inspectTailscale).toHaveBeenCalledWith({
       localUrl: LOCAL_POSTBOX_URL,
-      profile: { kind: "production", id: "production" }
+      profile: { kind: "development", id: "development:0123456789abcdef" }
     });
     expect(snapshot).toMatchObject({
       connection: {
@@ -404,6 +463,12 @@ describe("PostboxClient pending ask resilience", () => {
         tailnetUrl: TAILNET_POSTBOX_URL
       },
       remoteConfig: `export PI_POSTBOX_URL=${TAILNET_POSTBOX_URL}`,
+      server: {
+        version: "0.1.3",
+        protocolVersion: PROTOCOL_VERSION,
+        instanceId: "dev-instance",
+        buildId: "0.1.3+sha256.0123456789abcdef"
+      },
       autostart: { enabled: true, startedByThisSession: true },
       tailscale: {
         state: "served",
@@ -412,6 +477,26 @@ describe("PostboxClient pending ask resilience", () => {
       }
     });
     expect(snapshot.diagnostics).toContain("tailscale:served:Tailscale Serve points at this Postbox instance.");
+    expect(formatPostboxStatusSnapshot(snapshot)).toContain("Build: 0.1.3+sha256.0123456789abcdef");
+    client.stop();
+  });
+
+  it("records when and where a disconnected client will retry", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({
+      serverUrl: LOCAL_POSTBOX_URL,
+      reconnectMs: 125,
+      inspectTailscale: async () => ({ state: "unavailable" })
+    });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    socket.close();
+
+    expect((await client.getStatusSnapshot()).diagnostics).toContain(
+      `reconnect-scheduled:delay=125ms;target=${LOCAL_POSTBOX_URL}`
+    );
     client.stop();
   });
 

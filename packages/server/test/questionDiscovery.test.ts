@@ -148,14 +148,34 @@ describe("token-cheap Question discovery", () => {
       ]));
   });
 
+  it("returns compact Question controls by default and complete content only when explicitly requested", () => {
+    const { requests, create } = setup();
+    create("current", "controlled", "Prompt that should stay out of the default view", "large private context");
+
+    expect(requests.getQuestions({ questionIds: ["controlled"] })).toEqual([{
+      questionId: "controlled",
+      revision: 1,
+      ownerRevision: 1,
+      status: "pending",
+      owner: OWNER,
+      creator: OWNER,
+      updatedAt: "2026-08-13T12:00:00.000Z"
+    }]);
+    expect(requests.getQuestions({ questionIds: ["controlled"], view: "full" })[0]).toMatchObject({
+      question: { prompt: "Prompt that should stay out of the default view" },
+      options: [{ value: "yes", label: "Yes" }],
+      context: { codebaseContext: "large private context", problemContext: "problem" }
+    });
+  });
+
   it("returns complete latest Question data for every explicit ID without Answer content or truncating large payloads", () => {
     const { requests, create } = setup();
     const largeContext = "large-context-".repeat(1_000);
     for (let index = 0; index < 31; index += 1) create("current", `detail-${index}`, `Question ${index}`, index === 30 ? largeContext : `context-${index}`);
     requests.answer("detail-0", { selectedValues: ["yes"], note: "must not leak", rationale: "also secret" });
-    const discovery = requests as RequestStore & { getQuestions(input: { questionIds: string[] }): unknown[] };
+    const discovery = requests as RequestStore & { getQuestions(input: { questionIds: string[]; view?: "control" | "full" }): unknown[] };
 
-    const details = discovery.getQuestions({ questionIds: Array.from({ length: 31 }, (_, index) => `detail-${index}`) }) as Array<Record<string, unknown>>;
+    const details = discovery.getQuestions({ questionIds: Array.from({ length: 31 }, (_, index) => `detail-${index}`), view: "full" }) as Array<Record<string, unknown>>;
     expect(details).toHaveLength(31);
     expect(details[30]).toMatchObject({
       questionId: "detail-30",

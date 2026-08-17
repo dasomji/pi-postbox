@@ -148,7 +148,12 @@ describe("deliberate Question ownership transfer and recovery", () => {
     store.answer("question", { expectedRevision: 1, selectedValues: ["yes"] });
     advance(10_000);
     expect(store.getAnswerForRecovery("question", RECOVERY)).toMatchObject({
+      alreadyRead: false,
       question: { questionId: "question" }, answer: { selectedValues: ["yes"] },
+      firstRead: { reader: RECOVERY }
+    });
+    expect(store.getAnswerForRecovery("question", SIBLING)).toMatchObject({
+      alreadyRead: true,
       firstRead: { reader: RECOVERY }
     });
     expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ creator: CREATOR, owner: CREATOR });

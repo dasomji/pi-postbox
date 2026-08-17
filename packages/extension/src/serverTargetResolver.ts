@@ -22,6 +22,8 @@ export interface ResolvedServerTarget {
   source: ServerTargetSource;
   url: string;
   profile: ServerProfileIdentity;
+  version: string;
+  protocolVersion: string;
   instanceId?: string;
   buildId: string;
   profilePollingEnabled: boolean;
@@ -70,6 +72,8 @@ export async function resolveServerTarget(options: ResolveServerTargetOptions = 
           source: env.PI_POSTBOX_URL ? "explicit-override" : "profile-config",
           url: config.serverUrl,
           profile: verified.health.profile,
+          version: verified.health.version,
+          protocolVersion: verified.health.protocolVersion,
           instanceId: verified.health.instance?.instanceId,
           buildId: verified.health.buildId,
           profilePollingEnabled: false
@@ -91,6 +95,8 @@ export async function resolveServerTarget(options: ResolveServerTargetOptions = 
           source: "profile-metadata",
           url: metadata.url,
           profile: metadata.profile,
+          version: verified.health.version,
+          protocolVersion: verified.health.protocolVersion,
           instanceId: metadata.instanceId,
           buildId: metadata.buildId,
           profilePollingEnabled: true

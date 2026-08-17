@@ -23,7 +23,7 @@ describe("Question update contract", () => {
       revision: 1, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T11:59:00.000Z",
       question: { prompt: "Original?" }, options: [{ value: "yes", label: "Yes" }]
     }], events: [
-      { type: "revision", revision: 2, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:00:00.000Z", changes: ["question.prompt"] },
+      { type: "revision", revision: 2, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:00:00.000Z", changes: ["question"] },
       { type: "parent_changed", revision: 3, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:01:00.000Z", parentQuestionId: "parent" },
       { type: "superseded", revision: 4, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:02:00.000Z", replacementQuestionId: "replacement" },
       { type: "owner_changed", revision: 4, ownerRevision: 2, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:03:00.000Z",

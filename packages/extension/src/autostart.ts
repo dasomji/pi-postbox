@@ -129,7 +129,6 @@ export function resolveAutostartCommand(profile: ResolvedServerProfile): { execu
     profile.databasePath
   ];
   if (profile.kind === "development") {
-    serverArgs.push("--no-tailscale");
     const developmentUi = join(packageRoot, "apps", "web", "dist");
     if (existsSync(developmentUi)) serverArgs.push("--ui-dist-dir", developmentUi);
   }

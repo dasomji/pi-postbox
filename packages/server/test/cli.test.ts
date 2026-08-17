@@ -7,6 +7,7 @@ import { createPostboxApp } from "../src/app.js";
 import {
   DEFAULT_POSTBOX_PORT,
   collectPostboxServerStatus,
+  createCliPostboxApp,
   describePostboxPortSelection,
   listenWithPortFallback,
   parseCliOptions
@@ -21,7 +22,7 @@ afterEach(async () => {
 });
 
 describe("pi-postbox-server profile CLI", () => {
-  it("uses stable production defaults", () => {
+  it("uses stable production defaults with package and content-specific runtime identity", () => {
     expect(parseCliOptions([], {})).toMatchObject({
       command: "serve",
       host: "127.0.0.1",
@@ -29,11 +30,25 @@ describe("pi-postbox-server profile CLI", () => {
       profile: { kind: "production", id: "production" },
       databasePath: join(process.env.HOME!, ".pi-postbox", "postbox.sqlite"),
       metadataPath: join(process.env.HOME!, ".pi-postbox", "active-local", "server.json"),
-      tailscaleEnabled: true
+      tailscaleEnabled: true,
+      version: "0.1.4",
+      buildId: expect.stringMatching(/^0\.1\.4\+sha256\.[a-f0-9]{16}$/)
     });
   });
 
-  it("derives isolated development resources, dynamic port, and disabled Tailscale", () => {
+  it("passes the CLI package version and build fingerprint into health", async () => {
+    const options = parseCliOptions(["--database=:memory:", "--no-tailscale"], {});
+    const app = await createCliPostboxApp(options);
+    apps.push(app);
+
+    expect((await app.inject({ method: "GET", url: "/healthz" })).json()).toMatchObject({
+      version: options.version,
+      buildId: options.buildId,
+      protocolVersion: PROTOCOL_VERSION
+    });
+  });
+
+  it("derives isolated development resources, a dynamic port, and enabled Tailscale", () => {
     const stateHome = "/tmp/test-state";
     const profileId = "development:0123456789abcdef";
     expect(parseCliOptions(["--profile", profileId], { XDG_STATE_HOME: stateHome })).toMatchObject({
@@ -41,7 +56,7 @@ describe("pi-postbox-server profile CLI", () => {
       port: 0,
       profileStateDir: join(stateHome, "pi-postbox", "dev", "0123456789abcdef"),
       databasePath: join(stateHome, "pi-postbox", "dev", "0123456789abcdef", "postbox.sqlite"),
-      tailscaleEnabled: false
+      tailscaleEnabled: true
     });
   });
 
@@ -136,7 +151,13 @@ describe("pi-postbox-server profile CLI", () => {
       heartbeatIntervalMs: 0
     });
 
-    const inspectTailscale = vi.fn();
+    const inspectTailscale = vi.fn(async () => ({
+      state: "served" as const,
+      localUrl: `${address}/`,
+      profile: development.profile,
+      tailnetUrl: "https://coolify.tailnet.ts.net:41657",
+      httpsPort: 41657
+    }));
     const report = await collectPostboxServerStatus({}, {
       profile: development.profile,
       metadataPath: development.metadataPath,
@@ -146,11 +167,12 @@ describe("pi-postbox-server profile CLI", () => {
     expect(report).toMatchObject({
       profile: development.profile,
       localUrl: `${address}/`,
+      tailnetUrl: "https://coolify.tailnet.ts.net:41657",
       availability: "running",
       health: "ok"
     });
     expect(report.diagnostics).not.toContain(expect.stringContaining("production"));
-    expect(inspectTailscale).not.toHaveBeenCalled();
+    expect(inspectTailscale).toHaveBeenCalledWith({ localUrl: `${address}/`, profile: development.profile });
   });
 });
 

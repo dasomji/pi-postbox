@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
   AskCreatePayloadSchema,
+  AskBatchDefaultsSchema,
+  AskBatchQuestionDraftSchema,
   type AskCreatePayload,
   type AskCreateHandoffContext,
+  type AskBatchDefaults,
   type AskOption,
   type AskReceipt,
   type AskBatchReceipt,
@@ -28,7 +31,12 @@ export interface AskPostboxInput {
 
 export interface AskPostboxBatchInput {
   mode: "batch";
-  questions: Array<AskPostboxInput & { localRef: string; parent?: { questionId: string } | { localRef: string } }>;
+  defaults: AskBatchDefaults;
+  questions: Array<Omit<AskPostboxInput, "context"> & {
+    localRef: string;
+    context?: AskCreateHandoffContext;
+    parent?: { questionId: string } | { localRef: string };
+  }>;
 }
 
 const optionParameters = {
@@ -70,7 +78,7 @@ export const askPostboxParameters = {
   description: "Create Questions. A Question may have at most five direct children and the hierarchy may have at most four levels.",
   oneOf: [
     { required: ["question", "options", "context"], not: { required: ["questions"] }, properties: { mode: { type: "string", enum: ["single", "multi"] } } },
-    { required: ["mode", "questions"], properties: { mode: { const: "batch" } }, not: { required: ["question"] } }
+    { required: ["mode", "defaults", "questions"], properties: { mode: { const: "batch" } }, not: { required: ["question"] } }
   ],
   properties: {
     ...sharedDraftProperties,
@@ -85,8 +93,11 @@ export const askPostboxParameters = {
     parent: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
       questionId: { type: "string", minLength: 1 }
     } },
+    defaults: { type: "object", additionalProperties: false, required: ["context"], properties: {
+      context: contextParameters
+    }, description: "Shared batch values expanded and validated by the server before each Question is persisted." },
     questions: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
-      required: ["localRef", "question", "options", "context"], properties: {
+      required: ["localRef", "question", "options"], properties: {
         ...sharedDraftProperties, localRef: { type: "string", minLength: 1 },
         mode: { type: "string", enum: ["single", "multi"] },
         parent: { oneOf: [
@@ -146,11 +157,24 @@ export async function executeAskPostbox(
 ): Promise<AskReceipt | AskBatchReceipt> {
   if (input.mode === "batch") {
     if (!("createAskBatch" in client)) throw new Error("Postbox client does not support Question batches");
-    const questions = input.questions.map(({ localRef, parent, ...item }) => {
-      const { sessionId: _sessionId, ...draft } = createAskPayload(item, sessionId);
-      return { ...draft, localRef, parent };
-    });
-    return client.createAskBatch({ sessionId, questions }, signal);
+    const defaults = AskBatchDefaultsSchema.parse(input.defaults);
+    const questions = input.questions.map(({ localRef, parent, ...item }) => AskBatchQuestionDraftSchema.parse({
+      localRef,
+      parent,
+      requestId: item.requestId ?? `ask_${randomUUID()}`,
+      mode: item.mode ?? "single",
+      question: {
+        prompt: item.question,
+        context: item.questionContext,
+        relevance: item.relevance,
+        decisionImpact: item.decisionImpact
+      },
+      options: item.options,
+      ...(item.context ? { context: item.context } : {}),
+      forkReference: item.forkReference,
+      expiresAt: item.expiresAt ?? (item.timeoutMs ? new Date(Date.now() + item.timeoutMs).toISOString() : undefined)
+    }));
+    return client.createAskBatch({ sessionId, defaults, questions }, signal);
   }
   const payload = createAskPayload(input, sessionId);
   void lifecycle;

@@ -23,7 +23,7 @@ describe("Pi Postbox server bootstrap", () => {
     expect(health).toMatchObject({
       ok: true,
       service: "pi-postbox",
-      protocolVersion: "0.1.0",
+      protocolVersion: PROTOCOL_VERSION,
       uptimeMs: 2_345
     });
     expect(health.profile).toEqual({ kind: "production", id: "production" });

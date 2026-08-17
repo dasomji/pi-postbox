@@ -26,6 +26,16 @@ function setup(state: "working" | "idle" | "waiting_for_postbox" = "working") {
 }
 
 describe("resilient proactive Answer delivery", () => {
+  it("returns an unresolved Answer as a compact normal pending result", () => {
+    const { store, create } = setup();
+    create("pending-read");
+    expect(store.getAnswer("pending-read", OWNER)).toEqual({
+      type: "pending",
+      status: "pending",
+      questionId: "pending-read"
+    });
+  });
+
   it("defers a busy owner until settled, then claims exactly one lightweight delivery", () => {
     const { sessions, store, create } = setup("working"); create("busy"); store.answer("busy", { expectedRevision: 1, selectedValues: ["yes"] });
     expect(store.claimProactiveAnswerNotifications(OWNER, "busy-connection", sessions)).toEqual([]);

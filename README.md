@@ -8,7 +8,7 @@ The product requirements document is in [`docs/prd/pi-postbox.md`](docs/prd/pi-p
 
 ## Current status
 
-Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `ask_postbox`, WebSocket session registration, SSE browser state, SQLite persistence/history, rich handoff context, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script.
+Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `ask_postbox`, WebSocket session registration, SSE browser state, SQLite persistence/history, rich handoff context, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script. Version 0.1.4 also makes common agent reads compact by default while keeping explicit complete forensic views.
 
 ## Quick start from this checkout
 
@@ -78,6 +78,34 @@ pi-postbox-server
 
 `npm install -g @wienerberliner/pi-postbox` is only needed when you want `pi-postbox-server` on your shell `PATH`; it is distinct from `pi install`.
 
+## Agent tool contracts
+
+`ask_postbox` returns after durable persistence rather than waiting for a human Answer. In batch mode, put the required shared handoff context in `defaults.context`; an item may supply a complete `context` override. The server expands and validates every item before persisting independent Question records:
+
+```json
+{
+  "mode": "batch",
+  "defaults": {
+    "context": {
+      "codebaseContext": "Postbox workspace",
+      "problemContext": "Choose the rollout approach"
+    }
+  },
+  "questions": [
+    { "localRef": "root", "question": "Roll out now?", "options": [{ "value": "yes", "label": "Yes" }] }
+  ]
+}
+```
+
+Agent query tools use small workflow-oriented results by default:
+
+- `get_questions({ questionIds })` returns IDs, lifecycle state, ownership, hierarchy, the latest timestamp, and concurrency revisions. Pass `view: "full"` for Question text, options, and handoff context.
+- `get_question_history({ questionId })` returns the initial complete snapshot, changed content sections, and non-content lifecycle/ownership/hierarchy events. Pass `view: "full"` for every immutable revision snapshot and revision event.
+- `list_postbox_owners()` derives the caller's feature scope and returns at most 100 owner identities with coarse presence and scoped active/unread counts. It permits only `feature`, `worktree`, or `repository` scope and never exposes titles, paths, prompts, or context.
+- `get_answer({ questionId })` returns `{ "type": "pending", "status": "pending", "questionId": "…" }` while the Question remains unresolved; this is a normal bounded result, not an error.
+
+See [`docs/protocol.md`](docs/protocol.md) for exact view and authorization semantics.
+
 ## Question Chat
 
 For a pending Postbox Question, click **Question Chat** to activate Question Chat explicitly. Activation creates a private runtime on the originating Pi machine, but it does not start an automatic model turn or response. Send a freeform message or choose a starter: **Elaborate**, **Pro–Cons**, or **Teach me**.
@@ -115,9 +143,9 @@ The extension resolves a server profile from the loaded package. Installed npm/g
 
 Override config location with `PI_POSTBOX_CONFIG_PATH` or `PI_POSTBOX_CONFIG_DIR`. The extension creates a generated machine id on first startup and persists it in this config file. That generated machine id is stable across sessions; hostname and dashboard aliases provide human-readable names.
 
-For local self-healing, each profile publishes only `<profile-state-dir>/active-local/server.json`. The extension validates that record against `/healthz` profile, instance, URL, protocol, and build identity. It never orders or falls back across profiles. A global production loopback `serverUrl` is therefore invisible to a checkout development profile, while `PI_POSTBOX_URL` remains an intentional escape hatch.
+For local self-healing, each profile publishes only `<profile-state-dir>/active-local/server.json`. The extension validates that record against `/healthz` profile, instance, URL, protocol, and build identity. Health reports the package version separately from the protocol version, while the default build id fingerprints the loaded runtime bytes. It never orders or falls back across profiles. A global production loopback `serverUrl` is therefore invisible to a checkout development profile, while `PI_POSTBOX_URL` remains an intentional escape hatch.
 
-`npm run dev` derives the checkout identity, selects independent backend/UI ports, uses its own database and metadata, disables Tailscale mutation, and never stops production. Separate clones and worktrees can run concurrently. The dashboard title and persistent accessible `Development server` badge come from authoritative `/healthz` profile state.
+`npm run dev` derives the checkout identity, selects independent backend/UI ports, uses its own database and metadata, and never stops production. It relies on the server's content-specific build fingerprint instead of assigning one static build id to the checkout. It exposes the development API through Tailscale Serve when available and non-conflicting, using the API's separate port so the production mapping remains untouched. Set `PI_POSTBOX_TAILSCALE=off` to disable this exposure. Separate clones and worktrees can run concurrently. The dashboard title and persistent accessible `Development server` badge come from authoritative `/healthz` profile state.
 
 Package-local autostart is enabled by default for `ask_postbox` and the user-only `/postbox` dashboard command. Set `PI_POSTBOX_AUTOSTART=off` to disable spawning a bundled server. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the recovery wait; the default is 10 seconds (`10000` ms).
 
@@ -171,7 +199,7 @@ While `ask_postbox` is pending, the extension shows compact command hints. Opera
 /postbox-cancel [requestId] [--note text] [--rationale text]
 ```
 
-`/postbox-status` reports privacy-preserving operator status: connectivity, active local URL when known, Tailnet URL/export guidance when available, open-question count, autostart state, and diagnostics. It does not dump pending question contents, options, answers, notes, or history. The read-only `postbox_status` tool exposes the same structured status for agents without leaking question text.
+`/postbox-status` reports privacy-preserving operator status: connectivity, active local URL when known, Tailnet URL/export guidance when available, exact server version/protocol/instance/build identity, open-question count, autostart state, and diagnostics. Reconnect diagnostics show their delay and target; an origin-pinned Question shows the deferred target and bounded affinity interval. It does not dump pending question contents, options, answers, notes, or history. The read-only `postbox_status` tool exposes the same structured status for agents without leaking question text.
 
 Use the exact user command `/postbox` to open the active Postbox dashboard in your browser. `/postbox` is a user-only/manual browser-opening command; browser opening is not exposed to LLM tools or agent tool side effects.
 

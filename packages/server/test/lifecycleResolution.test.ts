@@ -46,7 +46,8 @@ describe("human Answers versus lifecycle-only resolutions", () => {
     });
 
     const details = Object.fromEntries(store.getQuestions({
-      questionIds: ["answered", "cancelled", "expired", "superseded"]
+      questionIds: ["answered", "cancelled", "expired", "superseded"],
+      view: "full"
     }).map((detail: Record<string, unknown>) => [detail.questionId, detail]));
     expect(details.answered).toMatchObject({ status: "answered", answerId: expect.any(String), answerRead: false });
     for (const status of ["cancelled", "expired", "superseded"] as const) {
@@ -70,6 +71,10 @@ describe("human Answers versus lifecycle-only resolutions", () => {
     expect(store.listQuestionStatus({ ...discovery, readState: "unread" }))
       .toEqual([{ questionId: "answered", status: "answered", answerId: expect.any(String), answerRead: false }]);
     expect(store.listQuestionStatus({ ...discovery, readState: "read" })).toEqual([]);
+    expect(store.listQuestionStatus({ ...discovery, status: "cancelled", readState: "unread" })).toEqual([]);
+    expect(store.listQuestionStatus(discovery).map((question) => question.questionId)).toEqual([
+      "answered", "cancelled", "expired", "replacement", "superseded"
+    ]);
 
     expect(store.getAnswer("answered", OWNER)).toMatchObject({
       alreadyRead: false,

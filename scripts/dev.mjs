@@ -113,7 +113,7 @@ console.error(`[dev] Profile: ${profileId}`);
 console.error(`[dev] State: ${profileStateDir}`);
 console.error(`[dev] Dashboard: ${dashboardUrl}`);
 console.error(`[dev] API: http://127.0.0.1:${apiPort}/`);
-console.error("[dev] Tailscale mutation is disabled for development profiles.");
+console.error("[dev] Tailscale exposure is enabled when the CLI is installed, logged in, and non-conflicting.");
 
 start("server", serverExecutable, [
   ...serverPrefixArgs,
@@ -122,9 +122,7 @@ start("server", serverExecutable, [
   "--port", String(apiPort),
   "--profile", profileId,
   "--profile-state-dir", profileStateDir,
-  "--database", databasePath,
-  "--build-id", `dev-${checkoutId}`,
-  "--no-tailscale"
+  "--database", databasePath
 ]);
 start(
   "web",

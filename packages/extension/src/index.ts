@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { AnswerReadResultSchema, type SessionRegisterPayload } from "@pi-postbox/protocol";
-import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
+import { ASK_STATUSES, AnswerReadResultSchema, type SessionRegisterPayload } from "@pi-postbox/protocol";
+import { PostboxClient } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
 import { ensurePostboxServerAutostarted, getPostboxAutostartFailureDiagnostic, postboxAutostartTimeoutMs } from "./autostart.js";
@@ -196,7 +196,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
   pi.registerTool?.({
     name: "get_answer",
     label: "Get Postbox Answer",
-    description: "Read the latest Answer for an owned Postbox Question; the registered Pi session supplies reader identity.",
+    description: "Read the latest Answer for an owned Postbox Question, or receive a compact pending result while unresolved; the registered Pi session supplies reader identity.",
     annotations: { readOnlyHint: false },
     parameters: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
       questionId: { type: "string", minLength: 1, description: "Question ID returned by ask_postbox." }
@@ -218,7 +218,18 @@ export default function postboxExtension(pi: PiLikeApi): void {
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
   });
-  const filters = { owner: { type: "object" }, repository: { type: "string" }, worktree: { type: "string" }, feature: { type: "string" }, status: { type: "string" }, global: { type: "boolean" } };
+  const filters = {
+    owner: { type: "object", description: "Exact owner identity; normally omit and use scope." },
+    repository: { type: "string", description: "Opaque repository scope ID, not a filesystem path; normally omit and use scope." },
+    worktree: { type: "string", description: "Opaque worktree scope ID, not a filesystem path; normally omit and use scope." },
+    feature: { type: "string", description: "Opaque feature scope ID; normally omit and use scope." },
+    status: {
+      type: "string",
+      enum: [...ASK_STATUSES],
+      description: "Question lifecycle status. Use 'pending' for open or unanswered questions."
+    },
+    global: { type: "boolean" }
+  };
   const discoveryScope = {
     type: "string",
     enum: ["owner", "feature", "worktree", "repository", "global"],
@@ -227,10 +238,31 @@ export default function postboxExtension(pi: PiLikeApi): void {
   registerQueryTool("list_questions", "List compact pending Question IDs and text. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden across a feature, worktree, repository, or all Postbox Questions.",
     { type: "object", additionalProperties: false, properties: { ...filters, scope: discoveryScope, cursor: { type: "string" }, pageSize: { type: "number" } } }, "question.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
-  registerQueryTool("get_questions", "Get complete latest Question details for explicit IDs without Answer content.",
-    { type: "object", additionalProperties: false, required: ["questionIds"], properties: { questionIds: { type: "array", minItems: 1, items: { type: "string" } } } }, "questions.get");
+  registerQueryTool("get_questions", "Get compact latest Question controls for explicit IDs by default; request the full view for complete content without Answer content.",
+    { type: "object", additionalProperties: false, required: ["questionIds"], properties: {
+      questionIds: { type: "array", minItems: 1, items: { type: "string" } },
+      view: {
+        type: "string",
+        enum: ["control", "full"],
+        description: "Defaults to compact control records; use 'full' for complete Question content."
+      }
+    } }, "questions.get");
   registerQueryTool("list_question_status", "List compact actionable Question and unread Answer status. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden.",
-    { type: "object", additionalProperties: false, properties: { ...filters, scope: discoveryScope, readState: { type: "string", enum: ["read", "unread"] }, includeTerminal: { type: "boolean" } } }, "question.status.list",
+    { type: "object", additionalProperties: false, properties: {
+      ...filters,
+      scope: discoveryScope,
+      readState: { type: "string", enum: ["read", "unread"], description: "Human Answer read state; composes conjunctively with status." },
+      includeTerminal: { type: "boolean", description: "With no status/readState filter, include every lifecycle state instead of only actionable pending and unread items." }
+    } }, "question.status.list",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  registerQueryTool("list_postbox_owners", "List up to 100 Postbox owners in the caller's feature by default, with only coarse presence and scoped queue counts.",
+    { type: "object", additionalProperties: false, properties: {
+      scope: {
+        type: "string",
+        enum: ["feature", "worktree", "repository"],
+        description: "Defaults to the caller's current feature; broader scopes remain within its worktree or repository."
+      }
+    } }, "owner.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   registerQueryTool("get_postbox_owner_status", "Get compact presence and queue counts for exact harness-neutral owners.",
     { type: "object", additionalProperties: false, required: ["owners"], properties: {
@@ -246,12 +278,12 @@ export default function postboxExtension(pi: PiLikeApi): void {
       oneOf: [
         { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "question"], properties: {
           action: { const: "revise" }, ...questionUpdateVersions,
-          question: { type: "object", additionalProperties: false, required: ["prompt"], properties: {
+          question: { type: "object", additionalProperties: false, required: ["prompt"], description: "Complete replacement Question object; omitted question-level fields are removed.", properties: {
             prompt: { type: "string" }, context: { type: "string" }, relevance: { type: "string" }, decisionImpact: { type: "string" }
           } },
-          options: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", additionalProperties: false,
+          options: { type: "array", minItems: 1, maxItems: 20, description: "Optional complete replacement options; omit to preserve current options.", items: { type: "object", additionalProperties: false,
             required: ["value", "label"], properties: { value: { type: "string" }, label: { type: "string" }, description: { type: "string" }, meaning: { type: "string" }, context: { type: "string" } } } },
-          context: { type: "object", additionalProperties: false, required: ["codebaseContext", "problemContext"], properties: {
+          context: { type: "object", additionalProperties: false, required: ["codebaseContext", "problemContext"], description: "Optional complete replacement handoff context; omit to preserve current context.", properties: {
             codebaseContext: { type: "string" }, problemContext: { type: "string" }, additionalInfo: { type: "array", maxItems: 20, items: {
               type: "object", additionalProperties: false, required: ["content"], properties: {
                 kind: { type: "string", enum: ["text", "code", "diagram", "link"] }, title: { type: "string" },
@@ -281,8 +313,15 @@ export default function postboxExtension(pi: PiLikeApi): void {
       ]
     } } }, "question.update",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
-  registerQueryTool("get_question_history", "Explicitly retrieve immutable Question revision, parent, and terminal event facts.",
-    { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string" } } }, "question.history.get");
+  registerQueryTool("get_question_history", "Retrieve compact event-oriented Question history by default; request the full view for every immutable revision snapshot.",
+    { type: "object", additionalProperties: false, required: ["questionId"], properties: {
+      questionId: { type: "string" },
+      view: {
+        type: "string",
+        enum: ["events", "full"],
+        description: "Defaults to compact event-oriented history; use 'full' for every stored revision snapshot."
+      }
+    } }, "question.history.get");
   registerQueryTool("recover_question_answer", "Read a discovered offline owner's Answer without taking ownership.",
     { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string" } } }, "question.answer.recover",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
@@ -398,10 +437,22 @@ async function registerResolvedTarget(
     if (!uiScope.isActive()) return;
     currentRegistration = registration;
     client?.stop();
-    client = new PostboxClient({
+    let footerRenderVersion = 0;
+    let postboxClient!: PostboxClient;
+    const renderFooter = () => {
+      const renderVersion = ++footerRenderVersion;
+      void renderPostboxFooter(uiScope, postboxClient, target.url, () => renderVersion === footerRenderVersion);
+    };
+    postboxClient = new PostboxClient({
       serverUrl: target.url,
       targetSource: target.source,
       targetProfile: target.profile,
+      targetIdentity: {
+        version: target.version,
+        protocolVersion: target.protocolVersion,
+        instanceId: target.instanceId,
+        buildId: target.buildId
+      },
       registration,
       ...(target.profilePollingEnabled
         ? {
@@ -409,10 +460,8 @@ async function registerResolvedTarget(
             profilePollingEnabled: true
           }
         : {}),
-      onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
-      onLocalFallbackStatus: (status) => {
-        void renderLocalFallbackStatus(uiScope, status);
-      },
+      onStatus: renderFooter,
+      onLocalFallbackStatus: renderFooter,
       onAnswerAvailable: (notification, deliveryId) => {
         // Stable widget identity makes at-least-once transport replay owner-visible exactly once.
         uiScope.setWidget(`postbox-answer-${deliveryId}`, [
@@ -422,7 +471,9 @@ async function registerResolvedTarget(
       answerNotificationInbox: new FileAnswerNotificationInbox(env, undefined, profile),
       questionChats
     });
-    client.start();
+    client = postboxClient;
+    postboxClient.start();
+    renderFooter();
     notifyRegistrationWaiters();
   } catch (error) {
     if (!uiScope.isActive()) return;
@@ -733,25 +784,28 @@ function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
   };
 }
 
-async function renderLocalFallbackStatus(uiScope: SessionUiScope, status: LocalFallbackStatus | undefined): Promise<void> {
-  if (!status) {
-    uiScope.setStatus("postbox-ask", "");
-    uiScope.setWidget("postbox-ask", []);
-    return;
-  }
-
-  const displayUrl = await resolveAskDisplayUrl(status);
-  const message = status.message.replace(`Open ${status.serverUrl} to answer.`, `Open ${displayUrl} to answer.`);
-  uiScope.setStatus("postbox-ask", `Postbox ${displayUrl}`);
-  uiScope.setWidget("postbox-ask", [message]);
-  uiScope.notify(message, "info");
-}
-
-async function resolveAskDisplayUrl(status: LocalFallbackStatus): Promise<string> {
+async function renderPostboxFooter(
+  uiScope: SessionUiScope,
+  postboxClient: PostboxClient,
+  fallbackUrl: string,
+  isLatest: () => boolean
+): Promise<void> {
+  let displayUrl = fallbackUrl;
+  let openQuestionCount = postboxClient.listPendingAsks().length;
   try {
-    const snapshot = await client?.getStatusSnapshot?.();
-    return snapshot?.connection.tailnetUrl ?? status.serverUrl;
+    const snapshot = await postboxClient.getStatusSnapshot();
+    displayUrl = snapshot.connection.tailnetUrl
+      ?? snapshot.connection.localUrl
+      ?? snapshot.connection.activeUrl
+      ?? fallbackUrl;
+    openQuestionCount = snapshot.openQuestionCount;
   } catch {
-    return status.serverUrl;
+    // The known target and pending asks still make a useful footer if diagnostics fail.
   }
+  if (!isLatest()) return;
+
+  const questionLabel = openQuestionCount === 1 ? "question" : "questions";
+  uiScope.setStatus("postbox", `Postbox ${displayUrl} · ${openQuestionCount} open ${questionLabel}`);
+  uiScope.setStatus("postbox-ask", "");
+  uiScope.setWidget("postbox-ask", []);
 }

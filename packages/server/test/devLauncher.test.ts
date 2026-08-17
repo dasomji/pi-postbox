@@ -12,7 +12,7 @@ afterEach(async () => {
 });
 
 describe("scripts/dev.mjs", () => {
-  it("starts a checkout-scoped backend and Vite UI without production or Tailscale mutation", async () => {
+  it("starts a checkout-scoped backend and Vite UI with Tailscale exposure enabled", async () => {
     const { invocations, stderr, stateHome } = await runDevLauncher();
     const backend = invocations.find((entry) => entry.command === "fake-server");
     const profileId = valueAfter(backend?.args ?? [], "--profile");
@@ -21,10 +21,11 @@ describe("scripts/dev.mjs", () => {
     expect(backend?.args).toEqual(expect.arrayContaining([
       "serve",
       "--profile", profileId,
-      "--profile-state-dir", join(stateHome, "pi-postbox", "dev", profileId!.slice("development:".length)),
-      "--no-tailscale"
+      "--profile-state-dir", join(stateHome, "pi-postbox", "dev", profileId!.slice("development:".length))
     ]));
+    expect(backend?.args).not.toContain("--no-tailscale");
     expect(backend?.args).not.toContain("--active-local-role");
+    expect(backend?.args).not.toContain("--build-id");
     expect(backend?.args).not.toContain("32187");
     expect(invocations.some((entry) => entry.command === "tailscale")).toBe(false);
 
@@ -33,6 +34,7 @@ describe("scripts/dev.mjs", () => {
     expect(web?.piPostboxProfile).toBe(profileId);
     expect(stderr).toContain(`Profile: ${profileId}`);
     expect(stderr).toContain("Dashboard: http://127.0.0.1:");
+    expect(stderr).toContain("Tailscale exposure is enabled");
   });
 
   it("fails without stopping anything when an explicitly requested development port is occupied", async () => {

@@ -55,9 +55,9 @@ Context-only commands are created only from the stored Question, all options, re
 
 ## Health profile identity
 
-`/healthz` always reports `profile` and `buildId`. A listening server also reports its `instance`, containing the instance id and normalized loopback URL. Production uses the literal `production` profile; trusted source checkouts use `development:<checkout-id>`.
+`/healthz` always reports separate application `version`, `protocolVersion`, `profile`, and `buildId` fields. The CLI application version comes from the server package manifest. Its default build id combines that version with a deterministic SHA-256 fingerprint of the loaded runtime directory, so two builds from the same checkout do not share an identity merely because their path is unchanged. A listening server also reports its `instance`, containing the instance id and normalized loopback URL. Production uses the literal `production` profile; trusted source checkouts use `development:<checkout-id>`.
 
-The single profile-local `active-local/server.json` record requires an exact identity match: profile, instance id, URL, protocol version, and build id must match `/healthz` before the extension trusts the target. Missing or mismatched identity is a health mismatch. This keeps stale or unsafe metadata from redirecting clients to another server or profile.
+The single profile-local `active-local/server.json` record requires an exact identity match: profile, instance id, URL, protocol version, and build id must match `/healthz` before the extension trusts the target. Missing or mismatched identity is a health mismatch. This keeps stale or unsafe metadata from redirecting clients to another server or profile. Any incompatible schema change increments `protocolVersion`; package version and build fingerprint identify the particular application artifact independently.
 
 ## Extension WebSocket
 
@@ -128,7 +128,9 @@ Browser snapshots are extension-backed. A fresh browser sees `extension_offline`
 
 Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.
 
-### Ordered batch creation receipts
+### Ordered batch creation and receipts
+
+Batch input requires one shared `defaults.context` with non-blank `codebaseContext` and `problemContext`. Each item inherits that complete context unless it supplies its own complete `context` override. The server expands defaults before item validation and persistence; persisted Questions never retain a reference to mutable batch defaults. Replay remains keyed by each stable `requestId`.
 
 An `ask_postbox` batch receipt preserves input order. Every accepted item reports `localRef`, persisted `questionId`, current `revision`, and `disposition: "created" | "idempotent"`; rejected items report their `localRef` and typed reason. The top-level `status` remains `created`, `partial`, or `rejected`.
 
@@ -140,9 +142,9 @@ Postbox batch created: [{"localRef":"root","questionId":"ask_…","revision":1,"
 
 ### Human Answers and lifecycle-only resolutions
 
-`answerId` and `answerRead` are evidence of a human Answer and appear in complete or compact Question details only when `status` is `answered`. Cancelled, expired, and superseded Questions may use internal lifecycle records, but those records are never exposed as Answers.
+`answerId` and `answerRead` are evidence of a human Answer and appear in full Question details and compact status results only when `status` is `answered`; default control details omit them. Cancelled, expired, and superseded Questions may use internal lifecycle records, but those records are never exposed as Answers.
 
-`get_answer` retains its existing Answer result for `answered` Questions. For any lifecycle-only terminal Question it returns immediately with an explicit result and no Answer/read fields:
+`get_answer` returns immediately after its bounded read. An unresolved Question produces the normal compact branch `{ "type": "pending", "status": "pending", "questionId": "…" }`; it does not fail with an Answer-not-found error and it does not expose Question content. An `answered` Question retains the existing human Answer result. Any lifecycle-only terminal Question returns an explicit result with no Answer/read fields:
 
 ```json
 {
@@ -163,6 +165,28 @@ Postbox batch created: [{"localRef":"root","questionId":"ask_…","revision":1,"
 
 Cancelled results may additionally include `note` and `rationale`; expired results may include `rationale`. Superseded results require `replacementQuestionId`.
 
+A recovery read authorized for an offline owner records the actual recovery agent as the first reader without transferring ownership. Exactly one first reader receives `alreadyRead: false`; subsequent owner or recovery reads receive `alreadyRead: true` and retain the original `firstRead.reader`.
+
+`list_question_status` defaults to actionable facts only: pending Questions plus unread human Answers. `status` and `readState` are conjunctive when both are supplied. With no explicit status/read filter, `includeTerminal: true` broadens the default to every lifecycle state; explicit filters remain authoritative. Compact status results never include Question text, options, context, notes, rationale, or Answer content.
+
+### Compact and forensic query views
+
+`get_questions` defaults to `view: "control"`. A control record contains `questionId`, `revision`, `ownerRevision`, `status`, `owner`, `creator`, optional `parentQuestionId`, and `updatedAt`. It deliberately omits prompt, options, handoff context, expiry, resolution details, and Answer content. Callers that need content or immutable evidence must explicitly request `view: "full"`; missing IDs are omitted and input order is preserved for records that exist.
+
+`get_question_history` defaults to `view: "events"`. It returns:
+
+- `initial`: the complete revision-1 snapshot;
+- `revisions`: subsequent content revisions containing metadata plus only the complete sections replaced at that revision (`question`, `options`, and/or `context`); and
+- `events`: non-content hierarchy, lifecycle, and ownership events.
+
+These revisions are section replacements, not JSON Patch operations. `view: "full"` returns every stored immutable revision snapshot plus all events, including revision events. Compact history is derived at read time; the persisted forensic record is unchanged.
+
+### Scoped owner discovery
+
+`list_postbox_owners` derives authorization and grouping from the registered caller session. Its default `feature` scope may be broadened only to the caller's `worktree` or `repository`; arbitrary scope IDs and global discovery are not accepted. It returns at most 100 ordered entries, each exactly `owner`, coarse `presence`, `activeQuestionCount`, and `unreadAnswerCount`. Membership/presence come from sessions in the derived scope, while counts include Questions in that same scope. The caller may appear in the result.
+
+The result intentionally excludes semantic state, heartbeat timestamps, titles, paths, prompts, context, and a transfer-eligibility claim. A caller must still perform the normal revision/owner compare-and-swap when transferring a Question. `get_postbox_owner_status` remains the exact-owner lookup when the owner identities are already known.
+
 ## Question update concurrency
 
 Question details expose two independent optimistic-concurrency tokens:
@@ -174,13 +198,13 @@ Every `update_question` action supplies both `expectedRevision` and `expectedOwn
 
 ## Status and browser command boundaries
 
-The `/postbox-status` user command and read-only `postbox_status` tool expose privacy-preserving operational status: connection state, active/local URL when known, Tailnet/export guidance when available, open-question count, autostart state, and diagnostics. They do not expose pending question contents, options, answers, notes, or history.
+The `/postbox-status` user command and read-only `postbox_status` tool expose privacy-preserving operational status: connection state, active/local URL when known, Tailnet/export guidance when available, exact server package/protocol/instance/build identity, open-question count, autostart state, and diagnostics. Reconnect diagnostics include the scheduled delay and target. When unresolved sent work pins its origin server, status records the deferred target and bounded affinity interval instead of silently appearing stuck. These surfaces do not expose pending question contents, options, answers, notes, or history.
 
 The `/postbox` user command opens the active dashboard in the user's browser, using recovery/autostart if needed. Browser-opening is user-only/manual behavior and is not exposed through an LLM tool or agent side effect.
 
 ## Rich context and result hygiene
 
-Every new ask request must include a `context` object with non-blank `codebaseContext` and `problemContext`. It may also include:
+Every persisted new Question contains a `context` object with non-blank `codebaseContext` and `problemContext`. A single ask supplies it directly; a batch supplies required `defaults.context` and may replace it completely on an individual item. It may also include:
 
 - question context, relevance, and decision impact
 - per-option meaning/context
@@ -224,5 +248,6 @@ Package-local autostart is a client recovery behavior for `ask_postbox` and the 
 - Handle unknown fields gracefully.
 - Use `/healthz` to confirm service and protocol version before relying on newer fields.
 - `contextFallback`, `forkKind: "context-only"`, `POST .../chat/context`, and `chat.activate-context` are additive Question Chat capabilities that require a server and extension version that both understand them. Older Questions without complete persisted context deliberately report fallback unavailable; they are not migrated by inventing context.
+- Version 0.1.4 changes agent-tool defaults for batch creation, Question details, history, and pending Answer reads. A 0.1.4 extension and server must be deployed together; callers needing complete details/history must request `view: "full"` explicitly.
 - V1 has no app-level authentication; restrict network reachability with Tailscale/lizardtail or an external auth proxy.
 - State-changing HTTP actions and extension WebSockets reject cross-origin browser requests unless the `Origin` host matches the Postbox service host. Node/Pi extension clients normally omit `Origin` and are accepted if they can reach the service.

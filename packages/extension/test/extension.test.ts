@@ -23,7 +23,9 @@ const postboxClientMock = vi.hoisted(() => ({
     onLocalFallbackStatus?: (status: { requestId: string; serverUrl: string; message: string } | undefined) => void;
   }>,
   started: 0,
-  stopped: 0
+  stopped: 0,
+  pendingAskCount: 0,
+  tailnetUrl: "https://coolify.tailnet.ts.net:3500" as string | undefined
 }));
 const questionChatMock = vi.hoisted(() => ({
   cleanupAll: vi.fn<(ownerSessionId?: string) => Promise<void>>(async () => undefined),
@@ -63,13 +65,18 @@ vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
       }
 
       listPendingAsks() {
-        return [];
+        return Array.from({ length: postboxClientMock.pendingAskCount }, (_, index) => ({ requestId: `ask-${index}` }));
       }
 
       getStatusSnapshot() {
         return {
-          connection: { state: "connected", activeUrl: "http://127.0.0.1:3500/", localUrl: "http://127.0.0.1:3500/", tailnetUrl: "https://coolify.tailnet.ts.net:3500" },
-          openQuestionCount: 1,
+          connection: {
+            state: "connected",
+            activeUrl: "http://127.0.0.1:3500/",
+            localUrl: "http://127.0.0.1:3500/",
+            tailnetUrl: postboxClientMock.tailnetUrl
+          },
+          openQuestionCount: postboxClientMock.pendingAskCount,
           autostart: { enabled: true, startedByThisSession: false },
           diagnostics: []
         };
@@ -108,6 +115,8 @@ afterEach(async () => {
   postboxClientMock.options.length = 0;
   postboxClientMock.started = 0;
   postboxClientMock.stopped = 0;
+  postboxClientMock.pendingAskCount = 0;
+  postboxClientMock.tailnetUrl = "https://coolify.tailnet.ts.net:3500";
   questionChatMock.cleanupAll.mockReset();
   questionChatMock.cleanupAll.mockResolvedValue(undefined);
   questionChatMock.suspendAll.mockReset();
@@ -123,6 +132,54 @@ async function tempConfigEnv(extra: NodeJS.ProcessEnv = {}): Promise<NodeJS.Proc
 }
 
 describe("Pi Postbox extension registration", () => {
+  it("exposes lifecycle filters and compact-by-default Question, history, and owner discovery views", () => {
+    const tools = new Map<string, {
+      description: string;
+      parameters: { properties: Record<string, any> };
+    }>();
+
+    postboxExtension({
+      on: () => undefined,
+      registerTool(definition: unknown) {
+        const tool = definition as {
+          name: string;
+          description: string;
+          parameters: { properties: Record<string, any> };
+        };
+        tools.set(tool.name, tool);
+      },
+      registerCommand: () => undefined
+    });
+
+    const expectedStatusSchema = {
+      type: "string",
+      enum: ["pending", "answered", "cancelled", "expired", "superseded"],
+      description: "Question lifecycle status. Use 'pending' for open or unanswered questions."
+    };
+    expect(tools.get("list_questions")?.parameters.properties.status).toEqual(expectedStatusSchema);
+    expect(tools.get("list_question_status")?.parameters.properties.status).toEqual(expectedStatusSchema);
+    expect(tools.get("get_questions")?.parameters.properties.view).toEqual({
+      type: "string",
+      enum: ["control", "full"],
+      description: "Defaults to compact control records; use 'full' for complete Question content."
+    });
+    expect(tools.get("get_questions")?.description).toMatch(/compact.*default/i);
+    expect(tools.get("get_question_history")?.parameters.properties.view).toEqual({
+      type: "string",
+      enum: ["events", "full"],
+      description: "Defaults to compact event-oriented history; use 'full' for every stored revision snapshot."
+    });
+    expect(tools.get("get_question_history")?.description).toMatch(/event.*default/i);
+    expect(tools.get("list_postbox_owners")?.parameters.properties.scope).toEqual({
+      type: "string",
+      enum: ["feature", "worktree", "repository"],
+      description: "Defaults to the caller's current feature; broader scopes remain within its worktree or repository."
+    });
+    expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("global");
+    expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("featureId");
+    expect(tools.get("get_answer")?.description).toMatch(/pending/i);
+  });
+
   it("does not complete terminal session shutdown before Question Chat abort cleanup", async () => {
     let finishAbort!: () => void;
     questionChatMock.cleanupAll.mockImplementationOnce(
@@ -261,7 +318,7 @@ describe("Pi Postbox extension registration", () => {
     expect(postboxClientMock.options.at(-1)!.registration!.session.sessionId).not.toBe(originalOwner);
   });
 
-  it("shows the active Postbox URL in the footer while an ask is waiting", async () => {
+  it("shows the Tailnet URL and session question count in the footer without a waiting widget", async () => {
     const env = await tempConfigEnv({ PI_POSTBOX_URL: "https://postbox.example/" });
     const statuses: Array<{ key: string; value: string }> = [];
     const widgets: string[][] = [];
@@ -301,18 +358,77 @@ describe("Pi Postbox extension registration", () => {
       }
     );
 
+    postboxClientMock.pendingAskCount = 1;
     postboxClientMock.options.at(-1)?.onLocalFallbackStatus?.({
       requestId: "ask-footer-url",
       serverUrl: "http://127.0.0.1:3500/",
       message: "Postbox waiting ask-footer-url. Open http://127.0.0.1:3500/ to answer."
     });
 
-    await vi.waitFor(() => expect(statuses).toContainEqual({ key: "postbox-ask", value: "Postbox https://coolify.tailnet.ts.net:3500" }));
-    expect(statuses).not.toContainEqual({ key: "postbox-ask", value: "Waiting ask-footer-url" });
-    expect(widgets.at(-1)?.[0]).toContain("Open https://coolify.tailnet.ts.net:3500");
+    await vi.waitFor(() => expect(statuses).toContainEqual({
+      key: "postbox",
+      value: "Postbox https://coolify.tailnet.ts.net:3500 · 1 open question"
+    }));
+    expect(widgets.at(-1)).toEqual([]);
+
+    postboxClientMock.pendingAskCount = 0;
+    postboxClientMock.options.at(-1)?.onLocalFallbackStatus?.(undefined);
+    await vi.waitFor(() => expect(statuses).toContainEqual({
+      key: "postbox",
+      value: "Postbox https://coolify.tailnet.ts.net:3500 · 0 open questions"
+    }));
 
     const shutdownCtx = { cwd: process.cwd(), ui: { setStatus: () => undefined, notify: () => undefined, setWidget: () => undefined } };
     for (const handler of handlers.get("session_shutdown") ?? []) handler({}, shutdownCtx);
+  });
+
+  it("falls back to the local URL in the footer when Tailscale is unavailable", async () => {
+    postboxClientMock.tailnetUrl = undefined;
+    const env = await tempConfigEnv({ PI_POSTBOX_URL: "https://postbox.example/" });
+    const statuses: Array<{ key: string; value: string }> = [];
+    const api = {
+      getSessionName: () => "Footer local URL test",
+      on: () => undefined,
+      registerTool: () => undefined,
+      registerCommand: () => undefined
+    };
+
+    await startRegistration(
+      api,
+      {
+        cwd: process.cwd(),
+        ui: {
+          setStatus: (key, value) => statuses.push({ key, value }),
+          notify: () => undefined,
+          setWidget: () => undefined
+        },
+        sessionManager: { getSessionFile: () => "/tmp/session.jsonl", getLeafId: () => "leaf-1" }
+      },
+      env,
+      undefined,
+      "footer-local-url",
+      {
+        resolveOptions: {
+          fetch: healthFetch({
+            "https://postbox.example/healthz": createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS })
+          }).fetch,
+          nowMs: NOW_MS,
+          ttlMs: TTL_MS
+        }
+      }
+    );
+
+    postboxClientMock.pendingAskCount = 2;
+    postboxClientMock.options.at(-1)?.onLocalFallbackStatus?.({
+      requestId: "ask-footer-local-url",
+      serverUrl: "http://127.0.0.1:3500/",
+      message: "Postbox waiting ask-footer-local-url. Open http://127.0.0.1:3500/ to answer."
+    });
+
+    await vi.waitFor(() => expect(statuses).toContainEqual({
+      key: "postbox",
+      value: "Postbox http://127.0.0.1:3500/ · 2 open questions"
+    }));
   });
 
   it("does not block or throw Pi startup when the server is unavailable", async () => {

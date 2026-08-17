@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { askPostboxParameters, executeAskPostbox, formatAskResult } from "../src/tools/askPostbox.js";
 
+const sharedContext = { codebaseContext: "Deployment service", problemContext: "Choose a rollout." };
 const draft = {
   localRef: "root",
   requestId: "question-root",
   question: "Choose a rollout?",
-  options: [{ value: "blue", label: "Blue" }],
-  context: { codebaseContext: "Deployment service", problemContext: "Choose a rollout." }
+  options: [{ value: "blue", label: "Blue" }]
 };
 
 describe("ask_postbox ordered batches", () => {
@@ -17,7 +17,9 @@ describe("ask_postbox ordered batches", () => {
     expect(JSON.stringify(schema)).toMatch(/four levels/i);
     expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toBeUndefined();
-    expect(schema.properties.questions.items.required).toEqual(["localRef", "question", "options", "context"]);
+    expect(schema.oneOf[1].required).toEqual(["mode", "defaults", "questions"]);
+    expect(schema.properties.defaults.required).toEqual(["context"]);
+    expect(schema.properties.questions.items.required).toEqual(["localRef", "question", "options"]);
     expect(schema.properties.questions.items.properties.parent.oneOf).toHaveLength(2);
     expect(schema.properties.parent.required).toEqual(["questionId"]);
     expect(schema.properties.parent.properties.localRef).toBeUndefined();
@@ -25,9 +27,11 @@ describe("ask_postbox ordered batches", () => {
   });
 
   it("sends an ordered batch once and returns every created and rejected receipt", async () => {
+    const overrideContext = { codebaseContext: "Deployment worker", problemContext: "Choose the child rollout." };
     const input = {
       mode: "batch",
-      questions: [draft, { ...draft, localRef: "child", requestId: "question-child", parent: { localRef: "root" } }]
+      defaults: { context: sharedContext },
+      questions: [draft, { ...draft, localRef: "child", requestId: "question-child", context: overrideContext, parent: { localRef: "root" } }]
     };
     const receipt = {
       status: "partial",
@@ -40,7 +44,15 @@ describe("ask_postbox ordered batches", () => {
 
     await expect((executeAskPostbox as any)(input, { createAskBatch }, "session-1")).resolves.toEqual(receipt);
     expect(createAskBatch).toHaveBeenCalledOnce();
-    expect(createAskBatch.mock.calls[0]?.[0].questions.map((item: any) => item.localRef)).toEqual(["root", "child"]);
+    expect(createAskBatch.mock.calls[0]?.[0]).toMatchObject({
+      sessionId: "session-1",
+      defaults: { context: sharedContext },
+      questions: [
+        expect.objectContaining({ localRef: "root", requestId: "question-root" }),
+        expect.objectContaining({ localRef: "child", context: overrideContext })
+      ]
+    });
+    expect(createAskBatch.mock.calls[0]?.[0].questions[0]).not.toHaveProperty("context");
     expect(JSON.parse(formatAskResult(receipt as any).replace(/^Postbox batch partial: /, ""))).toEqual([
       { localRef: "root", questionId: "question-root", revision: 1, disposition: "created" },
       { localRef: "child", disposition: "rejected", reason: "child_limit_reached" }
@@ -62,6 +74,7 @@ describe("ask_postbox ordered batches", () => {
 
     const result = await (executeAskPostbox as any)({
       mode: "batch",
+      defaults: { context: sharedContext },
       questions: [
         { ...withoutRequestId, localRef: "generated" },
         { ...draft, localRef: "provided", requestId: "caller-question-id" }
@@ -86,7 +99,7 @@ describe("ask_postbox ordered batches", () => {
 
   it("maps a single existing parent Question ID and fork provenance into the create payload", async () => {
     const createAsk = vi.fn(async (payload) => ({ questionId: payload.requestId, revision: 1, status: "pending" as const }));
-    await (executeAskPostbox as any)({ ...draft, parent: { questionId: "existing-parent" },
+    await (executeAskPostbox as any)({ ...draft, context: sharedContext, parent: { questionId: "existing-parent" },
       forkReference: { agentSessionId: "session-source", leafId: "leaf-source" } }, { createAsk }, "session-1");
     expect(createAsk).toHaveBeenCalledWith(expect.objectContaining({
       parentQuestionId: "existing-parent",

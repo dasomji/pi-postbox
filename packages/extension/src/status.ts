@@ -14,9 +14,17 @@ export interface PostboxConnectionStatus {
   tailnetUrl?: string;
 }
 
+export interface PostboxServerIdentity {
+  version: string;
+  protocolVersion: string;
+  buildId: string;
+  instanceId?: string;
+}
+
 export interface PostboxStatusSnapshot {
   connection: PostboxConnectionStatus;
   profile?: ServerProfileIdentity;
+  server?: PostboxServerIdentity;
   remoteConfig?: string;
   openQuestionCount: number;
   openQuestionCountScope: "current_owner";
@@ -90,7 +98,13 @@ export async function collectPostboxStatusSnapshot(options: CollectPostboxStatus
       autostart,
       diagnostics,
       source: result.target.source,
-      profile: result.target.profile
+      profile: result.target.profile,
+      server: {
+        version: result.target.version,
+        protocolVersion: result.target.protocolVersion,
+        buildId: result.target.buildId,
+        instanceId: result.target.instanceId
+      }
     });
   }
 
@@ -115,6 +129,7 @@ export function createUrlStatusSnapshot(options: {
   diagnostics?: string[];
   source?: string;
   profile?: ServerProfileIdentity;
+  server?: PostboxServerIdentity;
 }): PostboxStatusSnapshot {
   const classified = classifyStatusUrl(options.activeUrl, options.source);
   return {
@@ -125,6 +140,7 @@ export function createUrlStatusSnapshot(options: {
       tailnetUrl: classified.tailnetUrl
     },
     profile: options.profile,
+    server: options.server,
     remoteConfig: classified.tailnetUrl ? `export PI_POSTBOX_URL=${classified.tailnetUrl}` : undefined,
     openQuestionCount: options.openQuestionCount,
     openQuestionCountScope: "current_owner",
@@ -139,14 +155,6 @@ export async function enrichStatusSnapshotFromLocalServer(
 ): Promise<PostboxStatusSnapshot> {
   const localUrl = snapshot.connection.localUrl;
   if (!localUrl) return snapshot;
-
-  if (options.profile?.kind === "development") {
-    return {
-      ...snapshot,
-      profile: options.profile,
-      tailscale: { state: "disabled", diagnostic: "Development profiles do not mutate Tailscale Serve automatically." }
-    };
-  }
 
   const inspectTailscale = options.inspectTailscale ?? inspectPostboxTailscaleStatus;
   const tailscale = await inspectTailscale({ localUrl, profile: options.profile });
@@ -178,6 +186,12 @@ export function formatPostboxStatusSnapshot(snapshot: PostboxStatusSnapshot): st
   if (snapshot.connection.localUrl) lines.push(`Local URL: ${snapshot.connection.localUrl}`);
   if (snapshot.connection.tailnetUrl) lines.push(`Tailnet URL: ${snapshot.connection.tailnetUrl}`);
   if (snapshot.profile) lines.push(`Profile: ${snapshot.profile.id} (${snapshot.profile.kind})`);
+  if (snapshot.server) {
+    lines.push(`Server version: ${snapshot.server.version}`);
+    lines.push(`Protocol: ${snapshot.server.protocolVersion}`);
+    if (snapshot.server.instanceId) lines.push(`Instance: ${snapshot.server.instanceId}`);
+    lines.push(`Build: ${snapshot.server.buildId}`);
+  }
   if (snapshot.remoteConfig) {
     lines.push("Remote config:");
     lines.push(snapshot.remoteConfig);

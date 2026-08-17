@@ -1,6 +1,6 @@
 {
   "name": "@wienerberliner/pi-postbox",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Pi Postbox extension and web service for remote human decision handoffs.",
   "type": "module",
   "workspaces": [

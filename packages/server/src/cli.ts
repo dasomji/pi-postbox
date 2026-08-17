@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPostboxApp, type ServerInstanceAwareApp } from "./app.js";
+import { getServerRuntimeIdentity } from "./runtimeIdentity.js";
 import {
   cleanupProfileTarget,
   createProfileInstanceId,
@@ -42,6 +43,7 @@ export interface CliOptions {
   profile: ServerProfileIdentity;
   profileStateDir: string;
   metadataPath: string;
+  version: string;
   buildId: string;
   sessionHideOfflineAfterMs?: number;
   sessionRetentionMs?: number;
@@ -88,9 +90,9 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     ?? defaultProfileStateDir(profile, env);
   const metadataPath = join(profileStateDir, "active-local", "server.json");
   const tailscaleEnv = (env.PI_POSTBOX_TAILSCALE ?? "").toLowerCase();
-  const tailscaleRequested = argv.includes("--tailscale") || ["on", "1", "true", "yes"].includes(tailscaleEnv);
   const tailscaleDisabled = argv.includes("--no-tailscale") || ["off", "0", "false", "no"].includes(tailscaleEnv);
-  const tailscaleEnabled = !tailscaleDisabled && (profile.kind === "production" || tailscaleRequested);
+  const tailscaleEnabled = !tailscaleDisabled;
+  const runtimeIdentity = getServerRuntimeIdentity();
 
   const host = getFlagValue("--host") ?? env.PI_POSTBOX_HOST ?? "127.0.0.1";
   const portText = getFlagValue("--port") ?? env.PI_POSTBOX_PORT ?? String(profile.kind === "production" ? DEFAULT_POSTBOX_PORT : 0);
@@ -123,7 +125,8 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     profile,
     profileStateDir,
     metadataPath,
-    buildId: getFlagValue("--build-id") ?? env.PI_POSTBOX_BUILD_ID ?? PROTOCOL_VERSION,
+    version: runtimeIdentity.version,
+    buildId: getFlagValue("--build-id") ?? env.PI_POSTBOX_BUILD_ID ?? runtimeIdentity.buildId,
     sessionHideOfflineAfterMs,
     sessionRetentionMs,
     fcmServiceAccountPath:
@@ -303,15 +306,13 @@ export async function collectPostboxServerStatus(
   }
 
   const inspectTailscale = options.inspectTailscale ?? inspectPostboxTailscaleStatus;
-  const tailscale: PostboxTailscaleStatus = target && profile.kind === "production"
+  const tailscale: PostboxTailscaleStatus = target
     ? await inspectTailscale({ localUrl: target.url, profile })
     : {
         state: "unavailable",
         localUrl: "",
         profile,
-        diagnostic: profile.kind === "development"
-          ? "Development profiles do not mutate Tailscale Serve automatically."
-          : "No healthy Postbox target is published for this profile."
+        diagnostic: "No healthy Postbox target is published for this profile."
       };
 
   const tailnetUrl = tailscale.tailnetUrl;
@@ -425,6 +426,24 @@ function isNodeError(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
 }
 
+export async function createCliPostboxApp(
+  options: CliOptions,
+  onShutdownRequest?: () => void
+): Promise<FastifyInstance> {
+  return createPostboxApp({
+    logger: true,
+    uiDistDir: options.uiDistDir,
+    databasePath: options.databasePath,
+    profile: options.profile,
+    version: options.version,
+    buildId: options.buildId,
+    sessionHideOfflineAfterMs: options.sessionHideOfflineAfterMs,
+    sessionRetentionMs: options.sessionRetentionMs,
+    fcmServiceAccountPath: options.fcmServiceAccountPath,
+    onShutdownRequest
+  });
+}
+
 export async function main(argv = process.argv.slice(2), env = process.env): Promise<void> {
   const options = parseCliOptions(argv, env);
 
@@ -445,17 +464,7 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
     }
   }
 
-  const app = await createPostboxApp({
-    logger: true,
-    uiDistDir: options.uiDistDir,
-    databasePath: options.databasePath,
-    profile: options.profile,
-    buildId: options.buildId,
-    sessionHideOfflineAfterMs: options.sessionHideOfflineAfterMs,
-    sessionRetentionMs: options.sessionRetentionMs,
-    fcmServiceAccountPath: options.fcmServiceAccountPath,
-    onShutdownRequest: () => void requestShutdown()
-  });
+  const app = await createCliPostboxApp(options, () => void requestShutdown());
 
   process.once("SIGINT", () => void requestShutdown());
   process.once("SIGTERM", () => void requestShutdown());

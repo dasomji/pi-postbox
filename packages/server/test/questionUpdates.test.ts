@@ -58,15 +58,32 @@ describe("immutable Question updates", () => {
     const answer = store.answer("root", { expectedRevision: 3, selectedValues: ["yes"] });
     expect(answer).toMatchObject({ affectedDescendantIds: ["child"], descendantGuidance: expect.stringMatching(/revise|supersede|cancel/i) });
     expect(store.get("child")).toMatchObject({ status: "pending", parentQuestionId: "root" });
-    expect(store.getQuestionHistory("root")).toMatchObject({ events: [
-      expect.objectContaining({ type: "revision", revision: 2, actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String) }),
-      expect.objectContaining({ type: "parent_changed", revision: 3 }),
-      expect.objectContaining({ type: "answered", revision: 3 })
-    ], revisions: [
-      expect.objectContaining({ revision: 1, question: { prompt: "root?" }, actor: { harness: "pi", ownerId: "agent" } }),
-      expect.objectContaining({ revision: 2, question: { prompt: "Revised root?" } }),
-      expect.objectContaining({ revision: 3, question: { prompt: "Revised root?" } })
-    ] });
+    expect(store.getQuestionHistory("root")).toEqual({
+      questionId: "root",
+      initial: expect.objectContaining({
+        revision: 1,
+        question: { prompt: "root?" },
+        actor: { harness: "pi", ownerId: "agent" }
+      }),
+      revisions: [{
+        revision: 2,
+        actor: { harness: "pi", ownerId: "agent" },
+        at: expect.any(String),
+        question: { prompt: "Revised root?" }
+      }],
+      events: [
+        expect.objectContaining({ type: "parent_changed", revision: 3 }),
+        expect.objectContaining({ type: "answered", revision: 3 })
+      ]
+    });
+    expect(store.getQuestionHistory("root", "full")).toMatchObject({
+      revisions: [
+        expect.objectContaining({ revision: 1, question: { prompt: "root?" } }),
+        expect.objectContaining({ revision: 2, question: { prompt: "Revised root?" } }),
+        expect.objectContaining({ revision: 3, question: { prompt: "Revised root?" } })
+      ],
+      events: expect.arrayContaining([expect.objectContaining({ type: "revision", revision: 2 })])
+    });
     expect(store.getQuestionHistory("root")).not.toHaveProperty("answer");
   });
 
@@ -74,9 +91,10 @@ describe("immutable Question updates", () => {
     const { db, store, create } = setup();
     create("browser-cancel");
     store.cancel("browser-cancel", { rationale: "No longer needed" });
-    expect(store.getQuestionHistory("browser-cancel").revisions).toEqual([
+    expect(store.getQuestionHistory("browser-cancel").initial).toEqual(
       expect.objectContaining({ revision: 1, question: { prompt: "browser-cancel?" } })
-    ]);
+    );
+    expect(store.getQuestionHistory("browser-cancel").revisions).toEqual([]);
     expect(store.getQuestionHistory("browser-cancel").events).toContainEqual(expect.objectContaining({
       type: "cancelled", actor: { harness: "pi", ownerId: "agent" }, at: expect.any(String)
     }));

@@ -22,6 +22,28 @@ const question = (localRef: string, parent?: unknown) => ({
 });
 
 describe("Question hierarchy transaction", () => {
+  it("expands batch default context before validation and persists item overrides independently", () => {
+    const { db, store } = setup();
+    const defaultContext = { codebaseContext: "Shared codebase", problemContext: "Shared problem" };
+    const overrideContext = { codebaseContext: "Child codebase", problemContext: "Child problem" };
+    const { context: _rootContext, ...root } = question("root");
+    const { context: _childContext, ...child } = question("child", { localRef: "root" });
+
+    expect(store.createBatch("session", [root, { ...child, context: overrideContext }], { context: defaultContext }))
+      .toMatchObject({ status: "created" });
+
+    expect(store.getQuestions({ questionIds: ["question-root", "question-child"], view: "full" }))
+      .toEqual([
+        expect.objectContaining({ questionId: "question-root", context: defaultContext }),
+        expect.objectContaining({ questionId: "question-child", context: overrideContext })
+      ]);
+    expect(db.prepare("SELECT context_json FROM questions ORDER BY question_id").all()).toEqual([
+      { context_json: JSON.stringify(overrideContext) },
+      { context_json: JSON.stringify(defaultContext) }
+    ]);
+    db.close();
+  });
+
   it("commits a valid prefix, rejects a forward reference with a typed reason, and rejects every later item", () => {
     const { db, store } = setup();
     const receipt = store.createBatch("session", [

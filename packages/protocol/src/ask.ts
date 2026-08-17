@@ -20,7 +20,8 @@ const NonBlankLongTextSchema = z
 const RequestIdSchema = z.string().min(1).max(REQUEST_ID_MAX);
 
 export const AskModeSchema = z.enum(["single", "multi"]);
-export const AskStatusSchema = z.enum(["pending", "answered", "cancelled", "expired", "superseded"]);
+export const ASK_STATUSES = ["pending", "answered", "cancelled", "expired", "superseded"] as const;
+export const AskStatusSchema = z.enum(ASK_STATUSES);
 
 export const RichContextItemSchema = z.object({
   kind: z.enum(["text", "code", "diagram", "link"]).default("text"),
@@ -135,8 +136,20 @@ export const AskQuestionDraftSchema = z.object({
   parent: AskParentReferenceSchema.optional()
 }).strict();
 
+export const AskBatchDefaultsSchema = z.object({
+  context: AskCreateHandoffContextSchema
+}).strict();
+
+export const AskBatchQuestionDraftSchema = AskQuestionDraftSchema.extend({
+  context: AskCreateHandoffContextSchema.optional()
+}).strict();
+
 const AskSingleInputSchema = z.object({ mode: z.literal("single"), question: AskQuestionDraftSchema }).strict();
-const AskBatchInputSchema = z.object({ mode: z.literal("batch"), questions: z.array(AskQuestionDraftSchema).min(1) }).strict()
+const AskBatchInputSchema = z.object({
+  mode: z.literal("batch"),
+  defaults: AskBatchDefaultsSchema,
+  questions: z.array(AskBatchQuestionDraftSchema).min(1)
+}).strict()
   .superRefine(({ questions }, ctx) => {
     const refs = new Set<string>();
     questions.forEach((question, index) => {
@@ -185,13 +198,44 @@ export const QuestionRevisionSnapshotSchema = HistoryBaseSchema.extend({
   options: z.array(AskOptionSchema),
   context: AskCreateHandoffContextSchema.optional()
 }).strict();
-export const QuestionHistorySchema = z.object({ questionId: RequestIdSchema, revisions: z.array(QuestionRevisionSnapshotSchema), events: z.array(z.union([
-  HistoryBaseSchema.extend({ type: z.literal("revision"), changes: z.array(ShortTextSchema) }).strict(),
+export const QuestionContentRevisionSchema = HistoryBaseSchema.extend({
+  question: AskQuestionSchema.optional(),
+  options: z.array(AskOptionSchema).optional(),
+  context: AskCreateHandoffContextSchema.optional()
+}).strict().superRefine((revision, context) => {
+  if (revision.question !== undefined || revision.options !== undefined || revision.context !== undefined) return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: "A content revision must replace at least one Question content section"
+  });
+});
+const QuestionRevisionEventSchema = HistoryBaseSchema.extend({
+  type: z.literal("revision"),
+  changes: z.array(z.enum(["question", "options", "context"])).min(1)
+}).strict();
+export const QuestionNonContentEventSchema = z.union([
   HistoryBaseSchema.extend({ type: z.literal("parent_changed"), parentQuestionId: RequestIdSchema.nullable() }).strict(),
-  HistoryBaseSchema.extend({ type: z.enum(["cancelled", "answered", "expired"]), replacementQuestionId: RequestIdSchema.optional() }).strict(),
-  HistoryBaseSchema.extend({ type: z.literal("superseded"), replacementQuestionId: RequestIdSchema }).strict()
-  ,HistoryBaseSchema.extend({ type: z.literal("owner_changed"), ownerRevision: ExpectedOwnerRevisionSchema, previousOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema, reason: z.enum(["transfer", "takeover"]) }).strict()
-])) }).strict();
+  HistoryBaseSchema.extend({ type: z.enum(["cancelled", "answered", "expired"]) }).strict(),
+  HistoryBaseSchema.extend({ type: z.literal("superseded"), replacementQuestionId: RequestIdSchema }).strict(),
+  HistoryBaseSchema.extend({
+    type: z.literal("owner_changed"),
+    ownerRevision: ExpectedOwnerRevisionSchema,
+    previousOwner: OwnerIdentitySchema,
+    owner: OwnerIdentitySchema,
+    reason: z.enum(["transfer", "takeover"])
+  }).strict()
+]);
+export const QuestionHistorySchema = z.object({
+  questionId: RequestIdSchema,
+  revisions: z.array(QuestionRevisionSnapshotSchema),
+  events: z.array(z.union([QuestionRevisionEventSchema, QuestionNonContentEventSchema]))
+}).strict();
+export const QuestionEventHistorySchema = z.object({
+  questionId: RequestIdSchema,
+  initial: QuestionRevisionSnapshotSchema,
+  revisions: z.array(QuestionContentRevisionSchema),
+  events: z.array(QuestionNonContentEventSchema)
+}).strict();
 
 export const AskCancelPayloadSchema = z.object({
   note: LongTextSchema.optional(),
@@ -277,7 +321,14 @@ export const LifecycleResolutionReadResultSchema = z.discriminatedUnion("status"
   LifecycleReadBaseSchema.extend({ status: z.literal("superseded"), replacementQuestionId: RequestIdSchema }).strict()
 ]);
 
+export const PendingAnswerReadResultSchema = z.object({
+  type: z.literal("pending"),
+  status: z.literal("pending"),
+  questionId: RequestIdSchema
+}).strict();
+
 export const AnswerReadResultSchema = z.union([
+  PendingAnswerReadResultSchema,
   HumanAnswerReadResultSchema,
   LifecycleResolutionReadResultSchema
 ]);
@@ -329,13 +380,20 @@ export type ProposeAnswerResult = z.infer<typeof ProposeAnswerResultSchema>;
 export type AskQuestion = z.infer<typeof AskQuestionSchema>;
 export type AskCreatePayload = z.infer<typeof AskCreatePayloadSchema>;
 export type AskQuestionDraft = z.infer<typeof AskQuestionDraftSchema>;
+export type AskBatchDefaults = z.infer<typeof AskBatchDefaultsSchema>;
+export type AskBatchQuestionDraft = z.infer<typeof AskBatchQuestionDraftSchema>;
 export type AskPostboxInput = z.infer<typeof AskPostboxInputSchema>;
 export type AskBatchReceipt = z.infer<typeof AskBatchReceiptSchema>;
 export type AskAnswerPayload = z.infer<typeof AskAnswerPayloadSchema>;
 export type UpdateQuestionPayload = z.infer<typeof UpdateQuestionPayloadSchema>;
+export type QuestionRevisionSnapshot = z.infer<typeof QuestionRevisionSnapshotSchema>;
+export type QuestionContentRevision = z.infer<typeof QuestionContentRevisionSchema>;
+export type QuestionNonContentEvent = z.infer<typeof QuestionNonContentEventSchema>;
 export type QuestionHistory = z.infer<typeof QuestionHistorySchema>;
+export type QuestionEventHistory = z.infer<typeof QuestionEventHistorySchema>;
 export type AskCancelPayload = z.infer<typeof AskCancelPayloadSchema>;
 export type AskResult = z.infer<typeof AskResultSchema>;
 export type AskReceipt = z.infer<typeof AskReceiptSchema>;
+export type PendingAnswerReadResult = z.infer<typeof PendingAnswerReadResultSchema>;
 export type AnswerReadResult = z.infer<typeof AnswerReadResultSchema>;
 export type AskRequestSnapshot = z.infer<typeof AskRequestSnapshotSchema>;

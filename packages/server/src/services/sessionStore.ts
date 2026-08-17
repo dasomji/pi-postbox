@@ -1,6 +1,8 @@
 import { ProjectIconSchema } from "@pi-postbox/protocol";
 import type {
   FeatureIdentity,
+  PostboxOwnerListScope,
+  PostboxOwnerSummary,
   PresenceState,
   SemanticState,
   SessionRegisterPayload,
@@ -71,6 +73,7 @@ export interface PostboxOwnerStatus {
 
 const DEFAULT_HIDE_OFFLINE_AFTER_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const POSTBOX_OWNER_LIST_MAX = 100;
 
 // When a session went offline: explicit disconnect/shutdown timestamp, or the
 // last sign of life for sessions orphaned by a server restart.
@@ -140,6 +143,72 @@ export class SessionStore {
       AND shutdown_at IS NULL AND disconnected_at IS NULL AND last_heartbeat_at > ? LIMIT 1`)
       .get(owner.harness, owner.ownerId, cutoff);
     return !live;
+  }
+
+  listPostboxOwners(sessionId: string, scope: PostboxOwnerListScope = "feature"): PostboxOwnerSummary[] {
+    const grouping = this.db.prepare(`SELECT repository_id, worktree_id, feature_id
+      FROM sessions WHERE session_id = ?`).get(sessionId) as {
+        repository_id: string | null;
+        worktree_id: string | null;
+        feature_id: string | null;
+      } | undefined;
+    if (!grouping?.repository_id
+      || (scope !== "repository" && !grouping.worktree_id)
+      || (scope === "feature" && !grouping.feature_id)) {
+      throw new SessionStoreError("scope_not_found", "Session has no owner discovery scope");
+    }
+
+    const sessionScopeClauses = ["s.repository_id = @repositoryId"];
+    const questionScopeClauses = ["q.repository_id = @repositoryId"];
+    const parameters: Record<string, string> = { repositoryId: grouping.repository_id };
+    if (scope !== "repository") {
+      sessionScopeClauses.push("s.worktree_id = @worktreeId");
+      questionScopeClauses.push("q.worktree_id = @worktreeId");
+      parameters.worktreeId = grouping.worktree_id!;
+    }
+    if (scope === "feature") {
+      sessionScopeClauses.push("s.feature_id = @featureId");
+      questionScopeClauses.push("q.feature_id = @featureId");
+      parameters.featureId = grouping.feature_id!;
+    }
+
+    const owners = this.db.prepare(`SELECT DISTINCT s.owner_harness AS harness, s.owner_id AS ownerId
+      FROM sessions s
+      WHERE s.owner_harness IS NOT NULL AND s.owner_id IS NOT NULL
+        AND ${sessionScopeClauses.join(" AND ")}
+      ORDER BY s.owner_harness, s.owner_id
+      LIMIT ${POSTBOX_OWNER_LIST_MAX}`).all(parameters) as Array<PostboxOwnerSummary["owner"]>;
+    const sessionQuery = this.db.prepare(`SELECT s.session_id, s.last_heartbeat_at, s.connected_at,
+        s.disconnected_at, s.shutdown_at, s.updated_at
+      FROM sessions s
+      WHERE s.owner_harness = @ownerHarness AND s.owner_id = @ownerId
+        AND ${sessionScopeClauses.join(" AND ")}
+      ORDER BY s.updated_at DESC`);
+    const countsQuery = this.db.prepare(`SELECT
+        SUM(CASE WHEN q.status = 'pending' THEN 1 ELSE 0 END) AS active_question_count,
+        SUM(CASE WHEN q.status = 'answered' AND EXISTS (
+          SELECT 1 FROM answers a WHERE a.question_id = q.question_id AND a.first_reader_harness IS NULL
+        ) THEN 1 ELSE 0 END) AS unread_answer_count
+      FROM questions q
+      WHERE q.owner_harness = @ownerHarness AND q.owner_owner_id = @ownerId
+        AND ${questionScopeClauses.join(" AND ")}`);
+
+    return owners.map((owner) => {
+      const ownerParameters = { ...parameters, ownerHarness: owner.harness, ownerId: owner.ownerId };
+      const presence = (sessionQuery.all(ownerParameters) as SessionPresenceRow[])
+        .map((row) => this.derivePresence(row))
+        .sort((left, right) => this.presenceRank(right) - this.presenceRank(left))[0] ?? "offline";
+      const counts = countsQuery.get(ownerParameters) as {
+        active_question_count: number | null;
+        unread_answer_count: number | null;
+      };
+      return {
+        owner,
+        presence,
+        activeQuestionCount: counts.active_question_count ?? 0,
+        unreadAnswerCount: counts.unread_answer_count ?? 0
+      };
+    });
   }
 
   getPostboxOwnerStatus(owners: ReadonlyArray<{ harness: string; ownerId: string }>): PostboxOwnerStatus[] {

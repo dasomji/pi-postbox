@@ -11,26 +11,29 @@ const draft = {
 };
 
 describe("ordered Question batch protocol", () => {
-  it("uses the same strict draft contract for single and batch creation", () => {
+  it("keeps strict single drafts while allowing batch context to come from required defaults", () => {
     const protocol = askProtocol as Record<string, any>;
     const draftSchema = protocol.AskQuestionDraftSchema;
     const inputSchema = protocol.AskPostboxInputSchema;
 
     expect(draftSchema).toBeDefined();
     expect(inputSchema).toBeDefined();
+    const defaults = { context: draft.context };
+    const { context: _context, ...compactDraft } = draft;
     expect(draftSchema.safeParse({ ...draft, surprise: true }).success).toBe(false);
     expect(inputSchema.safeParse({ mode: "single", question: draft }).success).toBe(true);
-    expect(inputSchema.safeParse({ mode: "batch", questions: [draft, { ...draft, localRef: "child", requestId: "question-child" }] }).success).toBe(true);
+    expect(inputSchema.safeParse({ mode: "batch", defaults, questions: [compactDraft, { ...compactDraft, localRef: "child", requestId: "question-child" }] }).success).toBe(true);
     expect(inputSchema.safeParse({ mode: "single", question: draft, questions: [draft] }).success).toBe(false);
-    expect(inputSchema.safeParse({ mode: "batch", questions: [draft], question: draft }).success).toBe(false);
+    expect(inputSchema.safeParse({ mode: "batch", defaults, questions: [compactDraft], question: draft }).success).toBe(false);
   });
 
   it("requires unique local references and an unambiguous parent reference", () => {
     const schema = (askProtocol as Record<string, any>).AskPostboxInputSchema;
     expect(schema).toBeDefined();
-    expect(schema.safeParse({ mode: "batch", questions: [draft, { ...draft, requestId: "question-2" }] }).success).toBe(false);
-    expect(schema.safeParse({ mode: "batch", questions: [draft, { ...draft, requestId: "question-2", parent: { questionId: "existing", localRef: "root" } }] }).success).toBe(false);
-    expect(schema.safeParse({ mode: "batch", questions: [draft, { ...draft, localRef: "root", requestId: "question-2" }] }).success).toBe(false);
+    const defaults = { context: draft.context };
+    expect(schema.safeParse({ mode: "batch", defaults, questions: [draft, { ...draft, requestId: "question-2" }] }).success).toBe(false);
+    expect(schema.safeParse({ mode: "batch", defaults, questions: [draft, { ...draft, requestId: "question-2", parent: { questionId: "existing", localRef: "root" } }] }).success).toBe(false);
+    expect(schema.safeParse({ mode: "batch", defaults, questions: [draft, { ...draft, localRef: "root", requestId: "question-2" }] }).success).toBe(false);
   });
 
   it("exposes hierarchy metadata, typed receipts, and affected descendant ids", () => {

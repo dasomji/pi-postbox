@@ -9,7 +9,8 @@ import {
   type AskReceipt,
   type AskBatchReceipt,
   AskBatchReceiptSchema,
-  type AskQuestionDraft,
+  type AskBatchDefaults,
+  type AskBatchQuestionDraft,
   AskReceiptSchema,
   AnswerReadResultSchema,
   type AnswerReadResult,
@@ -40,11 +41,12 @@ import {
 } from "../questionChatRuntime.js";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import type { ResolveServerTargetResult } from "../serverTargetResolver.js";
+import type { ResolvedServerTarget, ResolveServerTargetResult } from "../serverTargetResolver.js";
 import {
   createUrlStatusSnapshot,
   enrichStatusSnapshotFromLocalServer,
   type PostboxConnectionState,
+  type PostboxServerIdentity,
   type PostboxStatusSnapshot,
   type PostboxStatusTailscaleInspector
 } from "../status.js";
@@ -76,6 +78,7 @@ export interface PostboxClientOptions {
   answerReadTimeoutMs?: number;
   targetSource?: string;
   targetProfile?: ServerProfileIdentity;
+  targetIdentity?: PostboxServerIdentity;
   inspectTailscale?: PostboxStatusTailscaleInspector;
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
@@ -198,8 +201,9 @@ export class PostboxClient {
   private connectionDiagnostics: string[] = ["websocket:disconnected"];
   private currentTargetSource: string | undefined;
   private currentTargetProfile: ServerProfileIdentity | undefined;
+  private currentTargetIdentity: PostboxServerIdentity | undefined;
   private profilePollTimer: NodeJS.Timeout | undefined;
-  private deferredTargetUrl: string | undefined;
+  private deferredTarget: ResolvedServerTarget | undefined;
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
   private readonly questionChatSubscriptions = new Map<string, () => void>();
   private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
@@ -227,6 +231,7 @@ export class PostboxClient {
     this.currentServerUrl = options.serverUrl;
     this.currentTargetSource = options.targetSource;
     this.currentTargetProfile = options.targetProfile;
+    this.currentTargetIdentity = options.targetIdentity;
   }
 
   start(): void {
@@ -391,7 +396,7 @@ export class PostboxClient {
     return receipt;
   }
 
-  createAskBatch(payload: { sessionId: string; questions: AskQuestionDraft[] }, signal?: AbortSignal): Promise<AskBatchReceipt> {
+  createAskBatch(payload: { sessionId: string; defaults: AskBatchDefaults; questions: AskBatchQuestionDraft[] }, signal?: AbortSignal): Promise<AskBatchReceipt> {
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question batch was not persisted."));
     if (signal?.aborted) return Promise.reject(Object.assign(new Error("ask_postbox batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
     const requestId = `ask_batch_${randomUUID()}`;
@@ -489,14 +494,33 @@ export class PostboxClient {
   async getStatusSnapshot(
     autostart: PostboxAutostartStatusSnapshot = { enabled: true, startedByThisSession: false }
   ): Promise<PostboxStatusSnapshot> {
+    let openQuestionCount = this.pendingAsks.size;
+    const owner = this.options.registration.session.owner;
+    if (owner && this.isConnected()) {
+      try {
+        const [status] = await this.query("owner.status.get", { owners: [owner] }) as Array<{
+          activeQuestionCount?: unknown;
+        }>;
+        if (Number.isInteger(status?.activeQuestionCount) && Number(status.activeQuestionCount) >= 0) {
+          const awaitingPersistence = [...this.pendingCreateReceipts.keys()]
+            .filter((requestId) => this.pendingAsks.has(requestId))
+            .length;
+          openQuestionCount = Number(status.activeQuestionCount) + awaitingPersistence;
+        }
+      } catch {
+        // Pending client state remains a safe fallback while the durable status query is unavailable.
+      }
+    }
+
     const snapshot = createUrlStatusSnapshot({
       state: this.connectionState,
       activeUrl: this.currentServerUrl,
-      openQuestionCount: this.pendingAsks.size,
+      openQuestionCount,
       autostart,
-      diagnostics: this.connectionState === "connected" ? [] : this.connectionDiagnostics,
+      diagnostics: this.connectionDiagnostics,
       source: this.currentTargetSource,
-      profile: this.currentTargetProfile
+      profile: this.currentTargetProfile,
+      server: this.currentTargetIdentity
     });
 
     return enrichStatusSnapshotFromLocalServer(snapshot, {
@@ -603,10 +627,12 @@ export class PostboxClient {
         }
         if (parsed.data.type === "answer.result") {
           const pending = this.pendingAnswerReads.get(parsed.data.requestId);
-          if (!pending || pending.questionId !== parsed.data.payload.question.questionId) return;
+          const result = AnswerReadResultSchema.parse(parsed.data.payload);
+          const questionId = "questionId" in result ? result.questionId : result.question.questionId;
+          if (!pending || pending.questionId !== questionId) return;
           this.pendingAnswerReads.delete(parsed.data.requestId);
           pending.cleanup();
-          pending.resolve(AnswerReadResultSchema.parse(parsed.data.payload));
+          pending.resolve(result);
           return;
         }
         if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result" || parsed.data.type === "postbox.wait.result" || parsed.data.type === "ask.batch.result") {
@@ -1157,7 +1183,7 @@ export class PostboxClient {
       return;
     }
     const values = [...active.options.map((option) => option.value), OTHER_OPTION_VALUE].join(",");
-    const deferred = this.deferredTargetUrl ? ` Active-local switch to ${this.deferredTargetUrl} is deferred until pinned Postbox work is resolved.` : "";
+    const deferred = this.deferredTarget ? ` Active-local switch to ${this.deferredTarget.url} is deferred until pinned Postbox work is resolved.` : "";
     this.options.onLocalFallbackStatus({
       requestId: active.requestId,
       serverUrl: this.currentServerUrl,
@@ -1173,12 +1199,20 @@ export class PostboxClient {
     this.connectionDiagnostics = [...new Set([...this.connectionDiagnostics, diagnostic])].slice(-5);
   }
 
+  private removeConnectionDiagnostics(prefix: string): void {
+    this.connectionDiagnostics = this.connectionDiagnostics.filter((diagnostic) => !diagnostic.startsWith(prefix));
+  }
+
   private scheduleReconnect(): void {
     if (this.stopped || !this.reconnect) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     const delay = this.nextReconnectMs;
     this.nextReconnectMs = Math.min(this.nextReconnectMs * 2, this.reconnectMaxMs);
+    const diagnostic = `reconnect-scheduled:delay=${delay}ms;target=${this.currentServerUrl}`;
+    this.recordConnectionDiagnostic(diagnostic);
+    this.options.onStatus?.(diagnostic);
     this.reconnectTimer = setTimeout(() => {
+      this.removeConnectionDiagnostics("reconnect-scheduled:");
       void this.reconnectToResolvedTarget();
     }, delay);
     this.reconnectTimer.unref?.();
@@ -1217,34 +1251,54 @@ export class PostboxClient {
     }
 
     if (this.stopped || result.status !== "selected") return;
-    const targetUrl = result.target.url;
-    if (targetUrl === this.currentServerUrl && !this.deferredTargetUrl) return;
-
-    if (this.hasPinnedWorkBlocking(targetUrl)) {
-      this.deferTargetSwitch(targetUrl);
+    const target = result.target;
+    const targetUrl = target.url;
+    if (targetUrl === this.currentServerUrl && !this.deferredTarget) {
+      this.applyTargetIdentity(target);
       return;
     }
 
-    this.deferredTargetUrl = undefined;
-    this.currentTargetSource = result.target.source;
-    this.currentTargetProfile = result.target.profile;
+    if (this.hasPinnedWorkBlocking(targetUrl)) {
+      this.deferTargetSwitch(target);
+      return;
+    }
+
+    this.deferredTarget = undefined;
+    this.removeConnectionDiagnostics("target-switch-deferred:");
+    this.applyTargetIdentity(target);
     if (targetUrl === this.currentServerUrl) return;
     this.retargetNow(targetUrl, options.connectWhenDisconnected ?? true);
   }
 
-  private deferTargetSwitch(targetUrl: string): void {
-    this.deferredTargetUrl = targetUrl;
-    this.options.onStatus?.(`target-switch-deferred:${targetUrl}`);
+  private deferTargetSwitch(target: ResolvedServerTarget): void {
+    this.deferredTarget = target;
+    const timeoutMs = this.options.targetAffinityTimeoutMs ?? DEFAULT_TARGET_AFFINITY_TIMEOUT_MS;
+    const diagnostic = `target-switch-deferred:${target.url}:pinned-origin-affinity<=${timeoutMs}ms`;
+    this.recordConnectionDiagnostic(diagnostic);
+    this.options.onStatus?.(diagnostic);
     this.startTargetAffinityTimersForPinnedWork();
     this.publishLocalFallbackStatus();
   }
 
   private tryApplyDeferredTarget(): void {
-    if (this.stopped || !this.deferredTargetUrl || this.hasPinnedWorkBlocking(this.deferredTargetUrl)) return;
-    const targetUrl = this.deferredTargetUrl;
-    this.deferredTargetUrl = undefined;
-    if (targetUrl !== this.currentServerUrl) this.retargetNow(targetUrl, true);
+    const target = this.deferredTarget;
+    if (this.stopped || !target || this.hasPinnedWorkBlocking(target.url)) return;
+    this.deferredTarget = undefined;
+    this.removeConnectionDiagnostics("target-switch-deferred:");
+    this.applyTargetIdentity(target);
+    if (target.url !== this.currentServerUrl) this.retargetNow(target.url, true);
     this.publishLocalFallbackStatus();
+  }
+
+  private applyTargetIdentity(target: ResolvedServerTarget): void {
+    this.currentTargetSource = target.source;
+    this.currentTargetProfile = target.profile;
+    this.currentTargetIdentity = {
+      version: target.version,
+      protocolVersion: target.protocolVersion,
+      instanceId: target.instanceId,
+      buildId: target.buildId
+    };
   }
 
   private retargetNow(targetUrl: string, connectWhenDisconnected: boolean): void {

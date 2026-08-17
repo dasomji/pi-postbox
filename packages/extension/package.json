@@ -1,6 +1,6 @@
 {
   "name": "@pi-postbox/extension",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Pi extension that registers sessions with Pi Postbox and exposes ask_postbox.",
   "type": "module",
   "main": "src/index.ts",
@@ -32,11 +32,13 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.10",
-    "@pi-postbox/protocol": "0.1.0",
+    "@pi-postbox/protocol": "0.1.4",
     "typebox": "^1.1.38",
     "ws": "^8.21.0"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   }
 }
