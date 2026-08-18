@@ -12,7 +12,6 @@ export const QuestionTelemetryEventSchema = z.object({
   optionMeaningLength: z.number().int().nonnegative().optional(),
   optionContextLength: z.number().int().nonnegative().optional(),
   noteLength: z.number().int().nonnegative().optional(),
-  rationaleLength: z.number().int().nonnegative().optional(),
   contextSerializedBytes: z.number().int().nonnegative().optional(),
   optionsSerializedBytes: z.number().int().nonnegative().optional(),
   requestSerializedBytes: z.number().int().nonnegative().optional(),

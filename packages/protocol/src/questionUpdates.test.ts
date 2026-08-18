@@ -6,7 +6,8 @@ describe("Question update contract", () => {
     const schema = (protocol as Record<string, any>).UpdateQuestionPayloadSchema;
     expect(schema).toBeDefined();
     expect(schema.safeParse({ action: "revise", expectedRevision: 2, expectedOwnerRevision: 3, question: { prompt: "Updated?" } }).success).toBe(true);
-    expect(schema.safeParse({ action: "cancel", expectedRevision: 2, expectedOwnerRevision: 3, rationale: "No longer relevant" }).success).toBe(true);
+    expect(schema.safeParse({ action: "cancel", expectedRevision: 2, expectedOwnerRevision: 3, note: "No longer relevant" }).success).toBe(true);
+    expect(schema.safeParse({ action: "cancel", expectedRevision: 2, expectedOwnerRevision: 3, rationale: "No longer relevant" }).success).toBe(false);
     expect(schema.safeParse({ action: "supersede", expectedRevision: 2, expectedOwnerRevision: 3, replacementQuestionId: "replacement" }).success).toBe(true);
     expect(schema.safeParse({ action: "reparent", expectedRevision: 2, expectedOwnerRevision: 3, parentQuestionId: "new-parent" }).success).toBe(true);
     expect(schema.safeParse({ action: "patch", expectedRevision: 2, status: "answered" }).success).toBe(false);

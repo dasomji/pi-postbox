@@ -121,16 +121,17 @@ Browser snapshots are extension-backed. A fresh browser sees `extension_offline`
 
 1. Pi calls `ask_postbox`.
 2. Extension sends `ask.create` with a stable `requestId`.
-3. Server stores a pending request and broadcasts state over SSE.
-4. Browser or local terminal fallback submits an answer/cancel.
-5. Server stores a terminal result in History and broadcasts the pending-only live state, where that request is now absent.
-6. Extension receives `ask.resolved` and returns a concise result to the coding agent.
+3. Server stores a pending request, returns a persistence receipt, and broadcasts state over SSE.
+4. `ask_postbox` returns the receipt; Pi continues independent work without polling.
+5. Browser or local terminal fallback submits an answer/cancel.
+6. Server stores a terminal result in History, broadcasts the pending-only live state, and sends the owning extension a lightweight availability notification.
+7. After notification—or after an explicit `wait_for_postbox` wakes—Pi calls the bounded `get_answer` read.
 
-Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`.
+Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`. Once persistence is acknowledged, aborting the originating Pi tool call or compacting its turn does not cancel the durable Question.
 
 ### Ordered batch creation and receipts
 
-Batch input requires one shared `defaults.context` with non-blank `codebaseContext` and `problemContext`. Each item inherits that complete context unless it supplies its own complete `context` override. The server expands defaults before item validation and persistence; persisted Questions never retain a reference to mutable batch defaults. Replay remains keyed by each stable `requestId`.
+Batch input requires one shared `defaults.context` with non-blank `codebaseContext` and `problemContext`. Each item inherits that complete context unless it supplies its own complete `context` override. The server expands defaults before item validation and persistence; persisted Questions never retain a reference to mutable batch defaults. Replay remains keyed by each item's stable `requestId`. Batch mode rejects single-Question fields at the top level, including `requestId`, `timeoutMs`, and `expiresAt`; Postbox exposes no atomic batch-level idempotency key.
 
 An `ask_postbox` batch receipt preserves input order. Every accepted item reports `localRef`, persisted `questionId`, current `revision`, and `disposition: "created" | "idempotent"`; rejected items report their `localRef` and typed reason. The top-level `status` remains `created`, `partial`, or `rejected`.
 
@@ -144,34 +145,42 @@ Postbox batch created: [{"localRef":"root","questionId":"ask_…","revision":1,"
 
 `answerId` and `answerRead` are evidence of a human Answer and appear in full Question details and compact status results only when `status` is `answered`; default control details omit them. Cancelled, expired, and superseded Questions may use internal lifecycle records, but those records are never exposed as Answers.
 
-`get_answer` returns immediately after its bounded read. An unresolved Question produces the normal compact branch `{ "type": "pending", "status": "pending", "questionId": "…" }`; it does not fail with an Answer-not-found error and it does not expose Question content. An `answered` Question retains the existing human Answer result. Any lifecycle-only terminal Question returns an explicit result with no Answer/read fields:
+`get_answer` returns immediately after its bounded read. A human Answer produces exactly the compact fields below:
+
+```json
+{
+  "questionId": "question-1",
+  "answerId": "answer-1",
+  "answer": ["sqlite"],
+  "note": "Keep it local"
+}
+```
+
+`answer` is always an array of the selected machine option values, including for a single-choice Question; `note` is optional. Reading keeps the Question lifecycle status `answered` and atomically records the first read internally, but ordinary output omits status and read-receipt evidence.
+
+An unresolved Question produces the normal compact branch `{ "type": "pending", "status": "pending", "questionId": "…" }`; it does not fail with an Answer-not-found error and it does not expose Question content. Any lifecycle-only terminal Question likewise returns a compact explicit result with no repeated Question content or Answer/read fields:
 
 ```json
 {
   "type": "lifecycle",
   "status": "superseded",
-  "question": {
-    "questionId": "question-old",
-    "revision": 2,
-    "mode": "single",
-    "question": { "prompt": "Which path?" },
-    "options": [{ "value": "next", "label": "Use the replacement" }],
-    "createdAt": "2026-08-15T12:00:00.000Z",
-    "resolvedAt": "2026-08-15T12:01:00.000Z"
-  },
-  "replacementQuestionId": "question-new"
+  "questionId": "question-old",
+  "replacementQuestionId": "question-new",
+  "resolvedAt": "2026-08-15T12:01:00.000Z"
 }
 ```
 
-Cancelled results may additionally include `note` and `rationale`; expired results may include `rationale`. Superseded results require `replacementQuestionId`.
+Cancelled and expired results may additionally include `note`. Superseded results require `replacementQuestionId`. Every lifecycle result includes `resolvedAt`.
 
 A recovery read authorized for an offline owner records the actual recovery agent as the first reader without transferring ownership. Exactly one first reader receives `alreadyRead: false`; subsequent owner or recovery reads receive `alreadyRead: true` and retain the original `firstRead.reader`.
 
-`list_question_status` defaults to actionable facts only: pending Questions plus unread human Answers. `status` and `readState` are conjunctive when both are supplied. With no explicit status/read filter, `includeTerminal: true` broadens the default to every lifecycle state; explicit filters remain authoritative. Compact status results never include Question text, options, context, notes, rationale, or Answer content.
+`list_question_status` defaults to actionable facts only: pending Questions plus unread human Answers. `status` and `readState` are conjunctive when both are supplied. With no explicit status/read filter, `includeTerminal: true` broadens the default to every lifecycle state; explicit filters remain authoritative. Compact status results never include Question text, options, context, notes, or Answer content.
 
 ### Compact and forensic query views
 
-`get_questions` defaults to `view: "control"`. A control record contains `questionId`, `revision`, `ownerRevision`, `status`, `owner`, `creator`, optional `parentQuestionId`, and `updatedAt`. It deliberately omits prompt, options, handoff context, expiry, resolution details, and Answer content. Callers that need content or immutable evidence must explicitly request `view: "full"`; missing IDs are omitted and input order is preserved for records that exist.
+`get_questions` defaults to `view: "control"`. A control record contains `questionId`, `revision`, `ownerRevision`, `status`, `owner`, `creator`, optional `parentQuestionId`, and `updatedAt`. It deliberately omits prompt, options, handoff context, expiry, resolution details, and Answer content. Callers that need the complete current decision picture must explicitly request `view: "full"`; missing IDs are omitted and input order is preserved for records that exist.
+
+A full record contains current Question content plus a non-consuming `resolution`. Human Answer evidence has `kind: "answer"`, `answerId`, `questionRevision`, selected machine values in `answer`, optional `note`, `resolvedAt`, and `firstRead` (a reader/timestamp receipt or `null` when unread). Lifecycle evidence has `kind: "lifecycle"`, terminal `status`, optional `note`, `resolvedAt`, and the replacement Question ID when superseded. It never exposes legacy rationale data. Full records do not duplicate immutable revision/event history; compose this call with `get_question_history` when historical revisions matter.
 
 `get_question_history` defaults to `view: "events"`. It returns:
 
@@ -211,7 +220,7 @@ Every persisted new Question contains a `context` object with non-blank `codebas
 - additional text/code/diagram/link items
 - fork references such as agent session id/path and leaf id
 
-The dashboard APIs expose this context for display/history/interviewer use. The `ask_postbox` tool result intentionally returns only final selected values, user note, concise rationale/status metadata, request id, and resolved timestamp.
+The dashboard APIs expose this context for display/history/interviewer use. `ask_postbox` returns only a durable persistence receipt. A later ordinary `get_answer` returns exactly the Question ID, Answer ID, selected machine option values, and optional user note.
 
 ## Semantic and presence state
 
@@ -222,7 +231,7 @@ Semantic state is reported by the extension:
 - `idle`
 - `unknown`
 
-A Pi session replacement (`/new`, `/resume`, `/fork`) is a semantic boundary: the old Postbox session is explicitly shut down and unresolved asks for that session are cancelled with a lifecycle rationale. A Pi `/reload` is not a semantic boundary; pending asks remain attached to the same session and the replacement extension runtime can reconnect/re-register.
+A Pi session replacement (`/new`, `/resume`, `/fork`) is a semantic boundary: the old Postbox session is explicitly shut down and unresolved asks for that session are cancelled with a lifecycle note. A Pi `/reload` is not a semantic boundary; pending asks remain attached to the same session and the replacement extension runtime can reconnect/re-register.
 
 Presence is derived by the server from WebSocket connection and heartbeat timing:
 
@@ -230,7 +239,7 @@ Presence is derived by the server from WebSocket connection and heartbeat timing
 - `stale`
 - `offline`
 
-`ask_postbox` waits explicitly mark semantic state as blocked/waiting. Observed local `ask_user` calls also mark blocked. Herdr-compatible blocked events are best-effort; Postbox does not depend on Herdr.
+Persisting with `ask_postbox` does not block the agent turn. Postbox pushes a lightweight Answer-available notification, so agents must not poll `get_answer`, `list_question_status`, or `list_questions`. After independent work is exhausted, an agent whose sole blocker is a human Postbox decision may call `wait_for_postbox` once. Only that explicit wait publishes `waiting_for_postbox`, remains idle until an actionable event, and retains adapter capacity. Observed local `ask_user` calls also mark blocked. Herdr-compatible blocked events are best-effort; Postbox does not depend on Herdr.
 
 ## Profile-scoped client routing compatibility
 
@@ -238,7 +247,7 @@ Profile routing has no broad discovery and performs no port scanning. A client r
 
 Effective env-over-config precedence is preserved. `PI_POSTBOX_URL` is an intentional explicit override and may identify a Tailscale or hosted server. Without it, health-verified profile metadata and package-local autostart are the local recovery paths. A global production loopback configuration is not visible to a checkout development profile.
 
-Running sessions may reconnect only within their resolved profile. Unresolved sent asks and local fallback resolutions pin their origin instance until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching. Another profile is never a retarget candidate.
+Running sessions may reconnect only within their resolved profile. Unresolved sent asks and local fallback resolutions pin their origin endpoint until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching. A replacement server process at that same profile and URL is a restart, not a retarget: reconnect refreshes its exact instance/build identity. Another profile is never a retarget candidate.
 
 Package-local autostart is a client recovery behavior for `ask_postbox` and the user-only `/postbox` command. It can be disabled with `PI_POSTBOX_AUTOSTART=off`; `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` sets the wait time and defaults to 10 seconds (`10000` ms).
 
@@ -248,6 +257,6 @@ Package-local autostart is a client recovery behavior for `ask_postbox` and the 
 - Handle unknown fields gracefully.
 - Use `/healthz` to confirm service and protocol version before relying on newer fields.
 - `contextFallback`, `forkKind: "context-only"`, `POST .../chat/context`, and `chat.activate-context` are additive Question Chat capabilities that require a server and extension version that both understand them. Older Questions without complete persisted context deliberately report fallback unavailable; they are not migrated by inventing context.
-- Version 0.1.4 changes agent-tool defaults for batch creation, Question details, history, and pending Answer reads. A 0.1.4 extension and server must be deployed together; callers needing complete details/history must request `view: "full"` explicitly.
+- Version 0.1.6 requires matching extension/server/protocol packages while retaining protocol compatibility version 0.1.5. It makes single and batch `ask_postbox` shapes mutually strict, keeps batch idempotency per item, preserves acknowledged Questions across later tool-turn aborts, refreshes identity after same-endpoint server restarts, and advances the dashboard to the next open Question after a resolution. Callers needing complete details/history must request `view: "full"` explicitly.
 - V1 has no app-level authentication; restrict network reachability with Tailscale/lizardtail or an external auth proxy.
 - State-changing HTTP actions and extension WebSockets reject cross-origin browser requests unless the `Origin` host matches the Postbox service host. Node/Pi extension clients normally omit `Origin` and are accepted if they can reach the service.

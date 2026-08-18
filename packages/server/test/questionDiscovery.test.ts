@@ -70,7 +70,7 @@ describe("token-cheap Question discovery", () => {
     create("other-worktree", "excluded-worktree", "wrong worktree");
     create("other-repository", "excluded-repository", "wrong repository");
     create("current", "answered-current", "terminal question");
-    requests.answer("answered-current", { selectedValues: ["yes"], note: "secret answer", rationale: "secret rationale" });
+    requests.answer("answered-current", { selectedValues: ["yes"], note: "secret answer" });
 
     const discovery = requests as RequestStore & {
       listQuestions(input: unknown): { questions: unknown[]; nextCursor?: string };
@@ -168,11 +168,11 @@ describe("token-cheap Question discovery", () => {
     });
   });
 
-  it("returns complete latest Question data for every explicit ID without Answer content or truncating large payloads", () => {
-    const { requests, create } = setup();
+  it("returns complete latest Question data with non-consuming resolution evidence and no truncation", () => {
+    const { requests, create, caller } = setup();
     const largeContext = "large-context-".repeat(1_000);
     for (let index = 0; index < 31; index += 1) create("current", `detail-${index}`, `Question ${index}`, index === 30 ? largeContext : `context-${index}`);
-    requests.answer("detail-0", { selectedValues: ["yes"], note: "must not leak", rationale: "also secret" });
+    requests.answer("detail-0", { selectedValues: ["yes"], note: "must not leak" });
     const discovery = requests as RequestStore & { getQuestions(input: { questionIds: string[]; view?: "control" | "full" }): unknown[] };
 
     const details = discovery.getQuestions({ questionIds: Array.from({ length: 31 }, (_, index) => `detail-${index}`), view: "full" }) as Array<Record<string, unknown>>;
@@ -184,11 +184,32 @@ describe("token-cheap Question discovery", () => {
       options: [{ value: "yes", label: "Yes", description: "description", meaning: "meaning", context: "option context" }],
       context: { codebaseContext: largeContext, problemContext: "problem" }
     });
-    expect(JSON.stringify(details)).not.toContain("must not leak");
-    expect(JSON.stringify(details)).not.toContain("also secret");
-    expect(details[0]).toMatchObject({ answerId: expect.any(String), answerRead: false });
+    expect(details[0]).toMatchObject({
+      answerId: expect.any(String),
+      answerRead: false,
+      resolution: {
+        kind: "answer",
+        answerId: expect.any(String),
+        questionRevision: 1,
+        answer: ["yes"],
+        note: "must not leak",
+        resolvedAt: "2026-08-13T12:00:00.000Z",
+        firstRead: null
+      }
+    });
     expect(details[0]).not.toHaveProperty("answer");
     expect(details[0]).not.toHaveProperty("selectedValues");
+    expect(JSON.stringify(details)).not.toContain("rationale");
+    expect(requests.listQuestionStatus({ caller, scope: "owner", readState: "unread" }))
+      .toEqual([expect.objectContaining({ questionId: "detail-0", answerRead: false })]);
+
+    requests.getAnswer("detail-0", OWNER);
+    expect(requests.getQuestions({ questionIds: ["detail-0"], view: "full" })[0]).toMatchObject({
+      answerRead: true,
+      resolution: {
+        firstRead: { reader: OWNER, readAt: "2026-08-13T12:00:00.000Z" }
+      }
+    });
     expect((details[30].question as { context: string }).context).toHaveLength(largeContext.length);
   });
 

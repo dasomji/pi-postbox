@@ -77,11 +77,13 @@ describe("resilient proactive Answer delivery", () => {
     expect(store.acknowledgeOwnerNotification(ping.answerId, OWNER, "new")).toBe(true);
   });
 
-  it("gives an explicit waiter the full Answer and suppresses the lightweight ping", async () => {
+  it("gives an explicit waiter a lightweight wake without consuming the Answer", async () => {
     const { store, create } = setup("waiting_for_postbox"); create("wait");
     const waiting = store.waitForPostbox({ owner: OWNER });
     store.answer("wait", { expectedRevision: 1, selectedValues: ["yes"] });
-    await expect(waiting).resolves.toMatchObject({ type: "answer", question: { questionId: "wait" }, answer: { selectedValues: ["yes"] } });
+    await expect(waiting).resolves.toEqual({ type: "answer", questionId: "wait" });
+    expect(store.pendingOwnerNotifications(OWNER)).toHaveLength(1);
+    expect(store.getAnswer("wait", OWNER)).toEqual({ questionId: "wait", answerId: expect.any(String), answer: ["yes"] });
     expect(store.pendingOwnerNotifications(OWNER)).toEqual([]);
   });
 

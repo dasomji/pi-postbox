@@ -223,7 +223,7 @@ describe("question history", () => {
       const answer = await app.inject({
         method: "POST",
         url: "/api/requests/ask-history/answer",
-        payload: { expectedRevision: 1, selectedValues: ["ship"], note: "Proceed", rationale: "The audit trail has enough context." }
+        payload: { expectedRevision: 1, selectedValues: ["ship"], note: "Proceed" }
       });
       expect(answer.statusCode).toBe(200);
 
@@ -244,8 +244,7 @@ describe("question history", () => {
           result: {
             status: "answered",
             selectedValues: ["ship"],
-            note: "Proceed",
-            rationale: "The audit trail has enough context."
+            note: "Proceed"
           },
           question: {
             relevance: "History helps understand prior choices.",

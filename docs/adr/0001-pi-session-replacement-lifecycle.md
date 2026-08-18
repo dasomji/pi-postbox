@@ -8,4 +8,6 @@ Before a session switch or fork, Postbox checks the current owner's active Quest
 
 Extension UI/status callbacks are session-scoped and disposable: shutdown deactivates the old scope before WebSocket close/reconnect events can fire. If Pi does not expose a durable session file, Postbox uses a per-session generated identity so `/new` still produces a distinct Postbox Session.
 
-Creating an open Question does not retain an agent turn. Only the explicit `wait_for_postbox` tool blocks, publishes `waiting_for_postbox` to Postbox and parent status systems, and retains adapter capacity until it wakes or is cancelled. Local `ask_user` and Herdr waiting behavior remain independent.
+Creating an open Question does not retain an agent turn. Once persistence is acknowledged, a later abort of the originating tool signal—including turn compaction—does not cancel the durable Question. The owning Pi Session receives an Answer-available notification and must not poll status/list tools or `get_answer`.
+
+Only the explicit `wait_for_postbox` tool blocks, publishes `waiting_for_postbox` to Postbox and parent status systems, and retains adapter capacity until it wakes or is cancelled. It is called once only when the human decision is the sole remaining blocker and all independent work is exhausted. Local `ask_user` and Herdr waiting behavior remain independent.

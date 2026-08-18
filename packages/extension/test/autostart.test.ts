@@ -286,7 +286,7 @@ describe("package-local Postbox server autostart", () => {
 
       expect(vi.mocked(spawn)).not.toHaveBeenCalled();
       expect(result).toMatchObject({ details: { status: "unavailable", requestId: "ask-off" } });
-      expect(result.details.rationale).toMatch(/PI_POSTBOX_AUTOSTART=off|autostart disabled/i);
+      expect(result.details.note).toMatch(/PI_POSTBOX_AUTOSTART=off|autostart disabled/i);
     });
   });
 
@@ -311,7 +311,7 @@ describe("package-local Postbox server autostart", () => {
       await vi.advanceTimersByTimeAsync(50);
       await expect(pending).resolves.toMatchObject({ details: { status: "unavailable", requestId: "ask-timeout" } });
       expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
-      expect((await pending).details.rationale).toMatch(/timed out|timeout|50ms/i);
+      expect((await pending).details.note).toMatch(/timed out|timeout|50ms/i);
     });
   });
 
@@ -386,7 +386,7 @@ describe("package-local Postbox server autostart", () => {
       await vi.advanceTimersByTimeAsync(50);
 
       await expect(first).resolves.toMatchObject({ details: { status: "unavailable", requestId: "ask-path-failure-1" } });
-      expect((await first).details.rationale).toMatch(/ENOENT|autostart failed/i);
+      expect((await first).details.note).toMatch(/ENOENT|autostart failed/i);
 
       const second = harness.askTool.execute("call-path-failure-2", { ...askInput, requestId: "ask-path-failure-2" });
       await vi.waitFor(() => expect(vi.mocked(spawn)).toHaveBeenCalledTimes(2), { interval: 1, timeout: 10 });

@@ -124,6 +124,66 @@ describe("output-reduction protocol", () => {
     ]);
   });
 
+  it("defines explicit current Answer and lifecycle evidence for full Question reads", () => {
+    const schema = (protocol as Record<string, any>).QuestionResolutionSchema;
+    expect(schema).toBeDefined();
+    expect(schema.parse({
+      kind: "answer",
+      answerId: "answer-root",
+      questionRevision: 2,
+      answer: ["sqlite"],
+      note: "Keep it local",
+      resolvedAt: "2026-08-17T12:01:00.000Z",
+      firstRead: { reader: { harness: "pi", ownerId: "agent" }, readAt: "2026-08-17T12:02:00.000Z" }
+    })).toMatchObject({ kind: "answer", answer: ["sqlite"] });
+    expect(schema.parse({
+      kind: "lifecycle",
+      status: "superseded",
+      replacementQuestionId: "question-next",
+      resolvedAt: "2026-08-17T12:01:00.000Z"
+    })).toMatchObject({ kind: "lifecycle", status: "superseded" });
+    expect(schema.safeParse({
+      kind: "answer",
+      answerId: "answer-root",
+      questionRevision: 2,
+      answer: ["sqlite"],
+      rationale: "legacy",
+      resolvedAt: "2026-08-17T12:01:00.000Z",
+      firstRead: null
+    }).success).toBe(false);
+  });
+
+  it("accepts only the compact normal Answer fields", () => {
+    const compact = {
+      questionId: "question-root",
+      answerId: "answer-root",
+      answer: ["sqlite"],
+      note: "Keep it local"
+    } as const;
+    expect(protocol.AnswerReadResultSchema.parse(compact)).toEqual(compact);
+    expect(Object.keys(compact).sort()).toEqual(["answer", "answerId", "note", "questionId"]);
+    expect(() => protocol.AnswerReadResultSchema.parse({
+      alreadyRead: false,
+      question: {
+        questionId: "question-root",
+        revision: 1,
+        mode: "single",
+        question: { prompt: "Database?" },
+        options: [{ value: "sqlite", label: "SQLite" }],
+        createdAt: "2026-08-17T12:00:00.000Z",
+        resolvedAt: "2026-08-17T12:01:00.000Z"
+      },
+      answer: {
+        answerId: "answer-root",
+        questionRevision: 1,
+        status: "answered",
+        selectedValues: ["sqlite"],
+        createdAt: "2026-08-17T12:01:00.000Z"
+      },
+      firstRead: { reader: { harness: "pi", ownerId: "agent" }, readAt: "2026-08-17T12:01:01.000Z" }
+    })).toThrow();
+  });
+
   it("treats an unresolved Answer read as a normal compact result", () => {
     const pending = { type: "pending", status: "pending", questionId: "question-root" } as const;
     expect(protocol.AnswerReadResultSchema.parse(pending)).toEqual(pending);

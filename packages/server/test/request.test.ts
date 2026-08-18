@@ -215,10 +215,17 @@ describe("ask_postbox request loop", () => {
       ]
     });
 
+    const removedRationale = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-1/answer",
+      payload: { expectedRevision: 1, selectedValues: ["fastify"], rationale: "Removed field" }
+    });
+    expect(removedRationale.statusCode).toBe(400);
+
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-1/answer",
-      payload: { expectedRevision: 1, selectedValues: ["fastify"], note: "Use the boring daemon choice", rationale: "Strong lifecycle" }
+      payload: { expectedRevision: 1, selectedValues: ["fastify"], note: "Use the boring daemon choice" }
     });
 
     expect(answerResponse.statusCode).toBe(200);
@@ -227,8 +234,7 @@ describe("ask_postbox request loop", () => {
       status: "answered",
       requestId: "ask-1",
       selectedValues: ["fastify"],
-      note: "Use the boring daemon choice",
-      rationale: "Strong lifecycle"
+      note: "Use the boring daemon choice"
     });
   });
 
@@ -484,7 +490,7 @@ describe("ask_postbox request loop", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-rich/answer",
-      payload: { expectedRevision: 1, selectedValues: ["sqlite"], rationale: "Simple durable v1 storage." }
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Simple durable v1 storage." }
     });
     expect(answerResponse.statusCode).toBe(200);
     expect(answerResponse.json().request).toMatchObject({

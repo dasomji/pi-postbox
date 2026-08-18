@@ -170,24 +170,22 @@ describe("local Postbox fallback", () => {
           expiresAt: undefined
         }
       ],
-      answerPendingAsk: (input: { requestId?: string; selectedValues: string[]; note?: string; rationale?: string }) => {
+      answerPendingAsk: (input: { requestId?: string; selectedValues: string[]; note?: string }) => {
         const result: AskResult = {
           status: "answered",
           requestId: input.requestId ?? "ask-command",
           selectedValues: input.selectedValues,
           note: input.note,
-          rationale: input.rationale,
           resolvedAt: "2026-06-03T00:00:00.000Z"
         };
         results.push(result);
         return result;
       },
-      cancelPendingAsk: (input: { requestId?: string; note?: string; rationale?: string }) => {
+      cancelPendingAsk: (input: { requestId?: string; note?: string }) => {
         const result: AskResult = {
           status: "cancelled",
           requestId: input.requestId ?? "ask-command",
           note: input.note,
-          rationale: input.rationale,
           resolvedAt: "2026-06-03T00:00:01.000Z"
         };
         results.push(result);
@@ -197,11 +195,11 @@ describe("local Postbox fallback", () => {
     registerPostboxFallbackCommands(fakePi, () => fakeClient);
     const ctx: FakeCommandContext = { ui: { notify: (message) => notifications.push(message) } };
 
-    await fakePi.commands.get("postbox-answer")?.handler("yes --note terminal choice --rationale fastest", ctx);
+    await fakePi.commands.get("postbox-answer")?.handler("yes --note terminal choice", ctx);
     await fakePi.commands.get("postbox-cancel")?.handler("ask-command --note stop here", ctx);
 
     expect(results).toEqual([
-      expect.objectContaining({ status: "answered", selectedValues: ["yes"], note: "terminal choice", rationale: "fastest" }),
+      expect.objectContaining({ status: "answered", selectedValues: ["yes"], note: "terminal choice" }),
       expect.objectContaining({ status: "cancelled", requestId: "ask-command", note: "stop here" })
     ]);
     expect(notifications).toEqual([expect.stringContaining("Postbox answered ask-command"), expect.stringContaining("Postbox cancelled ask-command")]);
@@ -392,7 +390,7 @@ describe("local Postbox fallback", () => {
     expect(settled).toMatchObject({
       status: "unavailable",
       requestId: "ask-dead-origin",
-      rationale: expect.stringMatching(/undeliverable|unavailable|dead origin/i)
+      note: expect.stringMatching(/undeliverable|unavailable|dead origin/i)
     });
 
     await vi.advanceTimersByTimeAsync(100);

@@ -47,7 +47,11 @@ interface PiLikeContext {
 export function createWaitForPostboxTool(wait: (signal?: AbortSignal) => Promise<Record<string, unknown>>) {
   return {
     name: "wait_for_postbox", label: "Wait for Postbox", annotations: { readOnlyHint: false },
-    description: "Cancellably wait for the first actionable event across every Question owned by this agent.",
+    description: "Cancellably idle until the first actionable event across every Question owned by this agent.",
+    promptSnippet: "Use only when a Postbox decision is the sole remaining blocker; wait once instead of polling.",
+    promptGuidelines: [
+      "Use wait_for_postbox only when a human Postbox decision is the only blocker and no independent work remains. Call it once, remain idle until it wakes from a notification or actionable lifecycle event, then use get_answer for the relevant Question. Never use repeated status or Answer reads as a polling substitute."
+    ],
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute(_id: string, _params: Record<string, never>, signal?: AbortSignal) {
       const result = await wait(signal);
@@ -120,7 +124,7 @@ let semanticStateController: SemanticStateController | undefined;
 let activeUiScope: SessionUiScope | undefined;
 let profileSupervisor: ProfileSupervisor | undefined;
 let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
-let unavailableRationale = "Pi Postbox is not connected.";
+let unavailableNote = "Pi Postbox is not connected.";
 const registrationWaiters = new Set<() => void>();
 const questionChats = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter({
   proposeAnswer: (requestId, proposal, signal) => client
@@ -155,9 +159,9 @@ export default function postboxExtension(pi: PiLikeApi): void {
     name: "ask_postbox",
     label: "Ask Postbox",
     description: "Persist a structured decision question in Pi Postbox and return after server acknowledgement.",
-    promptSnippet: "Queue a remote decision, continue other work, then use get_answer after notification.",
+    promptSnippet: "Queue a remote decision, continue other work, and never poll; wait explicitly only when blocked.",
     promptGuidelines: [
-      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext. It returns after durable persistence, not after an Answer. Continue non-blocked work and call get_answer with the questionId after notification."
+      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext. It returns after durable persistence, not after an Answer. Continue every non-blocked task. Do not poll get_answer, list_question_status, or list_questions; Postbox will notify this session when an Answer is available. If the human decision is the only blocker, call wait_for_postbox once and remain idle until it wakes, then call get_answer with the questionId."
     ],
     parameters: askPostboxParameters,
     async execute(_toolCallId: string, params: AskPostboxInput, signal?: AbortSignal) {
@@ -169,7 +173,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
         const result = {
           status: "unavailable" as const,
           requestId: params.requestId ?? "unavailable",
-          rationale: unavailableRationale,
+          note: unavailableNote,
           resolvedAt: new Date().toISOString()
         };
         return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
@@ -203,7 +207,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     } },
     async execute(_toolCallId: string, params: { questionId: string }, signal?: AbortSignal) {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
-      if (!client) throw new Error(unavailableRationale);
+      if (!client) throw new Error(unavailableNote);
       const result = AnswerReadResultSchema.parse(await client.getAnswer(params.questionId, signal));
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
@@ -213,7 +217,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     name, label: name, description, annotations: { readOnlyHint: !["update_question", "recover_question_answer"].includes(name) }, parameters,
     async execute(_id: string, params: any) {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
-      if (!client || !currentRegistration) throw new Error(unavailableRationale);
+      if (!client || !currentRegistration) throw new Error(unavailableNote);
       const result = await client.query(type, payload(params));
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
@@ -238,7 +242,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
   registerQueryTool("list_questions", "List compact pending Question IDs and text. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden across a feature, worktree, repository, or all Postbox Questions.",
     { type: "object", additionalProperties: false, properties: { ...filters, scope: discoveryScope, cursor: { type: "string" }, pageSize: { type: "number" } } }, "question.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
-  registerQueryTool("get_questions", "Get compact latest Question controls for explicit IDs by default; request the full view for complete content without Answer content.",
+  registerQueryTool("get_questions", "Get compact latest Question controls for explicit IDs by default; request the full view for complete current Question and resolution evidence.",
     { type: "object", additionalProperties: false, required: ["questionIds"], properties: {
       questionIds: { type: "array", minItems: 1, items: { type: "string" } },
       view: {
@@ -293,7 +297,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
           } }
         } },
         { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision"], properties: {
-          action: { const: "cancel" }, ...questionUpdateVersions, rationale: { type: "string" }
+          action: { const: "cancel" }, ...questionUpdateVersions, note: { type: "string" }
         } },
         { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "replacementQuestionId"], properties: {
           action: { const: "supersede" }, ...questionUpdateVersions, replacementQuestionId: { type: "string" }
@@ -327,7 +331,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   pi.registerTool?.(createWaitForPostboxTool(async (signal) => {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env, signal);
-      if (!client || !currentRegistration) throw new Error(unavailableRationale);
+      if (!client || !currentRegistration) throw new Error(unavailableNote);
       // Expose explicit Postbox waiting independently to Herdr and other parent status systems.
       const release = semanticStateController?.beginAskPostboxWait("waiting_for_postbox");
       try { return await client.waitForPostbox(currentRegistration.session.sessionId, signal); }
@@ -392,7 +396,7 @@ function preserveFallbackIdentityForReload(reason: unknown, identity: string | u
 }
 
 async function collectExtensionPostboxStatusSnapshot(env: NodeJS.ProcessEnv) {
-  return collectPostboxStatusSnapshot({ client, env, unavailableRationale });
+  return collectPostboxStatusSnapshot({ client, env, unavailableNote });
 }
 
 export async function startRegistration(
@@ -411,7 +415,7 @@ export async function startRegistration(
   });
   if (!uiScope.isActive()) return;
   if (targetResult.status === "unavailable") {
-    unavailableRationale = formatUnavailableRationale(targetResult);
+    unavailableNote = formatUnavailableNote(targetResult);
     uiScope.setStatus("postbox", "Postbox unavailable");
     startNoClientProfileSupervisor(pi, ctx, env, uiScope, fallbackSessionIdentity, options);
     return;
@@ -430,7 +434,7 @@ async function registerResolvedTarget(
   target: ResolvedServerTarget,
   options: StartRegistrationOptions
 ): Promise<void> {
-  unavailableRationale = "Pi Postbox is not connected.";
+  unavailableNote = "Pi Postbox is not connected.";
 
   try {
     const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity, profile);
@@ -532,7 +536,7 @@ function startNoClientProfileSupervisor(
     }
 
     if (targetResult.status === "unavailable") {
-      unavailableRationale = formatUnavailableRationale(targetResult);
+      unavailableNote = formatUnavailableNote(targetResult);
       uiScope.setStatus("postbox", "Postbox unavailable");
       const delayMs = nextDelayMs;
       nextDelayMs = Math.min(nextDelayMs * 2, maxDelayMs);
@@ -595,9 +599,10 @@ function createSessionStickyProfileResolver(
 function isSameSessionStickyLocalTarget(original: ResolvedServerTarget, next: ResolvedServerTarget): boolean {
   if (next.source !== original.source || next.url !== original.url) return false;
   if (original.source === "profile-metadata") {
+    // Pin the session to its profile and endpoint, not to one server process. A clean
+    // restart at the same URL must refresh the connected instance/build identity.
     return next.profile.kind === original.profile.kind
-      && next.profile.id === original.profile.id
-      && next.instanceId === original.instanceId;
+      && next.profile.id === original.profile.id;
   }
   return true;
 }
@@ -621,7 +626,7 @@ async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promi
   }
 
   if (targetResult.status === "unavailable") {
-    unavailableRationale = formatUnavailableRationale(targetResult);
+    unavailableNote = formatUnavailableNote(targetResult);
     context.uiScope.setStatus("postbox", "Postbox unavailable");
     return false;
   }
@@ -653,7 +658,7 @@ async function ensureRegistrationForMutatingCaller(env: NodeJS.ProcessEnv, signa
     }
   });
   if (autostartResult.status === "disabled" || autostartResult.status === "failed") {
-    unavailableRationale = `${unavailableRationale} ${autostartResult.diagnostic}`;
+    unavailableNote = `${unavailableNote} ${autostartResult.diagnostic}`;
     return;
   }
 
@@ -727,7 +732,7 @@ function waitForRegistration(
     pollTimer.unref?.();
     timeout = setTimeout(() => {
       const failureDiagnostic = getAsyncAutostartFailure() ?? getPostboxAutostartFailureDiagnostic(env);
-      unavailableRationale = failureDiagnostic
+      unavailableNote = failureDiagnostic
         ? `Pi Postbox autostart failed before healthy profile metadata was available. ${failureDiagnostic}`
         : `Pi Postbox autostart timed out after ${timeoutMs}ms waiting for healthy profile metadata. ${autostartDiagnostic}`;
       settle("resolve");
@@ -755,7 +760,7 @@ export async function collectRegistrationPayload(
   return { machine, project, session };
 }
 
-function formatUnavailableRationale(result: Extract<ResolveServerTargetResult, { status: "unavailable" }>): string {
+function formatUnavailableNote(result: Extract<ResolveServerTargetResult, { status: "unavailable" }>): string {
   const codes = [...new Set(result.diagnostics.map((diagnostic) => diagnostic.code))];
   if (codes.length === 0) return "Pi Postbox is not connected.";
   return `Pi Postbox is unavailable after profile target resolution (${codes.join(", ")}).`;

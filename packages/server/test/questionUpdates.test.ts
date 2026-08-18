@@ -25,7 +25,7 @@ describe("immutable Question updates", () => {
       action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Updated question?" }
     })).toMatchObject({ questionId: "question", revision: 2, question: { prompt: "Updated question?" } });
     expect(() => store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, {
-      action: "cancel", expectedRevision: 1, expectedOwnerRevision: 1, rationale: "stale"
+      action: "cancel", expectedRevision: 1, expectedOwnerRevision: 1, note: "stale"
     })).toThrowError(expect.objectContaining({ code: "stale_revision" } satisfies Partial<RequestStoreError>));
     expect(() => store.answer("question", { expectedRevision: 1, selectedValues: ["yes"] })).toThrowError(expect.objectContaining({ code: "stale_revision" }));
     expect(store.get("question")).toMatchObject({ requestId: "question", status: "pending" });
@@ -36,7 +36,7 @@ describe("immutable Question updates", () => {
     for (const action of terminalActions) {
       const { store, create } = setup(); create("question"); if (action === "supersede") create("replacement");
       const terminal = store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, action === "cancel"
-        ? { action, expectedRevision: 1, expectedOwnerRevision: 1, rationale: "obsolete" }
+        ? { action, expectedRevision: 1, expectedOwnerRevision: 1, note: "obsolete" }
         : { action, expectedRevision: 1, expectedOwnerRevision: 1, replacementQuestionId: "replacement" });
       expect(terminal).toMatchObject(action === "supersede" ? { status: "superseded", replacementQuestionId: "replacement" } : { status: "cancelled" });
       expect(() => store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, { action: "reparent", expectedRevision: 2, expectedOwnerRevision: 1, parentQuestionId: null }))
@@ -90,7 +90,7 @@ describe("immutable Question updates", () => {
   it("records browser, session, and expiry terminal events with stable actors and timestamps", () => {
     const { db, store, create } = setup();
     create("browser-cancel");
-    store.cancel("browser-cancel", { rationale: "No longer needed" });
+    store.cancel("browser-cancel", { note: "No longer needed" });
     expect(store.getQuestionHistory("browser-cancel").initial).toEqual(
       expect.objectContaining({ revision: 1, question: { prompt: "browser-cancel?" } })
     );

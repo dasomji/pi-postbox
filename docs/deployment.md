@@ -156,7 +156,7 @@ The credential-free smoke starts `node packages/server/dist/cli.js` with a tempo
 3. Start Pi with `PI_POSTBOX_URL` set to the same URL.
 4. Confirm the session card appears with machine/project/branch metadata.
 5. Ask a test question with `ask_postbox` and answer it from the browser.
-6. Confirm the Pi tool result includes only the final selected values/note/rationale.
+6. Confirm `get_answer` returns only `questionId`, `answerId`, the selected option values in `answer`, and optional `note`.
 7. Confirm the decision appears in recent history.
 8. Test `/postbox-status` and `/postbox-answer` from the terminal as a fallback.
 9. Test the read-only `postbox_status` tool and confirm it reports status/open-question count without pending question contents.

@@ -118,13 +118,11 @@ export interface LocalAnswerInput {
   requestId?: string;
   selectedValues: string[];
   note?: string;
-  rationale?: string;
 }
 
 export interface LocalCancelInput {
   requestId?: string;
   note?: string;
-  rationale?: string;
 }
 
 interface LocalResolution {
@@ -147,6 +145,8 @@ interface PendingAsk {
   expiryTimer?: NodeJS.Timeout;
   targetAffinityTimer?: NodeJS.Timeout;
   createCommandId: string;
+  signal?: AbortSignal;
+  abort?: () => void;
 }
 
 interface PendingCreateReceipt {
@@ -342,7 +342,7 @@ export class PostboxClient {
       const cleanup = () => {
         this.pendingAsks.delete(payload.requestId);
         this.asynchronousAskCreates.delete(payload.requestId);
-        signal?.removeEventListener("abort", abort);
+        if (pending.signal && pending.abort) pending.signal.removeEventListener("abort", pending.abort);
         if (pending.unavailableTimer) clearTimeout(pending.unavailableTimer);
         if (pending.expiryTimer) clearTimeout(pending.expiryTimer);
         if (pending.targetAffinityTimer) clearTimeout(pending.targetAffinityTimer);
@@ -371,7 +371,9 @@ export class PostboxClient {
         cleanup,
         sentAtLeastOnce: false,
         createdServerUrl: this.currentServerUrl,
-        createCommandId: `ask_create_${randomUUID()}`
+        createCommandId: `ask_create_${randomUUID()}`,
+        signal,
+        abort
       };
 
       this.pendingAsks.set(payload.requestId, pending);
@@ -534,15 +536,13 @@ export class PostboxClient {
     this.validateSelectedValues(pending.payload, input.selectedValues);
     const answer: AskAnswerPayload = {
       selectedValues: input.selectedValues,
-      note: input.note,
-      rationale: input.rationale
+      note: input.note
     };
     const result: AskResult = {
       status: "answered",
       requestId: pending.payload.requestId,
       selectedValues: answer.selectedValues,
       note: answer.note,
-      rationale: answer.rationale,
       resolvedAt: new Date().toISOString()
     };
     this.resolveLocally(pending, result, {
@@ -555,12 +555,11 @@ export class PostboxClient {
 
   cancelPendingAsk(input: LocalCancelInput = {}): AskResult {
     const pending = this.findPendingAsk(input.requestId);
-    const cancel: AskCancelPayload = { note: input.note, rationale: input.rationale };
+    const cancel: AskCancelPayload = { note: input.note };
     const result: AskResult = {
       status: "cancelled",
       requestId: pending.payload.requestId,
       note: cancel.note,
-      rationale: cancel.rationale,
       resolvedAt: new Date().toISOString()
     };
     this.resolveLocally(pending, result, {
@@ -628,7 +627,7 @@ export class PostboxClient {
         if (parsed.data.type === "answer.result") {
           const pending = this.pendingAnswerReads.get(parsed.data.requestId);
           const result = AnswerReadResultSchema.parse(parsed.data.payload);
-          const questionId = "questionId" in result ? result.questionId : result.question.questionId;
+          const questionId = result.questionId;
           if (!pending || pending.questionId !== questionId) return;
           this.pendingAnswerReads.delete(parsed.data.requestId);
           pending.cleanup();
@@ -1042,7 +1041,16 @@ export class PostboxClient {
     const pending = this.pendingCreateReceipts.get(requestId);
     if (!pending) return;
     this.pendingCreateReceipts.delete(requestId);
+    this.detachAskAbortSignal(requestId);
     pending.resolve(receipt);
+  }
+
+  private detachAskAbortSignal(requestId: string): void {
+    const pending = this.pendingAsks.get(requestId);
+    if (!pending?.signal || !pending.abort) return;
+    pending.signal.removeEventListener("abort", pending.abort);
+    pending.signal = undefined;
+    pending.abort = undefined;
   }
 
   private async deliverAnswerNotification(
@@ -1394,15 +1402,15 @@ export function toExtensionSocketUrl(serverUrl: string): string {
   return url.toString();
 }
 
-function unavailableResult(requestId: string, rationale: string): AskResult {
-  return { status: "unavailable", requestId, rationale, resolvedAt: new Date().toISOString() };
+function unavailableResult(requestId: string, note: string): AskResult {
+  return { status: "unavailable", requestId, note, resolvedAt: new Date().toISOString() };
 }
 
 function expiredResult(requestId: string): AskResult {
   return {
     status: "expired",
     requestId,
-    rationale: "Postbox request expired before an answer was submitted.",
+    note: "Postbox request expired before an answer was submitted.",
     resolvedAt: new Date().toISOString()
   };
 }

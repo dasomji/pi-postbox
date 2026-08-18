@@ -35,7 +35,7 @@ describe("human Answers versus lifecycle-only resolutions", () => {
     for (const id of ["answered", "cancelled", "expired", "superseded", "replacement"]) create(id);
 
     store.answer("answered", { expectedRevision: 1, selectedValues: ["yes"] });
-    store.cancel("cancelled", { note: "Obsolete", rationale: "No longer needed" });
+    store.cancel("cancelled", { note: "No longer needed" });
     db.prepare("UPDATE questions SET expires_at = '2000-01-01T00:00:00.000Z' WHERE question_id = 'expired'").run();
     store.expireDue();
     store.updateQuestion("superseded", OWNER, {
@@ -76,9 +76,10 @@ describe("human Answers versus lifecycle-only resolutions", () => {
       "answered", "cancelled", "expired", "replacement", "superseded"
     ]);
 
-    expect(store.getAnswer("answered", OWNER)).toMatchObject({
-      alreadyRead: false,
-      answer: { status: "answered", answerId: expect.any(String), selectedValues: ["yes"] }
+    expect(store.getAnswer("answered", OWNER)).toEqual({
+      questionId: "answered",
+      answerId: expect.any(String),
+      answer: ["yes"]
     });
     const lifecycle = {
       cancelled: store.getAnswer("cancelled", OWNER),
@@ -88,27 +89,42 @@ describe("human Answers versus lifecycle-only resolutions", () => {
     expect(lifecycle.cancelled).toMatchObject({
       type: "lifecycle",
       status: "cancelled",
-      question: { questionId: "cancelled", revision: 1 },
-      note: "Obsolete",
-      rationale: "No longer needed"
+      questionId: "cancelled",
+      note: "No longer needed",
+      resolvedAt: expect.any(String)
     });
     expect(lifecycle.expired).toMatchObject({
       type: "lifecycle",
       status: "expired",
-      question: { questionId: "expired", revision: 1 },
-      rationale: expect.any(String)
+      questionId: "expired",
+      note: expect.any(String),
+      resolvedAt: expect.any(String)
     });
     expect(lifecycle.superseded).toMatchObject({
       type: "lifecycle",
       status: "superseded",
-      question: { questionId: "superseded", revision: 2 },
-      replacementQuestionId: "replacement"
+      questionId: "superseded",
+      replacementQuestionId: "replacement",
+      resolvedAt: expect.any(String)
     });
     for (const result of Object.values(lifecycle)) {
       expect(result).not.toHaveProperty("answerId");
       expect(result).not.toHaveProperty("answer");
       expect(result).not.toHaveProperty("alreadyRead");
       expect(result).not.toHaveProperty("firstRead");
+      expect(result).not.toHaveProperty("rationale");
     }
+
+    const forensic = store.getQuestions({ questionIds: ["cancelled", "expired", "superseded"], view: "full" });
+    expect(forensic[0]).toMatchObject({
+      resolution: { kind: "lifecycle", status: "cancelled", note: "No longer needed", resolvedAt: expect.any(String) }
+    });
+    expect(forensic[1]).toMatchObject({
+      resolution: { kind: "lifecycle", status: "expired", note: expect.any(String), resolvedAt: expect.any(String) }
+    });
+    expect(forensic[2]).toMatchObject({
+      resolution: { kind: "lifecycle", status: "superseded", replacementQuestionId: "replacement", resolvedAt: expect.any(String) }
+    });
+    expect(JSON.stringify(forensic)).not.toContain("rationale");
   });
 });

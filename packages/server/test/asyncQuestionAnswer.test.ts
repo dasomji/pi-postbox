@@ -234,7 +234,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/requests/question-1/answer",
-      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Keep it local", rationale: "Simple persistence" }
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Keep it local" }
     });
 
     expect(response.statusCode).toBe(200);
@@ -265,7 +265,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
     const cancellation = await app.inject({
       method: "POST",
       url: "/api/requests/question-1/cancel",
-      payload: { note: "Obsolete", rationale: "The decision is no longer needed" }
+      payload: { note: "The decision is no longer needed" }
     });
     expect(cancellation.statusCode).toBe(200);
 
@@ -282,17 +282,18 @@ describe("one asynchronous Question-to-Answer loop", () => {
       payload: {
         type: "lifecycle",
         status: "cancelled",
-        question: { questionId: "question-1", revision: 1 },
-        note: "Obsolete",
-        rationale: "The decision is no longer needed"
+        questionId: "question-1",
+        note: "The decision is no longer needed",
+        resolvedAt: expect.any(String)
       }
     });
+    expect(result.payload).not.toHaveProperty("question");
     expect(result.payload).not.toHaveProperty("answer");
     expect(result.payload).not.toHaveProperty("answerId");
     expect(result.payload).not.toHaveProperty("alreadyRead");
   });
 
-  it("atomically records the first get_answer reader and retains full content for later readers", async () => {
+  it("returns only the compact Answer contract and keeps repeated reads stable", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);
     const socket = await connectOwner(app, "idle");
@@ -301,7 +302,7 @@ describe("one asynchronous Question-to-Answer loop", () => {
     await app.inject({
       method: "POST",
       url: "/api/requests/question-1/answer",
-      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Keep it local", rationale: "Simple persistence" }
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Keep it local" }
     });
     await notification;
 
@@ -311,22 +312,18 @@ describe("one asynchronous Question-to-Answer loop", () => {
       return response;
     };
     const reads = [await read("read-1"), await read("read-2")];
-    expect(reads.filter((result) => (result.payload as { alreadyRead: boolean }).alreadyRead === false)).toHaveLength(1);
-    expect(reads.filter((result) => (result.payload as { alreadyRead: boolean }).alreadyRead === true)).toHaveLength(1);
     for (const result of reads) {
       expect(result).toMatchObject({
         type: "answer.result",
         payload: {
-        question: { questionId: "question-1", revision: 1, question: { prompt: "Which database should v1 use?" } },
-        answer: {
+          questionId: "question-1",
           answerId: expect.any(String),
-          selectedValues: ["sqlite"],
-          note: "Keep it local",
-          rationale: "Simple persistence"
-        },
-        firstRead: { reader: { harness: "pi", ownerId: PI_SESSION_UUID } }
+          answer: ["sqlite"],
+          note: "Keep it local"
         }
       });
+      expect(Object.keys(result.payload as object).sort()).toEqual(["answer", "answerId", "note", "questionId"]);
     }
+    expect((reads[1].payload as any).answerId).toBe((reads[0].payload as any).answerId);
   });
 });

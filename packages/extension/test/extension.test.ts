@@ -135,6 +135,8 @@ describe("Pi Postbox extension registration", () => {
   it("exposes lifecycle filters and compact-by-default Question, history, and owner discovery views", () => {
     const tools = new Map<string, {
       description: string;
+      promptSnippet?: string;
+      promptGuidelines?: string[];
       parameters: { properties: Record<string, any> };
     }>();
 
@@ -144,6 +146,8 @@ describe("Pi Postbox extension registration", () => {
         const tool = definition as {
           name: string;
           description: string;
+          promptSnippet?: string;
+          promptGuidelines?: string[];
           parameters: { properties: Record<string, any> };
         };
         tools.set(tool.name, tool);
@@ -178,6 +182,9 @@ describe("Pi Postbox extension registration", () => {
     expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("global");
     expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("featureId");
     expect(tools.get("get_answer")?.description).toMatch(/pending/i);
+    expect(tools.get("ask_postbox")?.promptGuidelines?.join(" ")).toMatch(/do not poll.*get_answer.*list_question_status.*list_questions/i);
+    expect(tools.get("ask_postbox")?.promptGuidelines?.join(" ")).toMatch(/only blocker.*wait_for_postbox.*once/i);
+    expect(tools.get("wait_for_postbox")?.promptGuidelines?.join(" ")).toMatch(/only blocker.*idle.*notification|only blocker.*idle.*wakes/i);
   });
 
   it("does not complete terminal session shutdown before Question Chat abort cleanup", async () => {
@@ -637,6 +644,54 @@ describe("Pi Postbox extension registration", () => {
     await expect(options?.resolveTarget?.()).resolves.toMatchObject({
       status: "selected",
       target: { url: server.url, profilePollingEnabled: true, source: "profile-metadata" }
+    });
+  });
+
+  it("accepts a restarted process at the same session-sticky endpoint so identity can refresh", async () => {
+    const url = "http://127.0.0.1:3500/";
+    const restartedInstanceId = "22222222-2222-4222-8222-222222222222";
+    const env = await tempConfigEnv();
+    let currentInstanceId = DEV_INSTANCE_ID;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.redirect).toBe("manual");
+      const inputUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      expect(inputUrl).toBe(`${url}healthz`);
+      return new Response(JSON.stringify(healthResponse({ role: "dev", instanceId: currentInstanceId, url })), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    await writeMetadata(env, {
+      role: "dev",
+      instanceId: DEV_INSTANCE_ID,
+      url,
+      updatedAt: new Date(NOW_MS).toISOString()
+    });
+
+    await startRegistration(
+      { getSessionName: () => "Same endpoint process restart", on: () => undefined },
+      {
+        cwd: process.cwd(),
+        ui: { setStatus: () => undefined, notify: () => undefined },
+        sessionManager: { getSessionFile: () => "/tmp/session.jsonl", getLeafId: () => "leaf-1" }
+      },
+      env,
+      undefined,
+      "same-endpoint-restart",
+      { resolveOptions: { fetch, nowMs: NOW_MS, ttlMs: TTL_MS } }
+    );
+
+    currentInstanceId = restartedInstanceId;
+    await writeMetadata(env, {
+      role: "dev",
+      instanceId: restartedInstanceId,
+      url,
+      updatedAt: new Date(NOW_MS).toISOString()
+    });
+
+    await expect(postboxClientMock.options.at(-1)?.resolveTarget?.()).resolves.toMatchObject({
+      status: "selected",
+      target: { url, instanceId: restartedInstanceId }
     });
   });
 

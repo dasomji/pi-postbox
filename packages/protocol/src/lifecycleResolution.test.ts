@@ -1,26 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { AnswerReadResultSchema, AskRequestSnapshotSchema } from "./index.js";
 
-const question = {
-  questionId: "question",
-  revision: 2,
-  mode: "single" as const,
-  question: { prompt: "Still needed?" },
-  options: [{ value: "yes", label: "Yes" }],
-  createdAt: "2026-08-15T12:00:00.000Z",
-  resolvedAt: "2026-08-15T12:01:00.000Z"
-};
-
 describe("lifecycle-only Question resolutions", () => {
   it.each([
-    { type: "lifecycle", status: "cancelled", question, note: "Obsolete" },
-    { type: "lifecycle", status: "expired", question, rationale: "The response deadline passed." },
-    { type: "lifecycle", status: "superseded", question, replacementQuestionId: "replacement" }
-  ])("accepts an explicit $status get_answer result without Answer fields", (result) => {
+    { type: "lifecycle", status: "cancelled", questionId: "question", note: "Obsolete", resolvedAt: "2026-08-15T12:01:00.000Z" },
+    { type: "lifecycle", status: "expired", questionId: "question", note: "The response deadline passed.", resolvedAt: "2026-08-15T12:01:00.000Z" },
+    { type: "lifecycle", status: "superseded", questionId: "question", replacementQuestionId: "replacement", resolvedAt: "2026-08-15T12:01:00.000Z" }
+  ])("accepts a compact explicit $status get_answer result without repeated Question content", (result) => {
     expect(AnswerReadResultSchema.parse(result)).toEqual(result);
+    expect(result).not.toHaveProperty("question");
     expect(result).not.toHaveProperty("answerId");
     expect(result).not.toHaveProperty("answer");
     expect(result).not.toHaveProperty("answerRead");
+    expect(result).not.toHaveProperty("rationale");
   });
 
   it("forbids Answer metadata on lifecycle-only snapshots", () => {

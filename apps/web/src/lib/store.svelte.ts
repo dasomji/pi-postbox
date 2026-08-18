@@ -203,16 +203,10 @@ class PostboxStore {
     this.locallyResolvingRequestIds.delete(requestId);
   }
 
-  /** Land where the next decision is: the project's queue while it still has open questions, otherwise the main page. */
-  routeAfterRequestResolved(sessionId: string): void {
-    const session = this.sessions.find((candidate) => candidate.sessionId === sessionId);
-    const projectId = session?.projectId;
-    const projectHasOpenQuestions =
-      projectId !== undefined &&
-      this.sessions.some(
-        (candidate) => candidate.projectId === projectId && this.openQuestionsFor(candidate.sessionId).length > 0
-      );
-    if (projectId !== undefined && projectHasOpenQuestions) this.selectProject(projectId);
+  /** Continue the decision workflow with the oldest open question, or return home when none remain. */
+  routeAfterRequestResolved(): void {
+    const nextRequest = this.pendingRequests[0];
+    if (nextRequest) this.selectRequest(nextRequest.requestId);
     else this.clearSelection();
   }
 
@@ -246,7 +240,7 @@ class PostboxStore {
       this.locallyRetainedRequest = previouslySelectedRequest;
       return;
     }
-    if (previouslySelectedRequest) this.routeAfterRequestResolved(previouslySelectedRequest.sessionId);
+    if (previouslySelectedRequest) this.routeAfterRequestResolved();
   }
 
   async loadSnapshot(fetchCurrentSnapshot: () => Promise<StateSnapshot> = fetchSnapshot): Promise<void> {

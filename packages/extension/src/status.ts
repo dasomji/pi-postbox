@@ -61,7 +61,7 @@ export interface PostboxStatusClient {
 export interface CollectPostboxStatusOptions {
   client?: PostboxStatusClient;
   env?: NodeJS.ProcessEnv;
-  unavailableRationale?: string;
+  unavailableNote?: string;
   resolveTarget?: (options: { env: NodeJS.ProcessEnv }) => Promise<ResolveServerTargetResult>;
 }
 
@@ -86,7 +86,7 @@ export async function collectPostboxStatusSnapshot(options: CollectPostboxStatus
   const resolveTarget = options.resolveTarget ?? ((input: { env: NodeJS.ProcessEnv }) => resolveServerTarget(input));
   const result = await resolveTarget({ env });
   const diagnostics = [
-    ...(options.unavailableRationale ? [options.unavailableRationale] : []),
+    ...(options.unavailableNote ? [options.unavailableNote] : []),
     ...result.diagnostics.map(formatProfileDiagnostic)
   ].filter(Boolean);
 

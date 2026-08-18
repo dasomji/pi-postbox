@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AskAnswerPayloadSchema,
+  AskCancelPayloadSchema,
   AskCreatePayloadSchema,
   AskOptionSchema,
   AskResultSchema,
@@ -143,6 +145,16 @@ describe("ask_postbox protocol", () => {
     ).toThrow();
   });
 
+  it("accepts notes but rejects removed rationale fields on Answer and cancellation payloads", () => {
+    expect(AskAnswerPayloadSchema.parse({ selectedValues: ["ship"], note: "Proceed" })).toEqual({
+      selectedValues: ["ship"],
+      note: "Proceed"
+    });
+    expect(() => AskAnswerPayloadSchema.parse({ selectedValues: ["ship"], rationale: "Because" })).toThrow();
+    expect(AskCancelPayloadSchema.parse({ note: "No longer needed" })).toEqual({ note: "No longer needed" });
+    expect(() => AskCancelPayloadSchema.parse({ rationale: "No longer needed" })).toThrow();
+  });
+
   it("normalizes answered, cancelled, expired, and unavailable terminal results", () => {
     expect(
       AskResultSchema.parse({
@@ -150,7 +162,6 @@ describe("ask_postbox protocol", () => {
         requestId: "ask-1",
         selectedValues: ["a", "b"],
         note: "ship it",
-        rationale: "covers the use case",
         resolvedAt: "2026-06-03T00:00:00.000Z"
       })
     ).toMatchObject({ status: "answered", selectedValues: ["a", "b"] });
@@ -167,19 +178,20 @@ describe("ask_postbox protocol", () => {
       AskResultSchema.parse({
         status: "expired",
         requestId: "ask-1",
-        rationale: "No answer before timeout",
+        note: "No answer before timeout",
         resolvedAt: "2026-06-03T00:00:00.000Z"
       })
-    ).toMatchObject({ status: "expired", requestId: "ask-1" });
+    ).toMatchObject({ status: "expired", requestId: "ask-1", note: "No answer before timeout" });
 
     expect(
       AskResultSchema.parse({
         status: "unavailable",
         requestId: "ask-1",
-        rationale: "Server unavailable",
+        note: "Server unavailable",
         resolvedAt: "2026-06-03T00:00:00.000Z"
       })
-    ).toMatchObject({ status: "unavailable", requestId: "ask-1" });
+    ).toMatchObject({ status: "unavailable", requestId: "ask-1", note: "Server unavailable" });
+    expect(JSON.stringify(AskResultSchema.options)).not.toMatch(/rationale/i);
   });
 
   it("allows state snapshots to include pending request cards", () => {

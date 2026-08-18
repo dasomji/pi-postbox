@@ -8,7 +8,7 @@ The product requirements document is in [`docs/prd/pi-postbox.md`](docs/prd/pi-p
 
 ## Current status
 
-Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `ask_postbox`, WebSocket session registration, SSE browser state, SQLite persistence/history, rich handoff context, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script. Version 0.1.4 also makes common agent reads compact by default while keeping explicit complete forensic views.
+Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `ask_postbox`, WebSocket session registration, SSE browser state, SQLite persistence/history, rich handoff context, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script. Version 0.1.6 keeps common agent reads compact, makes batch/single tool modes strict, preserves persisted Questions across turn cancellation, refreshes server identity after a same-endpoint restart, and advances the dashboard directly to the next open Question after a resolution.
 
 ## Quick start from this checkout
 
@@ -80,7 +80,9 @@ pi-postbox-server
 
 ## Agent tool contracts
 
-`ask_postbox` returns after durable persistence rather than waiting for a human Answer. In batch mode, put the required shared handoff context in `defaults.context`; an item may supply a complete `context` override. The server expands and validates every item before persisting independent Question records:
+`ask_postbox` returns after durable persistence rather than waiting for a human Answer. Continue any independent work and do not poll `get_answer`, `list_question_status`, or `list_questions`: Postbox notifies the owning Pi Session when an Answer is available. If that human decision becomes the only remaining blocker, call `wait_for_postbox` once to enter explicit idle/waiting mode; after it wakes, read the relevant Question with `get_answer`.
+
+In batch mode, put the required shared handoff context in `defaults.context`; an item may supply a complete `context` override. Batch idempotency is per Question: put a stable `requestId` on each item. A top-level batch `requestId` is invalid because Postbox does not claim an atomic batch-level idempotency contract. The server expands and validates every item before persisting independent Question records:
 
 ```json
 {
@@ -195,8 +197,8 @@ While `ask_postbox` is pending, the extension shows compact command hints. Opera
 
 ```text
 /postbox-status
-/postbox-answer [requestId] value[,value2] [--note text] [--rationale text]
-/postbox-cancel [requestId] [--note text] [--rationale text]
+/postbox-answer [requestId] value[,value2] [--note text]
+/postbox-cancel [requestId] [--note text]
 ```
 
 `/postbox-status` reports privacy-preserving operator status: connectivity, active local URL when known, Tailnet URL/export guidance when available, exact server version/protocol/instance/build identity, open-question count, autostart state, and diagnostics. Reconnect diagnostics show their delay and target; an origin-pinned Question shows the deferred target and bounded affinity interval. It does not dump pending question contents, options, answers, notes, or history. The read-only `postbox_status` tool exposes the same structured status for agents without leaking question text.
@@ -207,4 +209,6 @@ Terminology note: an explicit non-loopback URL is a configured URL whose host is
 
 ## Explicit agent waiting and capacity
 
-`wait_for_postbox` suspends until any Question owned by the calling agent has an Answer or another actionable lifecycle event. It accepts no Question IDs and is cancellable. In the Pi adapter each measured active wait retains exactly one configured runnable-agent slot: filling all configured slots with waiting children blocks an additional child until one wait wakes or is cancelled. A parent or operator should cancel or abort a waiting child to release capacity; cancellation clears only the ephemeral wait and leaves Questions and Answers durable.
+`wait_for_postbox` is an explicit idle/blocked mode, not a required follow-up to every `ask_postbox`. Use it only after all independent work is exhausted and a human Postbox decision is the sole blocker. Call it once; do not emulate waiting by repeatedly calling status/list tools or `get_answer`. It suspends until any Question owned by the calling agent has an Answer or another actionable lifecycle event, after which the agent reads the relevant Answer with `get_answer`.
+
+The tool accepts no Question IDs and is cancellable. In the Pi adapter each measured active wait retains exactly one configured runnable-agent slot: filling all configured slots with waiting children blocks an additional child until one wait wakes or is cancelled. A parent or operator should cancel or abort a waiting child to release capacity; cancellation clears only the ephemeral wait and leaves Questions and Answers durable. Likewise, aborting a completed `ask_postbox` tool turn after its persistence acknowledgement must not cancel the durable Question.

@@ -77,8 +77,19 @@ export const askPostboxParameters = {
   additionalProperties: false,
   description: "Create Questions. A Question may have at most five direct children and the hierarchy may have at most four levels.",
   oneOf: [
-    { required: ["question", "options", "context"], not: { required: ["questions"] }, properties: { mode: { type: "string", enum: ["single", "multi"] } } },
-    { required: ["mode", "defaults", "questions"], properties: { mode: { const: "batch" } }, not: { required: ["question"] } }
+    {
+      additionalProperties: false,
+      required: ["question", "options", "context"],
+      properties: {
+        question: {}, questionContext: {}, relevance: {}, decisionImpact: {}, requestId: {}, timeoutMs: {},
+        expiresAt: {}, options: {}, context: {}, forkReference: {}, mode: { type: "string", enum: ["single", "multi"] }, parent: {}
+      }
+    },
+    {
+      additionalProperties: false,
+      required: ["mode", "defaults", "questions"],
+      properties: { mode: { const: "batch" }, defaults: {}, questions: {} }
+    }
   ],
   properties: {
     ...sharedDraftProperties,
@@ -156,6 +167,10 @@ export async function executeAskPostbox(
   lifecycle?: AskPostboxWaitLifecycle
 ): Promise<AskReceipt | AskBatchReceipt> {
   if (input.mode === "batch") {
+    const invalidField = Object.keys(input).find((field) => !["mode", "defaults", "questions"].includes(field));
+    if (invalidField) {
+      throw new Error(`ask_postbox batch does not accept top-level ${invalidField}; put Question-specific fields on each questions item`);
+    }
     if (!("createAskBatch" in client)) throw new Error("Postbox client does not support Question batches");
     const defaults = AskBatchDefaultsSchema.parse(input.defaults);
     const questions = input.questions.map(({ localRef, parent, ...item }) => AskBatchQuestionDraftSchema.parse({
@@ -201,5 +216,5 @@ export function formatAskResult(result: AskReceipt | AskResult | AskBatchReceipt
   }
   if ("questionId" in result) return `Postbox persisted ${result.questionId} (revision ${result.revision}); the Answer will arrive asynchronously. Use get_answer with this questionId after notification.`;
   if (result.status === "answered") return `Postbox answered ${result.requestId}: ${result.selectedValues.join(", ")}.`;
-  return `Postbox ${result.status} ${result.requestId}.${result.rationale ? ` ${result.rationale}` : ""}`;
+  return `Postbox ${result.status} ${result.requestId}.${result.note ? ` ${result.note}` : ""}`;
 }

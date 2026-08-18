@@ -226,6 +226,66 @@ describe("PostboxClient pending ask resilience", () => {
     client.stop();
   });
 
+  it("correlates and returns only the compact normal Answer fields", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-answered");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "answer.result",
+      requestId: command.requestId,
+      payload: {
+        questionId: "question-answered",
+        answerId: "answer-1",
+        answer: ["yes"],
+        note: "Proceed"
+      }
+    });
+
+    await expect(answer).resolves.toEqual({
+      questionId: "question-answered",
+      answerId: "answer-1",
+      answer: ["yes"],
+      note: "Proceed"
+    });
+    client.stop();
+  });
+
+  it("correlates and returns a compact lifecycle get_answer result", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-cancelled");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "answer.result",
+      requestId: command.requestId,
+      payload: {
+        type: "lifecycle",
+        status: "cancelled",
+        questionId: "question-cancelled",
+        note: "No longer needed",
+        resolvedAt: "2026-08-17T10:00:00.000Z"
+      }
+    });
+
+    await expect(answer).resolves.toEqual({
+      type: "lifecycle",
+      status: "cancelled",
+      questionId: "question-cancelled",
+      note: "No longer needed",
+      resolvedAt: "2026-08-17T10:00:00.000Z"
+    });
+    client.stop();
+  });
+
   it("aborts a pending get_answer without leaving it for the response timeout", async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];
@@ -241,6 +301,39 @@ describe("PostboxClient pending ask resilience", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     client.stop();
   });
+  it("stops treating the tool signal as Question ownership after persistence acknowledgement", async () => {
+    FakeSocket.instances = [];
+    const client = createClient({ registration: { ...registration, session: { ...registration.session, semanticState: "working" } } });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+    const controller = new AbortController();
+
+    const receipt = client.createAsk({ ...askPayload, requestId: "ask-survives-tool-abort" }, controller.signal);
+    const command = socket.sent.find((value) =>
+      (value as { type?: string; payload?: { requestId?: string } }).type === "ask.create"
+      && (value as { payload?: { requestId?: string } }).payload?.requestId === "ask-survives-tool-abort"
+    ) as { requestId: string };
+    socket.serverMessage({
+      type: "ask.created",
+      requestId: command.requestId,
+      payload: { requestId: "ask-survives-tool-abort", questionId: "ask-survives-tool-abort", revision: 1, status: "pending" }
+    });
+    await expect(receipt).resolves.toMatchObject({ questionId: "ask-survives-tool-abort", status: "pending" });
+
+    controller.abort();
+    await Promise.resolve();
+
+    expect(socket.sent).not.toContainEqual(expect.objectContaining({
+      type: "ask.cancel",
+      payload: expect.objectContaining({ requestId: "ask-survives-tool-abort" })
+    }));
+    expect(client.listPendingAsks()).toEqual([
+      expect.objectContaining({ requestId: "ask-survives-tool-abort", sentAtLeastOnce: true })
+    ]);
+    client.stop();
+  });
+
   it("settles create receipts only from persistence evidence and survives lost ack through terminal replay", async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];
@@ -672,6 +765,43 @@ describe("PostboxClient pending ask resilience", () => {
     client.stop();
   });
 
+  it("refreshes the connected server identity when the process restarts at the same URL", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const url = "http://127.0.0.1:32187/";
+    let currentTarget = selectedTarget(url, "production", "old-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const client = createClient({
+      serverUrl: url,
+      targetIdentity: {
+        version: "0.1.3",
+        protocolVersion: PROTOCOL_VERSION,
+        instanceId: "old-instance",
+        buildId: "old-build"
+      },
+      resolveTarget,
+      reconnectMs: 100,
+      inspectTailscale: async () => ({ state: "unavailable" })
+    } as never);
+    client.start();
+    const firstSocket = FakeSocket.instances[0]!;
+    firstSocket.open();
+
+    currentTarget = {
+      ...selectedTarget(url, "production", "new-instance"),
+      target: { ...selectedTarget(url, "production", "new-instance").target, buildId: "new-build" }
+    };
+    firstSocket.close();
+    await vi.advanceTimersByTimeAsync(100);
+    FakeSocket.instances[1]!.open();
+
+    await expect(client.getStatusSnapshot()).resolves.toMatchObject({
+      connection: { state: "connected", activeUrl: url },
+      server: { instanceId: "new-instance", buildId: "new-build" }
+    });
+    client.stop();
+  });
+
   it("resolves the active-local target before reconnecting instead of redialing a stale local URL", async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];
@@ -728,7 +858,7 @@ describe("PostboxClient pending ask resilience", () => {
     await expect(askPromise).resolves.toMatchObject({
       status: "unavailable",
       requestId: "ask-unavailable",
-      rationale: expect.stringContaining("unavailable")
+      note: expect.stringContaining("unavailable")
     });
     client.stop();
   });

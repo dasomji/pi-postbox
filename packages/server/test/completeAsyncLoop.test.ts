@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 describe("complete asynchronous adapter/browser/API loop", () => {
-  it("persists a Question, exposes authoritative browser state, notifies Pi, and returns the full Answer", async () => {
+  it("persists a Question, exposes authoritative browser state, notifies Pi, and returns the compact Answer", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);
     await app.listen({ host: "127.0.0.1", port: 0 });
@@ -49,18 +49,18 @@ describe("complete asynchronous adapter/browser/API loop", () => {
 
     const answerResponse = await fetch(`${serverUrl}/api/requests/question-complete/answer`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["ship"], note: "Proceed", rationale: "The loop is complete" })
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["ship"], note: "Proceed" })
     });
     expect(answerResponse.status).toBe(200);
     await expect(notification).resolves.toMatchObject({
       questionId: "question-complete", question: "Ship the complete loop?", answerId: expect.any(String)
     });
 
-    await expect(client.getAnswer("question-complete")).resolves.toMatchObject({
-      alreadyRead: false,
-      question: { questionId: "question-complete", question: { prompt: "Ship the complete loop?" } },
-      answer: { status: "answered", selectedValues: ["ship"], note: "Proceed", rationale: "The loop is complete" },
-      firstRead: { reader: { harness: "pi", ownerId: "12345678-1234-4123-8123-123456789abc" } }
+    await expect(client.getAnswer("question-complete")).resolves.toEqual({
+      questionId: "question-complete",
+      answerId: expect.any(String),
+      answer: ["ship"],
+      note: "Proceed"
     });
   });
 });

@@ -120,7 +120,7 @@ describe("pending ask resilience", () => {
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-terminal/answer",
-      payload: { expectedRevision: 1, selectedValues: ["yes"], rationale: "Already decided" }
+      payload: { expectedRevision: 1, selectedValues: ["yes"], note: "Already decided" }
     });
     expect(answerResponse.statusCode).toBe(200);
 
@@ -128,7 +128,7 @@ describe("pending ask resilience", () => {
     socket.send(JSON.stringify(askCreateMessage("ask-terminal")));
     await expect(replayResolved).resolves.toMatchObject({
       type: "ask.resolved",
-      payload: { status: "answered", requestId: "ask-terminal", selectedValues: ["yes"], rationale: "Already decided" }
+      payload: { status: "answered", requestId: "ask-terminal", selectedValues: ["yes"], note: "Already decided" }
     });
 
     const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());

@@ -83,7 +83,7 @@ describe("durable decision compatibility migration", () => {
 
     expect(() => requests.proposeAnswer("question-complete", "session-right", { label: "Green" }))
       .toThrowError(expect.objectContaining({ code: "wrong_owner" } satisfies Partial<RequestStoreError>));
-    requests.answer("question-complete", { selectedValues: ["blue"], note: "Proceed tonight", rationale: "Pool is warm" });
+    requests.answer("question-complete", { selectedValues: ["blue"], note: "Proceed tonight" });
 
     expect(db.prepare("SELECT harness, owner_id, harness_session_id FROM owners ORDER BY owner_id").all()).toEqual([
       { harness: "pi", owner_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", harness_session_id: "shared-control-session" },
@@ -100,7 +100,7 @@ describe("durable decision compatibility migration", () => {
     });
     expect(db.prepare(`SELECT question_id, question_revision, status, selected_values_json, note, rationale
       FROM answers WHERE question_id = ?`).get("question-complete")).toEqual({
-      question_id: "question-complete", question_revision: 1, status: "answered", selected_values_json: '["blue"]', note: "Proceed tonight", rationale: "Pool is warm"
+      question_id: "question-complete", question_revision: 1, status: "answered", selected_values_json: '["blue"]', note: "Proceed tonight", rationale: null
     });
 
     requests.create({
@@ -171,12 +171,16 @@ describe("durable decision compatibility migration", () => {
       { question_id: "legacy-pending", revision: 1, owner_harness: "legacy", owner_owner_id: "legacy-session", status: "pending", expires_at: null },
       { question_id: "legacy-request", revision: 1, owner_harness: "legacy", owner_owner_id: "legacy-session", status: "answered", expires_at: null }
     ]);
-    expect(reopened.prepare(`SELECT question_id, selected_values_json, first_reader_harness, first_reader_owner_id,
+    expect(reopened.prepare(`SELECT question_id, selected_values_json, rationale, first_reader_harness, first_reader_owner_id,
       first_read_at, owner_notification_delivered_at FROM answers WHERE question_id = 'legacy-request'`).get()).toMatchObject({
-      question_id: "legacy-request", selected_values_json: '["yes"]', first_reader_harness: "legacy",
+      question_id: "legacy-request", selected_values_json: '["yes"]', rationale: "old rationale", first_reader_harness: "legacy",
       first_reader_owner_id: "legacy-session", first_read_at: "2026-01-01T00:01:00.000Z",
       owner_notification_delivered_at: "2026-01-01T00:01:00.000Z"
     });
+    const migratedStore = new RequestStore(reopened, () => Date.parse("2026-01-01T00:02:00.000Z"));
+    expect(JSON.stringify(migratedStore.get("legacy-request"))).not.toContain("rationale");
+    expect(JSON.stringify(migratedStore.getAnswerForRecovery("legacy-request", { harness: "pi", ownerId: "reader" }))).not.toContain("rationale");
+    migratedStore.close();
     expect(reopened.prepare("SELECT question_id, revision FROM question_revisions ORDER BY question_id").all()).toEqual([
       { question_id: "legacy-pending", revision: 1 }, { question_id: "legacy-request", revision: 1 }
     ]);

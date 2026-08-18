@@ -216,13 +216,24 @@ describe("store deselection of questions resolved on another device", () => {
     expect(store.selection).toEqual({ kind: "none" });
   });
 
-  it("routes to the project queue when the project still has other open questions", () => {
+  it("opens the next question when the selected question resolves and other questions remain", () => {
     store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending"), askRequest("ask-other", "pending")]));
     store.selectRequest("ask-remote");
 
     store.applyStateSnapshot(remoteSnapshot([askRequest("ask-other", "pending")]));
 
-    expect(store.selection).toEqual({ kind: "project", projectId: "remote-project" });
+    expect(store.selection).toEqual({ kind: "request", requestId: "ask-other" });
+  });
+
+  it("opens the oldest remaining question regardless of snapshot order", () => {
+    const oldest = { ...askRequest("ask-oldest", "pending"), createdAt: "2026-06-24T09:00:00.000Z" };
+    const newest = { ...askRequest("ask-newest", "pending"), createdAt: "2026-06-24T11:00:00.000Z" };
+    store.applyStateSnapshot(remoteSnapshot([askRequest("ask-remote", "pending"), newest, oldest]));
+    store.selectRequest("ask-remote");
+
+    store.applyStateSnapshot(remoteSnapshot([newest, oldest]));
+
+    expect(store.selection).toEqual({ kind: "request", requestId: "ask-oldest" });
   });
 
   it("keeps the selection while this tab is resolving the question locally", () => {

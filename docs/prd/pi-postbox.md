@@ -18,7 +18,7 @@ Build **Pi Postbox**, consisting of:
 
 Each Pi extension instance connects outbound to the standalone server, registers the active Pi session, sends heartbeats and semantic state, and posts structured question requests. The server persists sessions, machines, projects, pending requests, resolved answers, and history in SQLite. Browser clients receive reactive state via SSE and submit answers via HTTP actions.
 
-When an agent calls `ask_postbox`, the tool blocks the Pi session until the request is answered, cancelled, expires, or fails. The extension explicitly marks the session as blocked while waiting, independent of pi-ask. It also observes `ask_user` tool calls so local pi-ask prompts can still appear as attention states. While waiting, it emits Herdr-compatible blocked events so Herdr sidebars can reflect the same state when Pi runs inside Herdr.
+When an agent calls `ask_postbox`, the tool returns after the server durably persists the Question. The agent continues independent work and receives a lightweight notification when an Answer is available; it does not poll. If the human decision is the sole remaining blocker, the agent calls `wait_for_postbox` once to enter explicit idle/blocked mode until an actionable event. The extension also observes `ask_user` tool calls so local pi-ask prompts can still appear as attention states. Explicit Postbox waits emit Herdr-compatible blocked events so Herdr sidebars can reflect the same state when Pi runs inside Herdr.
 
 V1 does not include native push notifications or a conversational interviewer. It must reserve the architecture for both: notification hooks exist server-side, and rich handoff context is stored even if the first UI renders it as collapsible sections.
 
@@ -33,18 +33,18 @@ V1 does not include native push notifications or a conversational interviewer. I
 7. As a user, I want pending questions shown as cards, so that I can answer decisions without reading full chat streams.
 8. As a user on mobile, I want the attention inbox to prioritize pending questions, so that I can quickly unblock agents.
 9. As a user with the dashboard open on multiple devices, I want an answer submitted on one device to immediately resolve the card everywhere else, so that state stays consistent.
-10. As a Pi agent, I want to call `ask_postbox` with structured options, so that I can pause for a normalized human decision instead of guessing.
-11. As a Pi agent, I want `ask_postbox` to return the selected machine-readable value(s), so that I can continue deterministically.
+10. As a Pi agent, I want to call `ask_postbox` with structured options and continue independent work after persistence, so that I do not guess or waste a runnable turn.
+11. As a Pi agent, I want an Answer notification plus a compact `get_answer` result with normalized machine-readable values, so that I can continue deterministically without polling or reloading Question context.
 12. As a Pi agent, I want to include why the question matters, so that the user understands the decision context.
 13. As a Pi agent, I want to describe the impact of the decision, so that the user can answer with awareness of downstream consequences.
 14. As a Pi agent, I want to include per-answer context, so that the user understands what each option means.
 15. As a Pi agent, I want to include codebase/problem context, so that a future interviewer can discuss the decision intelligently.
-16. As a user, I want only final answers, notes, and concise rationale returned to the coding agent, so that rich interview context does not pollute the main coding session.
+16. As a user, I want only final machine-readable answers and an optional note returned to the coding agent, so that rich Question context does not pollute the main coding session.
 17. As a future interviewer agent, I want rich handoff context stored with the request, so that I can conduct a better conversation without needing the full coding-agent chat stream.
 18. As a future tool, I want each request to store the originating Pi session path/id and leaf id, so that a temporary forked Pi session can be created from the exact decision point later.
 19. As a user, I want Pi sessions to show `working`, `blocked/waiting`, and `idle` states, so that I can distinguish active work from input waits.
 20. As a user, I want local `ask_user` waits to appear as blocked/attention states too, so that pi-ask prompts are not invisible.
-21. As a user running Pi inside Herdr, I want `ask_postbox` waits to mark Herdr blocked, so that Herdr and Postbox agree.
+21. As a user running Pi inside Herdr, I want explicit `wait_for_postbox` calls to mark Herdr blocked, so that Herdr and Postbox agree without treating every persisted Question as a blocked agent.
 22. As a user, I want resolved and expired questions retained for a limited history window, so that I can audit decisions later.
 23. As a user, I want the server to survive restarts without losing names or pending/history records, so that Postbox can be trusted as infrastructure.
 24. As a Pi user, I want Pi startup not to block if Postbox is unavailable, so that Pi remains usable without the server.
@@ -105,7 +105,7 @@ V1 does not include native push notifications or a conversational interviewer. I
 - Presence/state model:
   - Adapt Herdr’s semantic state model for Pi lifecycle:
     - agent start → working.
-    - `ask_postbox` waiting → blocked/waiting.
+    - explicit `wait_for_postbox` → blocked/waiting.
     - `ask_user` tool call observed → locally blocked.
     - agent end → debounced idle.
     - session shutdown → release/offline.
@@ -113,15 +113,19 @@ V1 does not include native push notifications or a conversational interviewer. I
   - Mark sessions offline/stale when heartbeat/connection is lost beyond the configured threshold.
 
 - Herdr interoperability:
-  - `ask_postbox` emits Herdr-compatible blocked events while waiting and clears them afterward.
+  - `wait_for_postbox` emits Herdr-compatible blocked events while waiting and clears them afterward.
   - Postbox state remains independent and must not depend on Herdr being installed.
 
 - Ask behavior:
-  - `ask_postbox` blocks until answered/cancelled/expired/failure.
+  - `ask_postbox` returns after durable persistence, not after human resolution.
+  - Postbox sends the owning session a lightweight Answer-available notification; agents do not poll bounded read/list tools.
+  - `wait_for_postbox` is called once only when a human decision is the sole remaining blocker.
+  - Single-Question and batch inputs are mutually strict. Batch idempotency is per item through each stable `requestId`; there is no ignored top-level batch key.
+  - Once persistence is acknowledged, aborting or compacting the originating tool turn does not cancel the Question.
   - Requests are idempotent by request id across reconnects.
   - Reconnect with exponential backoff while keeping the request pending until timeout/expiry.
-  - Default timeout should be long enough for remote/asynchronous attention, not a short interactive timeout.
-  - Expired requests return a structured expired result to the agent.
+  - Default expiry should be long enough for remote/asynchronous attention, not a short interactive timeout.
+  - Unresolved bounded Answer reads return a structured pending result.
 
 - Local fallback:
   - While a request is pending, show compact local status.
@@ -144,7 +148,7 @@ V1 does not include native push notifications or a conversational interviewer. I
   - The coding agent supplies rich context explicitly in the tool call.
   - The extension adds objective metadata only.
   - Do not automatically crawl or summarize the repo in v1.
-  - Return only final selected answers, user notes, and concise rationale to the coding agent.
+  - Return only the Question ID, Answer ID, final selected option values, and optional user note to the coding agent.
   - Do not return full future interviewer transcripts to the main coding session by default.
 
 - Future fork reference:
@@ -175,10 +179,10 @@ V1 does not include native push notifications or a conversational interviewer. I
 
 - Test external behavior and protocol outcomes, not implementation details.
 - Highest-value test seams:
-  - `ask_postbox` tool behavior from call → pending request → answer → normalized tool result.
+  - `ask_postbox` persistence receipt → Answer notification/explicit wait → compact normalized `get_answer` result.
   - Extension state transitions for working/blocked/idle/offline.
   - Observation of `ask_user` tool calls causing local blocked state.
-  - Herdr-compatible blocked event emission around `ask_postbox` waits.
+  - Herdr-compatible blocked event emission around explicit `wait_for_postbox` calls.
   - WebSocket reconnect/idempotent request behavior.
   - Server persistence across restart for machines, aliases, requests, answers, and history.
   - SSE client state updates after HTTP answer submission.

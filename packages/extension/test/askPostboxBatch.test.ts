@@ -17,13 +17,29 @@ describe("ask_postbox ordered batches", () => {
     expect(JSON.stringify(schema)).toMatch(/four levels/i);
     expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toBeUndefined();
-    expect(schema.oneOf[1].required).toEqual(["mode", "defaults", "questions"]);
+    expect(schema.oneOf[0]).toMatchObject({ additionalProperties: false, required: ["question", "options", "context"] });
+    expect(schema.oneOf[1]).toMatchObject({ additionalProperties: false, required: ["mode", "defaults", "questions"] });
+    expect(schema.oneOf[0].properties).not.toHaveProperty("questions");
+    expect(schema.oneOf[0].properties).not.toHaveProperty("defaults");
+    expect(schema.oneOf[1].properties).not.toHaveProperty("requestId");
+    expect(schema.oneOf[1].properties).not.toHaveProperty("timeoutMs");
     expect(schema.properties.defaults.required).toEqual(["context"]);
     expect(schema.properties.questions.items.required).toEqual(["localRef", "question", "options"]);
     expect(schema.properties.questions.items.properties.parent.oneOf).toHaveLength(2);
     expect(schema.properties.parent.required).toEqual(["questionId"]);
     expect(schema.properties.parent.properties.localRef).toBeUndefined();
     expect(schema.properties.questions.items.properties.forkReference).toEqual(schema.properties.forkReference);
+  });
+
+  it("rejects single-Question fields at the batch execution boundary instead of silently ignoring them", async () => {
+    const createAskBatch = vi.fn();
+    await expect((executeAskPostbox as any)({
+      mode: "batch",
+      requestId: "not-a-batch-idempotency-key",
+      defaults: { context: sharedContext },
+      questions: [draft]
+    }, { createAskBatch }, "session-1")).rejects.toThrow(/requestId.*batch|batch.*requestId/i);
+    expect(createAskBatch).not.toHaveBeenCalled();
   });
 
   it("sends an ordered batch once and returns every created and rejected receipt", async () => {

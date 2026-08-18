@@ -546,7 +546,7 @@ describe("release packaging and operator docs", () => {
       "reconnect only within their resolved profile",
       "sent asks",
       "local fallback",
-      "pin their origin instance",
+      "pin their origin endpoint",
       "bounded",
       "deferred switching"
     ]);

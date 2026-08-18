@@ -8,7 +8,7 @@ describe("content-free Question telemetry contract", () => {
     const event = schema.parse({ operation: "question.batch.create", questionLength: 42, questionContextLength: 12,
       relevanceLength: 13, decisionImpactLength: 14, optionValueLength: 15, optionLabelLength: 16,
       optionDescriptionLength: 17, optionMeaningLength: 18, optionContextLength: 19, noteLength: 4,
-      rationaleLength: 5, contextSerializedBytes: 180, optionsSerializedBytes: 320,
+      contextSerializedBytes: 180, optionsSerializedBytes: 320,
       requestSerializedBytes: 400, batchSerializedBytes: 900, batchSize: 3, responseCharacterCount: 91, selectedIdCount: 2,
       answerResponseBytes: 144 });
     expect(event).toMatchObject({ operation: "question.batch.create", questionLength: 42, questionContextLength: 12,
@@ -17,5 +17,6 @@ describe("content-free Question telemetry contract", () => {
     for (const contentField of ["question", "prompt", "context", "options", "answer", "note", "rationale", "transcript"]) {
       expect(schema.safeParse({ ...event, [contentField]: "private content" }).success, contentField).toBe(false);
     }
+    expect(schema.safeParse({ ...event, rationaleLength: 5 }).success).toBe(false);
   });
 });

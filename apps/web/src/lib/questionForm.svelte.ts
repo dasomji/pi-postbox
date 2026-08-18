@@ -48,7 +48,7 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
     try {
       await action();
       await store.refresh();
-      store.routeAfterRequestResolved(currentRequest.sessionId);
+      store.routeAfterRequestResolved();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : fallback;
     } finally {

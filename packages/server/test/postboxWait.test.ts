@@ -38,22 +38,23 @@ function setup() {
 }
 
 describe("owner-wide explicit Postbox wait", () => {
-  it("takes no Question IDs and immediately atomically reads an existing unread Answer", async () => {
+  it("takes no Question IDs and immediately reports an existing unread Answer without consuming it", async () => {
     const { requests, waitable, create } = setup();
     create("ready");
-    requests.answer("ready", { expectedRevision: 1, selectedValues: ["yes"], note: "Proceed", rationale: "Approved" });
+    requests.answer("ready", { expectedRevision: 1, selectedValues: ["yes"], note: "Proceed" });
 
     const result = await waitable.waitForPostbox({ owner: OWNER });
-    expect(result).toMatchObject({
-      type: "answer",
-      alreadyRead: false,
-      question: { questionId: "ready", question: { prompt: "Question ready?" } },
-      answer: { selectedValues: ["yes"], note: "Proceed", rationale: "Approved" }
-    });
+    expect(result).toEqual({ type: "answer", questionId: "ready" });
     expect(requests.listQuestionStatus({
       caller: { owner: OWNER, repository: "", worktree: "", feature: "" }, global: true,
-      readState: "read", includeTerminal: true
-    })).toEqual([expect.objectContaining({ questionId: "ready", answerRead: true })]);
+      readState: "unread"
+    })).toEqual([expect.objectContaining({ questionId: "ready", answerRead: false })]);
+    expect(requests.getAnswer("ready", OWNER)).toEqual({
+      questionId: "ready",
+      answerId: expect.any(String),
+      answer: ["yes"],
+      note: "Proceed"
+    });
   });
 
   it("publishes waiting_for_postbox, suspends once per owner, and wakes with an Answer", async () => {
@@ -67,7 +68,7 @@ describe("owner-wide explicit Postbox wait", () => {
     await expect(waitable.waitForPostbox({ owner: OWNER })).rejects.toMatchObject({ code: "wait_already_active" });
 
     requests.answer("pending", { expectedRevision: 1, selectedValues: ["yes"] });
-    await expect(first).resolves.toMatchObject({ type: "answer", question: { questionId: "pending" } });
+    await expect(first).resolves.toEqual({ type: "answer", questionId: "pending" });
     expect(waitable.activeWaitCount(OWNER)).toBe(0);
   });
 
@@ -82,9 +83,11 @@ describe("owner-wide explicit Postbox wait", () => {
     advance(1_000);
     requests.answer("ancestor", { expectedRevision: 1, selectedValues: ["yes"] });
 
-    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toMatchObject({ question: { questionId: "ancestor" } });
-    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toMatchObject({ question: { questionId: "descendant" } });
-    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toMatchObject({ question: { questionId: "old-unrelated" } });
+    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toEqual({ type: "answer", questionId: "ancestor" });
+    requests.getAnswer("ancestor", OWNER);
+    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toEqual({ type: "answer", questionId: "descendant" });
+    requests.getAnswer("descendant", OWNER);
+    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toEqual({ type: "answer", questionId: "old-unrelated" });
   });
 
   it("wakes with compact lifecycle data and reports no_actionable_questions", async () => {
@@ -133,7 +136,7 @@ describe("owner-wide explicit Postbox wait", () => {
     controller.abort();
     requests.answer("race", { expectedRevision: 1, selectedValues: ["yes"] });
     await expect(abandoned).rejects.toMatchObject({ name: "AbortError" });
-    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toMatchObject({ type: "answer", question: { questionId: "race" } });
+    await expect(waitable.waitForPostbox({ owner: OWNER })).resolves.toEqual({ type: "answer", questionId: "race" });
   });
 
   it("wakes the displaced owner through the explicit transfer seam and frees the new owner to wait", async () => {

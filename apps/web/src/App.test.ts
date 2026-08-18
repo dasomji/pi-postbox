@@ -43,8 +43,15 @@ describe("authoritative server environment", () => {
     render(App, { props: { layoutState: new BrowserLayoutState(), shortcutPlatform: "other" } });
 
     expect(document.title).toBe("Pi Postbox — DEV");
-    expect(screen.getAllByText("Development server")).toHaveLength(2);
-    expect(screen.getAllByText("Development server")[0]?.getAttribute("title")).toContain("development:0123456789abcdef");
+    const badges = screen.getAllByText("Development server");
+    expect(badges).toHaveLength(2);
+    expect(badges[0]?.getAttribute("title")).toContain("development:0123456789abcdef");
+
+    const desktopNavigation = document.querySelector("#desktop-navigation");
+    expect(desktopNavigation?.querySelector("header")?.textContent).not.toContain("Development server");
+    expect(desktopNavigation?.querySelector("footer")?.textContent).toContain("Development server");
+    expect(desktopNavigation?.querySelector("footer")?.textContent?.indexOf("Development server"))
+      .toBeLessThan(desktopNavigation?.querySelector("footer")?.textContent?.indexOf("Notifications") ?? -1);
   });
 
   it("keeps production title and omits the development indicator", () => {

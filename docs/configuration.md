@@ -90,13 +90,13 @@ Each profile reads only `<profile-state-dir>/active-local/server.json`, then ver
 
 `PI_POSTBOX_URL` remains an intentional operator override and is health/compatibility checked first. A `serverUrl` in a profile's own config is also preferred. A checkout does not read production's global config, so a global loopback `serverUrl` cannot accidentally attach local development to production. `PI_POSTBOX_CONFIG_PATH` and `PI_POSTBOX_CONFIG_DIR` are explicit overrides and should be used only when intentional.
 
-After a Pi Session registers with a fallback/autostarted server, that session is sticky: it remains attached to the fallback until `/reload` or restart instead of migrating mid-session if the preferred server later comes back.
+After a Pi Session registers with a fallback/autostarted server, that session is sticky to the selected profile and endpoint: it does not migrate mid-session if a different preferred server later comes back. If the server process restarts at the same URL, reconnect accepts the replacement process and refreshes the exact instance/build identity shown by status.
 
 Package-local autostart is enabled by default for mutating Postbox actions that need a server (`ask_postbox` and the user-only `/postbox` dashboard command). Set `PI_POSTBOX_AUTOSTART=off` to opt out. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to control how long the extension waits for the started server; the default wait is 10 seconds (`10000` ms).
 
 Operational diagnostics are sanitized categories such as `missing`, `stale`, `unhealthy`, `unsafe` or malformed metadata, symlink/oversized metadata, health mismatch (`health-identity-mismatch`), `incompatible-protocol`, explicit override selection, and deferred switching while pinned work drains.
 
-Running sessions may reconnect only within their resolved profile. Sent asks and local fallback answer/cancel resolutions pin their origin instance until they resolve, flush, expire, or hit a bounded target-affinity release deadline; another profile is never a retarget candidate.
+Running sessions may reconnect only within their resolved profile. Sent asks and local fallback answer/cancel resolutions pin their origin endpoint until they resolve, flush, expire, or hit a bounded target-affinity release deadline; another profile is never a retarget candidate.
 
 ## Project display override
 
@@ -112,14 +112,18 @@ Repos can include a `.pi-postbox.json` file to improve display metadata:
 
 The icon path is resolved by the extension on the Pi machine, converted into a small data URL/hash, and uploaded during registration. The server never assumes it can read files from the Pi machine filesystem.
 
+## Agent notification and explicit waiting
+
+`ask_postbox` returns after durable persistence. The owning Pi Session receives a lightweight notification when an Answer becomes available, so agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. When the decision is the sole remaining blocker, call `wait_for_postbox` once to enter explicit idle/blocked mode; after it wakes, call `get_answer` for the relevant Question. Cancelling that ephemeral wait leaves durable Questions and Answers intact.
+
 ## Local fallback commands and browser command
 
 While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
 
 ```text
 /postbox-status
-/postbox-answer [requestId] value[,value2] [--note text] [--rationale text]
-/postbox-cancel [requestId] [--note text] [--rationale text]
+/postbox-answer [requestId] value[,value2] [--note text]
+/postbox-cancel [requestId] [--note text]
 ```
 
 `/postbox-status` reports connectivity, active/local URL, Tailnet URL/export line when available, open-question count, autostart state, and diagnostics. It is privacy-preserving: status includes counts only and never pending question contents, option labels, answers, notes, or history. The read-only `postbox_status` tool returns equivalent structured fields for agents.

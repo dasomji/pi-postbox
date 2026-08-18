@@ -177,21 +177,50 @@ export const AskAnswerEventSchema = z.object({ questionId: RequestIdSchema, affe
 export const AskAnswerPayloadSchema = z.object({
   expectedRevision: z.number().int().min(1).optional(),
   selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
-  note: LongTextSchema.optional(),
-  rationale: LongTextSchema.optional()
-});
+  note: LongTextSchema.optional()
+}).strict();
 
 const ExpectedRevisionSchema = z.number().int().min(1);
 const ExpectedOwnerRevisionSchema = z.number().int().min(1);
 export const UpdateQuestionPayloadSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, question: AskQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional(), context: AskCreateHandoffContextSchema.optional() }).strict(),
-  z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, rationale: LongTextSchema.optional() }).strict(),
+  z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, note: LongTextSchema.optional() }).strict(),
   z.object({ action: z.literal("supersede"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, replacementQuestionId: RequestIdSchema }).strict(),
   z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict(),
   z.object({ action: z.literal("transfer"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, expectedOwner: OwnerIdentitySchema, owner: OwnerIdentitySchema }).strict(),
   z.object({ action: z.literal("takeover"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, expectedOwner: OwnerIdentitySchema }).strict()
 ]);
 const HistoryActorSchema = z.object({ harness: ShortTextSchema, ownerId: ShortTextSchema }).strict();
+const FirstReadReceiptSchema = z.object({ reader: HistoryActorSchema, readAt: z.string().datetime() }).strict();
+export const QuestionResolutionSchema = z.union([
+  z.object({
+    kind: z.literal("answer"),
+    answerId: RequestIdSchema,
+    questionRevision: ExpectedRevisionSchema,
+    answer: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
+    note: LongTextSchema.optional(),
+    resolvedAt: z.string().datetime(),
+    firstRead: FirstReadReceiptSchema.nullable()
+  }).strict(),
+  z.object({
+    kind: z.literal("lifecycle"),
+    status: z.literal("cancelled"),
+    note: LongTextSchema.optional(),
+    resolvedAt: z.string().datetime()
+  }).strict(),
+  z.object({
+    kind: z.literal("lifecycle"),
+    status: z.literal("expired"),
+    note: LongTextSchema.optional(),
+    resolvedAt: z.string().datetime()
+  }).strict(),
+  z.object({
+    kind: z.literal("lifecycle"),
+    status: z.literal("superseded"),
+    replacementQuestionId: RequestIdSchema,
+    resolvedAt: z.string().datetime()
+  }).strict()
+]);
 const HistoryBaseSchema = z.object({ revision: ExpectedRevisionSchema, actor: HistoryActorSchema, at: z.string().datetime() });
 export const QuestionRevisionSnapshotSchema = HistoryBaseSchema.extend({
   question: AskQuestionSchema,
@@ -238,9 +267,8 @@ export const QuestionEventHistorySchema = z.object({
 }).strict();
 
 export const AskCancelPayloadSchema = z.object({
-  note: LongTextSchema.optional(),
-  rationale: LongTextSchema.optional()
-});
+  note: LongTextSchema.optional()
+}).strict();
 
 export const AskResultSchema = z.discriminatedUnion("status", [
   z.object({
@@ -248,7 +276,6 @@ export const AskResultSchema = z.discriminatedUnion("status", [
     requestId: RequestIdSchema,
     selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
     note: LongTextSchema.optional(),
-    rationale: LongTextSchema.optional(),
     affectedDescendantIds: z.array(RequestIdSchema).optional(),
     descendantGuidance: LongTextSchema.optional(),
     resolvedAt: z.string().datetime()
@@ -257,19 +284,18 @@ export const AskResultSchema = z.discriminatedUnion("status", [
     status: z.literal("cancelled"),
     requestId: RequestIdSchema,
     note: LongTextSchema.optional(),
-    rationale: LongTextSchema.optional(),
     resolvedAt: z.string().datetime()
   }),
   z.object({
     status: z.literal("expired"),
     requestId: RequestIdSchema,
-    rationale: LongTextSchema.optional(),
+    note: LongTextSchema.optional(),
     resolvedAt: z.string().datetime()
   }),
   z.object({
     status: z.literal("unavailable"),
     requestId: RequestIdSchema,
-    rationale: LongTextSchema.optional(),
+    note: LongTextSchema.optional(),
     resolvedAt: z.string().datetime()
   })
 ]);
@@ -280,39 +306,18 @@ export const AskReceiptSchema = z.object({
   status: z.literal("pending")
 });
 
-const AnswerReadQuestionSchema = z.object({
-  questionId: RequestIdSchema,
-  revision: z.number().int().min(1),
-  mode: AskModeSchema,
-  question: AskQuestionSchema,
-  options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
-  context: HandoffContextSchema.optional(),
-  createdAt: z.string().datetime(),
-  resolvedAt: z.string().datetime()
-}).strict();
-
 const HumanAnswerReadResultSchema = z.object({
-  alreadyRead: z.boolean(),
-  question: AnswerReadQuestionSchema,
-  answer: z.object({
-    answerId: z.string().min(1).max(200),
-    questionRevision: z.number().int().min(1),
-    status: z.literal("answered"),
-    selectedValues: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
-    note: LongTextSchema.optional(),
-    rationale: LongTextSchema.optional(),
-    createdAt: z.string().datetime()
-  }).strict(),
-  firstRead: z.object({
-    reader: z.object({ harness: ShortTextSchema, ownerId: ShortTextSchema }).strict(),
-    readAt: z.string().datetime()
-  }).strict()
+  questionId: RequestIdSchema,
+  answerId: RequestIdSchema,
+  answer: z.array(z.string().min(1).max(200)).min(1).max(SELECTED_VALUES_MAX),
+  note: LongTextSchema.optional()
 }).strict();
 
 const LifecycleReadBaseSchema = z.object({
   type: z.literal("lifecycle"),
-  question: AnswerReadQuestionSchema,
-  rationale: LongTextSchema.optional()
+  questionId: RequestIdSchema,
+  note: LongTextSchema.optional(),
+  resolvedAt: z.string().datetime()
 }).strict();
 
 export const LifecycleResolutionReadResultSchema = z.discriminatedUnion("status", [
@@ -386,6 +391,7 @@ export type AskPostboxInput = z.infer<typeof AskPostboxInputSchema>;
 export type AskBatchReceipt = z.infer<typeof AskBatchReceiptSchema>;
 export type AskAnswerPayload = z.infer<typeof AskAnswerPayloadSchema>;
 export type UpdateQuestionPayload = z.infer<typeof UpdateQuestionPayloadSchema>;
+export type QuestionResolution = z.infer<typeof QuestionResolutionSchema>;
 export type QuestionRevisionSnapshot = z.infer<typeof QuestionRevisionSnapshotSchema>;
 export type QuestionContentRevision = z.infer<typeof QuestionContentRevisionSchema>;
 export type QuestionNonContentEvent = z.infer<typeof QuestionNonContentEventSchema>;

@@ -18,7 +18,7 @@ export function registerPostboxFallbackCommands(
   getStatusSnapshot?: () => PostboxStatusSnapshot | Promise<PostboxStatusSnapshot>
 ): void {
   pi.registerCommand?.("postbox-answer", {
-    description: "Answer the active pending Postbox request locally. Usage: /postbox-answer [requestId] value[,value2] [--note text] [--rationale text]",
+    description: "Answer the active pending Postbox request locally. Usage: /postbox-answer [requestId] value[,value2] [--note text]",
     handler: async (args, ctx) => {
       const client = getClient();
       if (!client) return notify(ctx, "Pi Postbox is not connected; no local pending asks are available.", "warn");
@@ -33,7 +33,7 @@ export function registerPostboxFallbackCommands(
   });
 
   pi.registerCommand?.("postbox-cancel", {
-    description: "Cancel the active pending Postbox request locally. Usage: /postbox-cancel [requestId] [--note text] [--rationale text]",
+    description: "Cancel the active pending Postbox request locally. Usage: /postbox-cancel [requestId] [--note text]",
     handler: async (args, ctx) => {
       const client = getClient();
       if (!client) return notify(ctx, "Pi Postbox is not connected; no local pending asks are available.", "warn");
@@ -77,10 +77,10 @@ export function parseAnswerArgs(args: string, pending: PendingAskSnapshot[]): Lo
     .map((value) => value.trim())
     .filter(Boolean);
   if (selectedValues.length === 0) {
-    throw new Error("Usage: /postbox-answer [requestId] value[,value2] [--note text] [--rationale text]");
+    throw new Error("Usage: /postbox-answer [requestId] value[,value2] [--note text]");
   }
 
-  return { requestId, selectedValues, note: parsed.flags.note, rationale: parsed.flags.rationale };
+  return { requestId, selectedValues, note: parsed.flags.note };
 }
 
 export function parseCancelArgs(args: string, pending: PendingAskSnapshot[]): LocalCancelInput {
@@ -99,14 +99,14 @@ export function parseCancelArgs(args: string, pending: PendingAskSnapshot[]): Lo
     requestId = pending[0].requestId;
   }
 
-  return { requestId, note: parsed.flags.note, rationale: parsed.flags.rationale };
+  return { requestId, note: parsed.flags.note };
 }
 
-function parseFlaggedArgs(args: string): { positionals: string; flags: { note?: string; rationale?: string } } {
+function parseFlaggedArgs(args: string): { positionals: string; flags: { note?: string } } {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
   const positional: string[] = [];
-  const flags: { note?: string; rationale?: string } = {};
-  let currentFlag: "note" | "rationale" | undefined;
+  const flags: { note?: string } = {};
+  let currentFlag: "note" | undefined;
   let currentValue: string[] = [];
 
   const flush = () => {
@@ -117,11 +117,12 @@ function parseFlaggedArgs(args: string): { positionals: string; flags: { note?: 
   };
 
   for (const token of tokens) {
-    if (token === "--note" || token === "--rationale") {
+    if (token === "--note") {
       flush();
-      currentFlag = token.slice(2) as "note" | "rationale";
+      currentFlag = "note";
       continue;
     }
+    if (token.startsWith("--")) throw new Error(`Unknown option: ${token}`);
     if (currentFlag) currentValue.push(token);
     else positional.push(token);
   }

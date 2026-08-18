@@ -24,14 +24,17 @@ describe("owner Question/Answer source of truth", () => {
       context: { codebaseContext: "code", problemContext: "problem" }, expiresAt: "2026-08-14T00:00:00.000Z" });
     expect(db.prepare("SELECT count(*) count FROM ask_requests").get()).toEqual({ count: 0 });
     expect(store.get("question")).toMatchObject({ requestId: "question", sessionId: "session", status: "pending" });
-    store.answer("question", { expectedRevision: 1, selectedValues: ["yes"], note: "n", rationale: "why" });
-    expect(store.get("question")).toMatchObject({ status: "answered", result: { selectedValues: ["yes"], note: "n", rationale: "why" } });
+    store.answer("question", { expectedRevision: 1, selectedValues: ["yes"], note: "n" });
+    expect(store.get("question")).toMatchObject({ status: "answered", result: { selectedValues: ["yes"], note: "n" } });
+    expect(JSON.stringify(store.get("question"))).not.toContain("rationale");
     expect(db.prepare("SELECT count(*) count FROM answers WHERE question_id='question'").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT rationale FROM answers WHERE question_id='question'").get()).toEqual({ rationale: null });
     expect(telemetry).toContainEqual(expect.objectContaining({ operation: "question.create", questionContextLength: 16,
       relevanceLength: 8, decisionImpactLength: 6, optionDescriptionLength: 11, optionMeaningLength: 7,
       optionContextLength: 14, requestSerializedBytes: expect.any(Number) }));
     expect(telemetry).toContainEqual(expect.objectContaining({ operation: "answer.create", noteLength: 1,
-      rationaleLength: 3, selectedIdCount: 1, answerResponseBytes: expect.any(Number) }));
+      selectedIdCount: 1, answerResponseBytes: expect.any(Number) }));
+    expect(JSON.stringify(telemetry)).not.toContain("rationale");
     expect(JSON.stringify(telemetry)).not.toContain("Ship?");
     store.close(); sessions.close(); db.close();
   });

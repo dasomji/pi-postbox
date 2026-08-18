@@ -53,7 +53,6 @@ interface AskRequestRow {
   status: AskStatus;
   selected_values_json: string | null;
   note: string | null;
-  rationale: string | null;
   created_at: string;
   expires_at: string | null;
   resolved_at: string | null;
@@ -133,8 +132,7 @@ function applyQuestionDiscoveryScope(
   }
 }
 
-const EXPIRED_RATIONALE = "Postbox request expired before an answer was submitted.";
-const SESSION_SHUTDOWN_NOTE = "Originating Pi session shut down.";
+const EXPIRED_NOTE = "Postbox request expired before an answer was submitted.";
 const PROPOSED_OPTION_VALUE_ATTEMPTS = 4;
 const OPTIONS_MAX = 20;
 
@@ -262,7 +260,7 @@ export class RequestStore {
     publishSemanticState?: (state: string) => void;
   }): Promise<Record<string, unknown>> {
     const unreadQuestionId = this.nextUnreadQuestionId(input.owner);
-    if (unreadQuestionId) return { type: "answer", ...this.getAnswer(unreadQuestionId, input.owner) };
+    if (unreadQuestionId) return { type: "answer", questionId: unreadQuestionId };
     const active = this.db.prepare(`SELECT 1 FROM questions WHERE owner_harness = ? AND owner_owner_id = ?
       AND status = 'pending' LIMIT 1`).get(input.owner.harness, input.owner.ownerId);
     if (!active) return { type: "no_actionable_questions" };
@@ -500,7 +498,9 @@ export class RequestStore {
 
   getQuestions(input: { questionIds: string[]; view?: "control" | "full" }): Array<Record<string, unknown>> {
     if (input.questionIds.length === 0) return [];
-    const select = this.db.prepare(`SELECT q.*, a.answer_id, a.first_reader_harness
+    const select = this.db.prepare(`SELECT q.*, a.answer_id, a.question_revision AS answer_question_revision,
+        a.status AS answer_status, a.selected_values_json AS answer_selected_values_json, a.note AS answer_note,
+        a.first_reader_harness, a.first_reader_owner_id, a.first_read_at, a.created_at AS answer_created_at
       FROM questions q LEFT JOIN answers a ON a.question_id = q.question_id
       WHERE q.question_id = ? ORDER BY a.question_revision DESC, a.created_at DESC LIMIT 1`);
     return input.questionIds.flatMap((questionId) => {
@@ -517,6 +517,37 @@ export class RequestStore {
         updatedAt: row.updated_at
       };
       if (input.view !== "full") return [control];
+      const firstRead = row.first_reader_harness && row.first_reader_owner_id && row.first_read_at
+        ? {
+            reader: { harness: row.first_reader_harness, ownerId: row.first_reader_owner_id },
+            readAt: row.first_read_at
+          }
+        : null;
+      const resolution = row.status === "answered" && row.answer_id && row.answer_status === "answered"
+        ? {
+            kind: "answer",
+            answerId: row.answer_id,
+            questionRevision: row.answer_question_revision,
+            answer: JSON.parse(row.answer_selected_values_json as string),
+            ...(row.answer_note ? { note: row.answer_note } : {}),
+            resolvedAt: row.resolved_at,
+            firstRead
+          }
+        : row.status === "cancelled" || row.status === "expired"
+          ? {
+              kind: "lifecycle",
+              status: row.status,
+              ...(row.answer_note ? { note: row.answer_note } : {}),
+              resolvedAt: row.resolved_at
+            }
+          : row.status === "superseded"
+            ? {
+                kind: "lifecycle",
+                status: "superseded",
+                replacementQuestionId: row.replacement_question_id,
+                resolvedAt: row.resolved_at
+              }
+            : undefined;
       return [{
         ...control,
         mode: row.mode,
@@ -528,7 +559,8 @@ export class RequestStore {
         ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
         ...(row.status === "answered" && row.answer_id
           ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null }
-          : {})
+          : {}),
+        ...(resolution ? { resolution } : {})
       }];
     });
   }
@@ -681,10 +713,10 @@ export class RequestStore {
         if (replacement === questionId) throw new RequestStoreError("invalid_replacement", "A Question cannot supersede itself");
         if (replacement && !this.db.prepare("SELECT 1 FROM questions WHERE question_id=?").get(replacement)) throw new RequestStoreError("replacement_not_found", "Replacement Question not found");
         this.db.prepare("UPDATE questions SET revision=?, status=?, replacement_question_id=?, resolved_at=?, updated_at=? WHERE question_id=?").run(revision, status, replacement, at, at, questionId);
-        this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,rationale,
+        this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,
           first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), questionId, revision, status, "[]",
-            parsed.action === "cancel" ? parsed.rationale ?? null : `Superseded by ${replacement}`,
+            parsed.action === "cancel" ? parsed.note ?? null : null,
             actor.harness, actor.ownerId, at, at, at);
         type = status; facts = replacement ? { replacementQuestionId: replacement } : {};
       }
@@ -812,17 +844,16 @@ export class RequestStore {
       const answerId = randomUUID();
       const affectedDescendantIds = question ? this.openDescendantIds(question.question_id) : [];
       if (question) this.db.prepare(`INSERT INTO answers (
-        answer_id, question_id, question_revision, status, selected_values_json, note, rationale, created_at
-      ) VALUES (@answerId, @questionId, @revision, 'answered', @selectedValuesJson, @note, @rationale, @resolvedAt)`)
+        answer_id, question_id, question_revision, status, selected_values_json, note, created_at
+      ) VALUES (@answerId, @questionId, @revision, 'answered', @selectedValuesJson, @note, @resolvedAt)`)
         .run({ answerId, questionId: question.question_id, revision: question.revision,
-          selectedValuesJson: JSON.stringify(parsed.selectedValues), note: parsed.note ?? null, rationale: parsed.rationale ?? null, resolvedAt });
+          selectedValuesJson: JSON.stringify(parsed.selectedValues), note: parsed.note ?? null, resolvedAt });
       result = {
         status: "answered",
         requestId,
         ...(question ? { questionId: question.question_id, answerId, alreadyRead: false } : {}),
         selectedValues: parsed.selectedValues,
         note: parsed.note,
-        rationale: parsed.rationale,
         affectedDescendantIds,
         descendantGuidance: affectedDescendantIds.length ? "Review affected descendants and revise, supersede, or cancel only those whose assumptions changed." : undefined,
         resolvedAt
@@ -840,7 +871,7 @@ export class RequestStore {
     transaction();
     if (!result) throw new Error("answer transaction did not produce a result");
     this.recordTelemetry({ operation: "answer.create", selectedIdCount: parsed.selectedValues.length,
-      noteLength: parsed.note?.length ?? 0, rationaleLength: parsed.rationale?.length ?? 0,
+      noteLength: parsed.note?.length ?? 0,
       requestSerializedBytes: Buffer.byteLength(JSON.stringify(parsed)),
       answerResponseBytes: Buffer.byteLength(JSON.stringify(result)) });
     if (available) for (const listener of [...this.answerAvailableListeners]) listener(available);
@@ -897,7 +928,26 @@ export class RequestStore {
   }
 
   getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
-    return this.readAnswer(questionId, reader, reader);
+    const result = this.readAnswer(questionId, reader, reader);
+    if (result.type === "pending") return result;
+    const question = result.question as { questionId: string; resolvedAt: string };
+    if (result.type === "lifecycle") {
+      return {
+        type: "lifecycle",
+        status: result.status,
+        questionId: question.questionId,
+        ...(result.note ? { note: result.note } : {}),
+        ...(result.replacementQuestionId ? { replacementQuestionId: result.replacementQuestionId } : {}),
+        resolvedAt: question.resolvedAt
+      };
+    }
+    const answer = result.answer as { answerId: string; selectedValues: string[]; note?: string };
+    return {
+      questionId: question.questionId,
+      answerId: answer.answerId,
+      answer: answer.selectedValues,
+      ...(answer.note ? { note: answer.note } : {})
+    };
   }
 
   private readAnswer(
@@ -923,7 +973,7 @@ export class RequestStore {
         return;
       }
       const answer = this.db.prepare(`SELECT * FROM answers WHERE question_id = ? ORDER BY question_revision DESC, created_at DESC LIMIT 1`).get(questionId) as {
-        answer_id: string; question_revision: number; status: AskStatus; selected_values_json: string; note: string | null; rationale: string | null;
+        answer_id: string; question_revision: number; status: AskStatus; selected_values_json: string; note: string | null;
         first_reader_harness: string | null; first_reader_owner_id: string | null; first_read_at: string | null; created_at: string
       } | undefined;
       const questionResult = {
@@ -942,7 +992,6 @@ export class RequestStore {
           status: question.status,
           question: questionResult,
           ...(answer?.note ? { note: answer.note } : {}),
-          ...(answer?.rationale ? { rationale: answer.rationale } : {}),
           ...(question.status === "superseded" ? { replacementQuestionId: question.replacement_question_id } : {})
         };
         return;
@@ -964,7 +1013,6 @@ export class RequestStore {
           status: answer.status,
           selectedValues: JSON.parse(answer.selected_values_json),
           note: answer.note ?? undefined,
-          rationale: answer.rationale ?? undefined,
           createdAt: answer.created_at
         },
         firstRead: { reader: firstReader, readAt }
@@ -987,17 +1035,16 @@ export class RequestStore {
         WHERE question_id = @requestId AND status = 'pending'`).run({ requestId, resolvedAt }).changes;
       if (changes !== 1) throw new RequestStoreError("request_already_resolved", "Ask request is already resolved");
       const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(requestId) as any;
-      this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,rationale,
+      this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,
         first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), requestId, question.revision, "cancelled", "[]",
-          parsed.note ?? null, parsed.rationale ?? null, question.owner_harness, question.owner_owner_id, resolvedAt, resolvedAt, resolvedAt);
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), requestId, question.revision, "cancelled", "[]",
+          parsed.note ?? null, question.owner_harness, question.owner_owner_id, resolvedAt, resolvedAt, resolvedAt);
       if (question) this.recordQuestionEvent(question.question_id, "cancelled", question.revision,
         { harness: question.owner_harness, ownerId: question.owner_owner_id }, {}, resolvedAt);
       result = {
         status: "cancelled",
         requestId,
         note: parsed.note,
-        rationale: parsed.rationale,
         resolvedAt
       };
     });
@@ -1009,7 +1056,7 @@ export class RequestStore {
     return result;
   }
 
-  cancelPendingForSession(sessionId: string, rationale: string): AskResult[] {
+  cancelPendingForSession(sessionId: string, note: string): AskResult[] {
     this.expireDue();
     const nowIso = new Date(this.now()).toISOString();
     const pendingRows = this.db.prepare(`${this.snapshotSelect()} WHERE q.source_session_id = ? AND q.status = 'pending' ORDER BY q.created_at ASC`)
@@ -1026,13 +1073,13 @@ export class RequestStore {
 
         if (changes === 1) {
           const question = this.db.prepare("SELECT question_id, revision, owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(row.request_id) as any;
-          this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,rationale,
+          this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,
             first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), row.request_id, question.revision, "cancelled", "[]",
-              SESSION_SHUTDOWN_NOTE, rationale, question.owner_harness, question.owner_owner_id, nowIso, nowIso, nowIso);
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), row.request_id, question.revision, "cancelled", "[]",
+              note, question.owner_harness, question.owner_owner_id, nowIso, nowIso, nowIso);
           if (question) this.recordQuestionEvent(question.question_id, "cancelled", question.revision,
             { harness: question.owner_harness, ownerId: question.owner_owner_id }, {}, nowIso);
-          results.push({ status: "cancelled", requestId: row.request_id, note: SESSION_SHUTDOWN_NOTE, rationale, resolvedAt: nowIso });
+          results.push({ status: "cancelled", requestId: row.request_id, note, resolvedAt: nowIso });
         }
       }
     });
@@ -1060,13 +1107,13 @@ export class RequestStore {
 
         if (changes === 1) {
           const question = this.db.prepare("SELECT question_id, revision FROM questions WHERE question_id=?").get(row.request_id) as any;
-          this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,rationale,
+          this.db.prepare(`INSERT INTO answers (answer_id,question_id,question_revision,status,selected_values_json,note,
             first_reader_harness,first_reader_owner_id,first_read_at,owner_notification_delivered_at,created_at)
             SELECT ?,question_id,revision,'expired','[]',?,owner_harness,owner_owner_id,?,?,? FROM questions WHERE question_id=?`)
-            .run(randomUUID(), EXPIRED_RATIONALE, nowIso, nowIso, nowIso, row.request_id);
+            .run(randomUUID(), EXPIRED_NOTE, nowIso, nowIso, nowIso, row.request_id);
           if (question) this.recordQuestionEvent(question.question_id, "expired", question.revision,
             { harness: "postbox", ownerId: "expiry" }, {}, nowIso);
-          results.push({ status: "expired", requestId: row.request_id, rationale: EXPIRED_RATIONALE, resolvedAt: nowIso });
+          results.push({ status: "expired", requestId: row.request_id, note: EXPIRED_NOTE, resolvedAt: nowIso });
         }
       }
     });
@@ -1119,7 +1166,7 @@ export class RequestStore {
     return `SELECT q.question_id AS request_id, q.source_session_id AS session_id, q.revision, q.owner_revision,
       q.creator_harness, q.creator_owner_id, q.owner_harness, q.owner_owner_id, a.answer_id, a.first_reader_harness, q.mode,
       json_extract(q.question_json, '$.prompt') AS prompt, q.question_json, q.options_json, q.context_json,
-      q.fork_reference_json, q.parent_question_id, q.status, a.selected_values_json, a.note, a.rationale,
+      q.fork_reference_json, q.parent_question_id, q.status, a.selected_values_json, a.note,
       q.created_at, q.expires_at, q.resolved_at, q.updated_at
       FROM questions q LEFT JOIN answers a ON a.answer_id = (
         SELECT answer_id FROM answers WHERE question_id=q.question_id ORDER BY question_revision DESC, created_at DESC LIMIT 1
@@ -1215,8 +1262,7 @@ export class RequestStore {
     if (!questionId) return;
     this.ownerWaits.delete(key);
     wait.cleanup();
-    try { wait.resolve({ type: "answer", ...this.getAnswer(questionId, owner) }); }
-    catch (error) { wait.reject(error instanceof Error ? error : new Error(String(error))); }
+    wait.resolve({ type: "answer", questionId });
   }
 
   private wakeOwnerWithLifecycle(questionId: string, event: string): void {
@@ -1258,7 +1304,6 @@ export class RequestStore {
         requestId: row.request_id,
         selectedValues: JSON.parse(row.selected_values_json ?? "[]") as string[],
         note: row.note ?? undefined,
-        rationale: row.rationale ?? undefined,
         resolvedAt: row.resolved_at
       };
     }
@@ -1267,7 +1312,6 @@ export class RequestStore {
         status: "cancelled",
         requestId: row.request_id,
         note: row.note ?? undefined,
-        rationale: row.rationale ?? undefined,
         resolvedAt: row.resolved_at
       };
     }
@@ -1275,7 +1319,7 @@ export class RequestStore {
       return {
         status: "expired",
         requestId: row.request_id,
-        rationale: row.rationale ?? undefined,
+        note: row.note ?? undefined,
         resolvedAt: row.resolved_at
       };
     }
