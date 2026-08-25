@@ -133,12 +133,18 @@ class AndroidPendingQuestionNotifier(
     fun reconcileResolvedPendingSummary(requestId: String) {
         val resolvedNotificationId = requestId.hashCode()
         val pendingCount = try {
-            notificationManager.activeNotifications.count { notification ->
-                isPendingQuestionNotification(
-                    channelId = notification.notification.channelId,
-                    notificationId = notification.id
-                ) && notification.id != resolvedNotificationId
-            }
+            val activeNotifications = notificationManager.activeNotifications
+            pendingCountAfterResolvedPush(
+                summaryCount = activeNotifications
+                    .firstOrNull { it.id == PENDING_SUMMARY_NOTIFICATION_ID }
+                    ?.notification
+                    ?.number
+                    ?.takeIf { it > 0 },
+                activePendingNotificationIds = activeNotifications
+                    .filter { isPendingQuestionNotification(it.notification.channelId, it.id) }
+                    .mapTo(hashSetOf()) { it.id },
+                resolvedNotificationId = resolvedNotificationId
+            )
         } catch (_: SecurityException) {
             return
         }
@@ -267,6 +273,14 @@ internal fun isPendingQuestionNotification(channelId: String?, notificationId: I
     channelId == AndroidPendingQuestionNotifier.CHANNEL_ID &&
         notificationId != AndroidPendingQuestionNotifier.PROTOCOL_MISMATCH_NOTIFICATION_ID &&
         notificationId != AndroidPendingQuestionNotifier.PENDING_SUMMARY_NOTIFICATION_ID
+
+internal fun pendingCountAfterResolvedPush(
+    summaryCount: Int?,
+    activePendingNotificationIds: Set<Int>,
+    resolvedNotificationId: Int
+): Int = summaryCount
+    ?.let { (it - 1).coerceAtLeast(0) }
+    ?: activePendingNotificationIds.count { it != resolvedNotificationId }
 
 fun Intent.postboxNotificationRequestId(): String? {
     if (action != NotificationTapTarget.ACTION_OPEN_QUESTION) return null

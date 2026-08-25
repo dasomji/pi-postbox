@@ -29,6 +29,6 @@ describe("Android contract generator inputs", () => {
   });
 
   it("reads the health fixture version from the server package manifest", async () => {
-    await expect(readServerPackageVersion(root)).resolves.toBe("0.2.12");
+    await expect(readServerPackageVersion(root)).resolves.toBe("0.2.13");
   });
 });
