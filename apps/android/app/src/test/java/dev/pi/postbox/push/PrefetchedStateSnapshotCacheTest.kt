@@ -1,6 +1,8 @@
 package dev.pi.postbox.push
 
 import dev.pi.postbox.question.questionWorkflowState
+import dev.pi.postbox.question.singlePendingQuestion
+import org.junit.Assert.assertEquals
 import org.junit.After
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -51,5 +53,29 @@ class PrefetchedStateSnapshotCacheTest {
         PrefetchedStateSnapshotCache.clear()
 
         assertNull(PrefetchedStateSnapshotCache.freshSnapshotFor("http://coolify:32187", nowMillis = 2_000))
+    }
+
+    @Test
+    fun `resolved push removes the question from cached pending state idempotently`() {
+        val baseUrl = "http://coolify:32187"
+        PrefetchedStateSnapshotCache.store(
+            baseUrl,
+            questionWorkflowState(
+                requests = listOf(
+                    singlePendingQuestion(requestId = "ask-resolved"),
+                    singlePendingQuestion(requestId = "ask-still-pending")
+                )
+            ),
+            nowMillis = 1_000
+        )
+
+        assertEquals(
+            setOf("ask-still-pending"),
+            PrefetchedStateSnapshotCache.resolvePendingQuestion(baseUrl, "ask-resolved", nowMillis = 2_000)
+        )
+        assertEquals(
+            setOf("ask-still-pending"),
+            PrefetchedStateSnapshotCache.resolvePendingQuestion(baseUrl, "ask-resolved", nowMillis = 3_000)
+        )
     }
 }

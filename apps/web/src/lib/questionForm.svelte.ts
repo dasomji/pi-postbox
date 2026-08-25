@@ -7,7 +7,7 @@
  * the network calls.
  */
 import { OTHER_OPTION_VALUE, type AskRequestSnapshot } from "@pi-postbox/protocol";
-import { postJson } from "../api/postboxApi";
+import { PostboxStaleRevisionError, postJson } from "../api/postboxApi";
 import { store } from "./store.svelte";
 
 export interface QuestionForm {
@@ -50,6 +50,7 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
       await store.refresh();
       store.routeAfterRequestResolved();
     } catch (caught) {
+      if (caught instanceof PostboxStaleRevisionError) await store.refresh();
       error = caught instanceof Error ? caught.message : fallback;
     } finally {
       busy = false;

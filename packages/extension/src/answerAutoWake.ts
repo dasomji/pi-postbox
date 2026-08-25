@@ -1,4 +1,5 @@
 const ANSWER_WAKE_INTENT_TYPE = "postbox-answer-wake-intent";
+const ANSWER_WAKE_SENT_TYPE = "postbox-answer-wake-sent";
 const ANSWER_WAKE_MESSAGE_TYPE = "postbox-answer-available";
 const ANSWER_WAKE_DETAILS_VERSION = 1;
 const DEFAULT_BATCH_WINDOW_MS = 25;
@@ -35,10 +36,18 @@ export function resolveAnswerAutoWakeEnabled(
   configured: boolean | undefined,
   defaultEnabled = true
 ): boolean {
-  const value = env.PI_POSTBOX_AUTO_WAKE?.trim().toLowerCase();
-  if (value && AUTO_WAKE_ON_VALUES.has(value)) return true;
-  if (value && AUTO_WAKE_OFF_VALUES.has(value)) return false;
+  const value = parseAutoWakeBoolean(env.PI_POSTBOX_AUTO_WAKE);
+  if (value !== undefined) return value;
   return configured ?? defaultEnabled;
+}
+
+export function parseAutoWakeBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (AUTO_WAKE_ON_VALUES.has(normalized)) return true;
+  if (AUTO_WAKE_OFF_VALUES.has(normalized)) return false;
+  return undefined;
 }
 
 export class AnswerAutoWakeCoordinator {
@@ -51,6 +60,7 @@ export class AnswerAutoWakeCoordinator {
   constructor(private readonly options: {
     pi: AnswerAutoWakePiApi;
     sessionManager?: AnswerAutoWakeSessionManager;
+    hasPendingMessages?: () => boolean;
     enabled: boolean;
     batchWindowMs?: number;
   }) {}
@@ -128,12 +138,20 @@ export class AnswerAutoWakeCoordinator {
         this.pending.set(deliveryId, questionId);
       }
       this.schedule(RETRY_DELAY_MS);
+      return;
     }
+
+    this.options.pi.appendEntry?.(ANSWER_WAKE_SENT_TYPE, {
+      version: ANSWER_WAKE_DETAILS_VERSION,
+      deliveryIds
+    });
   }
 
   private refreshFromSession(): void {
     const entries = this.options.sessionManager?.getBranch?.() ?? [];
     const completed = completedDeliveryIds(entries);
+    const sent = sentDeliveryIds(entries);
+    const queueStillHasMessages = this.options.hasPendingMessages?.();
     this.completed.clear();
 
     for (const deliveryId of completed) {
@@ -144,10 +162,29 @@ export class AnswerAutoWakeCoordinator {
 
     for (const entry of entries) {
       const intent = parseWakeIntent(entry);
-      if (!intent || completed.has(intent.deliveryId) || this.queued.has(intent.deliveryId)) continue;
+      if (!intent || completed.has(intent.deliveryId)) continue;
+      if (sent.has(intent.deliveryId) && queueStillHasMessages !== false) {
+        this.pending.delete(intent.deliveryId);
+        this.queued.add(intent.deliveryId);
+        continue;
+      }
+      this.queued.delete(intent.deliveryId);
       this.pending.set(intent.deliveryId, intent.questionId);
     }
   }
+}
+
+function sentDeliveryIds(entries: unknown[]): Set<string> {
+  const sent = new Set<string>();
+  for (const entry of entries) {
+    if (!isRecord(entry) || entry.type !== "custom" || entry.customType !== ANSWER_WAKE_SENT_TYPE) continue;
+    const data = isRecord(entry.data) ? entry.data : undefined;
+    if (data?.version !== ANSWER_WAKE_DETAILS_VERSION || !Array.isArray(data.deliveryIds)) continue;
+    for (const deliveryId of data.deliveryIds) {
+      if (typeof deliveryId === "string" && deliveryId) sent.add(deliveryId);
+    }
+  }
+  return sent;
 }
 
 function completedDeliveryIds(entries: unknown[]): Set<string> {

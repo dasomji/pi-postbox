@@ -225,7 +225,9 @@ function chatUnavailable(error: QuestionChatAvailabilityError) {
 
 function sendRequestError(reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } }, error: unknown): unknown {
   if (error instanceof RequestStoreError) {
-    const statusCode = error.code === "request_already_resolved" || error.code === "request_not_pending" ? 409 : error.code === "request_not_found" ? 404 : 400;
+    const statusCode = error.code === "request_already_resolved" || error.code === "request_not_pending" || error.code === "stale_revision"
+      ? 409
+      : error.code === "request_not_found" ? 404 : 400;
     return reply.code(statusCode).send({ error: error.code, message: error.message });
   }
   throw error;

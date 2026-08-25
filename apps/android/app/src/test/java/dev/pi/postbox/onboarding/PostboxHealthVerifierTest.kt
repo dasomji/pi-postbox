@@ -85,6 +85,23 @@ class PostboxHealthVerifierTest {
     }
 
     @Test
+    fun rejectsUnversionedBadGatewayAsInvalidHealthInsteadOfProtocolMismatch() {
+        TestHealthServer(
+            statusCode = 502,
+            protocolHeader = null,
+            body = "bad gateway"
+        ).use { server ->
+            val result = OkHttpPostboxHealthVerifier().verify(server.baseUrl)
+
+            assertTrue(result is HealthVerificationResult.Rejected)
+            assertEquals(
+                HealthRejectionReason.MALFORMED_HEALTH_RESPONSE,
+                (result as HealthVerificationResult.Rejected).reason
+            )
+        }
+    }
+
+    @Test
     fun rejectsHealthyJsonFromANonPostboxService() {
         TestHealthServer(
             statusCode = 200,
@@ -167,7 +184,7 @@ class PostboxHealthVerifierTest {
     private class TestHealthServer(
         private val statusCode: Int,
         private val body: String,
-        private val protocolHeader: String = GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION
+        private val protocolHeader: String? = GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION
     ) : AutoCloseable {
         private val socket = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         private val requestedPaths = Collections.synchronizedList(mutableListOf<String>())
@@ -193,7 +210,7 @@ class PostboxHealthVerifierTest {
                     val headers = buildString {
                         append("HTTP/1.1 $statusCode OK\r\n")
                         append("Content-Type: application/json\r\n")
-                        append("X-Postbox-Protocol-Version: $protocolHeader\r\n")
+                        protocolHeader?.let { append("X-Postbox-Protocol-Version: $it\r\n") }
                         append("Content-Length: ${bytes.size}\r\n")
                         append("Connection: close\r\n")
                         append("\r\n")

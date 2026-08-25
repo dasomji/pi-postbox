@@ -83,12 +83,34 @@ class ProtocolCompatibilityGate(
 
     fun <T> decodeHttpResponse(
         rawMessage: String,
+        statusCode: Int,
         responseProtocolVersion: String?,
         source: ProtocolMessageSource,
-        decoder: (String) -> T
+        decoder: (JsonObject) -> T
     ): T {
+        requireCompatibleHttpResponse(statusCode, rawMessage, responseProtocolVersion, source)
+        val body = parseVersionedObject(rawMessage, source)
+        return decoder(body)
+    }
+
+    fun requireCompatibleHttpResponse(
+        statusCode: Int,
+        rawMessage: String,
+        responseProtocolVersion: String?,
+        source: ProtocolMessageSource
+    ) {
+        if (statusCode !in 200..299 && responseProtocolVersion == null) {
+            throw PostboxProtocolHttpException(statusCode, rawMessage)
+        }
         requireCompatible(responseProtocolVersion, source)
-        return decodeVersioned(rawMessage, source, decoder)
+    }
+
+    private fun parseVersionedObject(rawMessage: String, source: ProtocolMessageSource): JsonObject {
+        val objectValue = runCatching { PostboxProtocolJson.json.parseToJsonElement(rawMessage) as? JsonObject }.getOrNull()
+        val primitive = objectValue?.get("protocolVersion") as? JsonPrimitive
+        val reportedVersion = primitive?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }
+        requireCompatible(reportedVersion, source)
+        return checkNotNull(objectValue) { "Postbox response body must be a JSON object" }
     }
 
     fun extractReportedVersion(rawMessage: String): String? {

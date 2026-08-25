@@ -81,7 +81,7 @@ Example config:
 
 Answer auto-wake is enabled by default. When an Answer arrives while the owning Pi Session is not explicitly waiting, the extension durably records a wake intent, coalesces notifications arriving in the same short burst, and injects a privacy-preserving follow-up message that starts a turn if the agent is idle. The message includes Question identifiers but no Question text or Answer content. If Pi stops after recording the intent but before persisting the follow-up message, the active session branch recovers the wake after restart without duplicating already-persisted wakes.
 
-Set `"autoWake": false` to retain the answer-ready widget without starting an agent turn. The `PI_POSTBOX_AUTO_WAKE` environment variable overrides the JSON value; accepted enabling values are `1`, `true`, `yes`, `on`, and `enabled`, while `0`, `false`, `no`, `off`, and `disabled` disable it.
+Set `"autoWake": false` to retain the answer-ready widget without starting an agent turn. The JSON field accepts booleans and the same boolean-ish strings as the environment variable. The `PI_POSTBOX_AUTO_WAKE` environment variable overrides the JSON value; accepted enabling values are `1`, `true`, `yes`, `on`, and `enabled`, while `0`, `false`, `no`, `off`, and `disabled` disable it. An invalid field logs a warning naming that field without discarding other valid config values.
 
 The extension creates and persists a generated machine id in this same config file on first use. That generated machine id is the stable identity used by the dashboard. Hostname is also sent for display, and the dashboard can persist a friendlier machine alias.
 

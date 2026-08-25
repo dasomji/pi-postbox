@@ -184,6 +184,14 @@ describe("pending ask resilience", () => {
       payload: { questionId: "ask-current-handle", revision: 2, ownerRevision: 1, status: "pending" }
     });
 
+    const staleAnswer = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-current-handle/answer",
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
+    });
+    expect(staleAnswer.statusCode).toBe(409);
+    expect(staleAnswer.json()).toMatchObject({ error: "stale_revision", message: "Question revision is stale" });
+
     const transferred = nextMessage(socket);
     socket.send(JSON.stringify({
       type: "question.update",

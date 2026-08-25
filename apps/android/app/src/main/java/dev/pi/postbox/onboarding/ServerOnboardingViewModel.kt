@@ -22,11 +22,10 @@ class ServerOnboardingViewModel(
         val savedBaseUrl = store.loadVerifiedServerUrl()
         if (savedBaseUrl != null) {
             serverUrl = savedBaseUrl
-            state = ServerOnboardingState.Verifying(baseUrl = savedBaseUrl)
-            applyVerificationResultIfCurrent(
+            state = ServerOnboardingState.Ready(baseUrl = savedBaseUrl)
+            applySavedVerificationResultIfCurrent(
                 generation = generation,
-                normalizedBaseUrl = savedBaseUrl,
-                warning = null,
+                savedBaseUrl = savedBaseUrl,
                 result = verifier.verify(savedBaseUrl)
             )
         }
@@ -36,14 +35,13 @@ class ServerOnboardingViewModel(
         val generation = ++verificationGeneration
         val savedBaseUrl = store.loadVerifiedServerUrl() ?: return
         serverUrl = savedBaseUrl
-        state = ServerOnboardingState.Verifying(baseUrl = savedBaseUrl)
+        state = ServerOnboardingState.Ready(baseUrl = savedBaseUrl)
         val result = withContext(Dispatchers.IO) {
             verifier.verify(savedBaseUrl)
         }
-        applyVerificationResultIfCurrent(
+        applySavedVerificationResultIfCurrent(
             generation = generation,
-            normalizedBaseUrl = savedBaseUrl,
-            warning = null,
+            savedBaseUrl = savedBaseUrl,
             result = result
         )
     }
@@ -115,6 +113,35 @@ class ServerOnboardingViewModel(
     ) {
         if (generation != verificationGeneration) return
         handleVerificationResult(normalizedBaseUrl, warning, result)
+    }
+
+    private fun applySavedVerificationResultIfCurrent(
+        generation: Long,
+        savedBaseUrl: String,
+        result: HealthVerificationResult
+    ) {
+        if (generation != verificationGeneration) return
+        when (result) {
+            is HealthVerificationResult.IncompatibleProtocol -> {
+                state = ServerOnboardingState.IncompatibleProtocol(
+                    baseUrl = savedBaseUrl,
+                    mismatch = result.mismatch
+                )
+            }
+            is HealthVerificationResult.Valid -> {
+                state = ServerOnboardingState.Ready(
+                    baseUrl = savedBaseUrl,
+                    health = VerifiedPostboxHealth(
+                        service = result.service,
+                        version = result.version,
+                        protocolVersion = result.protocolVersion,
+                        buildId = result.buildId
+                    )
+                )
+            }
+            is HealthVerificationResult.Unreachable,
+            is HealthVerificationResult.Rejected -> Unit
+        }
     }
 
     private fun handleVerificationResult(

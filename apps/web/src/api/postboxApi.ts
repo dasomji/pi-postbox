@@ -87,8 +87,18 @@ export async function postJson(path: string, payload: unknown): Promise<void> {
 
   if (!response.ok) {
     const fallback = response.status === 409 ? "This request was already resolved on another device." : `Action failed with ${response.status}`;
-    const body = (await response.json().catch(() => undefined)) as { message?: string } | undefined;
+    const body = (await response.json().catch(() => undefined)) as { error?: string; message?: string } | undefined;
+    if (response.status === 409 && body?.error === "stale_revision") {
+      throw new PostboxStaleRevisionError();
+    }
     throw new Error(body?.message ?? fallback);
+  }
+}
+
+export class PostboxStaleRevisionError extends Error {
+  constructor() {
+    super("This question was updated. Review the latest revision and submit again.");
+    this.name = "PostboxStaleRevisionError";
   }
 }
 

@@ -1,9 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { assertAndroidFixtureServerVersion } from "./protocol-discipline.mjs";
 
 const base = process.argv[2];
 if (!base) throw new Error("Usage: node scripts/check-protocol-discipline.mjs <base-ref>");
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+assertAndroidFixtureServerVersion(
+  git("show", "HEAD:packages/protocol/fixtures/android/contract.json"),
+  git("show", "HEAD:packages/server/package.json")
+);
 const changed = git("diff", "--name-only", `${base}...HEAD`).split("\n").filter(Boolean);
 const publicProtocolChanged = changed.some((path) => path.startsWith("packages/protocol/src/") && !path.includes(".test."));
 if (!publicProtocolChanged) process.exit(0);

@@ -144,6 +144,30 @@ class PostboxProtocolClientTest {
         }
     }
 
+    @Test
+    fun staleRevisionConflictMapsToRefreshableDomainError() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(409)
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
+                .setBody(
+                    """{"protocolVersion":"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}","error":"stale_revision","message":"Question revision is stale"}"""
+                )
+        )
+        val client = OkHttpPostboxProtocolClient(baseUrl = server.url("/").toString())
+
+        try {
+            client.answerRequest(
+                requestId = "ask-protocol-1",
+                payload = AskAnswerPayload(expectedRevision = 1, selectedValues = listOf("kotlinx"))
+            )
+            fail("Expected stale revision conflict")
+        } catch (error: PostboxStaleRevisionException) {
+            assertEquals("ask-protocol-1", error.requestId)
+        }
+    }
+
     private fun jsonResponse(body: String): MockResponse = MockResponse()
         .setResponseCode(200)
         .setHeader("Content-Type", "application/json; charset=utf-8")

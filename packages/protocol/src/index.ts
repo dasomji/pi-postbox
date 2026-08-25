@@ -250,7 +250,6 @@ export {
   POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER,
   POSTBOX_PROTOCOL_VERSION_HEADER,
   ProtocolMessageMetadataSchema,
-  ReportedProtocolVersionSchema,
   VersionedAskMutationResponseSchema,
   VersionedQuestionChatActivationResponseSchema,
   VersionedQuestionChatSendHttpResponseSchema,

@@ -54,6 +54,7 @@ interface PiLikeApi extends AnswerAutoWakePiApi {
 interface PiLikeContext {
   hasUI?: boolean;
   cwd?: string;
+  hasPendingMessages?: () => boolean;
   ui?: {
     confirm?: (title: string, message: string) => Promise<boolean>;
     notify?: (message: string, level?: string) => void;
@@ -478,6 +479,7 @@ async function registerResolvedTarget(
     registrationAutoWakeCoordinator = new AnswerAutoWakeCoordinator({
       pi,
       sessionManager: ctx.sessionManager,
+      hasPendingMessages: ctx.hasPendingMessages,
       enabled: resolveAnswerAutoWakeEnabled(env, extensionConfig.autoWake)
     });
     answerAutoWakeCoordinator = registrationAutoWakeCoordinator;

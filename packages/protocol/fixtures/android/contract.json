@@ -1,8 +1,8 @@
 {
-  "protocolVersion": "0.1.9",
-  "fingerprint": "ad5e1496494a3a09bdc06fc33a078468b1d8d721600bfff55b1ca733080d7c07",
-  "androidVersionName": "0.4.3",
-  "androidVersionCode": 7,
+  "protocolVersion": "0.1.10",
+  "fingerprint": "714b443f32821ea63c645ea241207a87dbfeaf1e261639305f0f50b70b8109c6",
+  "androidVersionName": "0.4.4",
+  "androidVersionCode": 8,
   "wireValues": {
     "semanticStates": [
       "working",
@@ -104,9 +104,9 @@
     "health": {
       "ok": true,
       "service": "pi-postbox",
-      "version": "0.2.10",
-      "buildId": "0.2.10+contract",
-      "protocolVersion": "0.1.9",
+      "version": "0.2.11",
+      "buildId": "0.2.11+contract",
+      "protocolVersion": "0.1.10",
       "profile": {
         "kind": "production",
         "id": "production"
@@ -116,7 +116,7 @@
     },
     "states": [
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "sessions": [
           {
             "sessionId": "session-working",
@@ -353,7 +353,7 @@
         "timestamp": "2026-08-25T12:00:00.000Z"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "sessions": [
           {
             "sessionId": "session-blocked",
@@ -590,7 +590,7 @@
         "timestamp": "2026-08-25T12:00:00.000Z"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "sessions": [
           {
             "sessionId": "session-waiting_for_postbox",
@@ -827,7 +827,7 @@
         "timestamp": "2026-08-25T12:00:00.000Z"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "sessions": [
           {
             "sessionId": "session-idle",
@@ -1064,7 +1064,7 @@
         "timestamp": "2026-08-25T12:00:00.000Z"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "sessions": [
           {
             "sessionId": "session-unknown",
@@ -1305,7 +1305,7 @@
       {
         "kind": "answer.success",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "result": {
             "status": "answered",
             "requestId": "ask-contract-1",
@@ -1361,7 +1361,7 @@
       {
         "kind": "cancel.success",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "result": {
             "status": "cancelled",
             "requestId": "ask-contract-1",
@@ -1414,7 +1414,7 @@
       {
         "kind": "result.expired",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "result": {
             "status": "expired",
             "requestId": "ask-contract-1",
@@ -1425,7 +1425,7 @@
       {
         "kind": "result.unavailable",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "result": {
             "status": "unavailable",
             "requestId": "ask-contract-1",
@@ -1436,7 +1436,7 @@
       {
         "kind": "request.error",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "error": "request_already_resolved",
           "message": "Already resolved."
         }
@@ -1446,7 +1446,7 @@
       {
         "kind": "activation.ready",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "ready",
           "snapshot": {
             "requestId": "ask-contract-1",
@@ -1521,7 +1521,7 @@
       {
         "kind": "activation.unavailable",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "unavailable",
           "error": {
             "code": "extension_offline",
@@ -1532,7 +1532,7 @@
       {
         "kind": "snapshot.ready",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "ready",
           "snapshot": {
             "requestId": "ask-contract-1",
@@ -1608,7 +1608,7 @@
       {
         "kind": "snapshot.unavailable",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "unavailable",
           "error": {
             "code": "extension_offline",
@@ -1619,7 +1619,7 @@
       {
         "kind": "send.turn",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "accepted",
           "clientCommandId": "cmd-turn",
           "mode": "turn"
@@ -1628,7 +1628,7 @@
       {
         "kind": "send.steer",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "accepted",
           "clientCommandId": "cmd-steer",
           "mode": "steer"
@@ -1637,7 +1637,7 @@
       {
         "kind": "send.unavailable",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "unavailable",
           "error": {
             "code": "extension_offline",
@@ -1648,7 +1648,7 @@
       {
         "kind": "stop.accepted",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "accepted",
           "clientCommandId": "cmd-stop"
         }
@@ -1656,7 +1656,7 @@
       {
         "kind": "stop.unavailable",
         "payload": {
-          "protocolVersion": "0.1.9",
+          "protocolVersion": "0.1.10",
           "status": "unavailable",
           "error": {
             "code": "extension_offline",
@@ -1667,7 +1667,7 @@
     ],
     "questionChatAvailability": [
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "request_missing",
@@ -1675,7 +1675,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "request_not_pending",
@@ -1683,7 +1683,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "extension_offline",
@@ -1691,7 +1691,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "source_path_missing",
@@ -1699,7 +1699,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "source_leaf_missing",
@@ -1707,7 +1707,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "wrong_owner",
@@ -1715,7 +1715,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "command_timeout",
@@ -1723,7 +1723,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "runtime_failure",
@@ -1731,7 +1731,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "chat_not_started",
@@ -1739,7 +1739,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "invalid_command",
@@ -1747,7 +1747,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "duplicate_command",
@@ -1755,7 +1755,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "runtime_busy",
@@ -1763,7 +1763,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "forbidden_origin",
@@ -1771,7 +1771,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "status": "unavailable",
         "error": {
           "code": "rate_limited",
@@ -1781,42 +1781,42 @@
     ],
     "questionChatEvents": [
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 1,
         "type": "lifecycle",
         "state": "ready"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 2,
         "type": "lifecycle",
         "state": "generating"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 3,
         "type": "lifecycle",
         "state": "stopping"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 4,
         "type": "lifecycle",
         "state": "stopped"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 5,
         "type": "lifecycle",
         "state": "interrupted"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 6,
         "type": "message.started",
@@ -1828,7 +1828,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 7,
         "type": "message.started",
@@ -1840,7 +1840,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 8,
         "type": "message.started",
@@ -1852,7 +1852,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 9,
         "type": "message.started",
@@ -1864,7 +1864,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 10,
         "type": "message.started",
@@ -1876,7 +1876,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 11,
         "type": "assistant.text.delta",
@@ -1884,7 +1884,7 @@
         "text": "delta"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 12,
         "type": "message.finished",
@@ -1893,7 +1893,7 @@
         "status": "final"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 13,
         "type": "message.finished",
@@ -1902,7 +1902,7 @@
         "status": "stopped"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 14,
         "type": "message.finished",
@@ -1911,7 +1911,7 @@
         "status": "interrupted"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 15,
         "type": "tool.started",
@@ -1923,7 +1923,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 16,
         "type": "tool.started",
@@ -1935,7 +1935,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 17,
         "type": "tool.started",
@@ -1947,7 +1947,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 18,
         "type": "tool.started",
@@ -1959,7 +1959,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 19,
         "type": "tool.started",
@@ -1971,7 +1971,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 20,
         "type": "tool.finished",
@@ -1983,7 +1983,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 21,
         "type": "tool.finished",
@@ -1995,7 +1995,7 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "sequence": 22,
         "type": "tool.finished",
@@ -2007,13 +2007,13 @@
         }
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "type": "transport",
         "state": "online"
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "requestId": "ask-contract-1",
         "type": "transport",
         "state": "offline"
@@ -2021,7 +2021,7 @@
     ],
     "fcm": [
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "type": "ask.created",
         "requestId": "ask-contract-1",
         "sessionId": "session-contract-1",
@@ -2029,7 +2029,7 @@
         "body": "Postbox needs your input."
       },
       {
-        "protocolVersion": "0.1.9",
+        "protocolVersion": "0.1.10",
         "type": "ask.resolved",
         "requestId": "ask-contract-1"
       }

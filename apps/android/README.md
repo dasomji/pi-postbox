@@ -51,7 +51,7 @@ https://postbox.your-tailnet.ts.net/
 
 The app verifies the server with `GET /healthz` before saving the URL. Keep the existing Tailnet-private trust model: do not expose the Postbox server publicly for this prototype.
 
-Android 0.4.3 (build 7) supports Postbox protocol 0.1.9 exactly. The app displays this identity before and after connection, rechecks saved endpoints, and blocks state, Answer, cancel, refresh, Question Chat, and push registration when the active endpoint reports missing or different protocol evidence. Regenerate the shared contract with `npm run generate:android-protocol-contract`; CI uses `npm run check:android-protocol-contract` plus Android unit/lint/assembly gates to reject drift.
+Android 0.4.4 (build 8) supports Postbox protocol 0.1.10 exactly. The app displays this identity before and after connection, rechecks saved endpoints, and blocks state, Answer, cancel, refresh, Question Chat, and push registration when the active endpoint reports missing or different protocol evidence. Regenerate the shared contract with `npm run generate:android-protocol-contract`; CI uses `npm run check:android-protocol-contract` plus Android unit/lint/assembly gates to reject drift.
 
 ## Emulator localhost fallback
 

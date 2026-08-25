@@ -4,6 +4,7 @@ import android.util.Log
 import dev.pi.postbox.protocol.OkHttpPostboxProtocolClient
 import dev.pi.postbox.protocol.PostboxProtocolClient
 import dev.pi.postbox.protocol.StateSnapshot
+import dev.pi.postbox.protocol.AskStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,6 +36,24 @@ object PrefetchedStateSnapshotCache {
         if (current.baseUrl != baseUrl) return null
         if (nowMillis - current.fetchedAtMillis > maxAgeMillis) return null
         return current.snapshot
+    }
+
+    @Synchronized
+    fun resolvePendingQuestion(
+        baseUrl: String,
+        requestId: String,
+        maxAgeMillis: Long = DEFAULT_MAX_AGE_MILLIS,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Set<String>? {
+        val current = entry ?: return null
+        if (current.baseUrl != baseUrl || nowMillis - current.fetchedAtMillis > maxAgeMillis) return null
+        val updatedSnapshot = current.snapshot.copy(
+            requests = current.snapshot.requests.filterNot { it.requestId == requestId }
+        )
+        entry = current.copy(snapshot = updatedSnapshot)
+        return updatedSnapshot.requests
+            .filter { it.status == AskStatus.PENDING }
+            .mapTo(linkedSetOf()) { it.requestId }
     }
 
     fun clear() {

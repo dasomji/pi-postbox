@@ -198,6 +198,35 @@ class PostboxStateStreamTest {
     }
 
     @Test
+    fun stateStreamReconnectsAfterUnversionedBadGatewayWithoutReportingProtocolMismatch() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(502)
+                .setHeader("Content-Type", "text/plain; charset=utf-8")
+                .setBody("bad gateway")
+        )
+        server.enqueue(sseResponse(representativeStateJson(requestId = "ask-after-502")))
+        val stream = OkHttpPostboxStateStream(
+            baseUrl = server.url("/").toString(),
+            reconnectDelayMs = 10L
+        )
+
+        try {
+            stream.start()
+            val connected = withTimeout(2.seconds) {
+                stream.states.filterIsInstance<PostboxStateStreamStatus.Connected>().first()
+            }
+
+            assertEquals("ask-after-502", connected.latestState.requests.single().requestId)
+            assertEquals("/api/state/events", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+            assertEquals("/api/state/events", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+            assertTrue(stream.states.replayCache.none { it is PostboxStateStreamStatus.IncompatibleProtocol })
+        } finally {
+            stream.close()
+        }
+    }
+
+    @Test
     fun upgradeRequiredStateStreamStopsWithoutReconnecting() = runBlocking {
         server.enqueue(
             MockResponse()

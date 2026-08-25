@@ -16,6 +16,7 @@ import {
   QuestionChatToolActivitySchema
 } from "./chat.js";
 import { ExtensionClientMessageSchema, ExtensionServerMessageSchema } from "./ws.js";
+import { PROTOCOL_VERSION } from "./health.js";
 
 describe("Question Chat activation protocol", () => {
   it("correlates separately defined Postbox proposal commands by command and Question", () => {
@@ -261,6 +262,20 @@ describe("Question Chat first-message protocol", () => {
       state: "offline",
       sequence: 99
     })).toThrow();
+  });
+
+  it("accepts protocol-stamped transport events at the web stream seam", () => {
+    expect(QuestionChatStreamEventSchema.parse({
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: "ask-30",
+      type: "transport",
+      state: "online"
+    })).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: "ask-30",
+      type: "transport",
+      state: "online"
+    });
   });
 
   it("accepts a complete bounded transcript snapshot", () => {

@@ -1,4 +1,9 @@
-import { HealthResponseSchema, PROTOCOL_VERSION, type ServerInstanceIdentity } from "@pi-postbox/protocol";
+import {
+  HealthResponseSchema,
+  IncompatibleProtocolResponseSchema,
+  PROTOCOL_VERSION,
+  type ServerInstanceIdentity
+} from "@pi-postbox/protocol";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,12 +51,13 @@ describe("Pi Postbox server bootstrap", () => {
     });
     expect(incompatible.statusCode).toBe(426);
     expect(incompatible.headers["x-postbox-protocol-version"]).toBe(PROTOCOL_VERSION);
-    expect(incompatible.json()).toEqual({
+    expect(IncompatibleProtocolResponseSchema.parse(incompatible.json())).toEqual({
       protocolVersion: PROTOCOL_VERSION,
       error: "incompatible_protocol",
       supportedProtocolVersion: PROTOCOL_VERSION,
       receivedProtocolVersion: "0.0.1"
     });
+    expect(current.headers["x-postbox-protocol-version"]).toBeTypeOf("string");
   });
 
   it("returns the current profile-scoped server identity after the CLI sets it", async () => {

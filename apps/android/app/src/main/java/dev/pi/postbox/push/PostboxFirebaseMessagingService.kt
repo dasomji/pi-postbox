@@ -22,9 +22,22 @@ class PostboxFirebaseMessagingService : FirebaseMessagingService() {
         }
         if (decision is PostboxPushDecision.Ignored) return
 
+        val savedBaseUrl = SharedPreferencesVerifiedServerUrlStore(applicationContext).loadVerifiedServerUrl()
+        if (decision is PostboxPushDecision.Resolved) {
+            reconcileResolvedPushLocally(
+                requestId = decision.requestId,
+                baseUrl = savedBaseUrl,
+                cancel = notifier::cancel,
+                resolveCachedPendingIds = { baseUrl, requestId ->
+                    PrefetchedStateSnapshotCache.resolvePendingQuestion(baseUrl, requestId)
+                },
+                reconcilePendingIds = notifier::reconcilePendingRequests
+            )
+        }
+
         // Fetch the fresh state now, in the push execution window, so both the cached queue and
         // launcher badge represent every pending Question even while the activity is closed.
-        SharedPreferencesVerifiedServerUrlStore(applicationContext).loadVerifiedServerUrl()?.let { baseUrl ->
+        savedBaseUrl?.let { baseUrl ->
             PostboxStatePrefetch.prefetch(baseUrl) { url, snapshot ->
                 PrefetchedStateSnapshotCache.store(url, snapshot)
                 notifier.reconcilePendingRequests(
@@ -36,7 +49,7 @@ class PostboxFirebaseMessagingService : FirebaseMessagingService() {
         }
 
         when (decision) {
-            is PostboxPushDecision.Resolved -> notifier.cancel(decision.requestId)
+            is PostboxPushDecision.Resolved -> Unit
             is PostboxPushDecision.Created -> notifier.post(decision.notification)
             is PostboxPushDecision.IncompatibleProtocol,
             PostboxPushDecision.Ignored -> Unit
@@ -50,4 +63,16 @@ class PostboxFirebaseMessagingService : FirebaseMessagingService() {
             AndroidPendingQuestionNotifier(applicationContext).postProtocolMismatch(mismatch)
         }
     }
+}
+
+internal fun reconcileResolvedPushLocally(
+    requestId: String,
+    baseUrl: String?,
+    cancel: (String) -> Unit,
+    resolveCachedPendingIds: (String, String) -> Set<String>?,
+    reconcilePendingIds: (Set<String>) -> Unit
+) {
+    cancel(requestId)
+    val pendingIds = baseUrl?.let { resolveCachedPendingIds(it, requestId) } ?: return
+    reconcilePendingIds(pendingIds)
 }
