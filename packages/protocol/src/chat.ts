@@ -62,13 +62,17 @@ export const QuestionChatSourceSchema = z.object({
   model: z.string().min(1).max(SHORT_TEXT_MAX).optional()
 });
 
+export const QuestionChatModelSourceSchema = z.enum(["originating", "pi-default"]);
+
 export const QuestionChatModelSchema = z.object({
   id: z.string().min(1).max(SHORT_TEXT_MAX),
-  source: z.enum(["originating", "pi-default"]),
+  source: QuestionChatModelSourceSchema,
   fallbackReason: z.string().min(1).max(ERROR_MESSAGE_MAX).optional()
 });
 
 export const QuestionChatStateSchema = z.enum(["ready", "generating", "stopping", "stopped", "interrupted"]);
+
+export const QuestionChatAssistantStatusSchema = z.enum(["streaming", "final", "stopped", "interrupted"]);
 
 export const QuestionChatMessageSchema = z.discriminatedUnion("role", [
   z.object({
@@ -81,7 +85,7 @@ export const QuestionChatMessageSchema = z.discriminatedUnion("role", [
     id: z.string().min(1).max(REQUEST_ID_MAX),
     role: z.literal("assistant"),
     text: z.string().max(QUESTION_CHAT_ASSISTANT_TEXT_MAX),
-    status: z.enum(["streaming", "final", "stopped", "interrupted"])
+    status: QuestionChatAssistantStatusSchema
   })
 ]);
 
@@ -109,6 +113,8 @@ const QuestionChatToolActivityBaseSchema = z.object({
   details: z.string().max(QUESTION_CHAT_TOOL_DETAILS_MAX).optional(),
   action: QuestionChatToolActionSchema.optional()
 }).strict();
+
+export const QuestionChatToolStateSchema = z.enum(["running", "success", "error", "stale"]);
 
 export const QuestionChatToolActivitySchema = z.discriminatedUnion("state", [
   QuestionChatToolActivityBaseSchema.extend({ state: z.literal("running") }),
@@ -182,12 +188,14 @@ export const QuestionChatStreamEventSchema = z.union([
   QuestionChatTransportEventSchema
 ]);
 
+export const QuestionChatSendModeSchema = z.enum(["turn", "steer"]);
+
 export const QuestionChatSendResponseSchema = z.object({
   status: z.literal("accepted"),
   clientCommandId: z.string().min(1).max(QUESTION_CHAT_COMMAND_ID_MAX),
   // Optional while older extension peers may still acknowledge without the
   // turn/steer distinction. All current producers include it.
-  mode: z.enum(["turn", "steer"]).optional()
+  mode: QuestionChatSendModeSchema.optional()
 });
 
 export const QuestionChatStopPayloadSchema = z.object({

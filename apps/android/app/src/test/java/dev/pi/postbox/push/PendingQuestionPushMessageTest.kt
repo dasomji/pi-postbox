@@ -1,6 +1,8 @@
 package dev.pi.postbox.push
 
 import dev.pi.postbox.notification.NotificationTapTarget
+import dev.pi.postbox.protocol.GeneratedPostboxProtocolContract
+import dev.pi.postbox.protocol.ProtocolMismatchReason
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -10,6 +12,7 @@ class PendingQuestionPushMessageTest {
     fun `maps ask created data payload to a pending question notification`() {
         val notification = pendingQuestionNotificationFromPushData(
             mapOf(
+                "protocolVersion" to GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION,
                 "type" to "ask.created",
                 "requestId" to "ask-1",
                 "sessionId" to "session-1",
@@ -31,6 +34,7 @@ class PendingQuestionPushMessageTest {
     fun `falls back to default title and message when payload omits them`() {
         val notification = pendingQuestionNotificationFromPushData(
             mapOf(
+                "protocolVersion" to GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION,
                 "type" to "ask.created",
                 "requestId" to "ask-2"
             )
@@ -39,6 +43,21 @@ class PendingQuestionPushMessageTest {
         requireNotNull(notification)
         assertEquals("New Postbox question", notification.title)
         assertEquals("A Postbox session needs your input.", notification.message)
+    }
+
+    @Test
+    fun `foreign and missing push evidence is rejected without mapping question content`() {
+        val foreign = decodePostboxPushData(
+            mapOf("protocolVersion" to "0.0.1", "type" to "ask.created", "requestId" to "secret-request")
+        ) as PostboxPushDecision.IncompatibleProtocol
+        val missing = decodePostboxPushData(
+            mapOf("type" to "ask.created", "requestId" to "secret-request")
+        ) as PostboxPushDecision.IncompatibleProtocol
+
+        assertEquals(ProtocolMismatchReason.DIFFERENT_VERSION, foreign.mismatch.reason)
+        assertEquals(ProtocolMismatchReason.MISSING_VERSION, missing.mismatch.reason)
+        assertEquals("0.0.1", foreign.mismatch.receivedVersion)
+        org.junit.Assert.assertFalse(foreign.toString().contains("secret-request"))
     }
 
     @Test

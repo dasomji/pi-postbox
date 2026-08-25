@@ -262,5 +262,6 @@ sealed interface QuestionChatEventTransportFact {
     data class Event(val event: QuestionChatStreamEvent) : QuestionChatEventTransportFact
     data class Stale(val throwable: Throwable) : QuestionChatEventTransportFact
     data class Failure(val throwable: Throwable) : QuestionChatEventTransportFact
+    data class IncompatibleProtocol(val mismatch: dev.pi.postbox.protocol.ProtocolMismatch) : QuestionChatEventTransportFact
     data object EndOfStream : QuestionChatEventTransportFact
 }

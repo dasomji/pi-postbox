@@ -9,6 +9,9 @@ import {
   QuestionChatStopHttpResponseSchema,
   QuestionChatStopPayloadSchema,
   QuestionChatUnavailableResponseSchema,
+  POSTBOX_PROTOCOL_VERSION_HEADER,
+  PROTOCOL_VERSION,
+  withProtocolVersion,
   type QuestionChatAvailabilityError
 } from "../protocol.js";
 import type { FastifyInstance } from "fastify";
@@ -150,12 +153,15 @@ export async function registerRequestRoutes(
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-store, no-transform",
+      [POSTBOX_PROTOCOL_VERSION_HEADER]: PROTOCOL_VERSION,
       Connection: "keep-alive",
       "X-Accel-Buffering": "no"
     });
     reply.raw.write(": question-chat-connected\n\n");
     const unsubscribe = questionChat!.relay.subscribe(state.snapshot!.requestId, (event) => {
-      if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (!reply.raw.destroyed) {
+        reply.raw.write(`data: ${JSON.stringify(withProtocolVersion(event as unknown as Record<string, unknown>))}\n\n`);
+      }
     });
     request.raw.once("close", unsubscribe);
   });

@@ -1,5 +1,7 @@
 package dev.pi.postbox.question
 
+import dev.pi.postbox.protocol.GeneratedPostboxProtocolContract
+
 import dev.pi.postbox.protocol.AskMode
 import dev.pi.postbox.protocol.AskOption
 import dev.pi.postbox.protocol.AskQuestion
@@ -175,6 +177,6 @@ internal fun healthResponse(): HealthResponse = HealthResponse(
     service = "pi-postbox",
     version = "0.1.0",
     buildId = "0.1.0",
-    protocolVersion = "0.1.0",
+    protocolVersion = GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION,
     profile = dev.pi.postbox.protocol.ServerProfileIdentity(kind = "production", id = "production")
 )

@@ -24,6 +24,9 @@ class PostboxProtocolDtoTest {
         assertEquals(PresenceState.LIVE, session.presence)
         assertEquals("sha256:test-icon", session.projectIcon?.hash)
         assertEquals("image/svg+xml", session.projectIcon?.mediaType)
+        assertEquals("repo-1", session.repository?.repositoryId)
+        assertEquals("worktree-1", session.worktree?.worktreeId)
+        assertEquals("feature-1", session.feature?.featureId)
 
         val request = snapshot.requests.single()
         assertEquals("ask-protocol-1", request.requestId)
@@ -35,6 +38,29 @@ class PostboxProtocolDtoTest {
         assertEquals("kotlinx", request.options[0].value)
         assertEquals("Use Kotlin serialization", request.options[0].label)
         assertEquals("leaf-1", request.forkReference?.leafId)
+        assertEquals(3, request.revision)
+        assertEquals(2, request.ownerRevision)
+        assertEquals("ask-parent-1", request.parentQuestionId)
+        assertEquals("repo-1", request.repository?.repositoryId)
+    }
+
+    @Test
+    fun parsesWaitingForPostboxWithItsExplicitWireValue() {
+        val snapshot = PostboxProtocolJson.decodeStateSnapshot(
+            representativeStateJson().replace("\"semanticState\": \"blocked\"", "\"semanticState\": \"waiting_for_postbox\"")
+        )
+
+        assertEquals(SemanticState.WAITING_FOR_POSTBOX, snapshot.sessions.single().semanticState)
+        assertEquals("waiting_for_postbox", snapshot.sessions.single().semanticState.wireValue)
+    }
+
+    @Test
+    fun parsesSupersededTerminalRequest() {
+        val snapshot = PostboxProtocolJson.decodeStateSnapshot(
+            representativeStateJson(requestStatus = "superseded", resolvedAt = "2026-06-25T12:06:00.000Z")
+        )
+
+        assertEquals(AskStatus.SUPERSEDED, snapshot.requests.single().status)
     }
 
     @Test

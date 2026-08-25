@@ -1,5 +1,7 @@
 package dev.pi.postbox.questionchat
 
+import dev.pi.postbox.protocol.PostboxProtocolMismatchException
+import dev.pi.postbox.protocol.ProtocolMismatch
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
@@ -95,6 +97,7 @@ open class QuestionChatOwner(
     private val httpClient: QuestionChatHttpClient,
     private val eventTransport: QuestionChatEventTransport,
     private val scope: CoroutineScope,
+    private val onProtocolMismatch: (ProtocolMismatch) -> Unit = {},
     private val markdownParser: SafeMarkdownParser = SafeMarkdownParser(),
     private val markdownParserDispatcher: CoroutineDispatcher = defaultQuestionChatMarkdownParserDispatcher
 ) : Closeable {
@@ -216,6 +219,7 @@ open class QuestionChatOwner(
             } catch (_: CancellationException) {
                 return@launchTracked
             } catch (error: Exception) {
+                (error as? PostboxProtocolMismatchException)?.let { onProtocolMismatch(it.mismatch) }
                 reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error))
@@ -252,6 +256,7 @@ open class QuestionChatOwner(
             } catch (_: CancellationException) {
                 return@launchTracked
             } catch (error: Exception) {
+                (error as? PostboxProtocolMismatchException)?.let { onProtocolMismatch(it.mismatch) }
                 reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error))
@@ -317,6 +322,7 @@ open class QuestionChatOwner(
             } catch (_: CancellationException) {
                 return@launchTracked
             } catch (error: Exception) {
+                (error as? PostboxProtocolMismatchException)?.let { onProtocolMismatch(it.mismatch) }
                 reduceIfCurrentSynchronizeAttempt(key, expectedGeneration, attemptId) {
                     mutableState.value = mutableState.value.copy(
                         activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error)),
@@ -348,6 +354,7 @@ open class QuestionChatOwner(
                 }
             }
             is QuestionChatEventTransportFact.Failure -> {
+                (fact.throwable as? PostboxProtocolMismatchException)?.let { onProtocolMismatch(it.mismatch) }
                 if (buffering) {
                     buffered.streamFailure = fact.throwable
                 } else {
@@ -365,6 +372,12 @@ open class QuestionChatOwner(
                     )
                     scheduleSynchronize(key, expectedGeneration)
                 }
+            }
+            is QuestionChatEventTransportFact.IncompatibleProtocol -> {
+                onProtocolMismatch(fact.mismatch)
+                eventConnection?.close()
+                eventConnection = null
+                mutableState.value = QuestionChatOwnerState(key = key, isForeground = mutableState.value.isForeground)
             }
             is QuestionChatEventTransportFact.Event -> {
                 if (buffering) {
@@ -435,6 +448,7 @@ open class QuestionChatOwner(
             } catch (_: CancellationException) {
                 return@launchTracked
             } catch (error: Exception) {
+                (error as? PostboxProtocolMismatchException)?.let { onProtocolMismatch(it.mismatch) }
                 reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         pendingSend = null,
@@ -489,6 +503,7 @@ open class QuestionChatOwner(
             } catch (_: CancellationException) {
                 return@launchTracked
             } catch (error: Exception) {
+                (error as? PostboxProtocolMismatchException)?.let { onProtocolMismatch(it.mismatch) }
                 reduceIfCurrent(key, expectedGeneration) {
                     mutableState.value = mutableState.value.copy(
                         pendingStopCommandId = null,

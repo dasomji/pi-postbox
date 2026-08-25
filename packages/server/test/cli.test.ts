@@ -8,8 +8,7 @@ import {
   DEFAULT_POSTBOX_PORT,
   collectPostboxServerStatus,
   createCliPostboxApp,
-  describePostboxPortSelection,
-  listenWithPortFallback,
+  listenOnConfiguredPort,
   parseCliOptions
 } from "../src/cli.js";
 
@@ -31,8 +30,8 @@ describe("pi-postbox-server profile CLI", () => {
       databasePath: join(process.env.HOME!, ".pi-postbox", "postbox.sqlite"),
       metadataPath: join(process.env.HOME!, ".pi-postbox", "active-local", "server.json"),
       tailscaleEnabled: true,
-      version: "0.2.5",
-      buildId: expect.stringMatching(/^0\.2\.5\+sha256\.[a-f0-9]{16}$/)
+      version: "0.2.10",
+      buildId: expect.stringMatching(/^0\.2\.10\+sha256\.[a-f0-9]{16}$/)
     });
   });
 
@@ -85,7 +84,7 @@ describe("pi-postbox-server profile CLI", () => {
     expect(() => parseCliOptions(["--session-retention-ms", "0"], {})).toThrow();
   });
 
-  it("falls back from an occupied preferred port without touching its listener", async () => {
+  it("refuses to change an occupied configured port and leaves its listener untouched", async () => {
     const blocker = await createPostboxApp({ databasePath: ":memory:" });
     apps.push(blocker);
     const occupiedAddress = await blocker.listen({ host: "127.0.0.1", port: 0 });
@@ -94,17 +93,15 @@ describe("pi-postbox-server profile CLI", () => {
     const app = await createPostboxApp({ databasePath: ":memory:", profile: fixture.profile, buildId: "test-build" });
     apps.push(app);
 
-    const address = await listenWithPortFallback(app, {
+    await expect(listenOnConfiguredPort(app, {
       host: "127.0.0.1",
       port: occupiedPort,
       profile: fixture.profile,
       metadataPath: fixture.metadataPath,
       buildId: "test-build",
       heartbeatIntervalMs: 0
-    });
+    })).rejects.toMatchObject({ code: "EADDRINUSE" });
 
-    expect(Number(new URL(address).port)).not.toBe(occupiedPort);
-    expect(describePostboxPortSelection(occupiedPort, address)).toContain("fallback port");
     expect((await blocker.inject({ method: "GET", url: "/healthz" })).statusCode).toBe(200);
   });
 
@@ -112,7 +109,7 @@ describe("pi-postbox-server profile CLI", () => {
     const fixture = await developmentFixture();
     const app = await createPostboxApp({ databasePath: ":memory:", profile: fixture.profile, buildId: "test-build" });
     apps.push(app);
-    const address = await listenWithPortFallback(app, {
+    const address = await listenOnConfiguredPort(app, {
       host: "127.0.0.1",
       port: 0,
       profile: fixture.profile,
@@ -142,7 +139,7 @@ describe("pi-postbox-server profile CLI", () => {
     const development = await developmentFixture();
     const app = await createPostboxApp({ databasePath: ":memory:", profile: development.profile, buildId: "test-build" });
     apps.push(app);
-    const address = await listenWithPortFallback(app, {
+    const address = await listenOnConfiguredPort(app, {
       host: "127.0.0.1",
       port: 0,
       profile: development.profile,

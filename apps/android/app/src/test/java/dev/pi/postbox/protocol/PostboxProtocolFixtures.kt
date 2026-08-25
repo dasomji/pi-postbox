@@ -9,6 +9,7 @@ internal fun representativeStateJson(
     resultJson: String? = null
 ): String = """
     {
+      "protocolVersion": "${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}",
       "sessions": [
         {
           "sessionId": "session-1",
@@ -39,6 +40,9 @@ internal fun representativeStateJson(
           "lastHeartbeatAt": "2026-06-25T11:59:59.000Z",
           "connectedAt": "2026-06-25T11:55:00.000Z",
           "updatedAt": "2026-06-25T12:00:00.000Z",
+          "repository": { "repositoryId": "repo-1", "remote": "git@example.test:postbox.git" },
+          "worktree": { "worktreeId": "worktree-1", "machineId": "machine-1", "path": "/worktrees/native-android" },
+          "feature": { "featureId": "feature-1", "name": "Android protocol" },
           "unknownSessionField": { "must": "not fail parsing" }
         }
       ],
@@ -46,6 +50,10 @@ internal fun representativeStateJson(
         {
           "requestId": "$requestId",
           "sessionId": "session-1",
+          "revision": 3,
+          "ownerRevision": 2,
+          "creator": { "harness": "pi", "ownerId": "creator-1" },
+          "owner": { "harness": "pi", "ownerId": "owner-1" },
           "mode": "multi",
           "question": {
             "prompt": "Choose protocol client behavior",
@@ -76,6 +84,10 @@ internal fun representativeStateJson(
           "status": "$requestStatus",
           "createdAt": "2026-06-25T11:58:00.000Z",
           "expiresAt": "2026-06-25T12:30:00.000Z"${resolvedAt?.let { ",\n          \"resolvedAt\": \"$it\"" }.orEmpty()}${resultJson?.let { ",\n          \"result\": $it" }.orEmpty()},
+          "parentQuestionId": "ask-parent-1",
+          "repository": { "repositoryId": "repo-1" },
+          "worktree": { "worktreeId": "worktree-1", "machineId": "machine-1", "path": "/worktrees/native-android" },
+          "feature": { "featureId": "feature-1", "name": "Android protocol" },
           "unknownRequestField": ["ignored"]
         }
       ],

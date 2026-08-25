@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
+import dev.pi.postbox.protocol.PostboxProtocolMismatchException
+import dev.pi.postbox.protocol.ProtocolMismatch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,19 +22,30 @@ object PostboxFcmTokenRegistration {
     fun registerIfAvailable(
         context: Context,
         baseUrl: String,
-        registrar: FcmTokenRegistrar = OkHttpFcmTokenRegistrar()
+        registrar: FcmTokenRegistrar = OkHttpFcmTokenRegistrar(),
+        onProtocolMismatch: (ProtocolMismatch) -> Unit = {}
     ) {
         if (FirebaseApp.getApps(context.applicationContext).isEmpty()) return
 
         FirebaseMessaging.getInstance().token
-            .addOnSuccessListener { token -> upload(baseUrl, token, registrar) }
+            .addOnSuccessListener { token -> upload(baseUrl, token, registrar, onProtocolMismatch) }
             .addOnFailureListener { error -> Log.w(TAG, "Unable to obtain FCM token.", error) }
     }
 
-    fun upload(baseUrl: String, token: String, registrar: FcmTokenRegistrar = OkHttpFcmTokenRegistrar()) {
+    fun upload(
+        baseUrl: String,
+        token: String,
+        registrar: FcmTokenRegistrar = OkHttpFcmTokenRegistrar(),
+        onProtocolMismatch: (ProtocolMismatch) -> Unit = {}
+    ) {
         scope.launch {
             runCatching { registrar.register(baseUrl, token) }
-                .onFailure { error -> Log.w(TAG, "Unable to register FCM token with Postbox server.", error) }
+                .onFailure { error ->
+                    if (error is PostboxProtocolMismatchException) {
+                        onProtocolMismatch(error.mismatch)
+                    }
+                    Log.w(TAG, "Unable to register FCM token with Postbox server.", error)
+                }
         }
     }
 

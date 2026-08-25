@@ -1,5 +1,10 @@
 package dev.pi.postbox.onboarding
 
+import dev.pi.postbox.protocol.GeneratedPostboxProtocolContract
+import dev.pi.postbox.protocol.PostboxProtocolMismatchException
+import dev.pi.postbox.protocol.ProtocolCompatibilityGate
+import dev.pi.postbox.protocol.ProtocolMessageSource
+import dev.pi.postbox.protocol.ProtocolMismatch
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.Serializable
@@ -20,7 +25,8 @@ class OkHttpPostboxHealthVerifier(
         .writeTimeout(3, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.SECONDS)
         .build(),
-    private val json: Json = Json { ignoreUnknownKeys = true }
+    private val json: Json = Json { ignoreUnknownKeys = true },
+    private val compatibilityGate: ProtocolCompatibilityGate = ProtocolCompatibilityGate()
 ) : PostboxHealthVerifier {
     override fun verify(baseUrl: String): HealthVerificationResult {
         val healthUrl = baseUrl.toHttpUrlOrNull()
@@ -34,19 +40,28 @@ class OkHttpPostboxHealthVerifier(
 
         val request = Request.Builder()
             .url(healthUrl)
+            .header("X-Postbox-Client-Protocol-Version", GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
             .get()
             .build()
 
         return try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
+                val body = response.body?.string().orEmpty()
+                val health = try {
+                    compatibilityGate.decodeHttpResponse(
+                        rawMessage = body,
+                        responseProtocolVersion = response.header("X-Postbox-Protocol-Version"),
+                        source = ProtocolMessageSource.HEALTH
+                    ) {
+                        json.decodeFromString<PostboxHealthResponse>(it)
+                    }
+                } catch (exception: PostboxProtocolMismatchException) {
+                    return HealthVerificationResult.IncompatibleProtocol(exception.mismatch)
+                } catch (_: SerializationException) {
                     return HealthVerificationResult.Rejected(HealthRejectionReason.MALFORMED_HEALTH_RESPONSE)
                 }
 
-                val body = response.body?.string().orEmpty()
-                val health = try {
-                    json.decodeFromString<PostboxHealthResponse>(body)
-                } catch (_: SerializationException) {
+                if (!response.isSuccessful) {
                     return HealthVerificationResult.Rejected(HealthRejectionReason.MALFORMED_HEALTH_RESPONSE)
                 }
 
@@ -58,7 +73,8 @@ class OkHttpPostboxHealthVerifier(
                     baseUrl = baseUrl,
                     service = health.service,
                     version = health.version,
-                    protocolVersion = health.protocolVersion
+                    protocolVersion = health.protocolVersion,
+                    buildId = health.buildId
                 )
             }
         } catch (exception: IOException) {
@@ -76,7 +92,8 @@ sealed class HealthVerificationResult {
         val baseUrl: String,
         val service: String,
         val version: String,
-        val protocolVersion: String
+        val protocolVersion: String,
+        val buildId: String
     ) : HealthVerificationResult()
 
     data class Rejected(
@@ -85,6 +102,10 @@ sealed class HealthVerificationResult {
 
     data class Unreachable(
         val message: String
+    ) : HealthVerificationResult()
+
+    data class IncompatibleProtocol(
+        val mismatch: ProtocolMismatch
     ) : HealthVerificationResult()
 }
 
@@ -98,5 +119,6 @@ private data class PostboxHealthResponse(
     val ok: Boolean,
     val service: String,
     val version: String,
-    val protocolVersion: String
+    val protocolVersion: String,
+    val buildId: String
 )

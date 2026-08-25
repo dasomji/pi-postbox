@@ -87,9 +87,9 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
-import dev.pi.postbox.BuildConfig
 import dev.pi.postbox.R
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
+import dev.pi.postbox.protocol.ProtocolSupportLabel
 import dev.pi.postbox.questionchat.QuestionChatStarter
 import dev.pi.postbox.questionchat.QuestionChatWorkspaceTab
 import dev.pi.postbox.ui.theme.CrossIcon
@@ -135,7 +135,8 @@ fun QuestionWorkflowScreen(
     onStopQuestionChat: () -> Unit,
     onReviewQuestionChatSuggestion: (String) -> Unit,
     onHandleBack: () -> Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    serverIdentityText: String? = null
 ) {
     // Set when the answer is stamped (submitted); cleared again if the submit errors.
     var stampedRequestId by remember { mutableStateOf<String?>(null) }
@@ -196,6 +197,7 @@ fun QuestionWorkflowScreen(
                         coroutineScope.launch { drawerState.close() }
                     },
                     onDismissQuestion = onDismissQuestion,
+                    serverIdentityText = serverIdentityText,
                     onEditServerUrl = {
                         coroutineScope.launch { drawerState.close() }
                         onEditServerUrl()
@@ -482,6 +484,7 @@ private fun ConnectionNotice(state: QuestionWorkflowState) {
         QuestionConnectionState.CONNECTING -> "Connecting"
         QuestionConnectionState.DISCONNECTED -> "Disconnected"
         QuestionConnectionState.ERROR -> "Connection error"
+        QuestionConnectionState.INCOMPATIBLE_PROTOCOL -> "Protocol mismatch"
         QuestionConnectionState.CONNECTED -> ""
     }
     Text(
@@ -502,6 +505,7 @@ private fun ConnectionStatusDot(connectionState: QuestionConnectionState) {
         QuestionConnectionState.CONNECTING -> PostalColors.borderStrong
         QuestionConnectionState.DISCONNECTED -> PostalColors.warning
         QuestionConnectionState.ERROR -> PostalColors.danger
+        QuestionConnectionState.INCOMPATIBLE_PROTOCOL -> PostalColors.danger
     }
     Box(
         modifier = Modifier
@@ -523,6 +527,7 @@ private fun NavigationSidebar(
     onSelectSession: (String) -> Unit,
     onSelectQuestion: (String) -> Unit,
     onDismissQuestion: (String) -> Unit,
+    serverIdentityText: String?,
     onEditServerUrl: () -> Unit
 ) {
     val groups = remember(state.sessions, state.pendingQuestions, state.snapshotTimestamp) {
@@ -644,12 +649,15 @@ private fun NavigationSidebar(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Text(
-                text = "v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
-                fontSize = 10.sp,
-                color = PostalColors.muted,
-                modifier = Modifier.padding(horizontal = 4.dp)
-            )
+            ProtocolSupportLabel(modifier = Modifier.padding(horizontal = 4.dp))
+            serverIdentityText?.let { identity ->
+                Text(
+                    text = identity,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PostalColors.muted,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
         }
     }
 }
@@ -780,7 +788,7 @@ private fun SidebarProjectSection(
  */
 private fun sessionDotColor(session: QuestionSessionUiState, hasOpenQuestion: Boolean): Color = when {
     session.presence == "offline" -> PostalColors.borderStrong
-    hasOpenQuestion || session.semanticState == "blocked" -> PostalColors.attention
+    hasOpenQuestion || session.semanticState == "blocked" || session.semanticState == "waiting_for_postbox" -> PostalColors.attention
     session.semanticState == "working" -> PostalColors.success
     session.semanticState == "idle" -> PostalColors.history
     else -> PostalColors.borderStrong
@@ -791,7 +799,7 @@ private fun sidebarSessionLabel(session: QuestionSessionUiState): String =
 
 private fun sessionStatusLabel(session: QuestionSessionUiState, hasOpenQuestion: Boolean): String = when {
     session.presence == "offline" -> "Offline"
-    hasOpenQuestion || session.semanticState == "blocked" -> "Needs you"
+    hasOpenQuestion || session.semanticState == "blocked" || session.semanticState == "waiting_for_postbox" -> "Needs you"
     session.semanticState == "working" -> "Working"
     session.semanticState == "idle" -> "Done"
     else -> "Unknown status"
@@ -810,7 +818,7 @@ internal enum class AggregateSessionStatus {
 internal fun aggregateSessionStatus(sessions: List<QuestionSessionUiState>): AggregateSessionStatus {
     val onlineSessions = sessions.filter { it.presence != "offline" }
     return when {
-        onlineSessions.any { it.semanticState == "blocked" } -> AggregateSessionStatus.BLOCKED
+        onlineSessions.any { it.semanticState == "blocked" || it.semanticState == "waiting_for_postbox" } -> AggregateSessionStatus.BLOCKED
         onlineSessions.any { it.semanticState == "working" } -> AggregateSessionStatus.WORKING
         onlineSessions.any { it.semanticState == "idle" } -> AggregateSessionStatus.IDLE
         else -> AggregateSessionStatus.OFFLINE

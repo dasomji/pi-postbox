@@ -5,7 +5,8 @@ import { resolveServerProfile, type ResolvedServerProfile } from "./serverProfil
 
 const ExtensionConfigSchema = z.object({
   serverUrl: z.string().url().optional(),
-  machineId: z.string().min(1).optional()
+  machineId: z.string().min(1).optional(),
+  autoWake: z.boolean().optional()
 });
 
 export type ExtensionConfig = z.infer<typeof ExtensionConfigSchema>;

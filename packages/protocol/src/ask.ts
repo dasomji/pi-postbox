@@ -33,12 +33,14 @@ export const AskCreateOptionSchema = z.object({
   impact: LongTextSchema.optional()
 }).strict();
 
+export const AskOptionProvenanceSchema = z.literal("chat");
+
 export const AskOptionSchema = AskCreateOptionSchema.extend({
-  provenance: z.literal("chat").optional()
+  provenance: AskOptionProvenanceSchema.optional()
 });
 
 export const ProposedAnswerOptionSchema = AskCreateOptionSchema.extend({
-  provenance: z.literal("chat")
+  provenance: AskOptionProvenanceSchema
 });
 
 export const ProposeAnswerPayloadSchema = z.object({

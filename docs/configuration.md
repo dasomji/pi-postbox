@@ -22,14 +22,14 @@ pi-postbox-server
 
 This global install is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs the Pi resources and bundled package-local autostart support but does not put `pi-postbox-server` on your shell `PATH`.
 
-The CLI prints the actual listening URL. Port `32187` is the canonical default; if it is already in use, the server chooses another local port and prints an explicit warning that the local/Tailnet bookmark URL is non-canonical. Free `32187`, or set `--port` / `PI_POSTBOX_PORT` to a stable available port, when you need a bookmarkable URL.
+The CLI prints the listening URL. Port `32187` is the fixed canonical production default; if it is already in use, startup fails instead of changing the local/Tailnet URL. Free `32187`, or deliberately configure one stable alternative with `--port` / `PI_POSTBOX_PORT`.
 
 Supported flags and environment variables:
 
 | Flag | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `--host` | `PI_POSTBOX_HOST` | `127.0.0.1` | HTTP listen host. Keep local by default and expose with Tailscale/lizardtail. |
-| `--port` | `PI_POSTBOX_PORT` | canonical `32187` | Preferred HTTP listen port. If it is already in use, the CLI falls back to another local port and warns that the actual local/Tailnet URL is non-canonical. |
+| `--port` | `PI_POSTBOX_PORT` | fixed canonical `32187` | HTTP listen port. If it is already in use, startup fails instead of changing the local/Tailnet URL. |
 | `--profile` | `PI_POSTBOX_PROFILE` | `production` | Server profile identity: `production` or `development:<checkout-id>`. `npm run dev` derives the development identity automatically. |
 | `--profile-state-dir` | `PI_POSTBOX_PROFILE_STATE_DIR` | profile-specific | State root containing config-adjacent metadata, SQLite, locks, credentials, and the autostart `server.log`. Production uses `~/.pi-postbox`; development uses `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>`. |
 | `--no-tailscale` | `PI_POSTBOX_TAILSCALE=off` | automatic Tailnet-private Serve enabled | Disable Tailscale Serve mutation for this run while keeping local startup. |
@@ -74,9 +74,14 @@ Example config:
 
 ```json
 {
-  "serverUrl": "http://127.0.0.1:32187"
+  "serverUrl": "http://127.0.0.1:32187",
+  "autoWake": true
 }
 ```
+
+Answer auto-wake is enabled by default. When an Answer arrives while the owning Pi Session is not explicitly waiting, the extension durably records a wake intent, coalesces notifications arriving in the same short burst, and injects a privacy-preserving follow-up message that starts a turn if the agent is idle. The message includes Question identifiers but no Question text or Answer content. If Pi stops after recording the intent but before persisting the follow-up message, the active session branch recovers the wake after restart without duplicating already-persisted wakes.
+
+Set `"autoWake": false` to retain the answer-ready widget without starting an agent turn. The `PI_POSTBOX_AUTO_WAKE` environment variable overrides the JSON value; accepted enabling values are `1`, `true`, `yes`, `on`, and `enabled`, while `0`, `false`, `no`, `off`, and `disabled` disable it.
 
 The extension creates and persists a generated machine id in this same config file on first use. That generated machine id is the stable identity used by the dashboard. Hostname is also sent for display, and the dashboard can persist a friendlier machine alias.
 
@@ -114,7 +119,9 @@ The icon path is resolved by the extension on the Pi machine, converted into a s
 
 ## Agent notification and explicit waiting
 
-The `write_question` create actions return after durable persistence and include a reusable current Question handle. The owning Pi Session receives a lightweight notification when an Answer becomes available, so agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. When the decision is the sole remaining blocker, call `wait_for_postbox` once to enter explicit idle/blocked mode; after it wakes, call `get_answer` for the relevant Question. Cancelling that ephemeral wait leaves durable Questions and Answers intact.
+The `write_question` create actions return after durable persistence and include a reusable current Question handle. Agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. With default auto-wake enabled, an Answer notification starts a privacy-preserving follow-up turn when the owning Pi Session is idle; the agent then calls `get_answer` for the notified Question identifiers. A successful Answer read clears only the matching answer-ready widget; pending and lifecycle-only reads leave Answer widgets unchanged. Multiple notifications in the batching window produce one turn.
+
+When the decision is the sole remaining blocker during an active turn, `wait_for_postbox` can still enter explicit idle/blocked mode. The server does not send proactive Answer notifications while that owner is explicitly waiting, so the wait result resumes the existing turn without also scheduling an auto-wake follow-up. Cancelling that ephemeral wait leaves durable Questions and Answers intact. Disable auto-wake with `autoWake: false` or `PI_POSTBOX_AUTO_WAKE=off` when widget-only notification behavior is preferred.
 
 ## Local fallback commands and browser command
 
@@ -155,6 +162,6 @@ Useful endpoints for wrappers and manual checks:
 ```bash
 npm run build
 PI_POSTBOX_DATABASE=/tmp/pi-postbox.sqlite node packages/server/dist/cli.js
-# Use the listening URL printed by the CLI; the port may differ from 32187 if it was busy.
+# The default URL is fixed; startup fails if 32187 is already busy.
 curl <printed-url>/healthz
 ```

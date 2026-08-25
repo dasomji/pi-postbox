@@ -27,12 +27,14 @@ sealed class PostboxStateStreamStatus {
     data class Connected(val latestState: StateSnapshot) : PostboxStateStreamStatus()
     data class Reconnecting(val reason: String, val latestState: StateSnapshot? = null) : PostboxStateStreamStatus()
     data class Disconnected(val reason: String, val latestState: StateSnapshot? = null) : PostboxStateStreamStatus()
+    data class IncompatibleProtocol(val mismatch: ProtocolMismatch) : PostboxStateStreamStatus()
 }
 
 class OkHttpPostboxStateStream(
     baseUrl: String,
     private val client: OkHttpClient = defaultStateStreamHttpClient(),
-    private val reconnectDelayMs: Long = 1_000L
+    private val reconnectDelayMs: Long = 1_000L,
+    private val compatibilityGate: ProtocolCompatibilityGate = ProtocolCompatibilityGate()
 ) : PostboxStateStream {
     private val eventsUrl: HttpUrl = baseUrl.toPostboxBaseUrl().withPathSegments(listOf("api", "state", "events"))
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -67,6 +69,11 @@ class OkHttpPostboxStateStream(
                     val result = openAndConsumeEvents()
                     latestState = result.latestState ?: latestState
 
+                    if (result.mismatch != null) {
+                        emitStatus(PostboxStateStreamStatus.IncompatibleProtocol(result.mismatch))
+                        break
+                    }
+
                     if (closed || !isActive) break
                     emitStatus(
                         PostboxStateStreamStatus.Reconnecting(
@@ -95,6 +102,7 @@ class OkHttpPostboxStateStream(
             is PostboxStateStreamStatus.Connected -> status.latestState
             is PostboxStateStreamStatus.Reconnecting -> status.latestState
             is PostboxStateStreamStatus.Disconnected -> status.latestState
+            is PostboxStateStreamStatus.IncompatibleProtocol -> null
             PostboxStateStreamStatus.Connecting -> null
         }
         emitStatus(PostboxStateStreamStatus.Disconnected("closed", latest))
@@ -109,6 +117,7 @@ class OkHttpPostboxStateStream(
         val request = Request.Builder()
             .url(eventsUrl)
             .header("Accept", "text/event-stream")
+            .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
             .get()
             .build()
 
@@ -122,6 +131,14 @@ class OkHttpPostboxStateStream(
         }
         return try {
             call.execute().use { response ->
+                try {
+                    compatibilityGate.requireCompatible(
+                        response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                        ProtocolMessageSource.STATE_STREAM
+                    )
+                } catch (error: PostboxProtocolMismatchException) {
+                    return StreamReadResult(reason = error.message.orEmpty(), mismatch = error.mismatch)
+                }
                 if (!response.isSuccessful) {
                     return StreamReadResult(reason = "HTTP ${response.code}")
                 }
@@ -136,11 +153,16 @@ class OkHttpPostboxStateStream(
                     if (dataLines.isEmpty()) return
                     if (eventName == null || eventName == "state") {
                         val stateJson = dataLines.joinToString(separator = "\n")
-                        val decoded = runCatching { PostboxProtocolJson.decodeStateSnapshot(stateJson) }
+                        val decoded = runCatching {
+                            compatibilityGate.decodeVersioned(stateJson, ProtocolMessageSource.STATE_STREAM) {
+                                PostboxProtocolJson.decodeStateSnapshot(it)
+                            }
+                        }
                         decoded.onSuccess { snapshot ->
                             latestState = snapshot
                             emitStatus(PostboxStateStreamStatus.Connected(snapshot))
                         }.onFailure { error ->
+                            if (error is PostboxProtocolMismatchException) throw error
                             emitStatus(
                                 PostboxStateStreamStatus.Reconnecting(
                                     reason = "Malformed state event: ${error.message ?: error::class.java.simpleName}",
@@ -162,13 +184,19 @@ class OkHttpPostboxStateStream(
                         line.startsWith("data:") -> dataLines += line.removePrefix("data:").trimStart()
                     }
                 }
-                dispatchEvent()
+                try {
+                    dispatchEvent()
+                } catch (error: PostboxProtocolMismatchException) {
+                    return StreamReadResult(latestState = latestState, reason = error.message.orEmpty(), mismatch = error.mismatch)
+                }
 
                 StreamReadResult(
                     latestState = latestState,
                     reason = if (closed) "closed" else "Event stream ended"
                 )
             }
+        } catch (exception: PostboxProtocolMismatchException) {
+            StreamReadResult(reason = exception.message.orEmpty(), mismatch = exception.mismatch)
         } catch (exception: IOException) {
             StreamReadResult(reason = exception.message ?: exception::class.java.simpleName)
         } finally {
@@ -181,7 +209,8 @@ class OkHttpPostboxStateStream(
 
 private data class StreamReadResult(
     val latestState: StateSnapshot? = null,
-    val reason: String
+    val reason: String,
+    val mismatch: ProtocolMismatch? = null
 )
 
 private fun defaultStateStreamHttpClient(): OkHttpClient = OkHttpClient.Builder()

@@ -1,6 +1,9 @@
 package dev.pi.postbox.push
 
 import dev.pi.postbox.protocol.PostboxProtocolHttpException
+import dev.pi.postbox.protocol.GeneratedPostboxProtocolContract
+import dev.pi.postbox.protocol.POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.POSTBOX_PROTOCOL_VERSION_HEADER
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -29,13 +32,14 @@ class OkHttpFcmTokenRegistrarTest {
 
     @Test
     fun `posts the token as an android FCM registration`() = runTest {
-        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204).setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION))
 
         OkHttpFcmTokenRegistrar().register(server.url("/").toString(), "device-token-1")
 
         val request = server.takeRequest()
         assertEquals("POST", request.method)
         assertEquals("/api/push/fcm-tokens", request.path)
+        assertEquals(GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION, request.getHeader(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER))
 
         val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
         assertEquals("device-token-1", body["token"]?.jsonPrimitive?.content)
@@ -44,7 +48,11 @@ class OkHttpFcmTokenRegistrarTest {
 
     @Test
     fun `throws on non-success responses`() = runTest {
-        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"invalid_fcm_token"}"""))
+        server.enqueue(
+            MockResponse().setResponseCode(400)
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
+                .setBody("""{"protocolVersion":"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}","error":"invalid_fcm_token"}""")
+        )
 
         val result = runCatching { OkHttpFcmTokenRegistrar().register(server.url("/").toString(), "device-token-1") }
 

@@ -81,6 +81,7 @@ export interface PostboxClientOptions {
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
+  onOwnerQuestionStateChanged?: () => void;
   /** Transport is at-least-once. Consumer must apply the stable deliveryId idempotently. */
   onAnswerAvailable?: (notification: { questionId: string; question: string; answerId: string }, deliveryId: string) => void;
   answerNotificationInbox?: AnswerNotificationInbox;
@@ -166,6 +167,12 @@ interface PendingProposal {
   abort?: () => void;
 }
 
+interface PendingQuery {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+  ownerQuestionStateChanged?: boolean;
+}
+
 const DEFAULT_UNAVAILABLE_AFTER_MS = 30_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_PROFILE_POLL_MS = 5_000;
@@ -206,7 +213,7 @@ export class PostboxClient {
   private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
   private readonly pendingProposals = new Map<string, PendingProposal>();
   private readonly pendingAnswerReads = new Map<string, PendingAnswerRead>();
-  private readonly pendingQueries = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  private readonly pendingQueries = new Map<string, PendingQuery>();
   private readonly pendingPostboxWaits = new Map<string, string>();
   private readonly liveQuestionChats = new Map<string, string>();
   private readonly terminalQuestionChats = new Map<string, string>();
@@ -457,7 +464,11 @@ export class PostboxClient {
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected."));
     const requestId = `query_${randomUUID()}`;
     return new Promise((resolve, reject) => {
-      this.pendingQueries.set(requestId, { resolve, reject });
+      this.pendingQueries.set(requestId, {
+        resolve,
+        reject,
+        ownerQuestionStateChanged: type === "question.update"
+      });
       if (!this.send({ type, requestId, payload } as ExtensionClientMessage)) { this.pendingQueries.delete(requestId); reject(new Error("Query could not be sent.")); }
     });
   }
@@ -619,6 +630,7 @@ export class PostboxClient {
         }
         if (parsed.data.type === "answer.available") {
           const notification = parsed.data;
+          this.options.onOwnerQuestionStateChanged?.();
           this.answerNotificationOperation = this.answerNotificationOperation.then(
             () => this.deliverAnswerNotification(notification.requestId, notification.payload)
           );
@@ -636,7 +648,13 @@ export class PostboxClient {
         }
         if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result" || parsed.data.type === "postbox.wait.result" || parsed.data.type === "ask.batch.result") {
           const pending = this.pendingQueries.get(parsed.data.requestId);
-          if (pending) { this.pendingQueries.delete(parsed.data.requestId); pending.resolve(parsed.data.payload); }
+          if (pending) {
+            this.pendingQueries.delete(parsed.data.requestId);
+            pending.resolve(parsed.data.payload);
+            if (parsed.data.type === "ask.batch.result" || pending.ownerQuestionStateChanged) {
+              this.options.onOwnerQuestionStateChanged?.();
+            }
+          }
           return;
         }
         if (parsed.data.type === "chat.reconcile") {
@@ -691,6 +709,7 @@ export class PostboxClient {
           }
         }
         if (parsed.data.type === "ask.resolved") {
+          this.options.onOwnerQuestionStateChanged?.();
           this.resolveCreateReceipt(parsed.data.payload.requestId, {
             questionId: parsed.data.payload.requestId,
             revision: 1,

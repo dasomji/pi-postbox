@@ -1,4 +1,4 @@
-import { StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
+import { PROTOCOL_VERSION, StateSnapshotSchema, type ExtensionClientMessage } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
@@ -63,6 +63,7 @@ describe("browser-origin and payload safety", () => {
       });
       expect(blocked.statusCode).toBe(403);
       expect(blocked.json()).toEqual({
+        protocolVersion: PROTOCOL_VERSION,
         status: "unavailable",
         error: { code: "forbidden_origin", message: "Question Chat requests must come from this Postbox origin." }
       });

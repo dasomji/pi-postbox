@@ -15,8 +15,8 @@ android {
         applicationId = "dev.pi.postbox"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 7
+        versionName = "0.4.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -24,6 +24,10 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    sourceSets {
+        getByName("test").resources.srcDir("../../../packages/protocol/fixtures/android")
     }
 
     compileOptions {

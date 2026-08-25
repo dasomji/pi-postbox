@@ -10,6 +10,7 @@ class ServerOnboardingViewModel(
     private val verifier: PostboxHealthVerifier,
     private val store: VerifiedServerUrlStore
 ) {
+    private var verificationGeneration: Long = 0
     var serverUrl by mutableStateOf("")
         private set
 
@@ -17,14 +18,38 @@ class ServerOnboardingViewModel(
         private set
 
     fun loadSavedServerUrl() {
+        val generation = ++verificationGeneration
         val savedBaseUrl = store.loadVerifiedServerUrl()
         if (savedBaseUrl != null) {
             serverUrl = savedBaseUrl
-            state = ServerOnboardingState.Ready(baseUrl = savedBaseUrl)
+            state = ServerOnboardingState.Verifying(baseUrl = savedBaseUrl)
+            applyVerificationResultIfCurrent(
+                generation = generation,
+                normalizedBaseUrl = savedBaseUrl,
+                warning = null,
+                result = verifier.verify(savedBaseUrl)
+            )
         }
     }
 
+    suspend fun loadSavedServerUrlFromUi() {
+        val generation = ++verificationGeneration
+        val savedBaseUrl = store.loadVerifiedServerUrl() ?: return
+        serverUrl = savedBaseUrl
+        state = ServerOnboardingState.Verifying(baseUrl = savedBaseUrl)
+        val result = withContext(Dispatchers.IO) {
+            verifier.verify(savedBaseUrl)
+        }
+        applyVerificationResultIfCurrent(
+            generation = generation,
+            normalizedBaseUrl = savedBaseUrl,
+            warning = null,
+            result = result
+        )
+    }
+
     fun onServerUrlChanged(input: String) {
+        verificationGeneration += 1
         serverUrl = input
         state = ServerOnboardingState.Editing(input)
     }
@@ -33,7 +58,13 @@ class ServerOnboardingViewModel(
         state = ServerOnboardingState.Editing(serverUrl)
     }
 
+    fun reportProtocolMismatch(baseUrl: String, mismatch: dev.pi.postbox.protocol.ProtocolMismatch) {
+        if (state !is ServerOnboardingState.Ready || (state as ServerOnboardingState.Ready).baseUrl != baseUrl) return
+        state = ServerOnboardingState.IncompatibleProtocol(baseUrl = baseUrl, mismatch = mismatch)
+    }
+
     fun verifyAndSave() {
+        val generation = ++verificationGeneration
         val normalized = ServerUrlNormalizer.normalize(serverUrl)
         if (normalized !is ServerUrlValidationResult.Valid) {
             state = ServerOnboardingState.InvalidUrl(
@@ -44,7 +75,8 @@ class ServerOnboardingViewModel(
         }
 
         state = ServerOnboardingState.Verifying(normalized.baseUrl, normalized.warning)
-        handleVerificationResult(
+        applyVerificationResultIfCurrent(
+            generation = generation,
             normalizedBaseUrl = normalized.baseUrl,
             warning = normalized.warning,
             result = verifier.verify(normalized.baseUrl)
@@ -52,6 +84,7 @@ class ServerOnboardingViewModel(
     }
 
     suspend fun verifyAndSaveFromUi() {
+        val generation = ++verificationGeneration
         val input = serverUrl
         val normalized = ServerUrlNormalizer.normalize(input)
         if (normalized !is ServerUrlValidationResult.Valid) {
@@ -66,11 +99,22 @@ class ServerOnboardingViewModel(
         val result = withContext(Dispatchers.IO) {
             verifier.verify(normalized.baseUrl)
         }
-        handleVerificationResult(
+        applyVerificationResultIfCurrent(
+            generation = generation,
             normalizedBaseUrl = normalized.baseUrl,
             warning = normalized.warning,
             result = result
         )
+    }
+
+    private fun applyVerificationResultIfCurrent(
+        generation: Long,
+        normalizedBaseUrl: String,
+        warning: ServerUrlWarning?,
+        result: HealthVerificationResult
+    ) {
+        if (generation != verificationGeneration) return
+        handleVerificationResult(normalizedBaseUrl, warning, result)
     }
 
     private fun handleVerificationResult(
@@ -79,6 +123,13 @@ class ServerOnboardingViewModel(
         result: HealthVerificationResult
     ) {
         when (result) {
+            is HealthVerificationResult.IncompatibleProtocol -> {
+                state = ServerOnboardingState.IncompatibleProtocol(
+                    baseUrl = normalizedBaseUrl,
+                    mismatch = result.mismatch,
+                    warning = warning
+                )
+            }
             is HealthVerificationResult.Valid -> {
                 serverUrl = normalizedBaseUrl
                 store.saveVerifiedServerUrl(normalizedBaseUrl)
@@ -87,7 +138,8 @@ class ServerOnboardingViewModel(
                     health = VerifiedPostboxHealth(
                         service = result.service,
                         version = result.version,
-                        protocolVersion = result.protocolVersion
+                        protocolVersion = result.protocolVersion,
+                        buildId = result.buildId
                     ),
                     warning = warning
                 )
@@ -138,6 +190,11 @@ sealed class ServerOnboardingState {
         val baseUrl: String,
         val warning: ServerUrlWarning? = null
     ) : ServerOnboardingState()
+    data class IncompatibleProtocol(
+        val baseUrl: String,
+        val mismatch: dev.pi.postbox.protocol.ProtocolMismatch,
+        val warning: ServerUrlWarning? = null
+    ) : ServerOnboardingState()
     data class Ready(
         val baseUrl: String,
         val health: VerifiedPostboxHealth? = null,
@@ -148,5 +205,6 @@ sealed class ServerOnboardingState {
 data class VerifiedPostboxHealth(
     val service: String,
     val version: String,
-    val protocolVersion: String
+    val protocolVersion: String,
+    val buildId: String
 )

@@ -3,6 +3,10 @@ package dev.pi.postbox.questionchat
 import dev.pi.postbox.protocol.JSON_MEDIA_TYPE
 import dev.pi.postbox.protocol.toPostboxBaseUrl
 import dev.pi.postbox.protocol.withPathSegments
+import dev.pi.postbox.protocol.POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.POSTBOX_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.ProtocolCompatibilityGate
+import dev.pi.postbox.protocol.ProtocolMessageSource
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -45,7 +49,8 @@ interface QuestionChatHttpClient {
 
 class OkHttpQuestionChatHttpClient(
     baseUrl: String,
-    private val httpClient: OkHttpClient = defaultQuestionChatHttpClient()
+    private val httpClient: OkHttpClient = defaultQuestionChatHttpClient(),
+    private val compatibilityGate: ProtocolCompatibilityGate = ProtocolCompatibilityGate()
 ) : QuestionChatHttpClient {
     private val base: HttpUrl = baseUrl.toPostboxBaseUrl()
 
@@ -53,6 +58,7 @@ class OkHttpQuestionChatHttpClient(
         withJsonResponse(
             request = Request.Builder()
                 .url(base.withPathSegments(listOf("api", "requests", requestId, "chat")))
+                .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
                 .post(ByteArray(0).toRequestBody(null))
                 .build(),
             maxBytes = QuestionChatTransportLimits.SNAPSHOT_JSON_BODY_MAX_BYTES
@@ -62,6 +68,7 @@ class OkHttpQuestionChatHttpClient(
         withJsonResponse(
             request = Request.Builder()
                 .url(base.withPathSegments(listOf("api", "requests", requestId, "chat")))
+                .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
                 .get()
                 .build(),
             maxBytes = QuestionChatTransportLimits.SNAPSHOT_JSON_BODY_MAX_BYTES
@@ -83,6 +90,7 @@ class OkHttpQuestionChatHttpClient(
         withJsonResponse(
             request = Request.Builder()
                 .url(base.withPathSegments(listOf("api", "requests", requestId, "chat")))
+                .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
                 .get()
                 .build(),
             maxBytes = QuestionChatTransportLimits.SNAPSHOT_JSON_BODY_MAX_BYTES
@@ -100,6 +108,7 @@ class OkHttpQuestionChatHttpClient(
     ): QuestionChatCommandResult<QuestionChatSendResponse> = withJsonResponse(
         request = Request.Builder()
             .url(base.withPathSegments(listOf("api", "requests", requestId, "chat", "messages")))
+            .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
             .post(
                 "{\"clientCommandId\":${JsonPrimitive(clientCommandId)},\"message\":${JsonPrimitive(message)}}"
                     .toRequestBody(JSON_MEDIA_TYPE)
@@ -111,6 +120,7 @@ class OkHttpQuestionChatHttpClient(
     override suspend fun stop(requestId: String, clientCommandId: String): QuestionChatCommandResult<QuestionChatStopResponse> = withJsonResponse(
         request = Request.Builder()
             .url(base.withPathSegments(listOf("api", "requests", requestId, "chat", "stop")))
+            .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
             .post("{\"clientCommandId\":${JsonPrimitive(clientCommandId)}}".toRequestBody(JSON_MEDIA_TYPE))
             .build(),
         maxBytes = QuestionChatTransportLimits.SMALL_JSON_BODY_MAX_BYTES
@@ -123,7 +133,12 @@ class OkHttpQuestionChatHttpClient(
     ): T = withContext(Dispatchers.IO) {
         execute(request).use { response ->
             val body = response.body ?: throw QuestionChatTransportException("Missing Question Chat response body")
-            val decoded = parseJsonObject(body.readUtf8Bounded(maxBytes))
+            val rawBody = body.readUtf8Bounded(maxBytes)
+            val decoded = compatibilityGate.decodeHttpResponse(
+                rawMessage = rawBody,
+                responseProtocolVersion = response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                source = ProtocolMessageSource.QUESTION_CHAT_HTTP
+            ) { parseJsonObject(it) }
             transform(response.code, decoded)
         }
     }
@@ -154,24 +169,24 @@ fun defaultQuestionChatHttpClient(): OkHttpClient = OkHttpClient.Builder()
     .callTimeout(70, TimeUnit.SECONDS)
     .build()
 
-private sealed interface SnapshotEnvelope {
+internal sealed interface SnapshotEnvelope {
     data class Ready(val snapshot: QuestionChatSnapshot) : SnapshotEnvelope
     data class Unavailable(val error: QuestionChatAvailabilityError) : SnapshotEnvelope
 }
 
-private fun parseActivationResponse(body: JsonObject): QuestionChatActivationResult = when (body.requiredString("status")) {
+internal fun parseActivationResponse(body: JsonObject): QuestionChatActivationResult = when (body.requiredString("status")) {
     "ready" -> QuestionChatActivationResult.Ready(parseSnapshot(body.requiredObject("snapshot")))
     "unavailable" -> QuestionChatActivationResult.Unavailable(parseAvailabilityError(body.requiredObject("error")))
     else -> throw QuestionChatTransportException("Unknown activation status")
 }
 
-private fun parseSnapshotEnvelope(body: JsonObject): SnapshotEnvelope = when (body.requiredString("status")) {
+internal fun parseSnapshotEnvelope(body: JsonObject): SnapshotEnvelope = when (body.requiredString("status")) {
     "ready" -> SnapshotEnvelope.Ready(parseSnapshot(body.requiredObject("snapshot")))
     "unavailable" -> SnapshotEnvelope.Unavailable(parseAvailabilityError(body.requiredObject("error")))
     else -> throw QuestionChatTransportException("Unknown snapshot status")
 }
 
-private fun parseSendResponse(body: JsonObject): QuestionChatCommandResult<QuestionChatSendResponse> {
+internal fun parseSendResponse(body: JsonObject): QuestionChatCommandResult<QuestionChatSendResponse> {
     return when (body.requiredString("status")) {
         "accepted" -> QuestionChatCommandResult.Accepted(
             QuestionChatSendResponse(
@@ -184,7 +199,7 @@ private fun parseSendResponse(body: JsonObject): QuestionChatCommandResult<Quest
     }
 }
 
-private fun parseStopResponse(body: JsonObject): QuestionChatCommandResult<QuestionChatStopResponse> {
+internal fun parseStopResponse(body: JsonObject): QuestionChatCommandResult<QuestionChatStopResponse> {
     return when (body.requiredString("status")) {
         "accepted" -> QuestionChatCommandResult.Accepted(
             QuestionChatStopResponse(clientCommandId = body.requiredString("clientCommandId"))
@@ -270,12 +285,22 @@ private fun parseMessage(body: JsonObject): QuestionChatMessage = when (body.req
 
 private fun parseToolActivity(body: JsonObject): QuestionChatToolActivity = QuestionChatToolActivity(
     id = body.requiredString("id"),
-    tool = body.requiredString("tool"),
+    tool = validatedToolName(body.requiredString("tool")),
     target = body.requiredString("target"),
-    state = body.requiredString("state"),
+    state = validatedToolState(body.requiredString("state")),
     details = body["details"]?.jsonPrimitive?.contentOrNull,
     actionOptionValue = body["action"]?.jsonObject?.get("optionValue")?.jsonPrimitive?.contentOrNull
 )
+
+private fun validatedToolName(value: String): String = when (value) {
+    "repository_read", "repository_grep", "repository_find", "repository_list", "propose_answer" -> value
+    else -> throw QuestionChatTransportException("Unknown Question Chat tool name: $value")
+}
+
+private fun validatedToolState(value: String): String = when (value) {
+    "running", "success", "error", "stale" -> value
+    else -> throw QuestionChatTransportException("Unknown Question Chat tool state: $value")
+}
 
 internal fun parseJsonObject(value: String): JsonObject = try {
     questionChatJson.parseToJsonElement(value).jsonObject

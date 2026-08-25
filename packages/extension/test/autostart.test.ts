@@ -317,7 +317,7 @@ describe("package-local Postbox server autostart", () => {
   });
 
   it("ask_postbox requires a full Pi restart instead of autostarting over an exact live profile with a newer protocol", async () => {
-    const newerProtocolVersion = "0.1.9";
+    const newerProtocolVersion = "0.2.0";
     const env = await tempConfigEnv({ PI_POSTBOX_AUTOSTART_TIMEOUT_MS: "50" });
     await writeMetadata(env, {
       role: "dev",

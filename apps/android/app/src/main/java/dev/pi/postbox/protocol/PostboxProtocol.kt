@@ -26,6 +26,7 @@ object PostboxProtocolJson {
 
 @Serializable
 data class StateSnapshot(
+    val protocolVersion: String = GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION,
     val sessions: List<SessionSnapshot>,
     val requests: List<AskRequestSnapshot> = emptyList(),
     val timestamp: String
@@ -55,7 +56,10 @@ data class SessionSnapshot(
     val lastHeartbeatAt: String? = null,
     val connectedAt: String? = null,
     val disconnectedAt: String? = null,
-    val updatedAt: String
+    val updatedAt: String,
+    val repository: RepositoryIdentity? = null,
+    val worktree: WorktreeIdentity? = null,
+    val feature: FeatureIdentity? = null
 )
 
 @Serializable
@@ -67,11 +71,12 @@ data class ProjectIcon(
 )
 
 @Serializable
-enum class SemanticState {
-    @SerialName("working") WORKING,
-    @SerialName("blocked") BLOCKED,
-    @SerialName("idle") IDLE,
-    @SerialName("unknown") UNKNOWN
+enum class SemanticState(val wireValue: String) {
+    @SerialName("working") WORKING("working"),
+    @SerialName("blocked") BLOCKED("blocked"),
+    @SerialName("waiting_for_postbox") WAITING_FOR_POSTBOX("waiting_for_postbox"),
+    @SerialName("idle") IDLE("idle"),
+    @SerialName("unknown") UNKNOWN("unknown")
 }
 
 @Serializable
@@ -86,6 +91,7 @@ data class AskRequestSnapshot(
     val requestId: String,
     val sessionId: String,
     val revision: Int = 1,
+    val ownerRevision: Int = 1,
     val creator: OwnerIdentity? = null,
     val owner: OwnerIdentity? = null,
     val mode: AskMode,
@@ -98,7 +104,32 @@ data class AskRequestSnapshot(
     val resolvedAt: String? = null,
     val result: AskResult? = null,
     val answerId: String? = null,
-    val answerRead: Boolean? = null
+    val answerRead: Boolean? = null,
+    val parentQuestionId: String? = null,
+    val repository: RepositoryIdentity? = null,
+    val worktree: WorktreeIdentity? = null,
+    val feature: FeatureIdentity? = null
+)
+
+@Serializable
+data class RepositoryIdentity(
+    val repositoryId: String,
+    val remote: String? = null,
+    val machineId: String? = null,
+    val commonDirectory: String? = null
+)
+
+@Serializable
+data class WorktreeIdentity(
+    val worktreeId: String,
+    val machineId: String,
+    val path: String
+)
+
+@Serializable
+data class FeatureIdentity(
+    val featureId: String,
+    val name: String? = null
 )
 
 @Serializable
@@ -115,7 +146,8 @@ enum class AskStatus {
     @SerialName("pending") PENDING,
     @SerialName("answered") ANSWERED,
     @SerialName("cancelled") CANCELLED,
-    @SerialName("expired") EXPIRED
+    @SerialName("expired") EXPIRED,
+    @SerialName("superseded") SUPERSEDED
 }
 
 @Serializable
@@ -157,6 +189,7 @@ data class ForkReference(
 
 @Serializable
 data class AskAnswerPayload(
+    val expectedRevision: Int,
     val selectedValues: List<String>,
     val note: String? = null
 )

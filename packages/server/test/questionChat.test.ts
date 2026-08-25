@@ -1,4 +1,4 @@
-import { HistoryResponseSchema, type AskCreatePayload, type ExtensionClientMessage, type ExtensionServerMessage, type QuestionChatSnapshot } from "@pi-postbox/protocol";
+import { HistoryResponseSchema, PROTOCOL_VERSION, type AskCreatePayload, type ExtensionClientMessage, type ExtensionServerMessage, type QuestionChatSnapshot } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -474,7 +474,7 @@ describe("Question Chat activation relay", () => {
     expect(snapshotCommand).toMatchObject({ type: "chat.snapshot", payload: { requestId: "ask-chat" } });
     if (snapshotCommand.type !== "chat.snapshot") throw new Error("Expected recovered snapshot command");
     socket.send(JSON.stringify({ type: "chat.snapshot", requestId: snapshotCommand.requestId, payload: recovered } satisfies ExtensionClientMessage));
-    expect((await snapshotRequest).json()).toEqual({ status: "ready", snapshot: recovered });
+    expect((await snapshotRequest).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "ready", snapshot: recovered });
 
     socket.send(JSON.stringify({
       type: "chat.recover.offer",
@@ -602,7 +602,7 @@ describe("Question Chat activation relay", () => {
         payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-1", mode: "turn" } }
       } satisfies ExtensionClientMessage)
     );
-    expect(await (await sendResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-1", mode: "turn" });
+    expect(await (await sendResponse).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "accepted", clientCommandId: "browser-command-1", mode: "turn" });
 
     socket.send(JSON.stringify({ type: "chat.event", payload: { requestId: "ask-chat", sequence: 5, type: "lifecycle", state: "generating" } } satisfies ExtensionClientMessage));
     await expect(events.next()).resolves.toMatchObject({ requestId: "ask-chat", sequence: 5, type: "lifecycle" });
@@ -623,7 +623,7 @@ describe("Question Chat activation relay", () => {
       requestId: steerCommand.requestId,
       payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-2", mode: "steer" } }
     } satisfies ExtensionClientMessage));
-    expect((await steerResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-2", mode: "steer" });
+    expect((await steerResponse).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "accepted", clientCommandId: "browser-command-2", mode: "steer" });
 
     socket.send(JSON.stringify({
       type: "chat.event",
@@ -662,7 +662,7 @@ describe("Question Chat activation relay", () => {
       requestId: stopCommand.requestId,
       payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-stop-1" } }
     } satisfies ExtensionClientMessage));
-    expect(await (await stopResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-stop-1" });
+    expect(await (await stopResponse).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "accepted", clientCommandId: "browser-stop-1" });
 
     const continueResponse = app.inject({
       method: "POST",
@@ -676,7 +676,7 @@ describe("Question Chat activation relay", () => {
       requestId: continueCommand.requestId,
       payload: { requestId: "ask-chat", response: { status: "accepted", clientCommandId: "browser-command-3", mode: "turn" } }
     } satisfies ExtensionClientMessage));
-    expect((await continueResponse).json()).toEqual({ status: "accepted", clientCommandId: "browser-command-3", mode: "turn" });
+    expect((await continueResponse).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "accepted", clientCommandId: "browser-command-3", mode: "turn" });
     await events.close();
   });
 
@@ -689,7 +689,7 @@ describe("Question Chat activation relay", () => {
       socket.once("close", resolve);
       socket.close();
     });
-    await expect(events.next()).resolves.toEqual({ requestId: "ask-chat", type: "transport", state: "offline" });
+    await expect(events.next()).resolves.toEqual({ protocolVersion: PROTOCOL_VERSION, requestId: "ask-chat", type: "transport", state: "offline" });
     const send = await app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/chat/messages",
@@ -715,7 +715,7 @@ describe("Question Chat activation relay", () => {
     });
     socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId!, payload: readySnapshot() } satisfies ExtensionClientMessage));
 
-    expect((await activation).json()).toEqual({ status: "ready", snapshot: readySnapshot() });
+    expect((await activation).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "ready", snapshot: readySnapshot() });
   });
 
   it("lets two browsers with distinct activation correlations share one runtime, snapshots, and SSE events", async () => {
@@ -741,7 +741,7 @@ describe("Question Chat activation relay", () => {
     await respond();
 
     expect((await first).statusCode).toBe(200);
-    expect((await second).json()).toEqual({ status: "ready", snapshot: readySnapshot() });
+    expect((await second).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "ready", snapshot: readySnapshot() });
     expect(activationCommandIds[0]).not.toBe(activationCommandIds[1]);
     expect(runtimeStarts).toBe(1);
 
@@ -771,8 +771,8 @@ describe("Question Chat activation relay", () => {
       requestId: secondSnapshotCommand.requestId,
       payload: sharedSnapshot
     } satisfies ExtensionClientMessage));
-    expect((await firstSnapshot).json()).toEqual({ status: "ready", snapshot: sharedSnapshot });
-    expect((await secondSnapshot).json()).toEqual({ status: "ready", snapshot: sharedSnapshot });
+    expect((await firstSnapshot).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "ready", snapshot: sharedSnapshot });
+    expect((await secondSnapshot).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "ready", snapshot: sharedSnapshot });
 
     const sharedEvent = {
       requestId: "ask-chat",
@@ -783,7 +783,8 @@ describe("Question Chat activation relay", () => {
     const firstEvent = firstEvents.next();
     const secondEvent = secondEvents.next();
     socket.send(JSON.stringify({ type: "chat.event", payload: sharedEvent } satisfies ExtensionClientMessage));
-    await expect(Promise.all([firstEvent, secondEvent])).resolves.toEqual([sharedEvent, sharedEvent]);
+    const versionedSharedEvent = { protocolVersion: PROTOCOL_VERSION, ...sharedEvent };
+    await expect(Promise.all([firstEvent, secondEvent])).resolves.toEqual([versionedSharedEvent, versionedSharedEvent]);
     await firstEvents.close();
     await secondEvents.close();
   });
@@ -808,8 +809,8 @@ describe("Question Chat activation relay", () => {
         response: { status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" }
       }
     } satisfies ExtensionClientMessage));
-    expect((await first).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" });
-    expect((await second).json()).toEqual({ status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" });
+    expect((await first).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" });
+    expect((await second).json()).toEqual({ protocolVersion: PROTOCOL_VERSION, status: "accepted", clientCommandId: payload.clientCommandId, mode: "turn" });
     await noDuplicateRelay;
 
     const noConflictRelay = expectNoMessage(socket);
@@ -821,6 +822,7 @@ describe("Question Chat activation relay", () => {
     });
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json()).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
       status: "unavailable",
       error: { code: "duplicate_command", message: "This command ID was already used for different Question Chat input." }
     });
@@ -865,6 +867,7 @@ describe("Question Chat activation relay", () => {
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
       status: "unavailable",
       error: { code: "rate_limited", message: "Question Chat command rate limit exceeded.", retryAfterMs: 1_000 }
     });
@@ -918,6 +921,7 @@ describe("Question Chat activation relay", () => {
     const limited = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
       status: "unavailable",
       error: {
         code: "rate_limited",
@@ -1038,6 +1042,7 @@ describe("Question Chat activation relay", () => {
     expect(await terminalMessage).toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
     expect((await answer).statusCode).toBe(200);
     expect((await send).json()).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
       status: "unavailable",
       error: { code: "request_not_pending", message: "The Question became terminal while Chat was active." }
     });

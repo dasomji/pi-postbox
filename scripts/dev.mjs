@@ -21,12 +21,15 @@ const portsPath = join(profileStateDir, "dev-ports.json");
 const serverCli = join(packageRoot, "packages", "server", "dist", "cli.js");
 const serverExecutable = process.env.POSTBOX_DEV_SERVER_EXECUTABLE ?? process.execPath;
 const serverPrefixArgs = process.env.POSTBOX_DEV_SERVER_EXECUTABLE ? [] : [serverCli];
+const CANONICAL_DEV_API_PORT = 45795;
+const skipPortAvailabilityCheck = process.env.POSTBOX_DEV_TEST_SKIP_PORT_CHECK === "1"
+  && process.env.POSTBOX_DEV_SERVER_EXECUTABLE !== undefined;
 
 async function choosePort(preferred, explicitName) {
   if (preferred !== undefined) {
     const parsed = Number(preferred);
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) throw new Error(`Invalid ${explicitName ?? "persisted development port"}: ${preferred}`);
-    if (await portAvailable(parsed)) return parsed;
+    if (skipPortAvailabilityCheck || await portAvailable(parsed)) return parsed;
     if (explicitName) throw new Error(`Development port ${parsed} is already in use. Choose another ${explicitName}; production was left untouched.`);
   }
   return await reserveEphemeralPort();
@@ -130,10 +133,11 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => s
 
 buildBackend();
 const persistedPorts = await readPersistedPorts();
-const apiPort = await choosePort(
-  process.env.PI_POSTBOX_PORT ?? persistedPorts?.apiPort,
-  process.env.PI_POSTBOX_PORT === undefined ? undefined : "PI_POSTBOX_PORT"
-);
+const configuredApiPort = process.env.PI_POSTBOX_PORT ?? CANONICAL_DEV_API_PORT;
+const configuredApiPortName = process.env.PI_POSTBOX_PORT !== undefined
+  ? "PI_POSTBOX_PORT"
+  : "canonical development API port";
+const apiPort = await choosePort(configuredApiPort, configuredApiPortName);
 let webPort = await choosePort(
   process.env.POSTBOX_DEV_WEB_PORT ?? persistedPorts?.webPort,
   process.env.POSTBOX_DEV_WEB_PORT === undefined ? undefined : "POSTBOX_DEV_WEB_PORT"
