@@ -375,7 +375,7 @@ describe("/postbox browser command", () => {
       await startConnectedSession(harness, env);
 
       expect(harness.commands.has("postbox")).toBe(true);
-      expect([...harness.tools.keys()]).toEqual(expect.arrayContaining(["ask_postbox", "get_answer", "postbox_status"]));
+      expect([...harness.tools.keys()]).toEqual(expect.arrayContaining(["write_question", "get_answer", "postbox_status"]));
       expect([...harness.tools.keys()]).not.toEqual(expect.arrayContaining(["open_postbox"]));
       expect([...harness.tools.keys()].some((name) => /open.*postbox|postbox.*open|browser|dashboard/i.test(name))).toBe(false);
 

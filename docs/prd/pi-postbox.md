@@ -6,21 +6,21 @@ When multiple Pi agents are running across repositories, branches, worktrees, an
 
 Existing dashboard-style approaches tend to mirror full agent conversations. That is too noisy for the desired workflow. The user wants a focused “postbox” for agent attention: each Pi session registers its presence, reports useful session metadata, and sends structured decision cards when it needs input. The user can open the web interface from a phone or laptop over Tailscale/lizardtail, answer the card, and let the blocked Pi session continue.
 
-The long-term vision is richer than a form UI: `ask_postbox` is a handoff to an interviewer. V1 is a simple structured question-answer interface, but the contract should preserve enough context for a future conversational interviewer, including relevance, decision impact, per-answer meaning, and codebase/problem context. Future interviewer conversations should help the user reach decisions without polluting the coding agent’s main context.
+The long-term vision is richer than a form UI: `write_question` is a durable decision handoff. Each new Question must state the ambiguity it aims to resolve and may preserve description and impact on each answer option. Question Chat can help the user reach a decision from an exact private fork of the originating Pi Session without polluting the coding agent’s main context.
 
 ## Solution
 
 Build **Pi Postbox**, consisting of:
 
 - A standalone **`pi-postbox-server`** web service.
-- A Pi extension exposing an **`ask_postbox`** tool.
+- A Pi extension exposing a **`write_question`** tool.
 - A reactive web UI optimized around pending attention cards, not streamed chat logs.
 
 Each Pi extension instance connects outbound to the standalone server, registers the active Pi session, sends heartbeats and semantic state, and posts structured question requests. The server persists sessions, machines, projects, pending requests, resolved answers, and history in SQLite. Browser clients receive reactive state via SSE and submit answers via HTTP actions.
 
-When an agent calls `ask_postbox`, the tool returns after the server durably persists the Question. The agent continues independent work and receives a lightweight notification when an Answer is available; it does not poll. If the human decision is the sole remaining blocker, the agent calls `wait_for_postbox` once to enter explicit idle/blocked mode until an actionable event. The extension also observes `ask_user` tool calls so local pi-ask prompts can still appear as attention states. Explicit Postbox waits emit Herdr-compatible blocked events so Herdr sidebars can reflect the same state when Pi runs inside Herdr.
+When an agent calls `write_question` with `action: "create"` or `action: "create_batch"`, the tool returns after the server durably persists the Question. The agent continues independent work and receives a lightweight notification when an Answer is available; it does not poll. If the human decision is the sole remaining blocker, the agent calls `wait_for_postbox` once to enter explicit idle/blocked mode until an actionable event. The extension also observes `ask_user` tool calls so local pi-ask prompts can still appear as attention states. Explicit Postbox waits emit Herdr-compatible blocked events so Herdr sidebars can reflect the same state when Pi runs inside Herdr.
 
-V1 does not include native push notifications or a conversational interviewer. It must reserve the architecture for both: notification hooks exist server-side, and rich handoff context is stored even if the first UI renders it as collapsible sections.
+V1 does not include native push notifications or a conversational interviewer. It reserves architecture for both through server-side notification hooks and an optional exact source-session/leaf reference; it does not persist a separate top-level handoff-context object.
 
 ## User Stories
 
@@ -33,15 +33,15 @@ V1 does not include native push notifications or a conversational interviewer. I
 7. As a user, I want pending questions shown as cards, so that I can answer decisions without reading full chat streams.
 8. As a user on mobile, I want the attention inbox to prioritize pending questions, so that I can quickly unblock agents.
 9. As a user with the dashboard open on multiple devices, I want an answer submitted on one device to immediately resolve the card everywhere else, so that state stays consistent.
-10. As a Pi agent, I want to call `ask_postbox` with structured options and continue independent work after persistence, so that I do not guess or waste a runnable turn.
+10. As a Pi agent, I want to call `write_question` with structured options and continue independent work after persistence, so that I do not guess or waste a runnable turn.
 11. As a Pi agent, I want an Answer notification plus a compact `get_answer` result with normalized machine-readable values, so that I can continue deterministically without polling or reloading Question context.
 12. As a Pi agent, I want to include why the question matters, so that the user understands the decision context.
 13. As a Pi agent, I want to describe the impact of the decision, so that the user can answer with awareness of downstream consequences.
-14. As a Pi agent, I want to include per-answer context, so that the user understands what each option means.
-15. As a Pi agent, I want to include codebase/problem context, so that a future interviewer can discuss the decision intelligently.
-16. As a user, I want only final machine-readable answers and an optional note returned to the coding agent, so that rich Question context does not pollute the main coding session.
-17. As a future interviewer agent, I want rich handoff context stored with the request, so that I can conduct a better conversation without needing the full coding-agent chat stream.
-18. As a future tool, I want each request to store the originating Pi session path/id and leaf id, so that a temporary forked Pi session can be created from the exact decision point later.
+14. As a Pi agent, I want to explain each answer option with a description and impact, so that the user understands what it means and its consequences.
+15. As a Pi agent, I want to state the exact ambiguity behind the Question, so that the human understands which uncertainty must be resolved.
+16. As a user, I want only final machine-readable answers and an optional note returned to the coding agent, so that Question details do not pollute the main coding session.
+17. As a future interviewer agent, I want an exact private fork of the originating Pi Session, so that I can use its real decision context without relying on a reconstructed summary.
+18. As a future tool, I want each request to record the originating Pi session path/id and leaf id, so that a temporary forked Pi session can be created from the exact decision point later.
 19. As a user, I want Pi sessions to show `working`, `blocked/waiting`, and `idle` states, so that I can distinguish active work from input waits.
 20. As a user, I want local `ask_user` waits to appear as blocked/attention states too, so that pi-ask prompts are not invisible.
 21. As a user running Pi inside Herdr, I want explicit `wait_for_postbox` calls to mark Herdr blocked, so that Herdr and Postbox agree without treating every persisted Question as a blocked agent.
@@ -49,7 +49,7 @@ V1 does not include native push notifications or a conversational interviewer. I
 23. As a user, I want the server to survive restarts without losing names or pending/history records, so that Postbox can be trusted as infrastructure.
 24. As a Pi user, I want Pi startup not to block if Postbox is unavailable, so that Pi remains usable without the server.
 25. As a Pi user, I want the extension to reconnect in the background, so that the dashboard recovers automatically after network/server interruptions.
-26. As a Pi user, I want `ask_postbox` requests to be idempotent across reconnects, so that duplicate cards are not created after connection drops.
+26. As a Pi user, I want `write_question` creation requests to be idempotent across reconnects, so that duplicate cards are not created after connection drops.
 27. As a Pi user, I want a local fallback command while a request is pending, so that I can answer/cancel from the terminal if the web UI is unavailable.
 28. As a server operator, I want Postbox to run as a normal local HTTP service, so that local operation remains reliable and Tailscale exposure can proxy to the actual bound port.
 29. As a server operator with Tailscale installed, I want Postbox startup to automatically expose the dashboard over Tailnet-private Tailscale Serve when safe, so that I can open the printed URL from a phone or laptop without manually wrapping the server.
@@ -60,7 +60,7 @@ V1 does not include native push notifications or a conversational interviewer. I
 ## Implementation Decisions
 
 - Product/tool naming:
-  - Tool: `ask_postbox`.
+  - Tool: `write_question`.
   - Server CLI/package identity: `pi-postbox-server`.
   - The name “postbox” is intentional: it signals queued attention/decision handoffs, not streamed chat dashboards, and avoids “inbox” terminology collisions.
 
@@ -116,8 +116,9 @@ V1 does not include native push notifications or a conversational interviewer. I
   - `wait_for_postbox` emits Herdr-compatible blocked events while waiting and clears them afterward.
   - Postbox state remains independent and must not depend on Herdr being installed.
 
-- Ask behavior:
-  - `ask_postbox` returns after durable persistence, not after human resolution.
+- Question write behavior:
+  - `write_question` creation actions return after durable persistence, not after human resolution.
+  - Every accepted create returns a reusable handle with the Question ID, current content and ownership revisions, current lifecycle status, and create/idempotent disposition.
   - Postbox sends the owning session a lightweight Answer-available notification; agents do not poll bounded read/list tools.
   - `wait_for_postbox` is called once only when a human decision is the sole remaining blocker.
   - Single-Question and batch inputs are mutually strict. Batch idempotency is per item through each stable `requestId`; there is no ignored top-level batch key.
@@ -132,29 +133,24 @@ V1 does not include native push notifications or a conversational interviewer. I
   - Provide local commands to answer or cancel the active pending request from the terminal.
   - Do not automatically open local prompts in v1.
 
-- `ask_postbox` contract:
-  - Keep compatibility with the core ask-user pattern: single/multi/preview-style options, normalized machine-readable values, optional freeform/custom answer.
-  - Add rich handoff fields from v1:
-    - question prompt.
-    - why this question is relevant.
-    - what effect the decision will have.
-    - per-answer meaning/context.
-    - optional diagrams/code snippets/additional information.
-    - codebase/problem context intended for a future interviewer, not necessarily for direct user display.
-  - The first UI renders rich context as simple/collapsible card sections.
-  - The future conversational interviewer can consume the same stored handoff contract.
+- `write_question` contract:
+  - Use one explicit action enum for creation (`create`, `create_batch`) and owned updates (`revise`, `cancel`, `supersede`, `reparent`, `transfer`, `takeover`); never infer a destructive action from object shape.
+  - Keep compatibility with the core ask-user pattern: single/multi/preview-style options and normalized machine-readable values.
+  - Require a Question prompt and a non-blank ambiguity for creation.
+  - Allow bounded per-answer description and impact.
+  - Do not accept or persist a top-level handoff-context object or per-option context.
 
 - Coding-agent context hygiene:
-  - The coding agent supplies rich context explicitly in the tool call.
-  - The extension adds objective metadata only.
+  - The coding agent supplies only the structured Question and option details needed for the decision.
+  - The extension adds objective source-session metadata only.
   - Do not automatically crawl or summarize the repo in v1.
-  - Return only the Question ID, Answer ID, final selected option values, and optional user note to the coding agent.
-  - Do not return full future interviewer transcripts to the main coding session by default.
+  - Return compact write handles for mutations, and only the Question ID, Answer ID, final selected option values, and optional user note for Answer reads.
+  - Do not return Question Chat transcripts to the main coding session by default.
 
 - Future fork reference:
   - Store originating Pi session path/id and current leaf id on each ask request.
   - This supports a later separate feature where a conversational interviewer can start a temporary forked Pi session from the exact decision point.
-  - This future backchannel is not part of the v1 `ask_postbox` schema.
+  - This future backchannel is not part of the v1 `write_question` schema.
 
 - Dashboard UX:
   - Primary view is an attention inbox sorted by urgency/age.
@@ -179,7 +175,7 @@ V1 does not include native push notifications or a conversational interviewer. I
 
 - Test external behavior and protocol outcomes, not implementation details.
 - Highest-value test seams:
-  - `ask_postbox` persistence receipt → Answer notification/explicit wait → compact normalized `get_answer` result.
+  - `write_question` persistence receipt → Answer notification/explicit wait → compact normalized `get_answer` result.
   - Extension state transitions for working/blocked/idle/offline.
   - Observation of `ask_user` tool calls causing local blocked state.
   - Herdr-compatible blocked event emission around explicit `wait_for_postbox` calls.
@@ -188,7 +184,7 @@ V1 does not include native push notifications or a conversational interviewer. I
   - SSE client state updates after HTTP answer submission.
   - First-answer-wins behavior across multiple browser clients.
   - Metadata collection for git branch/worktree/session/machine.
-  - Rich context rendering as card sections without returning it wholesale to the coding agent.
+  - Question ambiguity and per-option metadata rendering without returning it wholesale to the coding agent.
 
 - Extension tests should use mocked Pi extension context/events where possible.
 - Server tests should exercise Fastify routes/WebSocket/SSE contracts with an isolated temporary SQLite database.

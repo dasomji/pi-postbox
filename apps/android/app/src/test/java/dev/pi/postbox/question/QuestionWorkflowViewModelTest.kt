@@ -336,8 +336,7 @@ class QuestionWorkflowViewModelTest {
             value = "tailnet",
             label = "Use Tailnet HTTPS",
             description = "Use the verified endpoint.",
-            meaning = "Keep traffic inside the tailnet.",
-            context = "The server has already passed its health check."
+            impact = "Keep traffic inside the tailnet."
         )
         val initial = singlePendingQuestion().copy(options = listOf(richOption))
         val viewModel = startedViewModel(
@@ -361,8 +360,7 @@ class QuestionWorkflowViewModelTest {
         val updated = viewModel.state.visibleQuestion ?: error("Expected updated question")
         assertEquals(listOf("tailnet"), updated.selectedValues)
         assertEquals("Use the verified endpoint.", updated.options.first().description)
-        assertEquals("Keep traffic inside the tailnet.", updated.options.first().meaning)
-        assertEquals("The server has already passed its health check.", updated.options.first().context)
+        assertEquals("Keep traffic inside the tailnet.", updated.options.first().impact)
         assertEquals(QuestionOptionProvenance.CHAT, updated.options.last().provenance)
 
         stream.emit(
@@ -614,19 +612,15 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
-    fun longQuestionAndContextRemainAvailableInVisibleQuestionState() = runTest {
+    fun longQuestionAndAmbiguityRemainAvailableInVisibleQuestionState() = runTest {
         val longPrompt = "Should the native UI preserve every part of a long prompt? ".repeat(80)
-        val longQuestionContext = "Question context line with setup and constraints.\n".repeat(120)
-        val longProblemContext = "Problem context from the handoff should remain inspectable.\n".repeat(100)
-        val longRichContext = "terminal output that explains the decision\n".repeat(160)
+        val longAmbiguity = "Question ambiguity with competing constraints.\n".repeat(120)
         val client = RecordingPostboxProtocolClient(
             questionWorkflowState(
                 requests = listOf(
-                    longContextQuestion(
+                    longQuestion(
                         longPrompt = longPrompt,
-                        longQuestionContext = longQuestionContext,
-                        longProblemContext = longProblemContext,
-                        longRichContext = longRichContext
+                        longAmbiguity = longAmbiguity
                     )
                 )
             )
@@ -637,9 +631,7 @@ class QuestionWorkflowViewModelTest {
         val visibleQuestion = viewModel.state.visibleQuestion ?: error("Expected long question to remain visible")
 
         assertEquals(longPrompt, visibleQuestion.prompt)
-        assertEquals(longQuestionContext, visibleQuestion.questionContext)
-        assertEquals(longProblemContext, visibleQuestion.handoffContext?.problemContext)
-        assertEquals(longRichContext, visibleQuestion.handoffContext?.additionalInfo?.single()?.content)
+        assertEquals(longAmbiguity, visibleQuestion.ambiguity)
         assertTrue("Action state should still be exposed while long content scrolls", visibleQuestion.availableActions.contains(QuestionAction.SUBMIT))
         assertTrue(visibleQuestion.availableActions.contains(QuestionAction.CANCEL))
     }

@@ -35,16 +35,13 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a storage strategy",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(
                 QuestionOptionUiState(
                     value = "sqlite",
                     label = "SQLite",
                     description = "Keep deployment self-contained.",
-                    meaning = "Persist decisions beside session state.",
-                    context = "No second service is required."
+                    impact = "Persist decisions beside session state."
                 ),
                 QuestionOptionUiState(
                     value = "chat_stage",
@@ -53,7 +50,6 @@ class QuestionWorkflowScreenTest {
                     provenance = QuestionOptionProvenance.CHAT
                 )
             ),
-            handoffContext = null,
             forkReference = null,
             selectedValues = listOf("sqlite"),
             canSubmit = true,
@@ -85,8 +81,7 @@ class QuestionWorkflowScreenTest {
         )
 
         composeRule.onNodeWithText("Keep deployment self-contained.").assertIsDisplayed()
-        composeRule.onNodeWithText("Meaning: Persist decisions beside session state.").assertIsDisplayed()
-        composeRule.onNodeWithText("Context: No second service is required.").assertIsDisplayed()
+        composeRule.onNodeWithText("Impact: Persist decisions beside session state.").assertIsDisplayed()
         composeRule.onNodeWithText("Suggested in Chat").assertIsDisplayed()
 
         composeRule.onNode(hasText("SQLite", substring = true) and hasClickAction()).assertIsSelected()
@@ -107,11 +102,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a release path",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship now", null)),
-            handoffContext = null,
             forkReference = null,
             selectedValues = listOf("ship"),
             canSubmit = true,

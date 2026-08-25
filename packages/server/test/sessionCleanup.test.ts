@@ -81,15 +81,12 @@ async function createAsk(socket: WebSocket, requestId: string, sessionId = "sess
         requestId,
         sessionId,
         mode: "single",
-        question: { prompt: "Keep this session visible?" },
+        question: { prompt: "Keep this session visible?", ambiguity: "Test ambiguity." },
         options: [
           { value: "yes", label: "Yes" },
           { value: "no", label: "No" }
         ],
-        context: {
-          codebaseContext: "Fastify server with retained session and request records.",
-          problemContext: "Keep sessions referenced by pending or historical decisions."
-        }
+
       }
     } satisfies ExtensionClientMessage)
   );

@@ -168,12 +168,23 @@ describe("Pi Postbox extension registration", () => {
       description: "Defaults to compact control records; use 'full' for complete Question content."
     });
     expect(tools.get("get_questions")?.description).toMatch(/compact.*default/i);
+    expect(tools.get("get_questions")?.parameters.properties.questionIds).toMatchObject({ maxItems: 20 });
+    expect(tools.get("get_postbox_owner_status")?.parameters.properties.owners).toMatchObject({ maxItems: 20 });
     expect(tools.get("get_question_history")?.parameters.properties.view).toEqual({
       type: "string",
       enum: ["events", "full"],
-      description: "Defaults to compact event-oriented history; use 'full' for every stored revision snapshot."
+      description: "Defaults to compact event-oriented history; use 'full' for immutable revision snapshots."
     });
     expect(tools.get("get_question_history")?.description).toMatch(/event.*default/i);
+    expect(tools.get("get_question_history")?.parameters.properties.pageSize).toMatchObject({
+      type: "integer", minimum: 1, maximum: 50
+    });
+    expect(tools.get("recover_question_answer")?.parameters.properties.view).toEqual({
+      type: "string",
+      enum: ["compact", "full"],
+      description: "Defaults to compact recovery output; use 'full' for the complete Question, Answer, and read metadata."
+    });
+    expect(tools.get("recover_question_answer")?.description).toMatch(/compact.*default/i);
     expect(tools.get("list_postbox_owners")?.parameters.properties.scope).toEqual({
       type: "string",
       enum: ["feature", "worktree", "repository"],
@@ -181,9 +192,15 @@ describe("Pi Postbox extension registration", () => {
     });
     expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("global");
     expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("featureId");
+    expect(tools.get("list_postbox_owners")?.parameters.properties.includeInactive).toMatchObject({ type: "boolean" });
+    expect(tools.get("list_postbox_owners")?.parameters.properties.pageSize).toMatchObject({
+      type: "integer", minimum: 1, maximum: 100
+    });
     expect(tools.get("get_answer")?.description).toMatch(/pending/i);
-    expect(tools.get("ask_postbox")?.promptGuidelines?.join(" ")).toMatch(/do not poll.*get_answer.*list_question_status.*list_questions/i);
-    expect(tools.get("ask_postbox")?.promptGuidelines?.join(" ")).toMatch(/only blocker.*wait_for_postbox.*once/i);
+    expect(tools.get("write_question")?.promptSnippet).toBeUndefined();
+    expect(tools.get("wait_for_postbox")?.promptSnippet).toBeUndefined();
+    expect(tools.get("write_question")?.promptGuidelines?.join(" ")).toMatch(/do not poll.*get_answer.*list_question_status.*list_questions/i);
+    expect(tools.get("write_question")?.promptGuidelines?.join(" ")).toMatch(/only blocker.*wait_for_postbox.*once/i);
     expect(tools.get("wait_for_postbox")?.promptGuidelines?.join(" ")).toMatch(/only blocker.*idle.*notification|only blocker.*idle.*wakes/i);
   });
 

@@ -8,7 +8,7 @@ The product requirements document is in [`docs/prd/pi-postbox.md`](docs/prd/pi-p
 
 ## Current status
 
-Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `ask_postbox`, WebSocket session registration, SSE browser state, SQLite persistence/history, rich handoff context, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script. Version 0.1.6 keeps common agent reads compact, makes batch/single tool modes strict, preserves persisted Questions across turn cancellation, refreshes server identity after a same-endpoint restart, and advances the dashboard directly to the next open Question after a resolution.
+Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `write_question`, WebSocket session registration, SSE browser state, SQLite persistence/history, structured Questions and options, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script. Version 0.2.2 adds complete npm license and source metadata, fixes the published CLI bin path, and excludes test source from the package tarball. Version 0.2.1 bounds and paginates every model-facing bulk read, uses compact stateless cursors, hides inactive historical owners by default, trims repeated list fields, and preserves checkout development ports across restarts. Version 0.2.0 replaces the separate model-facing create/update tools with one explicit-action `write_question` surface and returns reusable current Question handles from creation. Version 0.1.9 requires a concise ambiguity for new Questions, simplifies parent and expiry inputs, renames option `meaning` to `impact`, removes top-level handoff context and per-option context, removes reconstructed Question Chat, and renders single/multi choice with accessible ballot controls. Version 0.1.8 exposed single-Question create/idempotent receipt disposition and safely required a full Pi restart when `/reload` retained an incompatible shared protocol dependency. Version 0.1.7 reduced model-facing tool schemas, strictly described exact-owner filters, and made recovery reads compact by default with an explicit full view while preserving strict server-side action validation and internal provenance/expiry compatibility.
 
 ## Quick start from this checkout
 
@@ -36,7 +36,7 @@ npm run build     # build server/protocol/extension and Vite UI
 npm run smoke     # packaged-path release smoke test
 ```
 
-The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration and handoff context, explicit Question Chat activation without an automatic turn, context-only interviewer fallback, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, and absence of the private transcript/evidence from those durable APIs.
+The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration, exact-fork Question Chat activation without an automatic turn, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, legacy context removal, and absence of the private transcript/evidence from those durable APIs.
 
 ## Packages
 
@@ -44,7 +44,7 @@ This repo uses npm workspaces:
 
 - `@pi-postbox/protocol` — shared Zod schemas and TypeScript types.
 - `@pi-postbox/server` — Fastify server package exposing the `pi-postbox-server` binary.
-- `@pi-postbox/extension` — Pi extension package advertising `pi.extensions` for `ask_postbox`.
+- `@pi-postbox/extension` — Pi extension package advertising `pi.extensions` for `write_question`.
 - `@pi-postbox/web` — Vite Svelte Tailwind browser UI.
 
 Source-checkout install for Pi extension development:
@@ -80,31 +80,39 @@ pi-postbox-server
 
 ## Agent tool contracts
 
-`ask_postbox` returns after durable persistence rather than waiting for a human Answer. Continue any independent work and do not poll `get_answer`, `list_question_status`, or `list_questions`: Postbox notifies the owning Pi Session when an Answer is available. If that human decision becomes the only remaining blocker, call `wait_for_postbox` once to enter explicit idle/waiting mode; after it wakes, read the relevant Question with `get_answer`.
+`write_question` is the single model-facing write surface. Use `action: "create"` or `action: "create_batch"` to persist Questions, and `revise`, `cancel`, `supersede`, `reparent`, `transfer`, or `takeover` to change an existing Question. Creation returns after durable persistence rather than waiting for a human Answer. Continue any independent work and do not poll `get_answer`, `list_question_status`, or `list_questions`: Postbox notifies the owning Pi Session when an Answer is available. If that human decision becomes the only remaining blocker, call `wait_for_postbox` once to enter explicit idle/waiting mode; after it wakes, read the relevant Question with `get_answer`.
 
-In batch mode, put the required shared handoff context in `defaults.context`; an item may supply a complete `context` override. Batch idempotency is per Question: put a stable `requestId` on each item. A top-level batch `requestId` is invalid because Postbox does not claim an atomic batch-level idempotency contract. The server expands and validates every item before persisting independent Question records:
+Batch idempotency is per Question: put a stable `requestId` on each item. A top-level batch `requestId` is invalid because Postbox does not claim an atomic batch-level idempotency contract. Questions may refer to an earlier item with `parentLocalRef`; the server validates the ordered batch before persisting independent Question records:
 
 ```json
 {
-  "mode": "batch",
-  "defaults": {
-    "context": {
-      "codebaseContext": "Postbox workspace",
-      "problemContext": "Choose the rollout approach"
-    }
-  },
+  "action": "create_batch",
   "questions": [
-    { "localRef": "root", "question": "Roll out now?", "options": [{ "value": "yes", "label": "Yes" }] }
+    {
+      "localRef": "root",
+      "requestId": "rollout-root",
+      "question": "Roll out now?",
+      "ambiguity": "Whether to begin the rollout now or defer it.",
+      "options": [{ "value": "yes", "label": "Yes" }]
+    }
   ]
 }
 ```
 
+The model-facing `write_question` contract does not expose expiry controls. Absolute `expiresAt` and `forkReference` remain internal protocol/embedding compatibility fields rather than model-authored inputs. A successful create handle reports `questionId`, current `revision`, current `ownerRevision`, current lifecycle `status`, and `disposition: "created" | "idempotent"`, so it can be passed directly into a later write and a stable-`requestId` replay returns current control state. Accepted batch items return equivalent handles.
+
 Agent query tools use small workflow-oriented results by default:
 
-- `get_questions({ questionIds })` returns IDs, lifecycle state, ownership, hierarchy, the latest timestamp, and concurrency revisions. Pass `view: "full"` for Question text, options, and handoff context.
-- `get_question_history({ questionId })` returns the initial complete snapshot, changed content sections, and non-content lifecycle/ownership/hierarchy events. Pass `view: "full"` for every immutable revision snapshot and revision event.
-- `list_postbox_owners()` derives the caller's feature scope and returns at most 100 owner identities with coarse presence and scoped active/unread counts. It permits only `feature`, `worktree`, or `repository` scope and never exposes titles, paths, prompts, or context.
+- `get_questions({ questionIds })` accepts at most 20 IDs and returns lifecycle state, ownership, hierarchy, the latest timestamp, and concurrency revisions. Pass `view: "full"` for Question text and options.
+- `get_question_history({ questionId })` returns up to 50 combined revision/event records per page. Compact view starts with the initial complete snapshot, then changed content sections and non-content events; `view: "full"` exposes immutable snapshots. Follow `nextCursor` for later pages.
+- `recover_question_answer({ questionId })` returns the compact Answer plus `alreadyRead` and `firstRead` evidence without repeating Question content. Pass `view: "full"` for the complete Question, Answer, and read metadata.
+- `write_question` presents one compact model-facing object with an action enum and documented action-specific fields. The server still validates the exact strict action payload and rejects missing, extra, or cross-action fields.
+- `list_questions` returns at most 100 records per page; `list_question_status` returns at most 50. Both accept only `scope` and a strict `{ "harness": "…", "ownerId": "…" }` owner filter on the model-facing surface, and return `nextCursor` when another page exists.
+- `list_postbox_owners()` derives the caller's feature scope, omits offline zero-count historical owners by default, and returns paged coarse presence and active/unread counts (100 maximum per page). Set `includeInactive: true` only for audit workflows.
+- `get_postbox_owner_status({ owners })` accepts at most 20 exact owner identities.
 - `get_answer({ questionId })` returns `{ "type": "pending", "status": "pending", "questionId": "…" }` while the Question remains unresolved; this is a normal bounded result, not an error.
+
+Pagination cursors are opaque, compact, stateless, and bound to the original query. Copy them unchanged into the next call with the same filters; malformed or cross-query cursors are rejected.
 
 See [`docs/protocol.md`](docs/protocol.md) for exact view and authorization semantics.
 
@@ -112,7 +120,7 @@ See [`docs/protocol.md`](docs/protocol.md) for exact view and authorization sema
 
 For a pending Postbox Question, click **Question Chat** to activate Question Chat explicitly. Activation creates a private runtime on the originating Pi machine, but it does not start an automatic model turn or response. Send a freeform message or choose a starter: **Elaborate**, **Pro–Cons**, or **Teach me**.
 
-Question Chat normally starts from an exact fork of the originating Pi Session at the question's leaf. If that leaf is unavailable but the request contains the required `codebaseContext` and `problemContext`, the dashboard may offer a clearly labeled, explicit **context-only interviewer** fallback; it never silently substitutes that fallback. A `/reload` or process restart aborts the active turn but preserves and recovers the temporary fork through its recovery manifest when possible.
+Question Chat starts only from an exact fork of the originating Pi Session at the question's recorded leaf. If the source session path or leaf is unavailable, activation reports the precise failure and no reconstructed or context-only conversation is created. A `/reload` or process restart aborts the active turn but preserves and recovers the temporary exact fork through its recovery manifest when possible.
 
 The assistant can use only bounded, read-only repository evidence tools: `repository_read`, `repository_grep`, `repository_find`, and `repository_list`. They are limited to the originating Git worktree, or to the originating cwd subtree outside Git, and expose neither a shell nor file mutation. A proposal made with the answer tool appears as **Suggested in Chat**. It is a server-validated option, not a selected answer; the user must still choose or submit it.
 
@@ -147,9 +155,11 @@ Override config location with `PI_POSTBOX_CONFIG_PATH` or `PI_POSTBOX_CONFIG_DIR
 
 For local self-healing, each profile publishes only `<profile-state-dir>/active-local/server.json`. The extension validates that record against `/healthz` profile, instance, URL, protocol, and build identity. Health reports the package version separately from the protocol version, while the default build id fingerprints the loaded runtime bytes. It never orders or falls back across profiles. A global production loopback `serverUrl` is therefore invisible to a checkout development profile, while `PI_POSTBOX_URL` remains an intentional escape hatch.
 
-`npm run dev` derives the checkout identity, selects independent backend/UI ports, uses its own database and metadata, and never stops production. It relies on the server's content-specific build fingerprint instead of assigning one static build id to the checkout. It exposes the development API through Tailscale Serve when available and non-conflicting, using the API's separate port so the production mapping remains untouched. Set `PI_POSTBOX_TAILSCALE=off` to disable this exposure. Separate clones and worktrees can run concurrently. The dashboard title and persistent accessible `Development server` badge come from authoritative `/healthz` profile state.
+`npm run dev` derives the checkout identity, selects independent backend/UI ports, persists them in the checkout profile's `dev-ports.json` for safe reuse across restarts, uses its own database and metadata, and never stops production. It relies on the server's content-specific build fingerprint instead of assigning one static build id to the checkout. It exposes the development API through Tailscale Serve when available and non-conflicting, using the API's separate port so the production mapping remains untouched. Set `PI_POSTBOX_TAILSCALE=off` to disable this exposure. Separate clones and worktrees can run concurrently. The dashboard title and persistent accessible `Development server` badge come from authoritative `/healthz` profile state.
 
-Package-local autostart is enabled by default for `ask_postbox` and the user-only `/postbox` dashboard command. Set `PI_POSTBOX_AUTOSTART=off` to disable spawning a bundled server. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the recovery wait; the default is 10 seconds (`10000` ms).
+Package-local autostart is enabled by default for `write_question` and the user-only `/postbox` dashboard command. Set `PI_POSTBOX_AUTOSTART=off` to disable spawning a bundled server. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the recovery wait; the default is 10 seconds (`10000` ms).
+
+Pi `/reload` can retain native ESM dependencies imported by an extension, including an older shared Postbox protocol package. After changing or upgrading shared protocol code, fully restart Pi rather than relying on `/reload`. If profile metadata and `/healthz` prove that the exact live profile server uses a different protocol from the loaded extension runtime, Postbox suppresses package-local autostart and returns full-Pi-restart guidance instead of spawning a competing profile owner.
 
 Repo-local project display metadata can be set with `.pi-postbox.json`:
 
@@ -193,7 +203,7 @@ See [`docs/configuration.md`](docs/configuration.md), [`docs/deployment.md`](doc
 
 ## Local fallback commands and status
 
-While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without starting an automatic model turn:
+While `write_question` is pending, the extension shows compact command hints. Operators can answer locally without starting an automatic model turn:
 
 ```text
 /postbox-status
@@ -209,6 +219,6 @@ Terminology note: an explicit non-loopback URL is a configured URL whose host is
 
 ## Explicit agent waiting and capacity
 
-`wait_for_postbox` is an explicit idle/blocked mode, not a required follow-up to every `ask_postbox`. Use it only after all independent work is exhausted and a human Postbox decision is the sole blocker. Call it once; do not emulate waiting by repeatedly calling status/list tools or `get_answer`. It suspends until any Question owned by the calling agent has an Answer or another actionable lifecycle event, after which the agent reads the relevant Answer with `get_answer`.
+`wait_for_postbox` is an explicit idle/blocked mode, not a required follow-up to every `write_question`. Use it only after all independent work is exhausted and a human Postbox decision is the sole blocker. Call it once; do not emulate waiting by repeatedly calling status/list tools or `get_answer`. It suspends until any Question owned by the calling agent has an Answer or another actionable lifecycle event, after which the agent reads the relevant Answer with `get_answer`.
 
-The tool accepts no Question IDs and is cancellable. In the Pi adapter each measured active wait retains exactly one configured runnable-agent slot: filling all configured slots with waiting children blocks an additional child until one wait wakes or is cancelled. A parent or operator should cancel or abort a waiting child to release capacity; cancellation clears only the ephemeral wait and leaves Questions and Answers durable. Likewise, aborting a completed `ask_postbox` tool turn after its persistence acknowledgement must not cancel the durable Question.
+The tool accepts no Question IDs and is cancellable. In the Pi adapter each measured active wait retains exactly one configured runnable-agent slot: filling all configured slots with waiting children blocks an additional child until one wait wakes or is cancelled. A parent or operator should cancel or abort a waiting child to release capacity; cancellation clears only the ephemeral wait and leaves Questions and Answers durable. Likewise, aborting a completed `write_question` tool turn after its persistence acknowledgement must not cancel the durable Question.

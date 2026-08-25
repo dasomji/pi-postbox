@@ -48,7 +48,9 @@ npm run dev
 
 `npm run dev` derives a stable `development:<checkout-id>` profile from the canonical checkout root, builds the current protocol/backend, and starts that checkout's backend plus Vite/HMR on available non-conflicting ports. It prints the profile identity, state directory, API URL, and dashboard URL. Vite proxies `/api` and `/healthz` to that backend.
 
-Development state lives under `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>` (normally `~/.local/state/pi-postbox/dev/<checkout-id>`), including its SQLite database and `active-local/server.json`. It never reads, migrates, stops, replaces, or retargets production, and Tailscale mutation is disabled. Separate clones/worktrees receive distinct identities and can run together. If an explicitly requested `PI_POSTBOX_PORT` is busy, the launcher exits and leaves the existing listener untouched.
+Development state lives under `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>` (normally `~/.local/state/pi-postbox/dev/<checkout-id>`), including its SQLite database, `active-local/server.json`, and `dev-ports.json`. The launcher atomically records the API and Vite ports and reuses them on the next restart when available, preserving endpoint affinity for unresolved Questions. If a remembered port is occupied, it selects and records a safe replacement; if an explicitly requested `PI_POSTBOX_PORT` or `POSTBOX_DEV_WEB_PORT` is occupied, it exits and leaves the existing listener untouched. API and web ports must differ.
+
+The development profile never reads, migrates, stops, replaces, or retargets production. Its optional non-clobbering Tailscale Serve mapping uses the separate development API port, so it does not replace the production mapping. Separate clones/worktrees receive distinct identities and can run together.
 
 ## Tailnet-private Tailscale Serve status
 
@@ -105,7 +107,7 @@ The workspace root advertises the extension through its `pi.extensions` metadata
 pi install npm:@wienerberliner/pi-postbox
 ```
 
-`pi install npm:@wienerberliner/pi-postbox` installs the Pi resources/extension resources plus bundled package-local autostart support. The extension connects in the background and does not block Pi startup if the preferred server is down; `ask_postbox` and `/postbox` can autostart the bundled server when needed.
+`pi install npm:@wienerberliner/pi-postbox` installs the Pi resources/extension resources plus bundled package-local autostart support. The extension connects in the background and does not block Pi startup if the preferred server is down; `write_question` and `/postbox` can autostart the bundled server when needed.
 
 Autostart is enabled by default. Set `PI_POSTBOX_AUTOSTART=off` to opt out, or set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the wait for a started server; the default timeout is 10 seconds (`10000` ms).
 
@@ -147,7 +149,7 @@ npm run build
 npm run smoke
 ```
 
-The credential-free smoke starts `node packages/server/dist/cli.js` with a temporary SQLite database and temporary `PI_POSTBOX_CONFIG_DIR`. It fetches the exact hashed JavaScript/CSS referenced by the served HTML plus the manifest, service worker, and icons; connects a fake extension/runtime over WebSocket; and verifies `/healthz`, state and Chat SSE, registration, authoritative handoff context, explicit activation without an automatic model prompt, streaming/tool output, Stop/resume, restart recovery, an authoritative proposal, generated-value selection, terminal cleanup, state/history correctness, and non-persistence of private Chat text and repository evidence.
+The credential-free smoke starts `node packages/server/dist/cli.js` with a temporary SQLite database and temporary `PI_POSTBOX_CONFIG_DIR`. It fetches the exact hashed JavaScript/CSS referenced by the served HTML plus the manifest, service worker, and icons; connects a fake extension/runtime over WebSocket; and verifies `/healthz`, state and Chat SSE, registration, exact-fork activation without an automatic model prompt, streaming/tool output, Stop/resume, restart recovery, an authoritative proposal, generated-value selection, legacy handoff-context removal, terminal cleanup, state/history correctness, and non-persistence of private Chat text and repository evidence.
 
 ## Manual test checklist
 
@@ -155,7 +157,7 @@ The credential-free smoke starts `node packages/server/dist/cli.js` with a tempo
 2. Open the UI from a laptop/phone over the Tailnet URL when Tailscale Serve is available.
 3. Start Pi with `PI_POSTBOX_URL` set to the same URL.
 4. Confirm the session card appears with machine/project/branch metadata.
-5. Ask a test question with `ask_postbox` and answer it from the browser.
+5. Create a test Question with `write_question({ action: "create", ... })` and answer it from the browser.
 6. Confirm `get_answer` returns only `questionId`, `answerId`, the selected option values in `answer`, and optional `note`.
 7. Confirm the decision appears in recent history.
 8. Test `/postbox-status` and `/postbox-answer` from the terminal as a fallback.

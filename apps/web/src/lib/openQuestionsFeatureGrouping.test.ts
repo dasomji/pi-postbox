@@ -3,8 +3,19 @@ import { describe, expect, it } from "vitest";
 import { groupOpenQuestions } from "./openQuestionsQueue";
 
 function request(requestId: string, sessionId: string, createdAt: string): AskRequestSnapshot {
-  return { requestId, sessionId, mode: "single", question: { prompt: requestId },
-    options: [{ value: "yes", label: "Yes" }], status: "pending", createdAt };
+  return {
+    requestId,
+    sessionId,
+    revision: 1,
+    ownerRevision: 1,
+    creator: { harness: "pi", ownerId: "test-owner" },
+    owner: { harness: "pi", ownerId: "test-owner" },
+    mode: "single",
+    question: { prompt: requestId },
+    options: [{ value: "yes", label: "Yes" }],
+    status: "pending",
+    createdAt
+  };
 }
 
 function session(sessionId: string, worktreeId: string, featureId: string): SessionSnapshot {

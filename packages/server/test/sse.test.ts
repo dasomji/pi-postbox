@@ -29,7 +29,16 @@ function registrationMessage(): ExtensionClientMessage {
     payload: {
       machine: { machineId: "machine-1", hostname: "workstation" },
       project: { projectId: "project-1", name: "pi-postbox", cwd: "/repo", branch: "main" },
-      session: { sessionId: "session-1", title: "Reactive answer loop", cwd: "/repo", branch: "main", semanticState: "working", owner: { harness: "pi", ownerId: "11111111-1111-4111-8111-111111111111" } }
+      session: {
+        sessionId: "session-1",
+        title: "Reactive answer loop",
+        cwd: "/repo",
+        branch: "main",
+        semanticState: "working",
+        owner: { harness: "pi", ownerId: "11111111-1111-4111-8111-111111111111" },
+        agentSessionPath: "/repo/session.jsonl",
+        leafId: "leaf-1"
+      }
     }
   };
 }
@@ -148,31 +157,24 @@ describe("browser state SSE reactivity", () => {
         requestId: "ask-proposal-sse",
         sessionId: "session-1",
         mode: "single",
-        question: { prompt: "Which rollout?" },
+        question: { prompt: "Which rollout?", ambiguity: "Test ambiguity." },
         options: [{ value: "ship", label: "Ship now" }],
-        context: {
-          codebaseContext: "Fastify state broadcaster with browser SSE clients.",
-          problemContext: "Append an answer option from Question Chat."
-        }
+
       }
     } satisfies ExtensionClientMessage));
     await created;
     await client.nextStateMatching((snapshot) => snapshot.requests.some((request) => request.requestId === "ask-proposal-sse"));
 
-    const activation = app.inject({
-      method: "POST",
-      url: "/api/requests/ask-proposal-sse/chat/context",
-      payload: { confirmed: true }
-    });
-    const command = await nextMessage(socket) as { type: string; requestId: string };
-    expect(command.type).toBe("chat.activate-context");
+    const activation = app.inject({ method: "POST", url: "/api/requests/ask-proposal-sse/chat" });
+    const activationCommand = await nextMessage(socket) as { type: string; requestId: string };
+    expect(activationCommand.type).toBe("chat.activate");
     socket.send(JSON.stringify({
       type: "chat.ready",
-      requestId: command.requestId,
+      requestId: activationCommand.requestId,
       payload: {
         requestId: "ask-proposal-sse",
         state: "ready",
-        forkKind: "context-only",
+        forkKind: "exact",
         model: { id: "test/model", source: "originating" },
         sequence: 0,
         messages: [],
@@ -237,15 +239,12 @@ describe("browser state SSE reactivity", () => {
           requestId: "ask-reactive",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Which client wins?" },
+          question: { prompt: "Which client wins?", ambiguity: "Test ambiguity." },
           options: [
             { value: "first", label: "First browser" },
             { value: "second", label: "Second browser" }
           ],
-          context: {
-            codebaseContext: "Fastify state broadcaster with browser SSE clients.",
-            problemContext: "Broadcast one pending decision consistently to connected clients."
-          }
+
         }
       } satisfies ExtensionClientMessage)
     );

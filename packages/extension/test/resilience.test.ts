@@ -13,12 +13,11 @@ const askPayload: AskCreatePayload = {
   requestId: "ask-replay",
   sessionId: "session-1",
   mode: "single",
-  question: { prompt: "Reconnect?" },
-  options: [{ value: "yes", label: "Yes" }],
-  context: {
-    codebaseContext: "Pi extension WebSocket client with reconnect support.",
-    problemContext: "Keep a pending decision stable across reconnects."
-  }
+  question: {
+    prompt: "Reconnect?",
+    ambiguity: "Whether a pending decision remains stable across reconnects."
+  },
+  options: [{ value: "yes", label: "Yes" }]
 };
 
 const LOCAL_POSTBOX_URL = "http://127.0.0.1:32187/";
@@ -317,7 +316,14 @@ describe("PostboxClient pending ask resilience", () => {
     socket.serverMessage({
       type: "ask.created",
       requestId: command.requestId,
-      payload: { requestId: "ask-survives-tool-abort", questionId: "ask-survives-tool-abort", revision: 1, status: "pending" }
+      payload: {
+        requestId: "ask-survives-tool-abort",
+        questionId: "ask-survives-tool-abort",
+        revision: 1,
+        ownerRevision: 1,
+        status: "pending",
+        disposition: "created"
+      }
     });
     await expect(receipt).resolves.toMatchObject({ questionId: "ask-survives-tool-abort", status: "pending" });
 
@@ -354,7 +360,13 @@ describe("PostboxClient pending ask resilience", () => {
     second.serverMessage({ type: "ask.resolved", requestId: replay.requestId, payload: {
       status: "answered", requestId: "ask-receipt", selectedValues: ["yes"], resolvedAt: "2026-06-03T00:00:01.000Z"
     } });
-    await expect(receipt).resolves.toEqual({ questionId: "ask-receipt", revision: 1, status: "pending" });
+    await expect(receipt).resolves.toEqual({
+      questionId: "ask-receipt",
+      revision: 1,
+      ownerRevision: 1,
+      status: "pending",
+      disposition: "idempotent"
+    });
     client.stop();
   });
 

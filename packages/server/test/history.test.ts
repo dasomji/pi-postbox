@@ -90,24 +90,16 @@ function askCreateMessage(requestId: string, prompt = `Question ${requestId}`, e
       mode: "single",
       question: {
         prompt,
-        context: "A focused decision needs an audit trail.",
-        relevance: "History helps understand prior choices.",
-        decisionImpact: "This affects later implementation slices."
+        ambiguity: "Which implementation direction should the audit trail preserve?"
       },
       options: [
         {
           value: "ship",
           label: "Ship it",
-          meaning: "Proceed with the implementation.",
-          context: "The user accepts this direction."
+          impact: "Proceed with the implementation."
         },
         { value: "hold", label: "Hold" }
       ],
-      context: {
-        codebaseContext: "Fastify + SQLite request storage already persists rich ask context.",
-        problemContext: "The user needs decision audit records without full chat transcripts.",
-        additionalInfo: [{ kind: "code", title: "No transcript", content: "history stores ask payloads, not chats", language: "text" }]
-      },
       forkReference: { agentSessionId: "agent-history", leafId: "leaf-history", cwd: "/worktrees/history" },
       expiresAt
     }
@@ -192,6 +184,7 @@ describe("question history", () => {
         question: { prompt: "Legacy pending question" },
         forkReference: { leafId: "legacy-leaf" }
       });
+      expect(pending?.question.ambiguity).toBeUndefined();
       expect(pending?.context).toBeUndefined();
       expect(state.requests.some((request) => request.requestId === "legacy-answered")).toBe(false);
 
@@ -202,13 +195,14 @@ describe("question history", () => {
         result: { status: "answered", selectedValues: ["ship"] },
         forkReference: { agentSessionPath: "/worktrees/history/.pi/session.jsonl", leafId: "legacy-leaf" }
       });
+      expect(answered?.question.ambiguity).toBeUndefined();
       expect(answered?.context).toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it("returns terminal requests with answer, timestamps, session/project/machine metadata, rich context, and persists across restart", async () => {
+  it("returns terminal requests with answer, timestamps, session/project/machine metadata, and persists across restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-postbox-history-db-"));
     const databasePath = join(dir, "postbox.sqlite");
 
@@ -247,12 +241,7 @@ describe("question history", () => {
             note: "Proceed"
           },
           question: {
-            relevance: "History helps understand prior choices.",
-            decisionImpact: "This affects later implementation slices."
-          },
-          context: {
-            codebaseContext: "Fastify + SQLite request storage already persists rich ask context.",
-            additionalInfo: [{ kind: "code", title: "No transcript" }]
+            ambiguity: "Which implementation direction should the audit trail preserve?"
           },
           forkReference: { agentSessionId: "agent-history", leafId: "leaf-history" }
         },
@@ -270,7 +259,7 @@ describe("question history", () => {
         }
       });
       expect(history.history[0]?.request.options).toEqual(
-        expect.arrayContaining([expect.objectContaining({ value: "ship", meaning: "Proceed with the implementation." })])
+        expect.arrayContaining([expect.objectContaining({ value: "ship", impact: "Proceed with the implementation." })])
       );
       expect(history.history[0]?.request.createdAt).toBe(new Date(1_000).toISOString());
       expect(history.history[0]?.request.resolvedAt).toBe(new Date(2_000).toISOString());

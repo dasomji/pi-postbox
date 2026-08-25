@@ -1,10 +1,14 @@
 # Pi Postbox protocol overview
 
-All process-boundary payloads are defined in `@pi-postbox/protocol` and validated with Zod. Clients should ignore unknown fields and preserve stable ids where provided. Schemas intentionally allow generous interviewer context, but still enforce finite string, option, icon, HTTP body, and WebSocket frame limits so a single ask cannot grow without bound.
+All process-boundary payloads are defined in `@pi-postbox/protocol` and validated with Zod. Clients should ignore unknown fields and preserve stable ids where provided. Schemas enforce finite Question, option, icon, HTTP body, and WebSocket frame limits so a single ask cannot grow without bound.
 
 ## Legacy expiry migration
 
 The owner-contract migration preserves expiry timestamps from databases written before expiry provenance was recorded. Those released rows cannot distinguish an explicit 12-hour expiry from the former automatic 12-hour default, so guessing from timestamp arithmetic would destroy user intent. Postbox clears an expiry only when the legacy writer recorded `manufactured_default`; unknown values are retained. The migration ledger records this conservative rule and makes repeated or partially completed migrations deterministic.
+
+## Legacy Question context removal
+
+Current protocol payloads contain no top-level handoff `context`. Database startup clears legacy `context_json` values from `ask_requests`, `questions`, and `question_revisions` and records `remove-question-context-v1` in the migration ledger. The compatibility columns remain in SQLite so older database layouts can be opened safely, but current code never writes or projects them.
 
 ## HTTP endpoints
 
@@ -17,8 +21,7 @@ The owner-contract migration preserves expiry timestamps from databases written 
 | `GET /api/requests` | Request list, optionally filtered with `?status=pending|answered|cancelled|expired|superseded`. |
 | `POST /api/requests/:requestId/answer` | Browser/user answer action. First pending answer wins. |
 | `POST /api/requests/:requestId/cancel` | Browser/user cancel action. |
-| `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned exact fork for Question Chat. Source-path/leaf failures disclose typed context-only interviewer availability. |
-| `POST /api/requests/:requestId/chat/context` | Explicitly start or reattach to an eligible context-only interviewer. Requires JSON `{ "confirmed": true }`; it is never called automatically. |
+| `POST /api/requests/:requestId/chat` | Activate or reattach to the extension-owned exact fork for Question Chat. Missing source-path/leaf coordinates return a typed activation failure. |
 | `GET /api/requests/:requestId/chat` | Fetch the current normalized Question Chat snapshot. |
 | `POST /api/requests/:requestId/chat/messages` | Start an idle Question Chat turn or steer the active turn, using a stable browser command id. |
 | `POST /api/requests/:requestId/chat/stop` | Abort only the active Question Chat turn, using a stable browser command id. |
@@ -32,7 +35,7 @@ Dynamic `/api/*` responses declare `Cache-Control: no-store`. Eligible non-strea
 
 ## Question Chat browser and relay protocol
 
-The browser activates an exact fork with `POST /api/requests/:requestId/chat`, or makes a separate confirmed `POST /api/requests/:requestId/chat/context` request for the context-only interviewer fallback. Activation and `GET /api/requests/:requestId/chat` return the initial normalized snapshot. The browser then subscribes to `GET /api/requests/:requestId/chat/events` for incremental lifecycle, message, tool, and online/offline transport events. The stream begins with a connection comment; it does not replay a private transcript, so clients resynchronize from a fresh snapshot if a runtime sequence has a gap.
+The browser activates an exact fork with `POST /api/requests/:requestId/chat`. Activation and `GET /api/requests/:requestId/chat` return the initial normalized snapshot. The browser then subscribes to `GET /api/requests/:requestId/chat/events` for incremental lifecycle, message, tool, and online/offline transport events. The stream begins with a connection comment; it does not replay a private transcript, so clients resynchronize from a fresh snapshot if a runtime sequence has a gap.
 
 Messages use `POST /api/requests/:requestId/chat/messages` with `{ "clientCommandId": "...", "message": "..." }`; Stop uses `POST /api/requests/:requestId/chat/stop` with the same bounded `clientCommandId` shape. The id makes retries idempotent. An accepted send returns `mode: "turn" | "steer"`; commands are rejected while the extension is offline rather than queued. This is a coordinated pre-release wire rename: server, extension, and browser ship together, and the former mode term is not accepted.
 
@@ -40,7 +43,7 @@ Every correlated server-to-extension request/response command has a relay `reque
 
 | Server command | Extension result |
 | --- | --- |
-| `chat.activate` or `chat.activate-context` | `chat.ready` or `chat.error` |
+| `chat.activate` | `chat.ready` or `chat.error` |
 | `chat.snapshot` | `chat.snapshot` or `chat.error` |
 | `chat.send` | `chat.send.accepted` or `chat.error` |
 | `chat.stop` | `chat.stop.accepted` or `chat.error` |
@@ -49,15 +52,17 @@ Every correlated server-to-extension request/response command has a relay `reque
 
 The extension emits sequenced visible `chat.event` frames independently of command acknowledgements. Terminal resolution or authoritative owner reconciliation sends `chat.cleanup`. On reconnect, the extension offers only owner metadata with `chat.recover.offer`; the server answers `chat.reconcile` with a correlated recover/delete disposition. Private snapshots transferred during recovery remain transient.
 
-Public Question Chat failures use the structured error codes `forbidden_origin`, `rate_limited`, `duplicate_command`, `wrong_owner`, `request_not_pending`, `extension_offline`, and `command_timeout` (along with the source/context/runtime codes defined by `QuestionChatAvailabilityCodeSchema`). HTTP status distinguishes origin, throttling, missing/terminal requests, and unavailable extension/timeout cases; the JSON body remains `{ "status": "unavailable", "error": { "code": "...", "message": "..." } }`, with `retryAfterMs` or `contextFallback` when applicable.
+Public Question Chat failures use the structured error codes `forbidden_origin`, `rate_limited`, `duplicate_command`, `wrong_owner`, `request_not_pending`, `extension_offline`, and `command_timeout` (along with the source/runtime codes defined by `QuestionChatAvailabilityCodeSchema`). HTTP status distinguishes origin, throttling, missing/terminal requests, and unavailable extension/timeout cases; the JSON body remains `{ "status": "unavailable", "error": { "code": "...", "message": "..." } }`, with `retryAfterMs` when applicable.
 
-Context-only commands are created only from the stored Question, all options, required non-blank `codebaseContext` and `problemContext`, bounded optional handoff details, owning session cwd, and optional recorded model. Browser-supplied interviewer context is ignored. A successful proposed answer is appended as an option with authoritative `provenance: "chat"`; proposal does not select or resolve the Question.
+A successful proposed answer is appended as an option with authoritative `provenance: "chat"`; proposal does not select or resolve the Question.
 
 ## Health profile identity
 
 `/healthz` always reports separate application `version`, `protocolVersion`, `profile`, and `buildId` fields. The CLI application version comes from the server package manifest. Its default build id combines that version with a deterministic SHA-256 fingerprint of the loaded runtime directory, so two builds from the same checkout do not share an identity merely because their path is unchanged. A listening server also reports its `instance`, containing the instance id and normalized loopback URL. Production uses the literal `production` profile; trusted source checkouts use `development:<checkout-id>`.
 
 The single profile-local `active-local/server.json` record requires an exact identity match: profile, instance id, URL, protocol version, and build id must match `/healthz` before the extension trusts the target. Missing or mismatched identity is a health mismatch. This keeps stale or unsafe metadata from redirecting clients to another server or profile. Any incompatible schema change increments `protocolVersion`; package version and build fingerprint identify the particular application artifact independently.
+
+Pi `/reload` may retain a native ESM shared-protocol dependency even when it reloads extension source. After changing or upgrading shared protocol code, the operator must fully restart Pi. When version-neutral health-envelope checks prove that profile metadata and `/healthz` identify the exact live profile owner but the loaded protocol versions differ, the extension reports `restart-required` recovery, suppresses package-local autostart, and does not trust newer message schemas from the stale runtime.
 
 ## Extension WebSocket
 
@@ -84,26 +89,18 @@ Server messages:
 
 - `registered` — registration accepted.
 - `ack` — heartbeat/session update/shutdown accepted.
-- `ask.created` — pending Postbox Question exists.
+- `ask.created` — a pending Postbox Question exists. Its payload includes the `questionId`, current `revision`, `status: "pending"`, and `disposition: "created" | "idempotent"`.
 - `ask.resolved` — ask reached a terminal `answered`, `cancelled`, `expired`, or `unavailable` result.
 - `error` — validation or transition error.
 - `chat.activate` — activate or reattach to an exact fork at the recorded source leaf.
-- `chat.activate-context` — distinctly activate or reattach to a fresh private context-only interviewer from authoritative persisted Question, option, and handoff context. It carries cwd and an optional recorded model, but never a source path, leaf, or transcript.
-- `chat.snapshot`, `chat.send`, `chat.stop`, and `chat.cleanup` — owner-scoped commands shared by exact and context-only private Question Chat runtimes.
+- `chat.snapshot`, `chat.send`, `chat.stop`, and `chat.cleanup` — owner-scoped commands for the exact private Question Chat runtime.
 - `chat.reconcile` — the server-authoritative `recover`/`delete` disposition for one offered manifest. Recovery requires the registered socket, pending request owner, request id, and fork kind to agree; missing, terminal, and wrong-owner manifests are deleted.
 
-## Question Chat activation and context-only interviewer fallback
+## Question Chat exact-fork activation
 
-Question Chat snapshots identify their runtime with `forkKind: "exact" | "context-only"`. A ready response whose kind does not match the requested activation is rejected. Repeated activation of the same kind reattaches idempotently; an activation of the other kind cannot replace a running runtime.
+Question Chat snapshots identify their runtime with `forkKind: "exact"`. A ready response with any other runtime kind is rejected. Repeated activation reattaches idempotently to the same private exact fork.
 
-Exact activation remains the primary path. When it fails with `source_path_missing` or `source_leaf_missing`, the HTTP error includes a finite `contextFallback` object:
-
-- `{ "status": "available" }` means both persisted `codebaseContext` and `problemContext` are present.
-- `{ "status": "unavailable", "reason": "missing_codebase_context" | "missing_problem_context" | "missing_codebase_and_problem_context" }` gives the precise legacy-data reason.
-
-The server never converts exact-fork activation into context-only interviewer activation. The browser must separately disclose that the context-only interviewer is a fresh private runtime based on persisted handoff context, obtain confirmation, and then send `{ "confirmed": true }` to the context endpoint. An explicit ineligible start returns `context_fallback_unavailable` with the typed unavailable reason. The server builds the extension command from the stored authoritative Postbox Question, every option, required handoff context, bounded optional `additionalInfo`, session cwd, and `forkReference.model` when present; browser-provided context and originating Pi Session history are not accepted.
-
-Historical Questions that lack either required context field remain readable and may still use exact activation while their recorded source exists. They cannot use context-only fallback.
+Activation requires the recorded source session path and leaf. Missing coordinates return `source_path_missing` or `source_leaf_missing`; Postbox does not reconstruct a conversation from stored Question fields and does not offer a degraded fallback. Historical Questions remain readable and answerable even when their source transcript is unavailable, but Question Chat cannot start for them.
 
 ## Question Chat turn lifecycle
 
@@ -111,34 +108,47 @@ Question Chat snapshots and events use `ready`, `generating`, `stopping`, `stopp
 
 Stop aborts the active SDK operation without disposing the private runtime. Visible partial assistant output remains in the transcript with a `stopped` marker, the lifecycle passes through `stopping` and `stopped`, and the runtime returns to `ready`. A retry-exhausted SDK error similarly preserves the last visible partial with an `interrupted` marker before returning to `ready`; retryable attempts are not marked interrupted prematurely. Replayed send and Stop commands are idempotent by their bounded `clientCommandId`.
 
-The private exact fork or context-only interviewer remains the only Question Chat transcript. A versioned `0600` recovery manifest in a hash-keyed `0700` directory records the owning session, fork kind, private session path, transcript boundary, model metadata, and durable sequence high-water mark. `/reload` aborts/disposes the old SDK runtime but preserves this fork; replacement, quit, terminal resolution, invalid metadata, and authoritative reconciliation deletion remove it. Runtime sequence is persisted before an event is emitted so a crash cannot reuse a number.
+The private exact fork remains the only Question Chat transcript. A versioned `0600` recovery manifest in a hash-keyed `0700` directory records the owning session, exact fork kind, private session path, transcript boundary, model metadata, and durable sequence high-water mark. `/reload` aborts/disposes the old SDK runtime but preserves this fork; replacement, quit, terminal resolution, invalid metadata, and authoritative reconciliation deletion remove it. Runtime sequence is persisted before an event is emitted so a crash cannot reuse a number.
 
 Question Chat enables exactly four custom repository-evidence tools: literal, bounded equivalents of read, grep, find, and list. Pi builtin tools, shell, mutation tools, and extension-provided tools are excluded. Each activation and recovery rediscovers the containing Git worktree for the recorded cwd, or uses the cwd subtree outside Git. Paths are schema-validated, normalized, containment-checked component by component, screened for ignored and secret-like names, and opened/traversed with finite byte, match, entry, depth, operation-time, and browser-output limits. Directory symlinks are never traversed. Tool activity is normalized into bounded running/success/error/stale rows; completed rows reconstruct from the private fork after reload, while a crash-interrupted running row becomes stale.
 
 Browser snapshots are extension-backed. A fresh browser sees `extension_offline` when the extension cannot supply one. An already-open browser preserves its rendered snapshot during an outage, marks it offline/stale, disables commands, and requires Retry. Runtime events are monotonic; a gap causes a fresh snapshot resynchronization. Transient transport frames have no runtime sequence and are not transcript data. Expandable tool details render as bounded plain text, never raw HTML. The server never queues Question Chat commands while the extension is offline and never stores Question Chat snapshots, messages, or tool activity in SQLite.
 
-## Ask lifecycle
+## Creation and Answer lifecycle
 
-1. Pi calls `ask_postbox`.
+1. Pi calls `write_question` with `action: "create"`.
 2. Extension sends `ask.create` with a stable `requestId`.
 3. Server stores a pending request, returns a persistence receipt, and broadcasts state over SSE.
-4. `ask_postbox` returns the receipt; Pi continues independent work without polling.
+4. `write_question` returns a reusable current Question handle; Pi continues independent work without polling.
 5. Browser or local terminal fallback submits an answer/cancel.
 6. Server stores a terminal result in History, broadcasts the pending-only live state, and sends the owning extension a lightweight availability notification.
 7. After notification—or after an explicit `wait_for_postbox` wakes—Pi calls the bounded `get_answer` read.
 
-Replayed `ask.create` messages with the same `requestId` are idempotent. If the request is still pending, the server returns `ask.created`; if it is already terminal, the server returns `ask.resolved`. Once persistence is acknowledged, aborting the originating Pi tool call or compacting its turn does not cancel the durable Question.
+Replayed `ask.create` messages with the same `requestId` are idempotent. The server always returns `ask.created` with current control state; its single-Question receipt reports `disposition: "created"` for first persistence and `disposition: "idempotent"` for a replay. If the Question is already terminal, the server then also returns `ask.resolved`. Once persistence is acknowledged, aborting the originating Pi tool call or compacting its turn does not cancel the durable Question.
+
+```json
+{
+  "action": "create",
+  "questionId": "ask_…",
+  "revision": 2,
+  "ownerRevision": 1,
+  "status": "pending",
+  "disposition": "idempotent"
+}
+```
 
 ### Ordered batch creation and receipts
 
-Batch input requires one shared `defaults.context` with non-blank `codebaseContext` and `problemContext`. Each item inherits that complete context unless it supplies its own complete `context` override. The server expands defaults before item validation and persistence; persisted Questions never retain a reference to mutable batch defaults. Replay remains keyed by each item's stable `requestId`. Batch mode rejects single-Question fields at the top level, including `requestId`, `timeoutMs`, and `expiresAt`; Postbox exposes no atomic batch-level idempotency key.
+Batch input is an ordered list of complete Question drafts. Each item includes its own `question`, non-blank `ambiguity`, options, and optional stable `requestId`; an item may refer to an earlier item with `parentLocalRef`. There is no batch `defaults` object. Replay remains keyed by each item's stable `requestId`. Batch mode rejects single-Question fields at the top level, including `requestId`, `timeoutMs`, and internal `expiresAt`; Postbox exposes no atomic batch-level idempotency key.
 
-An `ask_postbox` batch receipt preserves input order. Every accepted item reports `localRef`, persisted `questionId`, current `revision`, and `disposition: "created" | "idempotent"`; rejected items report their `localRef` and typed reason. The top-level `status` remains `created`, `partial`, or `rejected`.
+The model-facing single and per-item schemas do not expose expiry controls. Absolute `expiresAt` and `forkReference` remain accepted by internal protocol/embedding interfaces for compatibility and provenance, but are not model-authored tool fields.
 
-The tool's text result is a compact JSON projection so generated IDs are immediately reusable without a discovery query:
+A `write_question` batch receipt preserves input order. Every accepted item reports `localRef`, persisted `questionId`, current `revision`, current `ownerRevision`, current lifecycle `status`, and `disposition: "created" | "idempotent"`; rejected items report their `localRef` and typed reason. The model-facing top-level `batchStatus` remains `created`, `partial`, or `rejected`.
 
-```text
-Postbox batch created: [{"localRef":"root","questionId":"ask_…","revision":1,"disposition":"created"}]
+The tool's text and details results use the same compact JSON projection so generated IDs are immediately reusable without a discovery query:
+
+```json
+{"action":"create_batch","batchStatus":"created","items":[{"localRef":"root","questionId":"ask_…","revision":1,"ownerRevision":1,"status":"pending","disposition":"created"}]}
 ```
 
 ### Human Answers and lifecycle-only resolutions
@@ -172,27 +182,42 @@ An unresolved Question produces the normal compact branch `{ "type": "pending", 
 
 Cancelled and expired results may additionally include `note`. Superseded results require `replacementQuestionId`. Every lifecycle result includes `resolvedAt`.
 
-A recovery read authorized for an offline owner records the actual recovery agent as the first reader without transferring ownership. Exactly one first reader receives `alreadyRead: false`; subsequent owner or recovery reads receive `alreadyRead: true` and retain the original `firstRead.reader`.
+A recovery read authorized for an offline owner records the actual recovery agent as the first reader without transferring ownership. Exactly one first reader receives `alreadyRead: false`; subsequent owner or recovery reads receive `alreadyRead: true` and retain the original `firstRead.reader`. Recovery reads default to the same compact Answer or lifecycle shape described above plus `alreadyRead` and `firstRead`; pending output remains the bounded pending branch. Callers must explicitly request `view: "full"` to receive the complete Question, Answer, and read metadata.
 
-`list_question_status` defaults to actionable facts only: pending Questions plus unread human Answers. `status` and `readState` are conjunctive when both are supplied. With no explicit status/read filter, `includeTerminal: true` broadens the default to every lifecycle state; explicit filters remain authoritative. Compact status results never include Question text, options, context, notes, or Answer content.
+`list_question_status` defaults to actionable facts only: pending Questions plus unread human Answers. `status` and `readState` are conjunctive when both are supplied. With no explicit status/read filter, `includeTerminal: true` broadens the default to every lifecycle state; explicit filters remain authoritative. Compact status results never include Question text, options, notes, or Answer content. One call returns `{ statuses, nextCursor? }` with at most 50 status records.
+
+### Bulk-read limits and pagination
+
+Every model-facing collection read is bounded at both the protocol schema and server implementation:
+
+- `list_questions`: 25 records by default, 100 maximum, returning `{ questions, nextCursor? }`;
+- `get_questions`: 20 explicit Question IDs maximum;
+- `list_question_status`: 50 records maximum per page;
+- `get_question_history`: 50 combined revision/event records maximum per page;
+- `list_postbox_owners`: 50 records by default, 100 maximum; and
+- `get_postbox_owner_status`: 20 explicit owner identities maximum.
+
+`nextCursor` values are opaque compact base64url tokens. They are stateless: each token carries a short query digest and the keyset or frozen-snapshot boundary needed for continuation, so the server keeps no cursor lookup table and restart does not invalidate them. A cursor is valid only for the same semantic query (scope, filters, owner, view, or Question as applicable); malformed and cross-query tokens are rejected. Callers copy a cursor unchanged into the next request and must not parse or construct it. `list_questions` also accepts the prior verbose stateless cursor format during the compatibility transition but emits only compact cursors.
 
 ### Compact and forensic query views
 
-`get_questions` defaults to `view: "control"`. A control record contains `questionId`, `revision`, `ownerRevision`, `status`, `owner`, `creator`, optional `parentQuestionId`, and `updatedAt`. It deliberately omits prompt, options, handoff context, expiry, resolution details, and Answer content. Callers that need the complete current decision picture must explicitly request `view: "full"`; missing IDs are omitted and input order is preserved for records that exist.
+`get_questions` defaults to `view: "control"` and accepts at most 20 IDs per call. A control record contains `questionId`, `revision`, `ownerRevision`, `status`, `owner`, `creator`, optional `parentQuestionId`, and `updatedAt`. It deliberately omits prompt, options, expiry, resolution details, and Answer content. Callers that need the complete current decision picture must explicitly request `view: "full"`; missing IDs are omitted and input order is preserved for records that exist.
 
 A full record contains current Question content plus a non-consuming `resolution`. Human Answer evidence has `kind: "answer"`, `answerId`, `questionRevision`, selected machine values in `answer`, optional `note`, `resolvedAt`, and `firstRead` (a reader/timestamp receipt or `null` when unread). Lifecycle evidence has `kind: "lifecycle"`, terminal `status`, optional `note`, `resolvedAt`, and the replacement Question ID when superseded. It never exposes legacy rationale data. Full records do not duplicate immutable revision/event history; compose this call with `get_question_history` when historical revisions matter.
 
-`get_question_history` defaults to `view: "events"`. It returns:
+`get_question_history` defaults to `view: "events"`. Each response is a bounded page with `questionId`, `view`, `revisions`, `events`, optional `initial`, and optional `nextCursor`. In compact view the logical record order is:
 
-- `initial`: the complete revision-1 snapshot;
-- `revisions`: subsequent content revisions containing metadata plus only the complete sections replaced at that revision (`question`, `options`, and/or `context`); and
+- `initial`: the complete revision-1 snapshot, present only on the page containing that first logical record;
+- `revisions`: subsequent content revisions containing metadata plus only the complete sections replaced at that revision (`question` and/or `options`); then
 - `events`: non-content hierarchy, lifecycle, and ownership events.
 
-These revisions are section replacements, not JSON Patch operations. `view: "full"` returns every stored immutable revision snapshot plus all events, including revision events. Compact history is derived at read time; the persisted forensic record is unchanged.
+These revisions are section replacements, not JSON Patch operations. `view: "full"` pages every stored immutable revision snapshot followed by all events, including revision events. The first call freezes the highest revision and event IDs into the stateless continuation cursor, so records appended later do not shift or enter that traversal. Compact history is derived at read time; the persisted forensic record is unchanged.
 
 ### Scoped owner discovery
 
-`list_postbox_owners` derives authorization and grouping from the registered caller session. Its default `feature` scope may be broadened only to the caller's `worktree` or `repository`; arbitrary scope IDs and global discovery are not accepted. It returns at most 100 ordered entries, each exactly `owner`, coarse `presence`, `activeQuestionCount`, and `unreadAnswerCount`. Membership/presence come from sessions in the derived scope, while counts include Questions in that same scope. The caller may appear in the result.
+`list_postbox_owners` derives authorization and grouping from the registered caller session. Its default `feature` scope may be broadened only to the caller's `worktree` or `repository`; arbitrary scope IDs and global discovery are not accepted. It returns `{ owners, nextCursor? }` with 50 entries by default and at most 100, each exactly `owner`, coarse `presence`, `activeQuestionCount`, and `unreadAnswerCount`. Offline historical owners with both counts zero are omitted by default; `includeInactive: true` includes them for audit workflows. Membership/presence come from sessions in the derived scope, while counts include Questions in that same scope. The caller may appear when present or actionable.
+
+The `list_questions` and `list_question_status` model-facing exact-owner filter is a strict object requiring non-empty `harness` and `ownerId` strings and rejecting additional properties. Callers normally omit this filter and use the scope contract; the server independently applies the same strict identity validation at the protocol boundary.
 
 The result intentionally excludes semantic state, heartbeat timestamps, titles, paths, prompts, context, and a transfer-eligibility claim. A caller must still perform the normal revision/owner compare-and-swap when transferring a Question. `get_postbox_owner_status` remains the exact-owner lookup when the owner identities are already known.
 
@@ -200,10 +225,12 @@ The result intentionally excludes semantic state, heartbeat timestamps, titles, 
 
 Question details expose two independent optimistic-concurrency tokens:
 
-- `revision` changes when Question content or hierarchy changes, and for lifecycle transitions made through `update_question`.
+- `revision` changes when Question content or hierarchy changes, and for lifecycle transitions made through `write_question`.
 - `ownerRevision` changes only when ownership is transferred or taken over.
 
-Every `update_question` action supplies both `expectedRevision` and `expectedOwnerRevision` from a fresh complete detail read. The server rejects a mismatch before applying the update. Transfer and takeover leave `revision` unchanged, increment `ownerRevision`, and record both versions on the immutable `owner_changed` history event. This invalidates snapshots captured before an ownership change without treating ownership as content.
+Every existing-Question `write_question` action supplies both `expectedRevision` and `expectedOwnerRevision` from a fresh complete detail read. The server rejects a mismatch before applying the update. Transfer and takeover leave `revision` unchanged, increment `ownerRevision`, and record both versions on the immutable `owner_changed` history event. This invalidates snapshots captured before an ownership change without treating ownership as content.
+
+The model-facing tool schema uses one compact flat object with an explicit action enum and documents which fields each action requires. Creation and update operations share only this model-facing seam: the extension dispatches to the existing strict create or update WebSocket command. Missing action-specific fields, fields from another action, and unknown fields are rejected before execution.
 
 ## Status and browser command boundaries
 
@@ -211,16 +238,11 @@ The `/postbox-status` user command and read-only `postbox_status` tool expose pr
 
 The `/postbox` user command opens the active dashboard in the user's browser, using recovery/autostart if needed. Browser-opening is user-only/manual behavior and is not exposed through an LLM tool or agent side effect.
 
-## Rich context and result hygiene
+## Structured Question and result hygiene
 
-Every persisted new Question contains a `context` object with non-blank `codebaseContext` and `problemContext`. A single ask supplies it directly; a batch supplies required `defaults.context` and may replace it completely on an individual item. It may also include:
+Every new Question contains a prompt, a required non-blank ambiguity that states what uncertainty it aims to resolve, and one or more options. Options may include bounded description and impact text. At startup, persisted legacy option `meaning` fields migrate to `impact`; an already present `impact` remains authoritative, and legacy per-option context is removed. Internal provenance may also record the originating agent session path/id, leaf id, cwd, and model for exact-fork Question Chat.
 
-- question context, relevance, and decision impact
-- per-option meaning/context
-- additional text/code/diagram/link items
-- fork references such as agent session id/path and leaf id
-
-The dashboard APIs expose this context for display/history/interviewer use. `ask_postbox` returns only a durable persistence receipt. A later ordinary `get_answer` returns exactly the Question ID, Answer ID, selected machine option values, and optional user note.
+There is no top-level handoff context or per-option context in creation, current snapshots, or immutable history. `write_question` returns a compact current handle or update receipt. A later ordinary `get_answer` returns exactly the Question ID, Answer ID, selected machine option values, and optional user note.
 
 ## Semantic and presence state
 
@@ -239,7 +261,7 @@ Presence is derived by the server from WebSocket connection and heartbeat timing
 - `stale`
 - `offline`
 
-Persisting with `ask_postbox` does not block the agent turn. Postbox pushes a lightweight Answer-available notification, so agents must not poll `get_answer`, `list_question_status`, or `list_questions`. After independent work is exhausted, an agent whose sole blocker is a human Postbox decision may call `wait_for_postbox` once. Only that explicit wait publishes `waiting_for_postbox`, remains idle until an actionable event, and retains adapter capacity. Observed local `ask_user` calls also mark blocked. Herdr-compatible blocked events are best-effort; Postbox does not depend on Herdr.
+Persisting through a `write_question` create action does not block the agent turn. Postbox pushes a lightweight Answer-available notification, so agents must not poll `get_answer`, `list_question_status`, or `list_questions`. After independent work is exhausted, an agent whose sole blocker is a human Postbox decision may call `wait_for_postbox` once. Only that explicit wait publishes `waiting_for_postbox`, remains idle until an actionable event, and retains adapter capacity. Observed local `ask_user` calls also mark blocked. Herdr-compatible blocked events are best-effort; Postbox does not depend on Herdr.
 
 ## Profile-scoped client routing compatibility
 
@@ -249,14 +271,14 @@ Effective env-over-config precedence is preserved. `PI_POSTBOX_URL` is an intent
 
 Running sessions may reconnect only within their resolved profile. Unresolved sent asks and local fallback resolutions pin their origin endpoint until resolved, flushed, expired, or released by a bounded target-affinity deadline; while pinned, clients may report deferred switching. A replacement server process at that same profile and URL is a restart, not a retarget: reconnect refreshes its exact instance/build identity. Another profile is never a retarget candidate.
 
-Package-local autostart is a client recovery behavior for `ask_postbox` and the user-only `/postbox` command. It can be disabled with `PI_POSTBOX_AUTOSTART=off`; `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` sets the wait time and defaults to 10 seconds (`10000` ms).
+Package-local autostart is a client recovery behavior for `write_question` and the user-only `/postbox` command. It can be disabled with `PI_POSTBOX_AUTOSTART=off`; `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` sets the wait time and defaults to 10 seconds (`10000` ms).
 
 ## Compatibility notes
 
 - Treat `requestId`, `sessionId`, `machineId`, and `projectId` as stable protocol identifiers.
 - Handle unknown fields gracefully.
 - Use `/healthz` to confirm service and protocol version before relying on newer fields.
-- `contextFallback`, `forkKind: "context-only"`, `POST .../chat/context`, and `chat.activate-context` are additive Question Chat capabilities that require a server and extension version that both understand them. Older Questions without complete persisted context deliberately report fallback unavailable; they are not migrated by inventing context.
-- Version 0.1.6 requires matching extension/server/protocol packages while retaining protocol compatibility version 0.1.5. It makes single and batch `ask_postbox` shapes mutually strict, keeps batch idempotency per item, preserves acknowledged Questions across later tool-turn aborts, refreshes identity after same-endpoint server restarts, and advances the dashboard to the next open Question after a resolution. Callers needing complete details/history must request `view: "full"` explicitly.
+- Question Chat is exact-fork only. `forkKind` accepts only `"exact"`; context-only activation endpoints and relay commands are not part of the current protocol.
+- Package version 0.2.2 retains protocol compatibility version 0.1.8 and changes release packaging metadata only. Package version 0.2.1 introduced protocol compatibility version 0.1.8, adds server-enforced bulk-read limits and paged status/history/owner envelopes, emits compact stateless cursors, and omits inactive owners by default. Matching extension/server/protocol builds are required. Package version 0.2.0 used protocol 0.1.7, merged Question creation and updates into the model-facing `write_question` tool, and extended create receipts with current content/ownership revisions and lifecycle status. Package version 0.1.9 used protocol 0.1.6 and required ambiguity on new Questions, simplified model-facing parent/expiry fields, renamed legacy option `meaning` to `impact`, removed top-level handoff context and per-option context, removed reconstructed Question Chat, and used exact-fork Chat only. Package version 0.1.8 added single-Question receipt disposition and suppressed autostart when exact live-profile identity proved that `/reload` retained an incompatible protocol dependency; a full Pi restart was then required. Package version 0.1.7 added compact recovery views, explicit exact-owner schemas, and a compact model-facing update schema.
 - V1 has no app-level authentication; restrict network reachability with Tailscale/lizardtail or an external auth proxy.
 - State-changing HTTP actions and extension WebSockets reject cross-origin browser requests unless the `Origin` host matches the Postbox service host. Node/Pi extension clients normally omit `Origin` and are accepted if they can reach the service.

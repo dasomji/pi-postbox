@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,18 +17,41 @@ const profileId = `development:${checkoutId}`;
 const stateHome = process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
 const profileStateDir = process.env.PI_POSTBOX_PROFILE_STATE_DIR ?? join(stateHome, "pi-postbox", "dev", checkoutId);
 const databasePath = join(profileStateDir, "postbox.sqlite");
+const portsPath = join(profileStateDir, "dev-ports.json");
 const serverCli = join(packageRoot, "packages", "server", "dist", "cli.js");
 const serverExecutable = process.env.POSTBOX_DEV_SERVER_EXECUTABLE ?? process.execPath;
 const serverPrefixArgs = process.env.POSTBOX_DEV_SERVER_EXECUTABLE ? [] : [serverCli];
 
-async function choosePort(preferred) {
+async function choosePort(preferred, explicitName) {
   if (preferred !== undefined) {
     const parsed = Number(preferred);
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) throw new Error(`Invalid PI_POSTBOX_PORT: ${preferred}`);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) throw new Error(`Invalid ${explicitName ?? "persisted development port"}: ${preferred}`);
     if (await portAvailable(parsed)) return parsed;
-    throw new Error(`Development port ${parsed} is already in use. Choose another PI_POSTBOX_PORT; production was left untouched.`);
+    if (explicitName) throw new Error(`Development port ${parsed} is already in use. Choose another ${explicitName}; production was left untouched.`);
   }
   return await reserveEphemeralPort();
+}
+
+async function readPersistedPorts() {
+  try {
+    const parsed = JSON.parse(await readFile(portsPath, "utf8"));
+    if (parsed?.version !== 1) return undefined;
+    if (![parsed.apiPort, parsed.webPort].every((port) => Number.isInteger(port) && port >= 1 && port <= 65535)) return undefined;
+    return { apiPort: parsed.apiPort, webPort: parsed.webPort };
+  } catch {
+    return undefined;
+  }
+}
+
+async function persistPorts(apiPort, webPort) {
+  await mkdir(profileStateDir, { recursive: true, mode: 0o700 });
+  const temporary = join(profileStateDir, `.dev-ports.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await writeFile(temporary, `${JSON.stringify({ version: 1, apiPort, webPort }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    await rename(temporary, portsPath);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
 }
 
 function portAvailable(port) {
@@ -105,8 +129,22 @@ function shutdown(code) {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => shutdown(0));
 
 buildBackend();
-const apiPort = await choosePort(process.env.PI_POSTBOX_PORT);
-const webPort = await choosePort(process.env.POSTBOX_DEV_WEB_PORT);
+const persistedPorts = await readPersistedPorts();
+const apiPort = await choosePort(
+  process.env.PI_POSTBOX_PORT ?? persistedPorts?.apiPort,
+  process.env.PI_POSTBOX_PORT === undefined ? undefined : "PI_POSTBOX_PORT"
+);
+let webPort = await choosePort(
+  process.env.POSTBOX_DEV_WEB_PORT ?? persistedPorts?.webPort,
+  process.env.POSTBOX_DEV_WEB_PORT === undefined ? undefined : "POSTBOX_DEV_WEB_PORT"
+);
+if (webPort === apiPort) {
+  if (process.env.POSTBOX_DEV_WEB_PORT !== undefined) {
+    throw new Error("POSTBOX_DEV_WEB_PORT must differ from PI_POSTBOX_PORT.");
+  }
+  do { webPort = await reserveEphemeralPort(); } while (webPort === apiPort);
+}
+await persistPorts(apiPort, webPort);
 const dashboardUrl = `http://127.0.0.1:${webPort}/`;
 
 console.error(`[dev] Profile: ${profileId}`);

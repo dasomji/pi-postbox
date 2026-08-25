@@ -42,15 +42,12 @@ function askCreateMessage(requestId: string, prompt: string): ExtensionClientMes
       requestId,
       sessionId: "session-1",
       mode: "single",
-      question: { prompt },
+      question: { prompt, ambiguity: "Test ambiguity." },
       options: [
         { value: "yes", label: "Yes" },
         { value: "no", label: "No" }
       ],
-      context: {
-        codebaseContext: "Fastify server with Android FCM notifications.",
-        problemContext: "Notify the user about a pending remote decision."
-      }
+
     }
   };
 }

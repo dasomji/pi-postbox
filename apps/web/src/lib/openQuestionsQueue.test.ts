@@ -6,6 +6,10 @@ function request(requestId: string, sessionId: string, createdAt: string): AskRe
   return {
     requestId,
     sessionId,
+    revision: 1,
+    ownerRevision: 1,
+    creator: { harness: "pi", ownerId: "test-owner" },
+    owner: { harness: "pi", ownerId: "test-owner" },
     mode: "single",
     question: { prompt: `Resolve ${requestId}?` },
     options: [{ value: "yes", label: "Yes" }],

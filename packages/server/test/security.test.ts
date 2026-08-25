@@ -141,12 +141,9 @@ describe("browser-origin and payload safety", () => {
         requestId: "oversized-ask",
         sessionId: "session-security",
         mode: "single",
-        question: { prompt: "x".repeat(128_001) },
+        question: { prompt: "x".repeat(128_001), ambiguity: "Test ambiguity." },
         options: [{ value: "yes", label: "Yes" }],
-        context: {
-          codebaseContext: "Fastify server with finite shared protocol schemas.",
-          problemContext: "Reject an oversized ask payload at the protocol boundary."
-        }
+
       }
     }));
 

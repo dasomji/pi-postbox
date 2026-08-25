@@ -95,6 +95,13 @@ describe("release packaging and operator docs", () => {
       expect.arrayContaining(["pi-package"])
     );
     expect(root.publishConfig, "the scoped package must publish publicly").toMatchObject({ access: "public" });
+    expect(root.license, "the public package must declare its license").toEqual(expect.any(String));
+    expect(root.repository).toEqual({
+      type: "git",
+      url: "git+https://github.com/dasomji/pi-postbox.git"
+    });
+    expect(root.homepage).toBe("https://github.com/dasomji/pi-postbox#readme");
+    expect(root.bugs).toEqual({ url: "https://github.com/dasomji/pi-postbox/issues" });
 
     const pi = root.pi as { extensions?: unknown[] } | undefined;
     expect(pi?.extensions?.map(packagePath)).toEqual(["packages/extension/src/index.ts"]);
@@ -111,6 +118,7 @@ describe("release packaging and operator docs", () => {
   it("packs the combined runtime without local Pi/cache/secret files", async () => {
     const paths = await readDryRunPackPaths();
     const requiredRuntimeFiles = [
+      "LICENSE",
       "README.md",
       "package.json",
       "packages/extension/package.json",
@@ -148,7 +156,8 @@ describe("release packaging and operator docs", () => {
         /(?:^|\/)(?:activeLocal|activeLocalTarget)(?:\.|$)/.test(path) ||
         path === ".env" ||
         path.endsWith("/.env") ||
-        path.endsWith("/.DS_Store")
+        path.endsWith("/.DS_Store") ||
+        /(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path)
     );
 
     expect(missingRequiredFiles).toEqual([]);
@@ -277,7 +286,7 @@ describe("release packaging and operator docs", () => {
       "Teach me",
       "freeform",
       "exact fork",
-      "context-only",
+      "no reconstructed",
       "Suggested in Chat",
       "Retry",
       "Stop",
@@ -306,7 +315,6 @@ describe("release packaging and operator docs", () => {
 
     expectConcepts(protocol, [
       "POST /api/requests/:requestId/chat",
-      "POST /api/requests/:requestId/chat/context",
       "GET /api/requests/:requestId/chat",
       "POST /api/requests/:requestId/chat/messages",
       "POST /api/requests/:requestId/chat/stop",
@@ -314,7 +322,6 @@ describe("release packaging and operator docs", () => {
       "clientCommandId",
       "requestId",
       "chat.activate",
-      "chat.activate-context",
       "chat.ready",
       "chat.snapshot",
       "chat.send",
@@ -337,10 +344,16 @@ describe("release packaging and operator docs", () => {
       "request_not_pending",
       "extension_offline",
       "command_timeout",
-      "codebaseContext",
-      "problemContext",
+      "source_path_missing",
+      "source_leaf_missing",
+      "forkKind: \"exact\"",
+      "non-blank ambiguity",
       "provenance: \"chat\""
     ]);
+    expect(protocol).not.toContain("POST /api/requests/:requestId/chat/context");
+    expect(protocol).not.toContain("chat.activate-context");
+    expect(protocol).not.toContain("codebaseContext");
+    expect(protocol).not.toContain("problemContext");
     expect.soft(protocol, "the SSE contract should distinguish the initial snapshot from incremental Chat events").toMatch(
       /(initial|normalized) snapshot[\s\S]{0,500}chat\/events[\s\S]{0,300}(event|incremental)/i
     );

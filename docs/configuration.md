@@ -3,7 +3,7 @@
 Pi Postbox has two independently configured processes:
 
 1. `pi-postbox-server`, the standalone local HTTP service.
-2. The Pi extension, which connects outbound to the server and exposes `ask_postbox`.
+2. The Pi extension, which connects outbound to the server and exposes `write_question`.
 
 ## Server CLI
 
@@ -92,7 +92,7 @@ Each profile reads only `<profile-state-dir>/active-local/server.json`, then ver
 
 After a Pi Session registers with a fallback/autostarted server, that session is sticky to the selected profile and endpoint: it does not migrate mid-session if a different preferred server later comes back. If the server process restarts at the same URL, reconnect accepts the replacement process and refreshes the exact instance/build identity shown by status.
 
-Package-local autostart is enabled by default for mutating Postbox actions that need a server (`ask_postbox` and the user-only `/postbox` dashboard command). Set `PI_POSTBOX_AUTOSTART=off` to opt out. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to control how long the extension waits for the started server; the default wait is 10 seconds (`10000` ms).
+Package-local autostart is enabled by default for mutating Postbox actions that need a server (`write_question` and the user-only `/postbox` dashboard command). Set `PI_POSTBOX_AUTOSTART=off` to opt out. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to control how long the extension waits for the started server; the default wait is 10 seconds (`10000` ms).
 
 Operational diagnostics are sanitized categories such as `missing`, `stale`, `unhealthy`, `unsafe` or malformed metadata, symlink/oversized metadata, health mismatch (`health-identity-mismatch`), `incompatible-protocol`, explicit override selection, and deferred switching while pinned work drains.
 
@@ -114,11 +114,11 @@ The icon path is resolved by the extension on the Pi machine, converted into a s
 
 ## Agent notification and explicit waiting
 
-`ask_postbox` returns after durable persistence. The owning Pi Session receives a lightweight notification when an Answer becomes available, so agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. When the decision is the sole remaining blocker, call `wait_for_postbox` once to enter explicit idle/blocked mode; after it wakes, call `get_answer` for the relevant Question. Cancelling that ephemeral wait leaves durable Questions and Answers intact.
+The `write_question` create actions return after durable persistence and include a reusable current Question handle. The owning Pi Session receives a lightweight notification when an Answer becomes available, so agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. When the decision is the sole remaining blocker, call `wait_for_postbox` once to enter explicit idle/blocked mode; after it wakes, call `get_answer` for the relevant Question. Cancelling that ephemeral wait leaves durable Questions and Answers intact.
 
 ## Local fallback commands and browser command
 
-While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
+While a Question created through `write_question` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
 
 ```text
 /postbox-status
@@ -128,7 +128,7 @@ While `ask_postbox` is pending, the extension shows compact command hints. Opera
 
 `/postbox-status` reports connectivity, active/local URL, Tailnet URL/export line when available, open-question count, autostart state, and diagnostics. It is privacy-preserving: status includes counts only and never pending question contents, option labels, answers, notes, or history. The read-only `postbox_status` tool returns equivalent structured fields for agents.
 
-Use `/postbox` to open the active dashboard in the user's browser. `/postbox` may use the same recovery/autostart path as `ask_postbox` when disconnected, but it remains a user-only manual browser-opening command; no LLM tool or agent side effect can open the browser.
+Use `/postbox` to open the active dashboard in the user's browser. `/postbox` may use the same recovery/autostart path as `write_question` when disconnected, but it remains a user-only manual browser-opening command; no LLM tool or agent side effect can open the browser.
 
 ## Android push notifications (FCM)
 

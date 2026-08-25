@@ -40,6 +40,7 @@ export type ResolveServerTargetResult =
       status: "unavailable";
       profile: ResolvedServerProfile;
       diagnostics: ServerProfileMetadataDiagnostic[];
+      recovery?: "restart-required";
     };
 
 export interface ResolveServerTargetOptions extends ResolveServerProfileOptions {
@@ -60,6 +61,7 @@ export async function resolveServerTarget(options: ResolveServerTargetOptions = 
   const profile = options.profile ?? resolveServerProfile(options);
   const expectedProfile = profileIdentity(profile);
   const diagnostics: ServerProfileMetadataDiagnostic[] = [];
+  let recovery: "restart-required" | undefined;
   const config = await readExtensionConfig(env, profile);
 
   if (!options.skipConfiguredUrl && config.serverUrl) {
@@ -105,9 +107,10 @@ export async function resolveServerTarget(options: ResolveServerTargetOptions = 
       };
     }
     diagnostics.push({ code: verified.code, source: basename(profile.metadataPath) });
+    if (verified.recovery === "restart-required") recovery = verified.recovery;
   }
 
-  return { status: "unavailable", profile, diagnostics };
+  return { status: "unavailable", profile, diagnostics, ...(recovery ? { recovery } : {}) };
 }
 
 async function readProfileMetadata(
@@ -167,7 +170,10 @@ async function verifyHealth(
   baseUrl: string,
   options: Pick<ResolveServerTargetOptions, "fetch" | "healthTimeoutMs">,
   expectedInstance?: ServerInstanceIdentity
-): Promise<{ ok: true; health: import("@pi-postbox/protocol").HealthResponse } | { ok: false; code: string }> {
+): Promise<
+  | { ok: true; health: import("@pi-postbox/protocol").HealthResponse }
+  | { ok: false; code: string; recovery?: "restart-required" }
+> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS);
   try {
@@ -178,7 +184,11 @@ async function verifyHealth(
     if (!response.ok) return { ok: false, code: "health-status" };
     const body: unknown = await response.json();
     if (!isRecord(body) || body.service !== SERVICE_NAME) return { ok: false, code: "health-service-mismatch" };
-    if (body.protocolVersion !== PROTOCOL_VERSION) return { ok: false, code: "incompatible-protocol" };
+    if (body.protocolVersion !== PROTOCOL_VERSION) {
+      return isExactLiveProfileHealth(body, expectedInstance)
+        ? { ok: false, code: "incompatible-protocol", recovery: "restart-required" }
+        : { ok: false, code: "incompatible-protocol" };
+    }
     const parsed = HealthResponseSchema.safeParse(body);
     if (!parsed.success) return { ok: false, code: "health-invalid" };
 
@@ -194,6 +204,36 @@ async function verifyHealth(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isExactLiveProfileHealth(body: Record<string, unknown>, expected: ServerInstanceIdentity | undefined): boolean {
+  if (!expected || body.ok !== true || !isNonBlankString(body.version) || !isNonBlankString(body.buildId)
+    || !isNonBlankString(body.protocolVersion) || !Number.isInteger(body.uptimeMs) || Number(body.uptimeMs) < 0
+    || !isValidTimestamp(body.timestamp) || !sameUnknownProfile(body.profile, expected.profile)) {
+    return false;
+  }
+
+  const instance = body.instance;
+  return isRecord(instance)
+    && sameUnknownProfile(instance.profile, expected.profile)
+    && instance.instanceId === expected.instanceId
+    && instance.url === expected.url
+    && instance.protocolVersion === expected.protocolVersion
+    && instance.protocolVersion === body.protocolVersion
+    && instance.buildId === expected.buildId
+    && instance.buildId === body.buildId;
+}
+
+function sameUnknownProfile(actual: unknown, expected: ServerProfileIdentity): boolean {
+  return isRecord(actual) && actual.kind === expected.kind && actual.id === expected.id;
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isValidTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
 function sameInstance(actual: ServerInstanceIdentity, expected: ServerInstanceIdentity): boolean {

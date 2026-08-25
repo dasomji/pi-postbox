@@ -22,9 +22,9 @@ function setup() {
     requestId: questionId,
     sessionId: "session",
     mode: "single",
-    question: { prompt: `${questionId}?` },
+    question: { prompt: `${questionId}?`, ambiguity: "Test ambiguity." },
     options: [{ value: "yes", label: "Yes" }],
-    context: { codebaseContext: "Postbox", problemContext: "Distinguish lifecycle resolutions" }
+
   });
   return { db, store, create };
 }

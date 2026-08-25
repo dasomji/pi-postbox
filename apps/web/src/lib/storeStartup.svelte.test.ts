@@ -22,6 +22,7 @@ const SNAPSHOT: StateSnapshot = {
     requestId: "ask-notification",
     sessionId: "session-notification",
     revision: 1,
+    ownerRevision: 1,
     creator: { harness: "pi", ownerId: "owner" },
     owner: { harness: "pi", ownerId: "owner" },
     mode: "single",

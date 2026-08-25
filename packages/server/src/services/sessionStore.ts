@@ -1,4 +1,9 @@
-import { ProjectIconSchema } from "@pi-postbox/protocol";
+import {
+  POSTBOX_EXPLICIT_ID_MAX,
+  POSTBOX_OWNER_PAGE_DEFAULT,
+  POSTBOX_OWNER_PAGE_MAX,
+  ProjectIconSchema
+} from "@pi-postbox/protocol";
 import type {
   FeatureIdentity,
   PostboxOwnerListScope,
@@ -13,6 +18,7 @@ import type {
 import { randomUUID } from "node:crypto";
 import type { QuestionChatSource } from "@pi-postbox/protocol";
 import type { SqliteDatabase } from "../db/database.js";
+import { decodePaginationCursor, encodePaginationCursor } from "./paginationCursor.js";
 
 interface SessionPresenceRow {
   session_id: string;
@@ -55,6 +61,18 @@ export interface PresenceOptions {
   offlineAfterMs: number;
 }
 
+export interface PostboxOwnerListOptions {
+  scope?: PostboxOwnerListScope;
+  includeInactive?: boolean;
+  cursor?: string;
+  pageSize?: number;
+}
+
+export interface PostboxOwnerListPage {
+  owners: PostboxOwnerSummary[];
+  nextCursor?: string;
+}
+
 export interface SessionStoreOptions extends PresenceOptions {
   /** Offline sessions older than this are omitted from state snapshots. */
   hideOfflineAfterMs?: number;
@@ -73,7 +91,6 @@ export interface PostboxOwnerStatus {
 
 const DEFAULT_HIDE_OFFLINE_AFTER_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const POSTBOX_OWNER_LIST_MAX = 100;
 
 // When a session went offline: explicit disconnect/shutdown timestamp, or the
 // last sign of life for sessions orphaned by a server restart.
@@ -146,6 +163,26 @@ export class SessionStore {
   }
 
   listPostboxOwners(sessionId: string, scope: PostboxOwnerListScope = "feature"): PostboxOwnerSummary[] {
+    const owners: PostboxOwnerSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = this.listPostboxOwnersPage(sessionId, {
+        scope,
+        pageSize: POSTBOX_OWNER_PAGE_DEFAULT,
+        ...(cursor ? { cursor } : {})
+      });
+      owners.push(...page.owners);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return owners;
+  }
+
+  listPostboxOwnersPage(sessionId: string, options: PostboxOwnerListOptions = {}): PostboxOwnerListPage {
+    const scope = options.scope ?? "feature";
+    const pageSize = options.pageSize ?? POSTBOX_OWNER_PAGE_DEFAULT;
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > POSTBOX_OWNER_PAGE_MAX) {
+      throw new SessionStoreError("invalid_page_size", `Owner discovery page size must be a positive integer and at most ${POSTBOX_OWNER_PAGE_MAX}`);
+    }
     const grouping = this.db.prepare(`SELECT repository_id, worktree_id, feature_id
       FROM sessions WHERE session_id = ?`).get(sessionId) as {
         repository_id: string | null;
@@ -172,17 +209,38 @@ export class SessionStore {
       parameters.featureId = grouping.feature_id!;
     }
 
-    const owners = this.db.prepare(`SELECT DISTINCT s.owner_harness AS harness, s.owner_id AS ownerId
+    const scopeParameters = { ...parameters };
+    const cursorQuery = {
+      kind: "postbox-owners",
+      scope,
+      includeInactive: options.includeInactive ?? false,
+      repositoryId: grouping.repository_id,
+      worktreeId: grouping.worktree_id,
+      featureId: grouping.feature_id
+    };
+    if (options.cursor) {
+      try {
+        const boundary = decodePaginationCursor(options.cursor, cursorQuery);
+        if (!Array.isArray(boundary) || boundary.length !== 2
+          || typeof boundary[0] !== "string" || typeof boundary[1] !== "string") throw new Error();
+        sessionScopeClauses.push("(s.owner_harness > @cursorHarness OR (s.owner_harness = @cursorHarness AND s.owner_id > @cursorOwnerId))");
+        parameters.cursorHarness = boundary[0];
+        parameters.cursorOwnerId = boundary[1];
+      } catch {
+        throw new SessionStoreError("invalid_cursor", "Owner discovery cursor is invalid or belongs to another query");
+      }
+    }
+
+    const ownerIdentities = this.db.prepare(`SELECT DISTINCT s.owner_harness AS harness, s.owner_id AS ownerId
       FROM sessions s
       WHERE s.owner_harness IS NOT NULL AND s.owner_id IS NOT NULL
         AND ${sessionScopeClauses.join(" AND ")}
-      ORDER BY s.owner_harness, s.owner_id
-      LIMIT ${POSTBOX_OWNER_LIST_MAX}`).all(parameters) as Array<PostboxOwnerSummary["owner"]>;
+      ORDER BY s.owner_harness, s.owner_id`).all(parameters) as Array<PostboxOwnerSummary["owner"]>;
     const sessionQuery = this.db.prepare(`SELECT s.session_id, s.last_heartbeat_at, s.connected_at,
         s.disconnected_at, s.shutdown_at, s.updated_at
       FROM sessions s
       WHERE s.owner_harness = @ownerHarness AND s.owner_id = @ownerId
-        AND ${sessionScopeClauses.join(" AND ")}
+        AND ${sessionScopeClauses.filter((clause) => !clause.includes("cursorHarness")).join(" AND ")}
       ORDER BY s.updated_at DESC`);
     const countsQuery = this.db.prepare(`SELECT
         SUM(CASE WHEN q.status = 'pending' THEN 1 ELSE 0 END) AS active_question_count,
@@ -193,8 +251,8 @@ export class SessionStore {
       WHERE q.owner_harness = @ownerHarness AND q.owner_owner_id = @ownerId
         AND ${questionScopeClauses.join(" AND ")}`);
 
-    return owners.map((owner) => {
-      const ownerParameters = { ...parameters, ownerHarness: owner.harness, ownerId: owner.ownerId };
+    const matching = ownerIdentities.map((owner): PostboxOwnerSummary => {
+      const ownerParameters = { ...scopeParameters, ownerHarness: owner.harness, ownerId: owner.ownerId };
       const presence = (sessionQuery.all(ownerParameters) as SessionPresenceRow[])
         .map((row) => this.derivePresence(row))
         .sort((left, right) => this.presenceRank(right) - this.presenceRank(left))[0] ?? "offline";
@@ -208,10 +266,25 @@ export class SessionStore {
         activeQuestionCount: counts.active_question_count ?? 0,
         unreadAnswerCount: counts.unread_answer_count ?? 0
       };
-    });
+    }).filter((summary) => options.includeInactive
+      || summary.presence !== "offline"
+      || summary.activeQuestionCount > 0
+      || summary.unreadAnswerCount > 0);
+    const hasMore = matching.length > pageSize;
+    const owners = matching.slice(0, pageSize);
+    const last = owners.at(-1);
+    return {
+      owners,
+      ...(hasMore && last
+        ? { nextCursor: encodePaginationCursor(cursorQuery, [last.owner.harness, last.owner.ownerId]) }
+        : {})
+    };
   }
 
   getPostboxOwnerStatus(owners: ReadonlyArray<{ harness: string; ownerId: string }>): PostboxOwnerStatus[] {
+    if (owners.length > POSTBOX_EXPLICIT_ID_MAX) {
+      throw new SessionStoreError("too_many_owners", `At most ${POSTBOX_EXPLICIT_ID_MAX} owners may be inspected at once`);
+    }
     const sessionQuery = this.db.prepare(`SELECT session_id, semantic_state, last_heartbeat_at, connected_at,
         disconnected_at, shutdown_at, updated_at
       FROM sessions WHERE owner_harness = ? AND owner_id = ?

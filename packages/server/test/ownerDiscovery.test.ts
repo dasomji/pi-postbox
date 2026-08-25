@@ -50,9 +50,9 @@ function createQuestion(requests: RequestStore, sessionId: string, questionId: s
     requestId: questionId,
     sessionId,
     mode: "single",
-    question: { prompt: `${questionId}?` },
+    question: { prompt: `${questionId}?`, ambiguity: "Test ambiguity." },
     options: [{ value: "yes", label: "Yes" }],
-    context: { codebaseContext: "Postbox", problemContext: "Find a scoped transfer target" }
+
   });
 }
 
@@ -139,6 +139,33 @@ describe("scoped Postbox owner discovery", () => {
     }
   });
 
+  it("hides inactive offline owners by default and paginates explicit inactive discovery", () => {
+    const database = openPostboxDatabase(":memory:");
+    databases.push(database);
+    const sessions = new SessionStore(database, () => NOW, { staleAfterMs: 30_000, offlineAfterMs: 120_000 });
+    register(sessions, "session-a", OWNER_A, "repo-1", "worktree-1", "feature-1");
+    register(sessions, "session-b", OWNER_B, "repo-1", "worktree-1", "feature-1");
+    register(sessions, "session-c", OWNER_C, "repo-1", "worktree-1", "feature-1");
+    sessions.shutdown("session-c");
+
+    expect(sessions.listPostboxOwners("session-a").map((item) => item.owner)).toEqual([OWNER_A, OWNER_B]);
+    const first = (sessions as any).listPostboxOwnersPage("session-a", { includeInactive: true, pageSize: 2 });
+    expect(first.owners.map((item: { owner: unknown }) => item.owner)).toEqual([OWNER_A, OWNER_B]);
+    expect(first.nextCursor?.length).toBeLessThan(120);
+    expect((sessions as any).listPostboxOwnersPage("session-a", {
+      includeInactive: true,
+      pageSize: 2,
+      cursor: first.nextCursor
+    })).toEqual({
+      owners: [{ owner: OWNER_C, presence: "offline", activeQuestionCount: 0, unreadAnswerCount: 0 }]
+    });
+    expect(() => (sessions as any).listPostboxOwnersPage("session-a", { pageSize: 101 })).toThrow(/at most 100/i);
+    expect(() => sessions.getPostboxOwnerStatus(Array.from({ length: 21 }, (_, index) => ({
+      harness: "pi",
+      ownerId: `owner-${index}`
+    })))).toThrow(/at most 20/i);
+  });
+
   it("authorizes the registered caller and carries derived owner lists over the WebSocket", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);
@@ -159,10 +186,10 @@ describe("scoped Postbox owner discovery", () => {
     await expect(response).resolves.toMatchObject({
       type: "query.result",
       requestId: "owners-feature",
-      payload: [
+      payload: { owners: [
         { owner: OWNER_A, presence: "live", activeQuestionCount: 0, unreadAnswerCount: 0 },
         { owner: OWNER_B, presence: "live", activeQuestionCount: 0, unreadAnswerCount: 0 }
-      ]
+      ] }
     });
 
     response = next(caller);
@@ -174,11 +201,11 @@ describe("scoped Postbox owner discovery", () => {
     await expect(response).resolves.toMatchObject({
       type: "query.result",
       requestId: "owners-repository",
-      payload: [
+      payload: { owners: [
         { owner: OWNER_A },
         { owner: OWNER_B },
         { owner: OWNER_C }
-      ]
+      ] }
     });
 
     response = next(caller);

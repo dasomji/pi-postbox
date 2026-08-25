@@ -75,10 +75,7 @@ describe("Pi semantic state lifecycle reporting", () => {
       {
         requestId: "ask-state",
         question: "Which path should we take?",
-        context: {
-          codebaseContext: "Pi extension semantic-state lifecycle.",
-          problemContext: "Represent a pending remote decision as blocked work."
-        },
+        ambiguity: "Which path best preserves the lifecycle contract.",
         options: [{ value: "a", label: "A" }]
       },
       {

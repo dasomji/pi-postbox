@@ -1,7 +1,4 @@
-import {
-  QuestionChatContextSourceSchema,
-  type QuestionChatModel
-} from "@pi-postbox/protocol";
+import type { QuestionChatModel } from "@pi-postbox/protocol";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -26,7 +23,7 @@ const QuestionChatRecoveryManifestSchema = z.object({
   version: z.literal(1),
   requestId: z.string().min(1).max(200),
   ownerSessionId: z.string().min(1).max(200),
-  forkKind: z.enum(["exact", "context-only"]),
+  forkKind: z.literal("exact"),
   cwd: z.string().min(1).max(4_000),
   privateSessionPath: z.string().min(1).max(4_000),
   chatBoundaryId: z.string().min(1).max(400).nullable(),
@@ -35,8 +32,7 @@ const QuestionChatRecoveryManifestSchema = z.object({
     id: z.string().min(1).max(400),
     source: z.enum(["originating", "pi-default"]),
     fallbackReason: z.string().max(2_000).optional()
-  }) satisfies z.ZodType<QuestionChatModel>,
-  contextSource: QuestionChatContextSourceSchema.optional()
+  }) satisfies z.ZodType<QuestionChatModel>
 });
 
 export type QuestionChatRecoveryManifest = z.infer<typeof QuestionChatRecoveryManifestSchema>;
@@ -109,8 +105,8 @@ export class FileQuestionChatRecoveryStore implements QuestionChatRecoveryStore 
     const manifest = QuestionChatRecoveryManifestSchema.parse(input);
     const runtimeDirectory = this.runtimeDirectory(manifest.requestId);
     this.validateRuntimeDirectory(runtimeDirectory);
-    // A freshly created context-only SessionManager may reserve its session
-    // path before the SDK writes the first entry. Secure it as soon as it
+    // The SessionManager may reserve its session path before the SDK writes
+    // the first entry. Secure it as soon as it
     // exists; load/list still require a real contained file.
     if (existsSync(manifest.privateSessionPath)) {
       this.validatePrivateSessionPath(runtimeDirectory, manifest.privateSessionPath);
@@ -143,12 +139,6 @@ export class FileQuestionChatRecoveryStore implements QuestionChatRecoveryStore 
     const manifest = QuestionChatRecoveryManifestSchema.parse(JSON.parse(readFileSync(manifestPath, "utf8")));
     if (this.runtimeDirectory(manifest.requestId) !== runtimeDirectory) {
       throw new Error("Question Chat recovery directory key does not match its request");
-    }
-    if (manifest.forkKind === "context-only" && !manifest.contextSource) {
-      throw new Error("Context-only Question Chat recovery metadata is incomplete");
-    }
-    if (manifest.forkKind === "exact" && manifest.contextSource) {
-      throw new Error("Exact Question Chat recovery metadata has the wrong fork kind");
     }
     if (!isAbsolute(manifest.cwd) || !statSync(realpathSync(manifest.cwd)).isDirectory()) {
       throw new Error("Question Chat recovery working directory is unavailable");

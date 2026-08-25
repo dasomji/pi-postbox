@@ -74,9 +74,9 @@ async function createQuestion(socket: WebSocket): Promise<Record<string, unknown
       requestId: "question-1",
       sessionId: "control-session-1",
       mode: "single",
-      question: { prompt: "Which database should v1 use?" },
+      question: { prompt: "Which database should v1 use?", ambiguity: "Test ambiguity." },
       options: [{ value: "sqlite", label: "SQLite" }],
-      context: { codebaseContext: "Fastify server.", problemContext: "Choose durable storage." }
+
     }
   } satisfies ExtensionClientMessage));
   return created;

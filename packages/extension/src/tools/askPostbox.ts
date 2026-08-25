@@ -1,11 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   AskCreatePayloadSchema,
-  AskBatchDefaultsSchema,
   AskBatchQuestionDraftSchema,
   type AskCreatePayload,
-  type AskCreateHandoffContext,
-  type AskBatchDefaults,
   type AskOption,
   type AskReceipt,
   type AskBatchReceipt,
@@ -16,60 +13,37 @@ import type { PostboxClient } from "../client/PostboxClient.js";
 
 export interface AskPostboxInput {
   question: string;
-  questionContext?: string;
-  relevance?: string;
-  decisionImpact?: string;
+  ambiguity: string;
   mode?: "single" | "multi";
   options: AskOption[];
-  context: AskCreateHandoffContext;
   forkReference?: ForkReference;
-  parent?: { questionId: string };
+  parentQuestionId?: string;
   requestId?: string;
-  timeoutMs?: number;
   expiresAt?: string;
 }
 
 export interface AskPostboxBatchInput {
   mode: "batch";
-  defaults: AskBatchDefaults;
-  questions: Array<Omit<AskPostboxInput, "context"> & {
+  questions: Array<AskPostboxInput & {
     localRef: string;
-    context?: AskCreateHandoffContext;
-    parent?: { questionId: string } | { localRef: string };
+    parentLocalRef?: string;
   }>;
 }
 
 const optionParameters = {
   type: "object", additionalProperties: false, required: ["value", "label"],
   properties: {
-    value: { type: "string", minLength: 1 }, label: { type: "string", minLength: 1 },
-    description: { type: "string", minLength: 1 }, meaning: { type: "string", minLength: 1 },
-    context: { type: "string", minLength: 1 }
-  }
-} as const;
-const contextParameters = {
-  type: "object", additionalProperties: false, required: ["codebaseContext", "problemContext"],
-  properties: {
-    codebaseContext: { type: "string", minLength: 1 }, problemContext: { type: "string", minLength: 1 },
-    additionalInfo: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["content"], properties: {
-      kind: { type: "string", enum: ["text", "code", "diagram", "link"] }, title: { type: "string", minLength: 1 },
-      content: { type: "string", minLength: 1 }, language: { type: "string", minLength: 1 }
-    } } }
-  }
-} as const;
-const forkReferenceParameters = {
-  type: "object", additionalProperties: false, properties: {
-    agentSessionId: { type: "string", minLength: 1 }, agentSessionPath: { type: "string", minLength: 1 },
-    leafId: { type: "string", minLength: 1 }, cwd: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1 }
+    value: { type: "string", minLength: 1, description: "Stable machine-readable value returned when this option is selected." },
+    label: { type: "string", minLength: 1, description: "Short user-visible option label." },
+    description: { type: "string", minLength: 1, description: "Optional explanation that helps the user understand the option." },
+    impact: { type: "string", minLength: 1, description: "What impact and implications would this option have?" }
   }
 } as const;
 const sharedDraftProperties = {
-  question: { type: "string", minLength: 1 }, questionContext: { type: "string", minLength: 1 },
-  relevance: { type: "string", minLength: 1 }, decisionImpact: { type: "string", minLength: 1 },
-  requestId: { type: "string", minLength: 1 },
-  timeoutMs: { type: "number", minimum: 1 }, expiresAt: { type: "string", minLength: 1 },
-  options: { type: "array", minItems: 1, items: optionParameters }, context: contextParameters,
-  forkReference: forkReferenceParameters
+  question: { type: "string", minLength: 1, description: "Decision question to show in Pi Postbox." },
+  ambiguity: { type: "string", minLength: 1, description: "What ambiguity is this question aiming to solve?" },
+  requestId: { type: "string", minLength: 1, description: "Optional stable request id for this ask." },
+  options: { type: "array", minItems: 1, items: optionParameters, description: "Answer options presented to the user." }
 } as const;
 
 export const askPostboxParameters = {
@@ -79,80 +53,56 @@ export const askPostboxParameters = {
   oneOf: [
     {
       additionalProperties: false,
-      required: ["question", "options", "context"],
+      required: ["question", "ambiguity", "options"],
       properties: {
-        question: {}, questionContext: {}, relevance: {}, decisionImpact: {}, requestId: {}, timeoutMs: {},
-        expiresAt: {}, options: {}, context: {}, forkReference: {}, mode: { type: "string", enum: ["single", "multi"] }, parent: {}
+        question: sharedDraftProperties.question,
+        ambiguity: sharedDraftProperties.ambiguity,
+        requestId: sharedDraftProperties.requestId,
+        options: sharedDraftProperties.options,
+        mode: { type: "string", enum: ["single", "multi"], description: "Selection mode for this Question; defaults to single." },
+        parentQuestionId: { type: "string", minLength: 1, description: "Optional existing Question ID to use as this Question's parent." }
       }
     },
     {
       additionalProperties: false,
-      required: ["mode", "defaults", "questions"],
-      properties: { mode: { const: "batch" }, defaults: {}, questions: {} }
+      required: ["mode", "questions"],
+      properties: {
+        mode: { const: "batch", description: "Creates an ordered batch of Questions." },
+        questions: { description: "Ordered complete Question drafts to create." }
+      }
     }
   ],
   properties: {
     ...sharedDraftProperties,
-    question: { ...sharedDraftProperties.question, description: "Decision question to show in Pi Postbox." },
-    questionContext: { type: "string", minLength: 1, description: "Concrete context for why this question is being asked." },
-    relevance: { type: "string", minLength: 1, description: "Why this question is relevant now." },
-    decisionImpact: { type: "string", minLength: 1, description: "What effect this decision will have." },
     mode: { type: "string", enum: ["single", "multi", "batch"], description: "Single Question selection mode, or ordered batch creation." },
-    requestId: { type: "string", minLength: 1, description: "Optional stable request id for this ask." },
-    timeoutMs: { type: "number", minimum: 1, description: "Optional request expiry timeout in milliseconds." },
-    expiresAt: { type: "string", minLength: 1, description: "Optional ISO datetime when this request expires." },
-    parent: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
-      questionId: { type: "string", minLength: 1 }
-    } },
-    defaults: { type: "object", additionalProperties: false, required: ["context"], properties: {
-      context: contextParameters
-    }, description: "Shared batch values expanded and validated by the server before each Question is persisted." },
-    questions: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
-      required: ["localRef", "question", "options"], properties: {
-        ...sharedDraftProperties, localRef: { type: "string", minLength: 1 },
-        mode: { type: "string", enum: ["single", "multi"] },
-        parent: { oneOf: [
-          { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string", minLength: 1 } } },
-          { type: "object", additionalProperties: false, required: ["localRef"], properties: { localRef: { type: "string", minLength: 1 } } }
-        ] }
-      } }
-    }
+    parentQuestionId: { type: "string", minLength: 1, description: "Optional existing Question ID to use as this Question's parent." },
+    questions: { type: "array", minItems: 1, description: "Ordered complete Question drafts to create in batch mode.", items: {
+      type: "object", additionalProperties: false, description: "One complete Question draft in the ordered batch.",
+      required: ["localRef", "question", "ambiguity", "options"], properties: {
+        ...sharedDraftProperties,
+        localRef: { type: "string", minLength: 1, description: "Batch-local identifier used by later drafts to reference this Question." },
+        mode: { type: "string", enum: ["single", "multi"], description: "Selection mode for this Question; defaults to single." },
+        parentQuestionId: { type: "string", minLength: 1, description: "Optional existing Question ID to use as this Question's parent." },
+        parentLocalRef: { type: "string", minLength: 1, description: "Optional localRef of an earlier batch draft to use as this Question's parent." }
+      }
+    } }
   }
 } as const;
 
 export function createAskPayload(input: AskPostboxInput, sessionId: string): AskCreatePayload {
-  const context = mergeHandoffContext(input);
   return AskCreatePayloadSchema.parse({
     requestId: input.requestId ?? `ask_${randomUUID()}`,
     sessionId,
     mode: input.mode ?? "single",
     question: {
       prompt: input.question,
-      context: input.questionContext,
-      relevance: input.relevance,
-      decisionImpact: input.decisionImpact
+      ambiguity: input.ambiguity
     },
     options: input.options,
-    context,
     forkReference: input.forkReference,
-    parentQuestionId: input.parent?.questionId,
-    expiresAt: input.expiresAt ?? (input.timeoutMs ? new Date(Date.now() + input.timeoutMs).toISOString() : undefined)
+    parentQuestionId: input.parentQuestionId,
+    expiresAt: input.expiresAt
   });
-}
-
-function mergeHandoffContext(input: AskPostboxInput): AskCreateHandoffContext {
-  const context = input.context;
-  if (!context || typeof context.codebaseContext !== "string" || context.codebaseContext.trim().length === 0) {
-    throw new Error("ask_postbox requires non-blank codebaseContext");
-  }
-  if (typeof context.problemContext !== "string" || context.problemContext.trim().length === 0) {
-    throw new Error("ask_postbox requires non-blank problemContext");
-  }
-  return {
-    codebaseContext: context.codebaseContext,
-    problemContext: context.problemContext,
-    additionalInfo: context.additionalInfo
-  };
 }
 
 export interface AskPostboxWaitLifecycle {
@@ -167,29 +117,26 @@ export async function executeAskPostbox(
   lifecycle?: AskPostboxWaitLifecycle
 ): Promise<AskReceipt | AskBatchReceipt> {
   if (input.mode === "batch") {
-    const invalidField = Object.keys(input).find((field) => !["mode", "defaults", "questions"].includes(field));
+    const invalidField = Object.keys(input).find((field) => !["mode", "questions"].includes(field));
     if (invalidField) {
-      throw new Error(`ask_postbox batch does not accept top-level ${invalidField}; put Question-specific fields on each questions item`);
+      throw new Error(`write_question create_batch does not accept top-level ${invalidField}; put Question-specific fields on each questions item`);
     }
     if (!("createAskBatch" in client)) throw new Error("Postbox client does not support Question batches");
-    const defaults = AskBatchDefaultsSchema.parse(input.defaults);
-    const questions = input.questions.map(({ localRef, parent, ...item }) => AskBatchQuestionDraftSchema.parse({
+    const questions = input.questions.map(({ localRef, parentQuestionId, parentLocalRef, ...item }) => AskBatchQuestionDraftSchema.parse({
       localRef,
-      parent,
+      parentQuestionId,
+      parentLocalRef,
       requestId: item.requestId ?? `ask_${randomUUID()}`,
       mode: item.mode ?? "single",
       question: {
         prompt: item.question,
-        context: item.questionContext,
-        relevance: item.relevance,
-        decisionImpact: item.decisionImpact
+        ambiguity: item.ambiguity
       },
       options: item.options,
-      ...(item.context ? { context: item.context } : {}),
       forkReference: item.forkReference,
-      expiresAt: item.expiresAt ?? (item.timeoutMs ? new Date(Date.now() + item.timeoutMs).toISOString() : undefined)
+      expiresAt: item.expiresAt
     }));
-    return client.createAskBatch({ sessionId, defaults, questions }, signal);
+    return client.createAskBatch({ sessionId, questions }, signal);
   }
   const payload = createAskPayload(input, sessionId);
   void lifecycle;
@@ -198,7 +145,13 @@ export async function executeAskPostbox(
   if (!("ask" in client)) throw new Error("Postbox client does not support single Questions");
   return client.ask(payload, signal).then((result: AskResult) => {
     if (result.status !== "answered") throw new Error(`Question was not persisted: ${result.status}`);
-    return { questionId: payload.requestId, revision: 1, status: "pending" as const };
+    return {
+      questionId: payload.requestId,
+      revision: 1,
+      ownerRevision: 1,
+      status: "pending" as const,
+      disposition: "created" as const
+    };
   });
 }
 
@@ -214,7 +167,7 @@ export function formatAskResult(result: AskReceipt | AskResult | AskBatchReceipt
       : { localRef: item.localRef, disposition: "rejected", reason: item.reason.code });
     return `Postbox batch ${result.status}: ${JSON.stringify(items)}`;
   }
-  if ("questionId" in result) return `Postbox persisted ${result.questionId} (revision ${result.revision}); the Answer will arrive asynchronously. Use get_answer with this questionId after notification.`;
+  if ("questionId" in result) return `Postbox persisted ${result.questionId} (revision ${result.revision}; disposition: ${result.disposition}); the Answer will arrive asynchronously. Use get_answer with this questionId after notification.`;
   if (result.status === "answered") return `Postbox answered ${result.requestId}: ${result.selectedValues.join(", ")}.`;
   return `Postbox ${result.status} ${result.requestId}.${result.note ? ` ${result.note}` : ""}`;
 }

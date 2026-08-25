@@ -14,7 +14,7 @@ function setup() {
     session: { sessionId: "session", cwd: "/repo", semanticState: "working", owner: { harness: "pi", ownerId: "agent" } } });
   const store = new RequestStore(db, () => now) as any;
   const create = (id: string, parentQuestionId?: string) => store.create({ requestId: id, sessionId: "session", mode: "single",
-    question: { prompt: `${id}?` }, options: [{ value: "yes", label: "Yes" }], context: { codebaseContext: "Postbox", problemContext: "Keep Question accurate" }, parentQuestionId });
+    question: { prompt: `${id}?`, ambiguity: "Test ambiguity." }, options: [{ value: "yes", label: "Yes" }],  parentQuestionId });
   return { db, sessions, store, create, tick: () => { now += 1_000; } };
 }
 
@@ -22,8 +22,8 @@ describe("immutable Question updates", () => {
   it("appends revisions under a stable ID and atomically rejects stale agent and browser writes", () => {
     const { store, create, tick } = setup(); create("question"); tick();
     expect(store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, {
-      action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Updated question?" }
-    })).toMatchObject({ questionId: "question", revision: 2, question: { prompt: "Updated question?" } });
+      action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Updated question?", ambiguity: "Test ambiguity." }
+    })).toMatchObject({ questionId: "question", revision: 2, question: { prompt: "Updated question?", ambiguity: "Test ambiguity." } });
     expect(() => store.updateQuestion("question", { harness: "pi", ownerId: "agent" }, {
       action: "cancel", expectedRevision: 1, expectedOwnerRevision: 1, note: "stale"
     })).toThrowError(expect.objectContaining({ code: "stale_revision" } satisfies Partial<RequestStoreError>));
@@ -53,7 +53,7 @@ describe("immutable Question updates", () => {
 
   it("records revision, parent, and terminal history while leaving descendants unchanged", () => {
     const { store, create, tick } = setup(); create("root"); create("child", "root"); tick();
-    store.updateQuestion("root", { harness: "pi", ownerId: "agent" }, { action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Revised root?" } });
+    store.updateQuestion("root", { harness: "pi", ownerId: "agent" }, { action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Revised root?", ambiguity: "Test ambiguity." } });
     store.updateQuestion("root", { harness: "pi", ownerId: "agent" }, { action: "reparent", expectedRevision: 2, expectedOwnerRevision: 1, parentQuestionId: null });
     const answer = store.answer("root", { expectedRevision: 3, selectedValues: ["yes"] });
     expect(answer).toMatchObject({ affectedDescendantIds: ["child"], descendantGuidance: expect.stringMatching(/revise|supersede|cancel/i) });
@@ -62,14 +62,14 @@ describe("immutable Question updates", () => {
       questionId: "root",
       initial: expect.objectContaining({
         revision: 1,
-        question: { prompt: "root?" },
+        question: { prompt: "root?", ambiguity: "Test ambiguity." },
         actor: { harness: "pi", ownerId: "agent" }
       }),
       revisions: [{
         revision: 2,
         actor: { harness: "pi", ownerId: "agent" },
         at: expect.any(String),
-        question: { prompt: "Revised root?" }
+        question: { prompt: "Revised root?", ambiguity: "Test ambiguity." }
       }],
       events: [
         expect.objectContaining({ type: "parent_changed", revision: 3 }),
@@ -78,13 +78,49 @@ describe("immutable Question updates", () => {
     });
     expect(store.getQuestionHistory("root", "full")).toMatchObject({
       revisions: [
-        expect.objectContaining({ revision: 1, question: { prompt: "root?" } }),
-        expect.objectContaining({ revision: 2, question: { prompt: "Revised root?" } }),
-        expect.objectContaining({ revision: 3, question: { prompt: "Revised root?" } })
+        expect.objectContaining({ revision: 1, question: { prompt: "root?", ambiguity: "Test ambiguity." } }),
+        expect.objectContaining({ revision: 2, question: { prompt: "Revised root?", ambiguity: "Test ambiguity." } }),
+        expect.objectContaining({ revision: 3, question: { prompt: "Revised root?", ambiguity: "Test ambiguity." } })
       ],
       events: expect.arrayContaining([expect.objectContaining({ type: "revision", revision: 2 })])
     });
     expect(store.getQuestionHistory("root")).not.toHaveProperty("answer");
+  });
+
+  it("paginates history across a frozen compact snapshot", () => {
+    const { store, create, tick } = setup();
+    create("paged-history");
+    for (let revision = 1; revision <= 3; revision += 1) {
+      tick();
+      store.updateQuestion("paged-history", { harness: "pi", ownerId: "agent" }, {
+        action: "revise",
+        expectedRevision: revision,
+        expectedOwnerRevision: 1,
+        question: { prompt: `Revision ${revision + 1}?`, ambiguity: "Test ambiguity." }
+      });
+    }
+
+    const first = store.getQuestionHistoryPage({ questionId: "paged-history", pageSize: 2 });
+    expect(first).toMatchObject({
+      view: "events",
+      questionId: "paged-history",
+      initial: { revision: 1 },
+      revisions: [{ revision: 2 }],
+      events: []
+    });
+    expect(first.nextCursor?.length).toBeLessThan(120);
+    const second = store.getQuestionHistoryPage({
+      questionId: "paged-history",
+      pageSize: 2,
+      cursor: first.nextCursor
+    });
+    expect(second).toEqual({
+      view: "events",
+      questionId: "paged-history",
+      revisions: [expect.objectContaining({ revision: 3 }), expect.objectContaining({ revision: 4 })],
+      events: []
+    });
+    expect(() => store.getQuestionHistoryPage({ questionId: "paged-history", pageSize: 51 })).toThrow(/at most 50/i);
   });
 
   it("records browser, session, and expiry terminal events with stable actors and timestamps", () => {
@@ -92,7 +128,7 @@ describe("immutable Question updates", () => {
     create("browser-cancel");
     store.cancel("browser-cancel", { note: "No longer needed" });
     expect(store.getQuestionHistory("browser-cancel").initial).toEqual(
-      expect.objectContaining({ revision: 1, question: { prompt: "browser-cancel?" } })
+      expect.objectContaining({ revision: 1, question: { prompt: "browser-cancel?", ambiguity: "Test ambiguity." } })
     );
     expect(store.getQuestionHistory("browser-cancel").revisions).toEqual([]);
     expect(store.getQuestionHistory("browser-cancel").events).toContainEqual(expect.objectContaining({
@@ -119,8 +155,8 @@ describe("immutable Question updates", () => {
     sessions.register("other-connection", { machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
       session: { sessionId: "other-session", cwd: "/repo", semanticState: "working", owner: { harness: "pi", ownerId: "other-agent" } } });
     store.create({ requestId: "foreign-parent", sessionId: "other-session", mode: "single",
-      question: { prompt: "foreign-parent?" }, options: [{ value: "yes", label: "Yes" }],
-      context: { codebaseContext: "Postbox", problemContext: "Different owner" } });
+      question: { prompt: "foreign-parent?", ambiguity: "Test ambiguity." }, options: [{ value: "yes", label: "Yes" }],
+       });
     expect(() => store.updateQuestion("child", { harness: "pi", ownerId: "agent" }, {
       action: "reparent", expectedRevision: 1, expectedOwnerRevision: 1, parentQuestionId: "foreign-parent"
     })).toThrowError(expect.objectContaining({ code: "wrong_owner" }));

@@ -5,35 +5,50 @@ const draft = {
   localRef: "root",
   requestId: "question-root",
   mode: "single",
-  question: { prompt: "Choose a rollout?" },
-  options: [{ value: "blue", label: "Blue" }],
-  context: { codebaseContext: "Deployment service", problemContext: "Choose a rollout." }
+  question: { prompt: "Choose a rollout?", ambiguity: "Which rollout balances speed and risk?" },
+  options: [{ value: "blue", label: "Blue" }]
 };
 
 describe("ordered Question batch protocol", () => {
-  it("keeps strict single drafts while allowing batch context to come from required defaults", () => {
+  it("keeps single and batch drafts strict without shared defaults", () => {
     const protocol = askProtocol as Record<string, any>;
     const draftSchema = protocol.AskQuestionDraftSchema;
     const inputSchema = protocol.AskPostboxInputSchema;
 
     expect(draftSchema).toBeDefined();
     expect(inputSchema).toBeDefined();
-    const defaults = { context: draft.context };
-    const { context: _context, ...compactDraft } = draft;
     expect(draftSchema.safeParse({ ...draft, surprise: true }).success).toBe(false);
     expect(inputSchema.safeParse({ mode: "single", question: draft }).success).toBe(true);
-    expect(inputSchema.safeParse({ mode: "batch", defaults, questions: [compactDraft, { ...compactDraft, localRef: "child", requestId: "question-child" }] }).success).toBe(true);
+    expect(inputSchema.safeParse({ mode: "batch", questions: [draft, { ...draft, localRef: "child", requestId: "question-child" }] }).success).toBe(true);
     expect(inputSchema.safeParse({ mode: "single", question: draft, questions: [draft] }).success).toBe(false);
-    expect(inputSchema.safeParse({ mode: "batch", defaults, questions: [compactDraft], question: draft }).success).toBe(false);
+    expect(inputSchema.safeParse({ mode: "batch", questions: [draft], question: draft }).success).toBe(false);
+    expect(inputSchema.safeParse({ mode: "batch", defaults: {}, questions: [draft] }).success).toBe(false);
   });
 
-  it("requires unique local references and an unambiguous parent reference", () => {
+  it("requires unique local references and explicit, unambiguous parent fields", () => {
     const schema = (askProtocol as Record<string, any>).AskPostboxInputSchema;
     expect(schema).toBeDefined();
-    const defaults = { context: draft.context };
-    expect(schema.safeParse({ mode: "batch", defaults, questions: [draft, { ...draft, requestId: "question-2" }] }).success).toBe(false);
-    expect(schema.safeParse({ mode: "batch", defaults, questions: [draft, { ...draft, requestId: "question-2", parent: { questionId: "existing", localRef: "root" } }] }).success).toBe(false);
-    expect(schema.safeParse({ mode: "batch", defaults, questions: [draft, { ...draft, localRef: "root", requestId: "question-2" }] }).success).toBe(false);
+    expect(schema.safeParse({ mode: "batch", questions: [draft, { ...draft, requestId: "question-2" }] }).success).toBe(false);
+    expect(schema.safeParse({ mode: "batch", questions: [draft, {
+      ...draft,
+      localRef: "child",
+      requestId: "question-2",
+      parentQuestionId: "existing",
+      parentLocalRef: "root"
+    }] }).success).toBe(false);
+    expect(schema.safeParse({ mode: "batch", questions: [draft, {
+      ...draft,
+      localRef: "child",
+      requestId: "question-2",
+      parentQuestionId: "existing"
+    }] }).success).toBe(true);
+    expect(schema.safeParse({ mode: "batch", questions: [draft, {
+      ...draft,
+      localRef: "child",
+      requestId: "question-2",
+      parentLocalRef: "root"
+    }] }).success).toBe(true);
+    expect(schema.safeParse({ mode: "batch", questions: [draft, { ...draft, localRef: "root", requestId: "question-2" }] }).success).toBe(false);
   });
 
   it("exposes hierarchy metadata, typed receipts, and affected descendant ids", () => {
@@ -42,7 +57,15 @@ describe("ordered Question batch protocol", () => {
     expect(protocol.AskBatchReceiptSchema.safeParse({
       status: "partial",
       items: [
-        { localRef: "root", status: "created", questionId: "question-root", revision: 1, disposition: "created" },
+        {
+          localRef: "root",
+          status: "created",
+          questionId: "question-root",
+          revision: 1,
+          ownerRevision: 1,
+          questionStatus: "pending",
+          disposition: "created"
+        },
         { localRef: "child", status: "rejected", reason: { code: "forward_parent_reference", message: "Parent must precede child." } }
       ]
     }).success).toBe(true);

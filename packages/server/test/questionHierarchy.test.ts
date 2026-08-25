@@ -15,31 +15,31 @@ function setup() {
   return { db, store: new RequestStore(db, () => now) as any };
 }
 
-const question = (localRef: string, parent?: unknown) => ({
-  localRef, requestId: `question-${localRef}`, parent, mode: "single",
-  question: { prompt: `Resolve ${localRef}?` }, options: [{ value: "yes", label: "Yes" }],
-  context: { codebaseContext: "Postbox", problemContext: "Preserve a deterministic hierarchy." }
+const question = (localRef: string, parent?: { questionId?: string; localRef?: string }) => ({
+  localRef,
+  requestId: `question-${localRef}`,
+  ...(parent?.questionId ? { parentQuestionId: parent.questionId } : {}),
+  ...(parent?.localRef ? { parentLocalRef: parent.localRef } : {}),
+  mode: "single",
+  question: { prompt: `Resolve ${localRef}?`, ambiguity: "Test ambiguity." }, options: [{ value: "yes", label: "Yes" }],
+
 });
 
 describe("Question hierarchy transaction", () => {
-  it("expands batch default context before validation and persists item overrides independently", () => {
+  it("persists ordered batch Questions without top-level handoff context", () => {
     const { db, store } = setup();
-    const defaultContext = { codebaseContext: "Shared codebase", problemContext: "Shared problem" };
-    const overrideContext = { codebaseContext: "Child codebase", problemContext: "Child problem" };
-    const { context: _rootContext, ...root } = question("root");
-    const { context: _childContext, ...child } = question("child", { localRef: "root" });
-
-    expect(store.createBatch("session", [root, { ...child, context: overrideContext }], { context: defaultContext }))
+    expect(store.createBatch("session", [question("root"), question("child", { localRef: "root" })]))
       .toMatchObject({ status: "created" });
 
-    expect(store.getQuestions({ questionIds: ["question-root", "question-child"], view: "full" }))
-      .toEqual([
-        expect.objectContaining({ questionId: "question-root", context: defaultContext }),
-        expect.objectContaining({ questionId: "question-child", context: overrideContext })
-      ]);
+    const details = store.getQuestions({ questionIds: ["question-root", "question-child"], view: "full" });
+    expect(details).toEqual([
+      expect.objectContaining({ questionId: "question-root" }),
+      expect.objectContaining({ questionId: "question-child" })
+    ]);
+    expect(details.every((detail: object) => !("context" in detail))).toBe(true);
     expect(db.prepare("SELECT context_json FROM questions ORDER BY question_id").all()).toEqual([
-      { context_json: JSON.stringify(overrideContext) },
-      { context_json: JSON.stringify(defaultContext) }
+      { context_json: null },
+      { context_json: null }
     ]);
     db.close();
   });
@@ -107,7 +107,7 @@ describe("Question hierarchy transaction", () => {
       action: "revise",
       expectedRevision: 1,
       expectedOwnerRevision: 1,
-      question: { prompt: "Resolve the revised root?" }
+      question: { prompt: "Resolve the revised root?", ambiguity: "Test ambiguity." }
     });
     expect(store.createBatch("session", drafts)).toMatchObject({
       status: "created",

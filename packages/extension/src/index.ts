@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { ASK_STATUSES, AnswerReadResultSchema, type SessionRegisterPayload } from "@pi-postbox/protocol";
+import {
+  ASK_STATUSES,
+  AnswerReadResultSchema,
+  POSTBOX_EXPLICIT_ID_MAX,
+  POSTBOX_OWNER_PAGE_MAX,
+  QUESTION_DISCOVERY_PAGE_MAX,
+  QUESTION_HISTORY_PAGE_MAX,
+  QUESTION_STATUS_PAGE_MAX,
+  type SessionRegisterPayload
+} from "@pi-postbox/protocol";
 import { PostboxClient } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
@@ -14,7 +23,14 @@ import { createSemanticStateController, installSemanticStateHandlers, type Seman
 import { getMachineIdentity } from "./machineIdentity.js";
 import { collectProjectMetadata } from "./projectMetadata.js";
 import { collectSessionMetadata } from "./sessionMetadata.js";
-import { askPostboxParameters, executeAskPostbox, formatAskResult, type AskPostboxInput } from "./tools/askPostbox.js";
+import { executeAskPostbox } from "./tools/askPostbox.js";
+import {
+  normalizeWriteQuestionResult,
+  toAskPostboxInput,
+  toQuestionUpdateRequest,
+  writeQuestionParameters,
+  type WriteQuestionInput
+} from "./tools/writeQuestion.js";
 import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./status.js";
 import { PiQuestionChatRuntimeAdapter, QuestionChatRuntimeRegistry } from "./questionChatRuntime.js";
 import { FileAnswerNotificationInbox } from "./answerNotificationInbox.js";
@@ -48,7 +64,6 @@ export function createWaitForPostboxTool(wait: (signal?: AbortSignal) => Promise
   return {
     name: "wait_for_postbox", label: "Wait for Postbox", annotations: { readOnlyHint: false },
     description: "Cancellably idle until the first actionable event across every Question owned by this agent.",
-    promptSnippet: "Use only when a Postbox decision is the sole remaining blocker; wait once instead of polling.",
     promptGuidelines: [
       "Use wait_for_postbox only when a human Postbox decision is the only blocker and no independent work remains. Call it once, remain idle until it wakes from a notification or actionable lifecycle event, then use get_answer for the relevant Question. Never use repeated status or Answer reads as a polling substitute."
     ],
@@ -156,44 +171,57 @@ export default function postboxExtension(pi: PiLikeApi): void {
   });
 
   pi.registerTool?.({
-    name: "ask_postbox",
-    label: "Ask Postbox",
-    description: "Persist a structured decision question in Pi Postbox and return after server acknowledgement.",
-    promptSnippet: "Queue a remote decision, continue other work, and never poll; wait explicitly only when blocked.",
+    name: "write_question",
+    label: "Write Question",
+    description: "Create, revise, cancel, supersede, reparent, transfer, or take over Postbox Questions through one compact write interface.",
+    annotations: { readOnlyHint: false },
     promptGuidelines: [
-      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext. It returns after durable persistence, not after an Answer. Continue every non-blocked task. Do not poll get_answer, list_question_status, or list_questions; Postbox will notify this session when an Answer is available. If the human decision is the only blocker, call wait_for_postbox once and remain idle until it wakes, then call get_answer with the questionId."
+      "Use write_question action create or create_batch when you need a human decision. State the ambiguity and concise options. Creation returns after durable persistence with questionId, revision, and ownerRevision; it does not wait for an Answer. Continue independent work and do not poll get_answer, list_question_status, or list_questions. If the Answer is the only blocker, call wait_for_postbox once, remain idle until it wakes, then call get_answer. Existing-Question actions require the latest revision and ownerRevision; reuse the handle returned by the preceding write, and fetch full current state only after a conflict or external change."
     ],
-    parameters: askPostboxParameters,
-    async execute(_toolCallId: string, params: AskPostboxInput, signal?: AbortSignal) {
-      if (!client || !currentRegistration) {
-        await ensureRegistrationForMutatingCaller(process.env, signal);
-      }
+    parameters: writeQuestionParameters,
+    async execute(_toolCallId: string, params: WriteQuestionInput, signal?: AbortSignal) {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env, signal);
 
       if (!client || !currentRegistration) {
-        const result = {
+        if (params.action !== "create" && params.action !== "create_batch") throw new Error(unavailableNote);
+        const unavailable = {
           status: "unavailable" as const,
           requestId: params.requestId ?? "unavailable",
           note: unavailableNote,
           resolvedAt: new Date().toISOString()
         };
-        return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
+        const result = normalizeWriteQuestionResult(params.action, unavailable);
+        return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
       }
 
-      const liveContext = activeSessionRegistrationContext?.ctx;
-      const liveSessionPath = liveContext?.sessionManager?.getSessionFile?.();
-      const liveLeafId = liveContext?.sessionManager?.getLeafId?.();
-      if (liveSessionPath && liveLeafId) {
-        const source = { cwd: liveContext?.cwd ?? currentRegistration.session.cwd, agentSessionPath: liveSessionPath, leafId: liveLeafId };
-        const sourceAwareClient = client as PostboxClient & { updateQuestionSource?: (value: typeof source) => boolean };
-        sourceAwareClient.updateQuestionSource?.(source);
-        currentRegistration = {
-          ...currentRegistration,
-          session: { ...currentRegistration.session, ...source }
-        };
+      let rawResult: Record<string, unknown>;
+      if (params.action === "create" || params.action === "create_batch") {
+        const liveContext = activeSessionRegistrationContext?.ctx;
+        const liveSessionPath = liveContext?.sessionManager?.getSessionFile?.();
+        const liveLeafId = liveContext?.sessionManager?.getLeafId?.();
+        if (liveSessionPath && liveLeafId) {
+          const source = { cwd: liveContext?.cwd ?? currentRegistration.session.cwd, agentSessionPath: liveSessionPath, leafId: liveLeafId };
+          const sourceAwareClient = client as PostboxClient & { updateQuestionSource?: (value: typeof source) => boolean };
+          sourceAwareClient.updateQuestionSource?.(source);
+          currentRegistration = { ...currentRegistration, session: { ...currentRegistration.session, ...source } };
+        }
+        rawResult = await executeAskPostbox(
+          toAskPostboxInput(params),
+          client,
+          currentRegistration.session.sessionId,
+          signal,
+          semanticStateController
+        ) as unknown as Record<string, unknown>;
+      } else {
+        const request = toQuestionUpdateRequest(params);
+        rawResult = await client.query("question.update", {
+          sessionId: currentRegistration.session.sessionId,
+          ...request
+        }) as Record<string, unknown>;
       }
 
-      const result = await executeAskPostbox(params, client, currentRegistration.session.sessionId, signal, semanticStateController);
-      return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
+      const result = normalizeWriteQuestionResult(params.action, rawResult);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
   });
 
@@ -203,7 +231,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     description: "Read the latest Answer for an owned Postbox Question, or receive a compact pending result while unresolved; the registered Pi session supplies reader identity.",
     annotations: { readOnlyHint: false },
     parameters: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
-      questionId: { type: "string", minLength: 1, description: "Question ID returned by ask_postbox." }
+      questionId: { type: "string", minLength: 1, description: "Question ID returned by write_question." }
     } },
     async execute(_toolCallId: string, params: { questionId: string }, signal?: AbortSignal) {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
@@ -214,7 +242,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
   });
 
   const registerQueryTool = (name: string, description: string, parameters: any, type: any, payload: (params: any) => any = (value) => value) => pi.registerTool?.({
-    name, label: name, description, annotations: { readOnlyHint: !["update_question", "recover_question_answer"].includes(name) }, parameters,
+    name, label: name, description, annotations: { readOnlyHint: name !== "recover_question_answer" }, parameters,
     async execute(_id: string, params: any) {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
       if (!client || !currentRegistration) throw new Error(unavailableNote);
@@ -222,17 +250,20 @@ export default function postboxExtension(pi: PiLikeApi): void {
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
   });
+  const ownerIdentityParameters = {
+    type: "object", additionalProperties: false, required: ["harness", "ownerId"],
+    properties: {
+      harness: { type: "string", minLength: 1, description: "Agent harness that owns the Question." },
+      ownerId: { type: "string", minLength: 1, description: "Harness-neutral owner identifier." }
+    }
+  };
   const filters = {
-    owner: { type: "object", description: "Exact owner identity; normally omit and use scope." },
-    repository: { type: "string", description: "Opaque repository scope ID, not a filesystem path; normally omit and use scope." },
-    worktree: { type: "string", description: "Opaque worktree scope ID, not a filesystem path; normally omit and use scope." },
-    feature: { type: "string", description: "Opaque feature scope ID; normally omit and use scope." },
+    owner: { ...ownerIdentityParameters, description: "Exact owner identity; normally omit and use scope." },
     status: {
       type: "string",
       enum: [...ASK_STATUSES],
       description: "Question lifecycle status. Use 'pending' for open or unanswered questions."
-    },
-    global: { type: "boolean" }
+    }
   };
   const discoveryScope = {
     type: "string",
@@ -240,94 +271,78 @@ export default function postboxExtension(pi: PiLikeApi): void {
     description: "Discovery breadth. Defaults to the current owner; broader values deliberately include other owners."
   };
   registerQueryTool("list_questions", "List compact pending Question IDs and text. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden across a feature, worktree, repository, or all Postbox Questions.",
-    { type: "object", additionalProperties: false, properties: { ...filters, scope: discoveryScope, cursor: { type: "string" }, pageSize: { type: "number" } } }, "question.list",
+    { type: "object", additionalProperties: false, properties: {
+      ...filters,
+      scope: discoveryScope,
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous list response." },
+      pageSize: { type: "integer", minimum: 1, maximum: QUESTION_DISCOVERY_PAGE_MAX,
+        description: "Maximum number of Questions to return on this page." }
+    } }, "question.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   registerQueryTool("get_questions", "Get compact latest Question controls for explicit IDs by default; request the full view for complete current Question and resolution evidence.",
     { type: "object", additionalProperties: false, required: ["questionIds"], properties: {
-      questionIds: { type: "array", minItems: 1, items: { type: "string" } },
+      questionIds: {
+        type: "array", minItems: 1, maxItems: POSTBOX_EXPLICIT_ID_MAX, description: "Question IDs to retrieve.",
+        items: { type: "string", description: "One Question ID returned by Postbox." }
+      },
       view: {
         type: "string",
         enum: ["control", "full"],
         description: "Defaults to compact control records; use 'full' for complete Question content."
       }
     } }, "questions.get");
-  registerQueryTool("list_question_status", "List compact actionable Question and unread Answer status. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden.",
+  registerQueryTool("list_question_status", "List one page of compact actionable Question and unread Answer status as { statuses, nextCursor? }. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden.",
     { type: "object", additionalProperties: false, properties: {
       ...filters,
       scope: discoveryScope,
       readState: { type: "string", enum: ["read", "unread"], description: "Human Answer read state; composes conjunctively with status." },
-      includeTerminal: { type: "boolean", description: "With no status/readState filter, include every lifecycle state instead of only actionable pending and unread items." }
+      includeTerminal: { type: "boolean", description: "With no status/readState filter, include every lifecycle state instead of only actionable pending and unread items." },
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous status page." },
+      pageSize: { type: "integer", minimum: 1, maximum: QUESTION_STATUS_PAGE_MAX,
+        description: "Maximum number of status records to return on this page." }
     } }, "question.status.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
-  registerQueryTool("list_postbox_owners", "List up to 100 Postbox owners in the caller's feature by default, with only coarse presence and scoped queue counts.",
+  registerQueryTool("list_postbox_owners", "List one { owners, nextCursor? } page of present or actionable owners in the caller's feature, with coarse presence and scoped queue counts.",
     { type: "object", additionalProperties: false, properties: {
       scope: {
         type: "string",
         enum: ["feature", "worktree", "repository"],
         description: "Defaults to the caller's current feature; broader scopes remain within its worktree or repository."
-      }
+      },
+      includeInactive: { type: "boolean", description: "Include offline historical owners with no active Questions or unread Answers." },
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous owner page." },
+      pageSize: { type: "integer", minimum: 1, maximum: POSTBOX_OWNER_PAGE_MAX,
+        description: "Maximum number of owners to return on this page." }
     } }, "owner.list",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   registerQueryTool("get_postbox_owner_status", "Get compact presence and queue counts for exact harness-neutral owners.",
     { type: "object", additionalProperties: false, required: ["owners"], properties: {
-      owners: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
-        required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } } }
+      owners: { type: "array", minItems: 1, maxItems: POSTBOX_EXPLICIT_ID_MAX, description: "Exact owner identities to inspect.", items: {
+        ...ownerIdentityParameters,
+        description: "One exact harness-neutral owner identity."
+      } }
     } }, "owner.status.get");
-  const questionUpdateVersions = {
-    expectedRevision: { type: "integer", minimum: 1, description: "Current content revision from complete Question details." },
-    expectedOwnerRevision: { type: "integer", minimum: 1, description: "Current owner revision from complete Question details." }
-  };
-  registerQueryTool("update_question", "Revise, cancel, supersede, reparent, transfer, or take over an owned Question with separate content and owner concurrency revisions.",
-    { type: "object", additionalProperties: false, required: ["questionId", "update"], properties: { questionId: { type: "string" }, update: {
-      oneOf: [
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "question"], properties: {
-          action: { const: "revise" }, ...questionUpdateVersions,
-          question: { type: "object", additionalProperties: false, required: ["prompt"], description: "Complete replacement Question object; omitted question-level fields are removed.", properties: {
-            prompt: { type: "string" }, context: { type: "string" }, relevance: { type: "string" }, decisionImpact: { type: "string" }
-          } },
-          options: { type: "array", minItems: 1, maxItems: 20, description: "Optional complete replacement options; omit to preserve current options.", items: { type: "object", additionalProperties: false,
-            required: ["value", "label"], properties: { value: { type: "string" }, label: { type: "string" }, description: { type: "string" }, meaning: { type: "string" }, context: { type: "string" } } } },
-          context: { type: "object", additionalProperties: false, required: ["codebaseContext", "problemContext"], description: "Optional complete replacement handoff context; omit to preserve current context.", properties: {
-            codebaseContext: { type: "string" }, problemContext: { type: "string" }, additionalInfo: { type: "array", maxItems: 20, items: {
-              type: "object", additionalProperties: false, required: ["content"], properties: {
-                kind: { type: "string", enum: ["text", "code", "diagram", "link"] }, title: { type: "string" },
-                content: { type: "string" }, language: { type: "string" }
-              }
-            } }
-          } }
-        } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision"], properties: {
-          action: { const: "cancel" }, ...questionUpdateVersions, note: { type: "string" }
-        } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "replacementQuestionId"], properties: {
-          action: { const: "supersede" }, ...questionUpdateVersions, replacementQuestionId: { type: "string" }
-        } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "parentQuestionId"], properties: {
-          action: { const: "reparent" }, ...questionUpdateVersions, parentQuestionId: { type: ["string", "null"] }
-        } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "expectedOwner", "owner"], properties: {
-          action: { const: "transfer" }, ...questionUpdateVersions,
-          expectedOwner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } },
-          owner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } }
-        } },
-        { type: "object", additionalProperties: false, required: ["action", "expectedRevision", "expectedOwnerRevision", "expectedOwner"], properties: {
-          action: { const: "takeover" }, ...questionUpdateVersions,
-          expectedOwner: { type: "object", additionalProperties: false, required: ["harness", "ownerId"], properties: { harness: { type: "string" }, ownerId: { type: "string" } } }
-        } }
-      ]
-    } } }, "question.update",
-    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
-  registerQueryTool("get_question_history", "Retrieve compact event-oriented Question history by default; request the full view for every immutable revision snapshot.",
+  registerQueryTool("get_question_history", "Retrieve one bounded history page with optional nextCursor; compact events are default and full immutable snapshots are explicit.",
     { type: "object", additionalProperties: false, required: ["questionId"], properties: {
-      questionId: { type: "string" },
+      questionId: { type: "string", description: "Question ID whose history should be retrieved." },
       view: {
         type: "string",
         enum: ["events", "full"],
-        description: "Defaults to compact event-oriented history; use 'full' for every stored revision snapshot."
-      }
+        description: "Defaults to compact event-oriented history; use 'full' for immutable revision snapshots."
+      },
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous history page." },
+      pageSize: { type: "integer", minimum: 1, maximum: QUESTION_HISTORY_PAGE_MAX,
+        description: "Maximum combined revision and event records to return on this page." }
     } }, "question.history.get");
-  registerQueryTool("recover_question_answer", "Read a discovered offline owner's Answer without taking ownership.",
-    { type: "object", additionalProperties: false, required: ["questionId"], properties: { questionId: { type: "string" } } }, "question.answer.recover",
+  registerQueryTool("recover_question_answer", "Read a discovered offline owner's Answer without taking ownership; returns compact output by default.",
+    { type: "object", additionalProperties: false, required: ["questionId"], properties: {
+      questionId: { type: "string", description: "Question ID whose Answer should be recovered." },
+      view: {
+        type: "string",
+        enum: ["compact", "full"],
+        description: "Defaults to compact recovery output; use 'full' for the complete Question, Answer, and read metadata."
+      }
+    } }, "question.answer.recover",
     (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
   pi.registerTool?.(createWaitForPostboxTool(async (signal) => {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env, signal);
@@ -607,19 +622,24 @@ function isSameSessionStickyLocalTarget(original: ResolvedServerTarget, next: Re
   return true;
 }
 
-async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promise<boolean> {
+interface MutatingRegistrationRetryResult {
+  targetWasAvailable: boolean;
+  autostartAllowed: boolean;
+}
+
+async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promise<MutatingRegistrationRetryResult> {
   const context = activeSessionRegistrationContext;
-  if (!context || !context.uiScope.isActive()) return false;
+  if (!context || !context.uiScope.isActive()) return { targetWasAvailable: false, autostartAllowed: true };
 
   const targetResult = await resolveServerTarget({
     ...context.options.resolveOptions,
     cwd: context.options.resolveOptions?.cwd ?? context.ctx.cwd,
     env
   });
-  if (!context.uiScope.isActive()) return false;
-  if (client && (await isCurrentClientConnected())) return true;
+  if (!context.uiScope.isActive()) return { targetWasAvailable: false, autostartAllowed: true };
+  if (client && (await isCurrentClientConnected())) return { targetWasAvailable: true, autostartAllowed: true };
   if (client) {
-    if (clientHasPendingAsks(client)) return true;
+    if (clientHasPendingAsks(client)) return { targetWasAvailable: true, autostartAllowed: true };
     client.stop();
     client = undefined;
     currentRegistration = undefined;
@@ -628,7 +648,10 @@ async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promi
   if (targetResult.status === "unavailable") {
     unavailableNote = formatUnavailableNote(targetResult);
     context.uiScope.setStatus("postbox", "Postbox unavailable");
-    return false;
+    return {
+      targetWasAvailable: false,
+      autostartAllowed: targetResult.recovery !== "restart-required"
+    };
   }
 
   stopProfileSupervisor();
@@ -642,13 +665,14 @@ async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promi
     targetResult.target,
     context.options
   );
-  return true;
+  return { targetWasAvailable: true, autostartAllowed: true };
 }
 
 async function ensureRegistrationForMutatingCaller(env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
-  const targetWasAvailable = await retryRegistrationForMutatingCaller(env);
+  const retryResult = await retryRegistrationForMutatingCaller(env);
   if (client && currentRegistration && (await isCurrentClientConnected())) return;
-  if (targetWasAvailable && client && currentRegistration) return;
+  if (retryResult.targetWasAvailable && client && currentRegistration) return;
+  if (!retryResult.autostartAllowed) return;
 
   let asyncAutostartFailure: string | undefined;
   const autostartResult = ensurePostboxServerAutostarted(env, {
@@ -691,7 +715,7 @@ function waitForRegistration(
   signal?: AbortSignal
 ): Promise<void> {
   if (client && currentRegistration) return Promise.resolve();
-  if (signal?.aborted) return Promise.reject(new Error("ask_postbox was aborted"));
+  if (signal?.aborted) return Promise.reject(new Error("write_question was aborted"));
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -706,7 +730,7 @@ function waitForRegistration(
       if (pollTimer) clearInterval(pollTimer);
       registrationWaiters.delete(onRegistered);
       signal?.removeEventListener("abort", onAbort);
-      if (kind === "reject") reject(error ?? new Error("ask_postbox was aborted"));
+      if (kind === "reject") reject(error ?? new Error("write_question was aborted"));
       else resolve();
     };
 
@@ -722,7 +746,7 @@ function waitForRegistration(
     };
 
     const onRegistered = () => settle("resolve");
-    const onAbort = () => settle("reject", new Error("ask_postbox was aborted"));
+    const onAbort = () => settle("reject", new Error("write_question was aborted"));
 
     registrationWaiters.add(onRegistered);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -761,6 +785,9 @@ export async function collectRegistrationPayload(
 }
 
 function formatUnavailableNote(result: Extract<ResolveServerTargetResult, { status: "unavailable" }>): string {
+  if (result.recovery === "restart-required") {
+    return "A full Pi restart is required because /reload retained an incompatible shared Postbox protocol dependency. Package-local autostart was suppressed to avoid competing for the exact live profile server.";
+  }
   const codes = [...new Set(result.diagnostics.map((diagnostic) => diagnostic.code))];
   if (codes.length === 0) return "Pi Postbox is not connected.";
   return `Pi Postbox is unavailable after profile target resolution (${codes.join(", ")}).`;

@@ -2,7 +2,6 @@ package dev.pi.postbox.question
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -57,7 +56,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
@@ -1110,7 +1108,6 @@ private fun QuestionDetailCard(
 ) {
     var note by remember(question.requestId) { mutableStateOf("") }
     var showNote by remember(question.requestId) { mutableStateOf(false) }
-    var showHandoffContext by remember(question.requestId) { mutableStateOf(false) }
     val actionsEnabled = question.terminalState == null && !question.isSubmitting
 
     Column(
@@ -1140,27 +1137,6 @@ private fun QuestionDetailCard(
                 color = PostalColors.muted,
                 modifier = Modifier.weight(1f)
             )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "ⓘ Context",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = if (showHandoffContext) PostalColors.attentionForeground else PostalColors.subtle,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(PostalColors.elevated)
-                    .border(
-                        1.dp,
-                        if (showHandoffContext) PostalColors.attentionBorder else PostalColors.border,
-                        CircleShape
-                    )
-                    .clickable { showHandoffContext = !showHandoffContext }
-                    .padding(horizontal = 12.dp, vertical = 5.dp)
-            )
-        }
-
-        if (showHandoffContext) {
-            HandoffContextSection(question)
         }
 
         // Letter strip: the question arrives on a piece of ruled writing paper.
@@ -1189,12 +1165,8 @@ private fun QuestionDetailCard(
             )
         }
 
-        if (question.questionContext != null || question.relevance != null || question.decisionImpact != null) {
-            DecisionContextBox(
-                context = question.questionContext,
-                relevance = question.relevance,
-                impact = question.decisionImpact
-            )
+        question.ambiguity?.let { ambiguity ->
+            DecisionContextBox(ambiguity = ambiguity)
         }
 
         Text(
@@ -1301,20 +1273,13 @@ private fun QuestionDetailCard(
     }
 }
 
-/** Postal double frame with a navy envelope stamp: "Why this decision matters". */
+/** Postal double frame with a navy envelope stamp for the Question ambiguity. */
 @Composable
-private fun DecisionContextBox(
-    context: String?,
-    relevance: String?,
-    impact: String?
-) {
-    val hasMore = relevance != null || impact != null
-    var expanded by remember { mutableStateOf(false) }
+private fun DecisionContextBox(ambiguity: String) {
     val outerShape = RoundedCornerShape(10.dp)
     val innerShape = RoundedCornerShape(7.dp)
-    val chevronAngle by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
 
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(outerShape)
@@ -1322,64 +1287,38 @@ private fun DecisionContextBox(
             .border(2.dp, PostalColors.history.copy(alpha = 0.5f), outerShape)
             .padding(3.dp)
             .border(1.dp, PostalColors.history.copy(alpha = 0.4f), innerShape)
-            .clickable(enabled = hasMore) { expanded = !expanded }
-            .padding(14.dp)
+            .padding(14.dp),
+        verticalAlignment = Alignment.Top
     ) {
-        Row(verticalAlignment = Alignment.Top) {
-            Box(
-                modifier = Modifier
-                    .padding(top = 2.dp)
-                    .stampEdge()
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(PostalColors.history)
-                    .size(36.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = EnvelopeIcon,
-                    contentDescription = null,
-                    tint = PostalColors.elevated,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "Why this decision matters".uppercase(),
-                        style = PostalCaptionStyle.copy(color = PostalColors.historyForeground),
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (hasMore) {
-                        Text(
-                            text = "▾",
-                            color = PostalColors.historyForeground,
-                            modifier = Modifier.rotate(chevronAngle)
-                        )
-                    }
-                }
-                context?.let {
-                    Text(
-                        text = it,
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp,
-                        color = PostalColors.subtle,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-            }
+        Box(
+            modifier = Modifier
+                .padding(top = 2.dp)
+                .stampEdge()
+                .clip(RoundedCornerShape(2.dp))
+                .background(PostalColors.history)
+                .size(36.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = EnvelopeIcon,
+                contentDescription = null,
+                tint = PostalColors.elevated,
+                modifier = Modifier.size(20.dp)
+            )
         }
-        if (expanded) {
-            Column(
-                modifier = Modifier.padding(start = 48.dp, top = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                relevance?.let { LabeledBlock("Relevance", it) }
-                impact?.let { LabeledBlock("Impact", it) }
-            }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Ambiguity".uppercase(),
+                style = PostalCaptionStyle.copy(color = PostalColors.historyForeground)
+            )
+            Text(
+                text = ambiguity,
+                fontSize = 14.sp,
+                lineHeight = 21.sp,
+                color = PostalColors.subtle,
+                modifier = Modifier.padding(top = 4.dp)
+            )
         }
     }
 }
@@ -1450,11 +1389,21 @@ private fun BallotOptionRow(
             contentAlignment = Alignment.Center
         ) {
             if (selected) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(PostalColors.attention, markShape)
-                )
+                if (mode == QuestionMode.SINGLE) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(PostalColors.attention, CircleShape)
+                    )
+                } else {
+                    Text(
+                        text = "✓",
+                        color = PostalColors.attention,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 14.sp
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.width(12.dp))
@@ -1495,22 +1444,13 @@ private fun BallotOptionRow(
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
-            option.meaning?.let { meaning ->
+            option.impact?.let { impact ->
                 Text(
-                    text = "Meaning: $meaning",
+                    text = "Impact: $impact",
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     color = PostalColors.attentionForeground.copy(alpha = 0.8f),
                     modifier = Modifier.padding(top = 8.dp)
-                )
-            }
-            option.context?.let { context ->
-                Text(
-                    text = "Context: $context",
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                    color = PostalColors.muted,
-                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
         }
@@ -1574,40 +1514,6 @@ private fun SubtleTextButton(
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp)
     )
-}
-
-@Composable
-private fun HandoffContextSection(question: QuestionDetailUiState) {
-    val handoff = question.handoffContext
-    val additionalInfo = handoff?.additionalInfo.orEmpty()
-    val hasAnyContext = handoff?.problemContext != null ||
-        handoff?.codebaseContext != null ||
-        additionalInfo.isNotEmpty()
-
-    PostalPanel {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Text(
-                text = "Context".uppercase(),
-                style = PostalCaptionStyle
-            )
-            if (!hasAnyContext) {
-                Text(
-                    text = "No additional context was provided for this question.",
-                    fontSize = 14.sp,
-                    color = PostalColors.muted
-                )
-            } else {
-                handoff?.problemContext?.let { LabeledBlock("Problem context", it) }
-                handoff?.codebaseContext?.let { LabeledBlock("Codebase context", it) }
-                additionalInfo.forEach { item ->
-                    LabeledBlock(item.title ?: item.kind, item.content)
-                }
-            }
-        }
-    }
 }
 
 @Composable
@@ -1827,14 +1733,11 @@ private fun QuestionWorkflowScreenPreview() {
                     sessionId = "session-live",
                     mode = QuestionMode.SINGLE,
                     prompt = "Choose one deployment target",
-                    questionContext = "The verified server URL belongs to the developer Tailnet.",
-                    relevance = "The Android client should guide the developer to a reachable endpoint.",
-                    decisionImpact = "The selected target controls which server receives the answer.",
+                    ambiguity = "Which reachable endpoint should receive the answer?",
                     options = listOf(
                         QuestionOptionUiState("tailnet", "Use Tailnet HTTPS", "Connect to the verified HTTPS URL."),
                         QuestionOptionUiState("loopback", "Use emulator loopback", "Connect to 10.0.2.2.")
                     ),
-                    handoffContext = null,
                     forkReference = null,
                     availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
                 )

@@ -8,27 +8,15 @@ const SHORT_TEXT_MAX = 2_000;
 const LONG_TEXT_MAX = 128_000;
 const REQUEST_ID_MAX = 200;
 const OPTIONS_MAX = 20;
-const ADDITIONAL_INFO_MAX = 20;
 const SELECTED_VALUES_MAX = 20;
 
 const ShortTextSchema = z.string().min(1).max(SHORT_TEXT_MAX);
 const LongTextSchema = z.string().min(1).max(LONG_TEXT_MAX);
-const NonBlankLongTextSchema = z
-  .string()
-  .max(LONG_TEXT_MAX)
-  .refine((value) => value.trim().length > 0, { message: "Required context must not be blank" });
 const RequestIdSchema = z.string().min(1).max(REQUEST_ID_MAX);
 
 export const AskModeSchema = z.enum(["single", "multi"]);
 export const ASK_STATUSES = ["pending", "answered", "cancelled", "expired", "superseded"] as const;
 export const AskStatusSchema = z.enum(ASK_STATUSES);
-
-export const RichContextItemSchema = z.object({
-  kind: z.enum(["text", "code", "diagram", "link"]).default("text"),
-  title: ShortTextSchema.optional(),
-  content: LongTextSchema,
-  language: z.string().min(1).max(80).optional()
-});
 
 export const ForkReferenceSchema = z.object({
   agentSessionId: ShortTextSchema.optional(),
@@ -38,23 +26,11 @@ export const ForkReferenceSchema = z.object({
   model: ShortTextSchema.optional()
 });
 
-export const HandoffContextSchema = z.object({
-  codebaseContext: LongTextSchema.optional(),
-  problemContext: LongTextSchema.optional(),
-  additionalInfo: z.array(RichContextItemSchema).max(ADDITIONAL_INFO_MAX).optional()
-});
-
-export const AskCreateHandoffContextSchema = HandoffContextSchema.extend({
-  codebaseContext: NonBlankLongTextSchema,
-  problemContext: NonBlankLongTextSchema
-});
-
 export const AskCreateOptionSchema = z.object({
   value: z.string().min(1).max(200),
   label: ShortTextSchema,
   description: LongTextSchema.optional(),
-  meaning: LongTextSchema.optional(),
-  context: LongTextSchema.optional()
+  impact: LongTextSchema.optional()
 }).strict();
 
 export const AskOptionSchema = AskCreateOptionSchema.extend({
@@ -68,8 +44,7 @@ export const ProposedAnswerOptionSchema = AskCreateOptionSchema.extend({
 export const ProposeAnswerPayloadSchema = z.object({
   label: ShortTextSchema,
   description: LongTextSchema.optional(),
-  meaning: LongTextSchema.optional(),
-  context: LongTextSchema.optional()
+  impact: LongTextSchema.optional()
 }).strict();
 
 export const ProposeAnswerErrorCodeSchema = z.enum([
@@ -97,20 +72,27 @@ export const ProposeAnswerResultSchema = z.discriminatedUnion("status", [
   }).strict()
 ]);
 
+// Persisted legacy Questions may not have ambiguity yet. Unknown legacy helper
+// fields are stripped when reading rather than being re-exposed or synthesized.
 export const AskQuestionSchema = z.object({
   prompt: LongTextSchema,
-  context: LongTextSchema.optional(),
-  relevance: LongTextSchema.optional(),
-  decisionImpact: LongTextSchema.optional()
+  ambiguity: LongTextSchema.optional()
 });
+
+export const AskCreateQuestionSchema = z.object({
+  prompt: LongTextSchema,
+  ambiguity: z.string().max(LONG_TEXT_MAX).refine(
+    (value) => value.trim().length > 0,
+    { message: "Question ambiguity must not be blank" }
+  )
+}).strict();
 
 export const AskCreatePayloadSchema = z.object({
   requestId: RequestIdSchema,
   sessionId: z.string().min(1).max(200),
   mode: AskModeSchema,
-  question: AskQuestionSchema,
+  question: AskCreateQuestionSchema,
   options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
-  context: AskCreateHandoffContextSchema,
   forkReference: ForkReferenceSchema.optional(),
   expiresAt: z.string().datetime().optional(),
   parentQuestionId: RequestIdSchema.optional(),
@@ -119,35 +101,39 @@ export const AskCreatePayloadSchema = z.object({
   feature: FeatureIdentitySchema.optional()
 }).strict();
 
-export const AskParentReferenceSchema = z.union([
-  z.object({ questionId: RequestIdSchema }).strict(),
-  z.object({ localRef: RequestIdSchema }).strict()
-]);
-
-export const AskQuestionDraftSchema = z.object({
+const AskQuestionDraftShape = {
   localRef: RequestIdSchema,
   requestId: RequestIdSchema,
   mode: AskModeSchema.default("single"),
-  question: AskQuestionSchema,
+  question: AskCreateQuestionSchema,
   options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
-  context: AskCreateHandoffContextSchema,
   forkReference: ForkReferenceSchema.optional(),
   expiresAt: z.string().datetime().optional(),
-  parent: AskParentReferenceSchema.optional()
-}).strict();
+  parentQuestionId: RequestIdSchema.optional(),
+  parentLocalRef: RequestIdSchema.optional()
+};
 
-export const AskBatchDefaultsSchema = z.object({
-  context: AskCreateHandoffContextSchema
-}).strict();
+function requireUnambiguousParent(
+  draft: { parentQuestionId?: string; parentLocalRef?: string },
+  context: z.RefinementCtx
+): void {
+  if (draft.parentQuestionId === undefined || draft.parentLocalRef === undefined) return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["parentLocalRef"],
+    message: "A Question may reference its parent by Question ID or batch-local reference, not both"
+  });
+}
 
-export const AskBatchQuestionDraftSchema = AskQuestionDraftSchema.extend({
-  context: AskCreateHandoffContextSchema.optional()
-}).strict();
+export const AskQuestionDraftSchema = z.object(AskQuestionDraftShape)
+  .strict()
+  .superRefine(requireUnambiguousParent);
+
+export const AskBatchQuestionDraftSchema = AskQuestionDraftSchema;
 
 const AskSingleInputSchema = z.object({ mode: z.literal("single"), question: AskQuestionDraftSchema }).strict();
 const AskBatchInputSchema = z.object({
   mode: z.literal("batch"),
-  defaults: AskBatchDefaultsSchema,
   questions: z.array(AskBatchQuestionDraftSchema).min(1)
 }).strict()
   .superRefine(({ questions }, ctx) => {
@@ -166,6 +152,8 @@ const AskBatchItemReceiptSchema = z.discriminatedUnion("status", [
     status: z.literal("created"),
     questionId: RequestIdSchema,
     revision: z.number().int().min(1),
+    ownerRevision: z.number().int().min(1),
+    questionStatus: AskStatusSchema,
     disposition: z.enum(["created", "idempotent"]),
     nudge: z.string().optional()
   }).strict(),
@@ -183,7 +171,7 @@ export const AskAnswerPayloadSchema = z.object({
 const ExpectedRevisionSchema = z.number().int().min(1);
 const ExpectedOwnerRevisionSchema = z.number().int().min(1);
 export const UpdateQuestionPayloadSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, question: AskQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional(), context: AskCreateHandoffContextSchema.optional() }).strict(),
+  z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, question: AskCreateQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional() }).strict(),
   z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, note: LongTextSchema.optional() }).strict(),
   z.object({ action: z.literal("supersede"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, replacementQuestionId: RequestIdSchema }).strict(),
   z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict(),
@@ -224,15 +212,13 @@ export const QuestionResolutionSchema = z.union([
 const HistoryBaseSchema = z.object({ revision: ExpectedRevisionSchema, actor: HistoryActorSchema, at: z.string().datetime() });
 export const QuestionRevisionSnapshotSchema = HistoryBaseSchema.extend({
   question: AskQuestionSchema,
-  options: z.array(AskOptionSchema),
-  context: AskCreateHandoffContextSchema.optional()
+  options: z.array(AskOptionSchema)
 }).strict();
 export const QuestionContentRevisionSchema = HistoryBaseSchema.extend({
   question: AskQuestionSchema.optional(),
-  options: z.array(AskOptionSchema).optional(),
-  context: AskCreateHandoffContextSchema.optional()
+  options: z.array(AskOptionSchema).optional()
 }).strict().superRefine((revision, context) => {
-  if (revision.question !== undefined || revision.options !== undefined || revision.context !== undefined) return;
+  if (revision.question !== undefined || revision.options !== undefined) return;
   context.addIssue({
     code: z.ZodIssueCode.custom,
     message: "A content revision must replace at least one Question content section"
@@ -240,7 +226,7 @@ export const QuestionContentRevisionSchema = HistoryBaseSchema.extend({
 });
 const QuestionRevisionEventSchema = HistoryBaseSchema.extend({
   type: z.literal("revision"),
-  changes: z.array(z.enum(["question", "options", "context"])).min(1)
+  changes: z.array(z.enum(["question", "options"])).min(1)
 }).strict();
 export const QuestionNonContentEventSchema = z.union([
   HistoryBaseSchema.extend({ type: z.literal("parent_changed"), parentQuestionId: RequestIdSchema.nullable() }).strict(),
@@ -303,7 +289,9 @@ export const AskResultSchema = z.discriminatedUnion("status", [
 export const AskReceiptSchema = z.object({
   questionId: RequestIdSchema,
   revision: z.number().int().min(1),
-  status: z.literal("pending")
+  ownerRevision: z.number().int().min(1),
+  status: AskStatusSchema,
+  disposition: z.enum(["created", "idempotent"])
 });
 
 const HumanAnswerReadResultSchema = z.object({
@@ -348,7 +336,6 @@ export const AskRequestSnapshotSchema = z.object({
   mode: AskModeSchema,
   question: AskQuestionSchema,
   options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
-  context: HandoffContextSchema.optional(),
   forkReference: ForkReferenceSchema.optional(),
   status: AskStatusSchema,
   createdAt: z.string().datetime(),
@@ -372,10 +359,7 @@ export const AskRequestSnapshotSchema = z.object({
 
 export type AskMode = z.infer<typeof AskModeSchema>;
 export type AskStatus = z.infer<typeof AskStatusSchema>;
-export type RichContextItem = z.infer<typeof RichContextItemSchema>;
 export type ForkReference = z.infer<typeof ForkReferenceSchema>;
-export type HandoffContext = z.infer<typeof HandoffContextSchema>;
-export type AskCreateHandoffContext = z.infer<typeof AskCreateHandoffContextSchema>;
 export type AskCreateOption = z.infer<typeof AskCreateOptionSchema>;
 export type AskOption = z.infer<typeof AskOptionSchema>;
 export type ProposedAnswerOption = z.infer<typeof ProposedAnswerOptionSchema>;
@@ -383,9 +367,9 @@ export type ProposeAnswerPayload = z.infer<typeof ProposeAnswerPayloadSchema>;
 export type ProposeAnswerErrorCode = z.infer<typeof ProposeAnswerErrorCodeSchema>;
 export type ProposeAnswerResult = z.infer<typeof ProposeAnswerResultSchema>;
 export type AskQuestion = z.infer<typeof AskQuestionSchema>;
+export type AskCreateQuestion = z.infer<typeof AskCreateQuestionSchema>;
 export type AskCreatePayload = z.infer<typeof AskCreatePayloadSchema>;
 export type AskQuestionDraft = z.infer<typeof AskQuestionDraftSchema>;
-export type AskBatchDefaults = z.infer<typeof AskBatchDefaultsSchema>;
 export type AskBatchQuestionDraft = z.infer<typeof AskBatchQuestionDraftSchema>;
 export type AskPostboxInput = z.infer<typeof AskPostboxInputSchema>;
 export type AskBatchReceipt = z.infer<typeof AskBatchReceiptSchema>;

@@ -284,6 +284,55 @@ function runMigrations(db: SqliteDatabase): void {
     SELECT question_id, revision, question_json, options_json, context_json, creator_harness, creator_owner_id, created_at
     FROM questions`);
   migrateLegacyDecisions(db);
+  migrateLegacyOptionFields(db);
+  removePersistedQuestionContext(db);
+}
+
+function migrateLegacyOptionFields(db: SqliteDatabase): void {
+  db.transaction(() => {
+    for (const table of ["ask_requests", "questions", "question_revisions"] as const) {
+      const rows = db.prepare(`SELECT rowid, options_json FROM ${table}
+        WHERE options_json LIKE '%"meaning"%' OR options_json LIKE '%"context"%'`)
+        .all() as Array<{ rowid: number; options_json: string }>;
+      const update = db.prepare(`UPDATE ${table} SET options_json = ? WHERE rowid = ?`);
+      for (const row of rows) {
+        let options: unknown;
+        try {
+          options = JSON.parse(row.options_json);
+        } catch {
+          continue;
+        }
+        if (!Array.isArray(options)) continue;
+        let changed = false;
+        const migrated = options.map((option: unknown) => {
+          if (typeof option !== "object" || option === null) return option;
+          const current = option as Record<string, unknown>;
+          if (!("meaning" in current) && !("context" in current)) return option;
+          const next = { ...current };
+          if (!("impact" in next) && typeof next.meaning === "string") next.impact = next.meaning;
+          delete next.meaning;
+          delete next.context;
+          changed = true;
+          return next;
+        });
+        if (changed) update.run(JSON.stringify(migrated), row.rowid);
+      }
+    }
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('rename-option-meaning-to-impact-v1', '{"legacyField":"meaning","replacement":"impact"}', datetime('now'))`).run();
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('remove-option-context-v1', '{"optionContext":"removed"}', datetime('now'))`).run();
+  })();
+}
+
+function removePersistedQuestionContext(db: SqliteDatabase): void {
+  db.transaction(() => {
+    db.prepare("UPDATE ask_requests SET context_json = NULL WHERE context_json IS NOT NULL").run();
+    db.prepare("UPDATE questions SET context_json = NULL WHERE context_json IS NOT NULL").run();
+    db.prepare("UPDATE question_revisions SET context_json = NULL WHERE context_json IS NOT NULL").run();
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('remove-question-context-v1', '{"storedContext":"removed"}', datetime('now'))`).run();
+  })();
 }
 
 function migrateLegacyDecisions(db: SqliteDatabase): void {

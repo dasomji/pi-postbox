@@ -31,11 +31,9 @@ class PostboxProtocolDtoTest {
         assertEquals(AskMode.MULTI, request.mode)
         assertEquals(AskStatus.PENDING, request.status)
         assertEquals("Choose protocol client behavior", request.question.prompt)
-        assertEquals("Defines the first public client boundary.", request.question.decisionImpact)
+        assertEquals("Which client behavior preserves the public protocol boundary?", request.question.ambiguity)
         assertEquals("kotlinx", request.options[0].value)
         assertEquals("Use Kotlin serialization", request.options[0].label)
-        assertEquals("Fastify server with shared protocol schemas.", request.context?.codebaseContext)
-        assertEquals("Route", request.context?.additionalInfo?.single()?.title)
         assertEquals("leaf-1", request.forkReference?.leafId)
     }
 
@@ -49,8 +47,7 @@ class PostboxProtocolDtoTest {
         val option = request.options.first()
 
         assertEquals("Generate small DTOs backed by kotlinx.serialization.", option.description)
-        assertEquals("Stay idiomatic on Android.", option.meaning)
-        assertEquals("Existing project already has the dependency.", option.context)
+        assertEquals("Stay idiomatic on Android.", option.impact)
         assertEquals(AskOptionProvenance.CHAT, option.provenance)
     }
 

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { askPostboxParameters, executeAskPostbox, formatAskResult } from "../src/tools/askPostbox.js";
 
-const sharedContext = { codebaseContext: "Deployment service", problemContext: "Choose a rollout." };
 const draft = {
   localRef: "root",
   requestId: "question-root",
   question: "Choose a rollout?",
+  ambiguity: "Which rollout should be used?",
   options: [{ value: "blue", label: "Blue" }]
 };
 
@@ -17,18 +17,51 @@ describe("ask_postbox ordered batches", () => {
     expect(JSON.stringify(schema)).toMatch(/four levels/i);
     expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toBeUndefined();
-    expect(schema.oneOf[0]).toMatchObject({ additionalProperties: false, required: ["question", "options", "context"] });
-    expect(schema.oneOf[1]).toMatchObject({ additionalProperties: false, required: ["mode", "defaults", "questions"] });
+    expect(schema.oneOf[0]).toMatchObject({ additionalProperties: false, required: ["question", "ambiguity", "options"] });
+    expect(schema.oneOf[1]).toMatchObject({ additionalProperties: false, required: ["mode", "questions"] });
     expect(schema.oneOf[0].properties).not.toHaveProperty("questions");
     expect(schema.oneOf[0].properties).not.toHaveProperty("defaults");
     expect(schema.oneOf[1].properties).not.toHaveProperty("requestId");
     expect(schema.oneOf[1].properties).not.toHaveProperty("timeoutMs");
-    expect(schema.properties.defaults.required).toEqual(["context"]);
-    expect(schema.properties.questions.items.required).toEqual(["localRef", "question", "options"]);
-    expect(schema.properties.questions.items.properties.parent.oneOf).toHaveLength(2);
-    expect(schema.properties.parent.required).toEqual(["questionId"]);
-    expect(schema.properties.parent.properties.localRef).toBeUndefined();
-    expect(schema.properties.questions.items.properties.forkReference).toEqual(schema.properties.forkReference);
+    expect(schema.properties).not.toHaveProperty("defaults");
+    expect(schema.properties).not.toHaveProperty("context");
+    expect(schema.properties.options.items.properties).not.toHaveProperty("context");
+    expect(schema.properties.options.items.properties).not.toHaveProperty("meaning");
+    expect(schema.properties.questions.items.properties.options.items.properties).not.toHaveProperty("context");
+    expect(schema.properties.questions.items.required).toEqual(["localRef", "question", "ambiguity", "options"]);
+    expect(schema.properties.questions.items.properties.parentQuestionId.type).toBe("string");
+    expect(schema.properties.questions.items.properties.parentLocalRef.type).toBe("string");
+    expect(schema.properties.parentQuestionId.type).toBe("string");
+    expect(schema.properties).not.toHaveProperty("parentLocalRef");
+    expect(schema.properties).not.toHaveProperty("parent");
+    expect(schema.properties).not.toHaveProperty("forkReference");
+    expect(schema.properties).not.toHaveProperty("expiresAt");
+    expect(schema.oneOf[0].properties).not.toHaveProperty("forkReference");
+    expect(schema.oneOf[0].properties).not.toHaveProperty("expiresAt");
+    expect(schema.properties.questions.items.properties).not.toHaveProperty("forkReference");
+    expect(schema.properties.questions.items.properties).not.toHaveProperty("expiresAt");
+    expect(schema.properties).not.toHaveProperty("timeoutMs");
+    expect(schema.properties.questions.items.properties).not.toHaveProperty("timeoutMs");
+    expect(JSON.stringify(schema).length).toBeLessThan(5_100);
+  });
+
+  it("describes every single and nested batch field for the model", () => {
+    const schema = askPostboxParameters as Record<string, any>;
+    const expectDescriptions = (properties: Record<string, any>) => {
+      for (const [name, field] of Object.entries(properties)) {
+        expect(field.description, `${name} needs a model-facing description`).toEqual(expect.any(String));
+      }
+    };
+
+    expectDescriptions(schema.properties);
+    expectDescriptions(schema.properties.options.items.properties);
+    expectDescriptions(schema.properties.questions.items.properties);
+    expectDescriptions(schema.properties.questions.items.properties.options.items.properties);
+    expectDescriptions(schema.oneOf[0].properties);
+    expectDescriptions(schema.oneOf[1].properties);
+    expect(schema.properties.ambiguity.description).toBe("What ambiguity is this question aiming to solve?");
+    expect(schema.properties.options.items.properties.impact.description)
+      .toBe("What impact and implications would this option have?");
   });
 
   it("rejects single-Question fields at the batch execution boundary instead of silently ignoring them", async () => {
@@ -36,18 +69,15 @@ describe("ask_postbox ordered batches", () => {
     await expect((executeAskPostbox as any)({
       mode: "batch",
       requestId: "not-a-batch-idempotency-key",
-      defaults: { context: sharedContext },
       questions: [draft]
     }, { createAskBatch }, "session-1")).rejects.toThrow(/requestId.*batch|batch.*requestId/i);
     expect(createAskBatch).not.toHaveBeenCalled();
   });
 
   it("sends an ordered batch once and returns every created and rejected receipt", async () => {
-    const overrideContext = { codebaseContext: "Deployment worker", problemContext: "Choose the child rollout." };
     const input = {
       mode: "batch",
-      defaults: { context: sharedContext },
-      questions: [draft, { ...draft, localRef: "child", requestId: "question-child", context: overrideContext, parent: { localRef: "root" } }]
+      questions: [draft, { ...draft, localRef: "child", requestId: "question-child", parentLocalRef: "root" }]
     };
     const receipt = {
       status: "partial",
@@ -62,13 +92,11 @@ describe("ask_postbox ordered batches", () => {
     expect(createAskBatch).toHaveBeenCalledOnce();
     expect(createAskBatch.mock.calls[0]?.[0]).toMatchObject({
       sessionId: "session-1",
-      defaults: { context: sharedContext },
       questions: [
         expect.objectContaining({ localRef: "root", requestId: "question-root" }),
-        expect.objectContaining({ localRef: "child", context: overrideContext })
+        expect.objectContaining({ localRef: "child" })
       ]
     });
-    expect(createAskBatch.mock.calls[0]?.[0].questions[0]).not.toHaveProperty("context");
     expect(JSON.parse(formatAskResult(receipt as any).replace(/^Postbox batch partial: /, ""))).toEqual([
       { localRef: "root", questionId: "question-root", revision: 1, disposition: "created" },
       { localRef: "child", disposition: "rejected", reason: "child_limit_reached" }
@@ -90,7 +118,6 @@ describe("ask_postbox ordered batches", () => {
 
     const result = await (executeAskPostbox as any)({
       mode: "batch",
-      defaults: { context: sharedContext },
       questions: [
         { ...withoutRequestId, localRef: "generated" },
         { ...draft, localRef: "provided", requestId: "caller-question-id" }
@@ -113,12 +140,14 @@ describe("ask_postbox ordered batches", () => {
     expect(formatted.length).toBeLessThan(400);
   });
 
-  it("maps a single existing parent Question ID and fork provenance into the create payload", async () => {
+  it("retains internal absolute-expiry and fork-provenance compatibility outside the model-facing schema", async () => {
     const createAsk = vi.fn(async (payload) => ({ questionId: payload.requestId, revision: 1, status: "pending" as const }));
-    await (executeAskPostbox as any)({ ...draft, context: sharedContext, parent: { questionId: "existing-parent" },
+    await (executeAskPostbox as any)({ ...draft, parentQuestionId: "existing-parent",
+      expiresAt: "2026-08-19T12:00:00.000Z",
       forkReference: { agentSessionId: "session-source", leafId: "leaf-source" } }, { createAsk }, "session-1");
     expect(createAsk).toHaveBeenCalledWith(expect.objectContaining({
       parentQuestionId: "existing-parent",
+      expiresAt: "2026-08-19T12:00:00.000Z",
       forkReference: { agentSessionId: "session-source", leafId: "leaf-source" }
     }), undefined);
   });

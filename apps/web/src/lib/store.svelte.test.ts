@@ -3,6 +3,12 @@ import type { AskRequestSnapshot, HistoryResponse, SessionSnapshot, StateSnapsho
 import { store } from "./store.svelte";
 
 const SNAPSHOT_TIME = "2026-06-24T12:00:00.000Z";
+const REQUEST_IDENTITY = {
+  revision: 1,
+  ownerRevision: 1,
+  creator: { harness: "pi", ownerId: "test-owner" },
+  owner: { harness: "pi", ownerId: "test-owner" }
+} as const;
 
 function session(overrides: Partial<SessionSnapshot> & Pick<SessionSnapshot, "sessionId" | "projectId" | "projectName" | "presence" | "semanticState">): SessionSnapshot {
   return {
@@ -40,6 +46,7 @@ describe("open question queue ordering", () => {
     ): AskRequestSnapshot => ({
       requestId,
       sessionId: "queue-session",
+      ...REQUEST_IDENTITY,
       mode: "single",
       question: { prompt: `Resolve ${requestId}?` },
       options: [{ value: "yes", label: "Yes" }],
@@ -191,13 +198,10 @@ describe("store deselection of questions resolved on another device", () => {
     return {
       requestId,
       sessionId: "session-remote",
+      ...REQUEST_IDENTITY,
       mode: "single",
       question: { prompt: `Prompt for ${requestId}` },
       options: [{ value: "yes", label: "Yes" }],
-      context: {
-        codebaseContext: "Svelte dashboard store with multi-device state synchronization.",
-        problemContext: "Keep navigation correct when a remote decision resolves."
-      },
       status,
       createdAt: SNAPSHOT_TIME
     };
@@ -271,13 +275,10 @@ describe("store notification navigation", () => {
     return {
       requestId: "ask-notification",
       sessionId: liveSession.sessionId,
+      ...REQUEST_IDENTITY,
       mode: "single",
       question: { prompt: "Still need an answer?" },
       options: [{ value: "yes", label: "Yes" }],
-      context: {
-        codebaseContext: "Svelte dashboard store with notification navigation.",
-        problemContext: "Open a pending decision from a device notification."
-      },
       status,
       createdAt: SNAPSHOT_TIME
     };
@@ -349,7 +350,6 @@ describe("store History loading", () => {
 
     finishLoading({
       history: [],
-      retention: { maxAgeMs: 1_000, maxRecords: 10 },
       timestamp: SNAPSHOT_TIME
     });
     await loading;

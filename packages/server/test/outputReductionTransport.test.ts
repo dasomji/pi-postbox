@@ -39,7 +39,7 @@ async function send(socket: WebSocket, message: Record<string, unknown>): Promis
 }
 
 describe("output-reduced WebSocket transport", () => {
-  it("carries batch defaults, explicit full views, event history, and pending Answer results", async () => {
+  it("carries compact batches, explicit full views, event history, and pending Answer results", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
     apps.push(app);
     const socket = await connect(app);
@@ -60,43 +60,53 @@ describe("output-reduced WebSocket transport", () => {
       }
     })).resolves.toMatchObject({ type: "registered", requestId: "register" });
 
-    const sharedContext = {
-      codebaseContext: "Postbox transport integration",
-      problemContext: "Prove compact defaults cross the server boundary"
-    };
-    const overrideContext = {
-      codebaseContext: "Child-specific transport context",
-      problemContext: "Prove a complete item override remains independent"
-    };
+    const batchQuestions = [
+      {
+        localRef: "root",
+        requestId: "transport-root",
+        mode: "single",
+        question: { prompt: "Root transport Question?", ambiguity: "Test ambiguity." },
+        options: [{ value: "yes", label: "Yes" }]
+      },
+      {
+        localRef: "child",
+        requestId: "transport-child",
+        mode: "single",
+        question: { prompt: "Child transport Question?", ambiguity: "Test ambiguity." },
+        options: [{ value: "yes", label: "Yes" }],
+        parentLocalRef: "root"
+      }
+    ];
     await expect(send(socket, {
       type: "ask.batch.create",
       requestId: "batch",
-      payload: {
-        sessionId: "session-1",
-        defaults: { context: sharedContext },
-        questions: [
-          {
-            localRef: "root",
-            requestId: "transport-root",
-            mode: "single",
-            question: { prompt: "Root transport Question?" },
-            options: [{ value: "yes", label: "Yes" }]
-          },
-          {
-            localRef: "child",
-            requestId: "transport-child",
-            mode: "single",
-            question: { prompt: "Child transport Question?" },
-            options: [{ value: "yes", label: "Yes" }],
-            context: overrideContext,
-            parent: { localRef: "root" }
-          }
-        ]
-      }
+      payload: { sessionId: "session-1", questions: batchQuestions }
     })).resolves.toMatchObject({
       type: "ask.batch.result",
       requestId: "batch",
-      payload: { status: "created", items: [{ questionId: "transport-root" }, { questionId: "transport-child" }] }
+      payload: {
+        status: "created",
+        items: [
+          {
+            localRef: "root",
+            status: "created",
+            questionId: "transport-root",
+            revision: 1,
+            ownerRevision: 1,
+            questionStatus: "pending",
+            disposition: "created"
+          },
+          {
+            localRef: "child",
+            status: "created",
+            questionId: "transport-child",
+            revision: 1,
+            ownerRevision: 1,
+            questionStatus: "pending",
+            disposition: "created"
+          }
+        ]
+      }
     });
 
     const controls = await send(socket, {
@@ -117,8 +127,9 @@ describe("output-reduced WebSocket transport", () => {
       requestId: "full",
       payload: { questionIds: ["transport-root", "transport-child"], view: "full" }
     });
-    expect(full.payload[0]).toMatchObject({ question: { prompt: "Root transport Question?" }, context: sharedContext });
-    expect(full.payload[1]).toMatchObject({ question: { prompt: "Child transport Question?" }, context: overrideContext });
+    expect(full.payload[0]).toMatchObject({ question: { prompt: "Root transport Question?", ambiguity: "Test ambiguity." } });
+    expect(full.payload[1]).toMatchObject({ question: { prompt: "Child transport Question?", ambiguity: "Test ambiguity." } });
+    expect(full.payload.every((question: object) => !("context" in question))).toBe(true);
 
     await expect(send(socket, {
       type: "question.update",
@@ -130,10 +141,39 @@ describe("output-reduced WebSocket transport", () => {
           action: "revise",
           expectedRevision: 1,
           expectedOwnerRevision: 1,
-          question: { prompt: "Revised transport Question?" }
+          question: { prompt: "Revised transport Question?", ambiguity: "Test ambiguity." }
         }
       }
     })).resolves.toMatchObject({ type: "query.result", requestId: "revise", payload: { revision: 2 } });
+
+    await expect(send(socket, {
+      type: "ask.batch.create",
+      requestId: "batch-replay",
+      payload: { sessionId: "session-1", questions: batchQuestions }
+    })).resolves.toMatchObject({
+      type: "ask.batch.result",
+      payload: {
+        status: "created",
+        items: [
+          {
+            localRef: "root",
+            questionId: "transport-root",
+            revision: 2,
+            ownerRevision: 1,
+            questionStatus: "pending",
+            disposition: "idempotent"
+          },
+          {
+            localRef: "child",
+            questionId: "transport-child",
+            revision: 1,
+            ownerRevision: 1,
+            questionStatus: "pending",
+            disposition: "idempotent"
+          }
+        ]
+      }
+    });
 
     const events = await send(socket, {
       type: "question.history.get",
@@ -142,8 +182,8 @@ describe("output-reduced WebSocket transport", () => {
     });
     expect(events.payload).toMatchObject({
       questionId: "transport-root",
-      initial: { revision: 1, question: { prompt: "Root transport Question?" } },
-      revisions: [{ revision: 2, question: { prompt: "Revised transport Question?" } }],
+      initial: { revision: 1, question: { prompt: "Root transport Question?", ambiguity: "Test ambiguity." } },
+      revisions: [{ revision: 2, question: { prompt: "Revised transport Question?", ambiguity: "Test ambiguity." } }],
       events: []
     });
 
@@ -163,6 +203,101 @@ describe("output-reduced WebSocket transport", () => {
       type: "answer.result",
       requestId: "answer-pending",
       payload: { type: "pending", status: "pending", questionId: "transport-root" }
+    });
+  });
+
+  it("defaults recovery reads to compact output and transports an explicit full view", async () => {
+    let now = Date.parse("2026-08-18T12:00:00.000Z");
+    const app = await createPostboxApp({
+      databasePath: ":memory:",
+      expirySweepMs: 0,
+      now: () => now,
+      staleAfterMs: 100,
+      offlineAfterMs: 500
+    });
+    apps.push(app);
+    const creatorSocket = await connect(app);
+    await send(creatorSocket, {
+      type: "session.register",
+      requestId: "register-creator",
+      payload: {
+        machine: { machineId: "machine-1", hostname: "workstation" },
+        project: { projectId: "project-1", name: "postbox", cwd: "/workspace/postbox" },
+        session: { sessionId: "creator-session", cwd: "/workspace/postbox", semanticState: "working", owner: OWNER }
+      }
+    });
+    await send(creatorSocket, {
+      type: "ask.create",
+      requestId: "create-recovery",
+      payload: {
+        requestId: "recovery-question",
+        sessionId: "creator-session",
+        mode: "single",
+        question: { prompt: "Recover compactly?", ambiguity: "Test ambiguity." },
+        options: [{ value: "yes", label: "Yes" }],
+
+      }
+    });
+    const answered = await send(creatorSocket, {
+      type: "ask.answer",
+      requestId: "answer-recovery",
+      payload: {
+        requestId: "recovery-question",
+        answer: { expectedRevision: 1, selectedValues: ["yes"], note: "Recovered." }
+      }
+    });
+    const answerId = answered.payload.answerId;
+    await new Promise<void>((resolve) => {
+      creatorSocket.once("close", () => resolve());
+      creatorSocket.close();
+    });
+    now += 1_000;
+
+    const recoverySocket = await connect(app);
+    const recoveryOwner = { harness: "claude-code", ownerId: "recovery-agent" };
+    await send(recoverySocket, {
+      type: "session.register",
+      requestId: "register-recovery",
+      payload: {
+        machine: { machineId: "machine-1", hostname: "workstation" },
+        project: { projectId: "project-1", name: "postbox", cwd: "/workspace/postbox" },
+        session: { sessionId: "recovery-session", cwd: "/workspace/postbox", semanticState: "working", owner: recoveryOwner }
+      }
+    });
+
+    const compact = await send(recoverySocket, {
+      type: "question.answer.recover",
+      requestId: "recover-compact",
+      payload: { sessionId: "recovery-session", questionId: "recovery-question" }
+    });
+    expect(compact).toEqual({
+      type: "query.result",
+      requestId: "recover-compact",
+      payload: {
+        questionId: "recovery-question",
+        answerId,
+        answer: ["yes"],
+        note: "Recovered.",
+        alreadyRead: false,
+        firstRead: { reader: recoveryOwner, readAt: "2026-08-18T12:00:01.000Z" }
+      }
+    });
+    expect(compact.payload).not.toHaveProperty("question");
+
+    const full = await send(recoverySocket, {
+      type: "question.answer.recover",
+      requestId: "recover-full",
+      payload: { sessionId: "recovery-session", questionId: "recovery-question", view: "full" }
+    });
+    expect(full).toMatchObject({
+      type: "query.result",
+      requestId: "recover-full",
+      payload: {
+        alreadyRead: true,
+        question: { questionId: "recovery-question", question: { prompt: "Recover compactly?", ambiguity: "Test ambiguity." } },
+        answer: { answerId, selectedValues: ["yes"], note: "Recovered." },
+        firstRead: { reader: recoveryOwner, readAt: "2026-08-18T12:00:01.000Z" }
+      }
     });
   });
 });

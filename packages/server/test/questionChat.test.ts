@@ -172,9 +172,9 @@ async function setup(options: {
         requestId: "ask-chat",
         sessionId: "session-chat-owner",
         mode: "single",
-        question: { prompt: "Which design?" },
+        question: { prompt: "Which design?", ambiguity: "Test ambiguity." },
         options: options.askOptions ?? [{ value: "a", label: "A" }],
-        context: { codebaseContext: "A real Fastify server.", problemContext: "Choose the design." },
+
         forkReference: {
           agentSessionPath: "/browser-must-not-control/source.jsonl",
           leafId: "untrusted-leaf",
@@ -229,8 +229,7 @@ describe("Question Chat activation relay", () => {
         proposal: {
           label: "Stage first",
           description: "Deploy to a limited cohort.",
-          meaning: "A reversible rollout.",
-          context: "The release pipeline supports cohorts."
+          impact: "A reversible rollout."
         }
       }
     } satisfies ExtensionClientMessage));
@@ -498,177 +497,6 @@ describe("Question Chat activation relay", () => {
       payload: { requestId: "ask-chat", forkKind: "exact", result: { status: "recovered", snapshot: recovered } }
     } satisfies ExtensionClientMessage));
     await expect(lateCleanup).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
-  });
-
-  it("offers but never auto-starts an eligible context-only fallback, then relays only the explicit confirmed command", async () => {
-    const { app, socket } = await setup({ sessionPath: null });
-    let unexpectedCommand = false;
-    const observeUnexpected = () => {
-      unexpectedCommand = true;
-    };
-    socket.once("message", observeUnexpected);
-
-    const exact = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    expect(exact.statusCode).toBe(409);
-    expect(exact.json()).toMatchObject({
-      status: "unavailable",
-      error: { code: "source_path_missing", contextFallback: { status: "available" } }
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(unexpectedCommand).toBe(false);
-    socket.off("message", observeUnexpected);
-
-    const activation = app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    const command = await nextMessage(socket);
-    expect(command).toMatchObject({
-      type: "chat.activate-context",
-      payload: {
-        requestId: "ask-chat",
-        ownerSessionId: "session-chat-owner",
-        source: {
-          cwd: "/repo",
-          model: "anthropic/claude-sonnet-4",
-          mode: "single",
-          question: { prompt: "Which design?" },
-          options: [{ value: "a", label: "A" }],
-          context: { codebaseContext: "A real Fastify server.", problemContext: "Choose the design." }
-        }
-      }
-    });
-    if (command.type !== "chat.activate-context") throw new Error("Expected explicit context-only activation command");
-    const snapshot: QuestionChatSnapshot = { ...readySnapshot(), forkKind: "context-only" };
-    socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId, payload: snapshot } satisfies ExtensionClientMessage));
-    expect((await activation).json()).toEqual({ status: "ready", snapshot });
-
-    const eventResponse = await fetch(`http://127.0.0.1:${listenerPort(app)}/api/requests/ask-chat/chat/events`);
-    const events = createSseReader(eventResponse);
-    const send = app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/messages",
-      payload: { clientCommandId: "context-message-1", message: "Explain the persisted context." }
-    });
-    const sendCommand = await nextMessage(socket);
-    expect(sendCommand).toMatchObject({ type: "chat.send", payload: { command: { clientCommandId: "context-message-1" } } });
-    if (sendCommand.type !== "chat.send") throw new Error("Expected context Chat send command");
-    socket.send(JSON.stringify({
-      type: "chat.send.accepted",
-      requestId: sendCommand.requestId,
-      payload: {
-        requestId: "ask-chat",
-        response: { status: "accepted", clientCommandId: "context-message-1", mode: "turn" }
-      }
-    } satisfies ExtensionClientMessage));
-    expect((await send).statusCode).toBe(200);
-    socket.send(JSON.stringify({
-      type: "chat.event",
-      payload: { requestId: "ask-chat", sequence: 1, type: "lifecycle", state: "generating" }
-    } satisfies ExtensionClientMessage));
-    await expect(events.next()).resolves.toMatchObject({ sequence: 1, state: "generating" });
-    await events.close();
-
-    const cancel = app.inject({ method: "POST", url: "/api/requests/ask-chat/cancel", payload: {} });
-    await expect(nextMessage(socket)).resolves.toMatchObject({
-      type: "chat.cleanup",
-      payload: { requestId: "ask-chat", reason: "cancelled" }
-    });
-    expect((await cancel).statusCode).toBe(200);
-  });
-
-  it("rejects unconfirmed and legacy-ineligible context-only starts with a precise typed reason", async () => {
-    const { app } = await setup({
-      sessionPath: null,
-      legacyContext: { codebaseContext: "Still readable, but missing problem context." }
-    });
-    const exact = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    expect(exact.json()).toMatchObject({
-      error: {
-        code: "source_path_missing",
-        contextFallback: { status: "unavailable", reason: "missing_problem_context" }
-      }
-    });
-
-    const unconfirmed = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: false }
-    });
-    expect(unconfirmed.statusCode).toBe(400);
-    expect(unconfirmed.json()).toMatchObject({ status: "unavailable", error: { code: "invalid_command" } });
-
-    const ineligible = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    expect(ineligible.statusCode).toBe(409);
-    expect(ineligible.json()).toMatchObject({
-      status: "unavailable",
-      error: {
-        code: "context_fallback_unavailable",
-        contextFallback: { status: "unavailable", reason: "missing_problem_context" }
-      }
-    });
-  });
-
-  it("keeps a legacy context-ineligible Question exact-fork-capable while its source exists", async () => {
-    const { app, socket } = await setup({ legacyContext: null });
-    const activation = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    const command = await nextMessage(socket);
-    expect(command.type).toBe("chat.activate");
-    if (command.type !== "chat.activate") throw new Error("Expected legacy exact activation");
-    socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId, payload: readySnapshot() } satisfies ExtensionClientMessage));
-    expect((await activation).statusCode).toBe(200);
-
-    const context = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    expect(context.json()).toMatchObject({
-      status: "unavailable",
-      error: {
-        code: "context_fallback_unavailable",
-        contextFallback: { status: "unavailable", reason: "missing_codebase_and_problem_context" }
-      }
-    });
-  });
-
-  it("does not let context-only activation replace an already-running exact fork", async () => {
-    const { app, socket } = await setup();
-    await activateChat(app, socket);
-    let unexpectedCommand = false;
-    socket.once("message", () => {
-      unexpectedCommand = true;
-    });
-    const conflict = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    expect(conflict.statusCode).toBe(409);
-    expect(conflict.json()).toMatchObject({ status: "unavailable", error: { code: "runtime_busy" } });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(unexpectedCommand).toBe(false);
-  });
-
-  it("rejects an activation snapshot whose fork kind does not match the requested command", async () => {
-    const { app, socket } = await setup({ sessionPath: null });
-    const activation = app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    const command = await nextMessage(socket);
-    if (command.type !== "chat.activate-context") throw new Error("Expected context activation");
-    socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId, payload: readySnapshot() } satisfies ExtensionClientMessage));
-    expect((await activation).json()).toMatchObject({
-      status: "unavailable",
-      error: { code: "runtime_failure" }
-    });
   });
 
   it("keeps a newer same-kind activation authoritative when an earlier concurrent attempt fails", async () => {

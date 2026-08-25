@@ -22,8 +22,8 @@ function setup() {
   register("recovery-session", RECOVERY);
   const store = new RequestStore(db, () => now) as any;
   store.create({ requestId: "question", sessionId: "creator-session", mode: "single",
-    question: { prompt: "Recover this?" }, options: [{ value: "yes", label: "Yes" }],
-    context: { codebaseContext: "Postbox", problemContext: "Owner recovery" } });
+    question: { prompt: "Recover this?", ambiguity: "Test ambiguity." }, options: [{ value: "yes", label: "Yes" }],
+     });
   return { db, sessions, store, advance: (ms: number) => { now += ms; } };
 }
 
@@ -77,7 +77,7 @@ describe("deliberate Question ownership transfer and recovery", () => {
       action: "revise",
       expectedRevision: 1,
       expectedOwnerRevision: 2,
-      question: { prompt: "Recovered?" }
+      question: { prompt: "Recovered?", ambiguity: "Test ambiguity." }
     })).toMatchObject({ revision: 2, ownerRevision: 2 });
   });
 
@@ -143,18 +143,81 @@ describe("deliberate Question ownership transfer and recovery", () => {
     expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ owner: CREATOR });
   });
 
-  it("lets a recovery agent read an offline owner's Answer without taking ownership", () => {
-    const { store, advance } = setup();
-    store.answer("question", { expectedRevision: 1, selectedValues: ["yes"] });
-    advance(10_000);
-    expect(store.getAnswerForRecovery("question", RECOVERY)).toMatchObject({
-      alreadyRead: false,
-      question: { questionId: "question" }, answer: { selectedValues: ["yes"] },
-      firstRead: { reader: RECOVERY }
+  it("keeps pending and lifecycle recovery branches compact", () => {
+    const { store } = setup();
+    expect(store.getAnswerForRecovery("question", RECOVERY)).toEqual({
+      type: "pending",
+      status: "pending",
+      questionId: "question"
     });
-    expect(store.getAnswerForRecovery("question", SIBLING)).toMatchObject({
+    store.updateQuestion("question", CREATOR, {
+      action: "cancel",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1,
+      note: "No longer needed."
+    });
+    expect(store.getAnswerForRecovery("question", RECOVERY)).toEqual({
+      type: "lifecycle",
+      status: "cancelled",
+      questionId: "question",
+      note: "No longer needed.",
+      resolvedAt: "2026-08-13T12:00:00.000Z"
+    });
+  });
+
+  it("returns compact recovery output by default and preserves the complete view explicitly", () => {
+    const { db, store, advance } = setup();
+    const answered = store.answer("question", { expectedRevision: 1, selectedValues: ["yes"], note: "Ship it." });
+    db.prepare("UPDATE questions SET context_json = ? WHERE question_id = ?")
+      .run('{"codebaseContext":"must not escape"}', "question");
+    advance(10_000);
+    const answerId = answered.answerId as string;
+    expect(store.getAnswerForRecovery("question", RECOVERY)).toEqual({
+      questionId: "question",
+      answerId,
+      answer: ["yes"],
+      note: "Ship it.",
+      alreadyRead: false,
+      firstRead: {
+        reader: RECOVERY,
+        readAt: "2026-08-13T12:00:10.000Z"
+      }
+    });
+    expect(store.getAnswerForRecovery("question", SIBLING, "full")).toEqual({
       alreadyRead: true,
-      firstRead: { reader: RECOVERY }
+      question: {
+        questionId: "question",
+        revision: 1,
+        mode: "single",
+        question: { prompt: "Recover this?", ambiguity: "Test ambiguity." },
+        options: [{ value: "yes", label: "Yes" }],
+
+        createdAt: "2026-08-13T12:00:00.000Z",
+        resolvedAt: "2026-08-13T12:00:00.000Z"
+      },
+      answer: {
+        answerId,
+        questionRevision: 1,
+        status: "answered",
+        selectedValues: ["yes"],
+        note: "Ship it.",
+        createdAt: "2026-08-13T12:00:00.000Z"
+      },
+      firstRead: {
+        reader: RECOVERY,
+        readAt: "2026-08-13T12:00:10.000Z"
+      }
+    });
+    expect(store.getAnswerForRecovery("question", SIBLING)).toEqual({
+      questionId: "question",
+      answerId,
+      answer: ["yes"],
+      note: "Ship it.",
+      alreadyRead: true,
+      firstRead: {
+        reader: RECOVERY,
+        readAt: "2026-08-13T12:00:10.000Z"
+      }
     });
     expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ creator: CREATOR, owner: CREATOR });
   });

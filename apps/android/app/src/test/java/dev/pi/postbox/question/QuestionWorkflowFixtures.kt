@@ -8,11 +8,9 @@ import dev.pi.postbox.protocol.AskResult
 import dev.pi.postbox.protocol.AskResultStatus
 import dev.pi.postbox.protocol.AskStatus
 import dev.pi.postbox.protocol.ForkReference
-import dev.pi.postbox.protocol.HandoffContext
 import dev.pi.postbox.protocol.HealthResponse
 import dev.pi.postbox.protocol.PresenceState
 import dev.pi.postbox.protocol.ProjectIcon
-import dev.pi.postbox.protocol.RichContextItem
 import dev.pi.postbox.protocol.SemanticState
 import dev.pi.postbox.protocol.SessionSnapshot
 import dev.pi.postbox.protocol.StateSnapshot
@@ -47,7 +45,7 @@ internal fun questionWorkflowState(
 internal fun singlePendingQuestion(
     requestId: String = "ask-single",
     prompt: String = "Choose one deployment target",
-    questionContext: String? = "The verified server URL belongs to the developer Tailnet.",
+    ambiguity: String? = "Which reachable endpoint should receive the answer?",
     status: AskStatus = AskStatus.PENDING,
     result: AskResult? = null,
     resolvedAt: String? = null
@@ -57,25 +55,11 @@ internal fun singlePendingQuestion(
     mode = AskMode.SINGLE,
     question = AskQuestion(
         prompt = prompt,
-        context = questionContext,
-        relevance = "The Android client should guide the developer to a reachable endpoint.",
-        decisionImpact = "The selected target controls which server receives the answer."
+        ambiguity = ambiguity
     ),
     options = listOf(
         AskOption(value = "tailnet", label = "Use Tailnet HTTPS", description = "Connect to the verified Tailscale HTTPS URL."),
         AskOption(value = "loopback", label = "Use emulator loopback", description = "Connect to 10.0.2.2 for local emulator testing.")
-    ),
-    context = HandoffContext(
-        codebaseContext = "Android app lives under apps/android and uses the Postbox HTTP protocol.",
-        problemContext = "A native user must be able to inspect enough context before answering.",
-        additionalInfo = listOf(
-            RichContextItem(
-                kind = "markdown",
-                title = "Server contract",
-                content = "POST /api/requests/:requestId/answer accepts selectedValues.",
-                language = "md"
-            )
-        )
     ),
     forkReference = ForkReference(
         agentSessionId = "native-ui-session",
@@ -102,18 +86,12 @@ internal fun multiPendingQuestion(
     mode = AskMode.MULTI,
     question = AskQuestion(
         prompt = "Pick all UI states to expose",
-        context = "The prototype should still be useful when the stream disconnects.",
-        relevance = "Multi-select questions are common during review fanout.",
-        decisionImpact = "Missing states make the native app less capable than the web dashboard."
+        ambiguity = "Which disconnected and multi-select states must the native app expose?"
     ),
     options = listOf(
         AskOption(value = "loading", label = "Loading", description = "Show initial fetch progress."),
         AskOption(value = "empty", label = "Empty", description = "Show when there are no pending questions."),
         AskOption(value = "disconnected", label = "Disconnected", description = "Keep the visible question on screen.")
-    ),
-    context = HandoffContext(
-        codebaseContext = "Android question workflow with multi-select answer support.",
-        problemContext = "Several answers can be true at once."
     ),
     status = status,
     createdAt = "2026-06-25T12:01:00.000Z",
@@ -145,28 +123,13 @@ internal fun cancelledMultiQuestion(): AskRequestSnapshot = multiPendingQuestion
     )
 )
 
-internal fun longContextQuestion(
+internal fun longQuestion(
     longPrompt: String,
-    longQuestionContext: String,
-    longProblemContext: String,
-    longRichContext: String
+    longAmbiguity: String
 ): AskRequestSnapshot = singlePendingQuestion(
     requestId = "ask-long",
     prompt = longPrompt,
-    questionContext = longQuestionContext
-).copy(
-    context = HandoffContext(
-        codebaseContext = "Compose screens should receive complete text and decide scrolling in the UI layer.",
-        problemContext = longProblemContext,
-        additionalInfo = listOf(
-            RichContextItem(
-                kind = "log",
-                title = "Full terminal transcript",
-                content = longRichContext,
-                language = "text"
-            )
-        )
-    )
+    ambiguity = longAmbiguity
 )
 
 private fun sessionSnapshot(

@@ -14,7 +14,6 @@ import { applyQuestionChatEvent } from "./questionChat";
 
 export interface QuestionChatApi {
   activate(requestId: string): Promise<QuestionChatActivationResponse>;
-  activateContext(requestId: string): Promise<QuestionChatActivationResponse>;
   fetchSnapshot(requestId: string): Promise<QuestionChatSnapshot>;
   probeSnapshot(requestId: string): Promise<QuestionChatProbeResult>;
   sendMessage(requestId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
@@ -36,7 +35,7 @@ interface LifecycleCallbacks {
   recoveryNotStarted?: () => void;
 }
 
-type LifecycleApi = Pick<QuestionChatApi, "activate" | "activateContext" | "fetchSnapshot" | "probeSnapshot" | "connectEvents">;
+type LifecycleApi = Pick<QuestionChatApi, "activate" | "fetchSnapshot" | "probeSnapshot" | "connectEvents">;
 
 export class QuestionChatLifecycle {
   view = $state<QuestionChatView>({ kind: "not-started" });
@@ -68,10 +67,6 @@ export class QuestionChatLifecycle {
 
   async start(): Promise<void> {
     await this.activateWith((requestId) => this.api.activate(requestId));
-  }
-
-  async startContext(): Promise<void> {
-    await this.activateWith((requestId) => this.api.activateContext(requestId));
   }
 
   private async activateWith(activate: (requestId: string) => Promise<QuestionChatActivationResponse>): Promise<void> {

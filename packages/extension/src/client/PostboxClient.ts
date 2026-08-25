@@ -9,7 +9,6 @@ import {
   type AskReceipt,
   type AskBatchReceipt,
   AskBatchReceiptSchema,
-  type AskBatchDefaults,
   type AskBatchQuestionDraft,
   AskReceiptSchema,
   AnswerReadResultSchema,
@@ -25,7 +24,6 @@ import {
 import type {
   QuestionChatEvent,
   QuestionChatAvailabilityError,
-  QuestionChatContextSource,
   QuestionChatSendPayload,
   QuestionChatSendResponse,
   QuestionChatSnapshot,
@@ -88,7 +86,6 @@ export interface PostboxClientOptions {
   answerNotificationInbox?: AnswerNotificationInbox;
   questionChats?: {
     activate(input: { requestId: string; ownerSessionId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
-    activateContext(input: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
     getSnapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatSnapshot>;
     send(requestId: string, ownerSessionId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
     stop(requestId: string, ownerSessionId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
@@ -335,7 +332,7 @@ export class PostboxClient {
       return Promise.resolve(unavailableResult(payload.requestId, "Pi Postbox client is stopped."));
     }
     if (signal?.aborted) {
-      return Promise.reject(new Error("ask_postbox was aborted"));
+      return Promise.reject(new Error("write_question was aborted"));
     }
 
     return new Promise<AskResult>((resolve, reject) => {
@@ -355,10 +352,10 @@ export class PostboxClient {
         resolve(result);
       };
       const abort = () => {
-        this.rejectCreateReceipt(payload.requestId, new Error("ask_postbox was aborted before persistence acknowledgement"));
+        this.rejectCreateReceipt(payload.requestId, new Error("write_question was aborted before persistence acknowledgement"));
         this.cancelAskOnAbort(pending);
         cleanup();
-        reject(new Error("ask_postbox was aborted"));
+        reject(new Error("write_question was aborted"));
       };
 
       const pending: PendingAsk = {
@@ -388,7 +385,7 @@ export class PostboxClient {
 
   createAsk(payload: AskCreatePayload, signal?: AbortSignal): Promise<AskReceipt> {
     if (this.stopped) return Promise.reject(new Error("Pi Postbox client is stopped; the Question was not persisted."));
-    if (signal?.aborted) return Promise.reject(new Error("ask_postbox was aborted before persistence acknowledgement"));
+    if (signal?.aborted) return Promise.reject(new Error("write_question was aborted before persistence acknowledgement"));
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question was not persisted."));
     this.asynchronousAskCreates.add(payload.requestId);
     const receipt = new Promise<AskReceipt>((resolve, reject) => this.pendingCreateReceipts.set(payload.requestId, { resolve, reject }));
@@ -398,14 +395,14 @@ export class PostboxClient {
     return receipt;
   }
 
-  createAskBatch(payload: { sessionId: string; defaults: AskBatchDefaults; questions: AskBatchQuestionDraft[] }, signal?: AbortSignal): Promise<AskBatchReceipt> {
+  createAskBatch(payload: { sessionId: string; questions: AskBatchQuestionDraft[] }, signal?: AbortSignal): Promise<AskBatchReceipt> {
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question batch was not persisted."));
-    if (signal?.aborted) return Promise.reject(Object.assign(new Error("ask_postbox batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
+    if (signal?.aborted) return Promise.reject(Object.assign(new Error("write_question create_batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
     const requestId = `ask_batch_${randomUUID()}`;
     return new Promise((resolve, reject) => {
       const abort = () => {
         if (!this.pendingQueries.delete(requestId)) return;
-        reject(Object.assign(new Error("ask_postbox batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
+        reject(Object.assign(new Error("write_question create_batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
       };
       this.pendingQueries.set(requestId, {
         resolve: (value) => { signal?.removeEventListener("abort", abort); resolve(AskBatchReceiptSchema.parse(value)); },
@@ -647,10 +644,6 @@ export class PostboxClient {
           void this.activateQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
         }
-        if (parsed.data.type === "chat.activate-context") {
-          void this.activateContextQuestionChat(parsed.data.requestId, parsed.data.payload);
-          return;
-        }
         if (parsed.data.type === "chat.snapshot") {
           void this.snapshotQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
@@ -696,7 +689,11 @@ export class PostboxClient {
         }
         if (parsed.data.type === "ask.resolved") {
           this.resolveCreateReceipt(parsed.data.payload.requestId, {
-            questionId: parsed.data.payload.requestId, revision: 1, status: "pending"
+            questionId: parsed.data.payload.requestId,
+            revision: 1,
+            ownerRevision: 1,
+            status: "pending",
+            disposition: "idempotent"
           });
           this.markQuestionChatTerminal(parsed.data.payload.requestId);
           this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
@@ -737,14 +734,7 @@ export class PostboxClient {
     await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activate(input));
   }
 
-  private async activateContextQuestionChat(
-    commandId: string,
-    payload: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }
-  ): Promise<void> {
-    await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activateContext(input));
-  }
-
-  private async handleQuestionChatActivation<Source extends QuestionChatSource | QuestionChatContextSource>(
+  private async handleQuestionChatActivation<Source extends QuestionChatSource>(
     commandId: string,
     payload: { requestId: string; ownerSessionId: string; source: Source },
     activate: (input: { requestId: string; ownerSessionId: string; source: Source }) => Promise<QuestionChatSnapshot>

@@ -1,8 +1,17 @@
 {
   "name": "@wienerberliner/pi-postbox",
-  "version": "0.1.6",
+  "version": "0.2.2",
   "description": "Pi Postbox extension and web service for remote human decision handoffs.",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasomji/pi-postbox.git"
+  },
+  "homepage": "https://github.com/dasomji/pi-postbox#readme",
+  "bugs": {
+    "url": "https://github.com/dasomji/pi-postbox/issues"
+  },
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -17,7 +26,7 @@
     "prepack": "npm run build"
   },
   "bin": {
-    "pi-postbox-server": "./packages/server/dist/cli.js"
+    "pi-postbox-server": "packages/server/dist/cli.js"
   },
   "files": [
     "README.md",

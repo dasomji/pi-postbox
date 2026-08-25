@@ -21,12 +21,8 @@ A private, question-scoped interviewer runtime that helps a human understand one
 _Avoid_: Chat (when used alone), Pi Chat, conversation
 
 **Exact fork**:
-The primary Question Chat form: a private branch of the originating Pi Session at the recorded Postbox Question leaf, with the recorded authenticated model preferred before Pi's configured default.
-_Avoid_: Copy, clone, source conversation
-
-**Context-only interviewer**:
-An explicitly confirmed Question Chat fallback created from persisted Postbox Question and handoff context when an exact fork is unavailable. It has no originating Pi Session transcript and must never be substituted silently.
-_Avoid_: Context-only Chat, reconstructed fork, synthetic conversation
+The only Question Chat form: a private branch of the originating Pi Session at the recorded Postbox Question leaf, with the recorded authenticated model preferred before Pi's configured default. If the source path or leaf is unavailable, Question Chat cannot start; Postbox does not reconstruct a conversation from Question fields.
+_Avoid_: Copy, clone, source conversation, reconstructed fork, synthetic conversation
 
 **Recovery manifest**:
 A private, versioned metadata file beside a Question Chat fork that lets the extension reconcile and reopen that fork after reload or restart. It contains no Question Chat transcript and is deleted with terminal or invalid runtimes.

@@ -43,9 +43,8 @@ function setup() {
     requestId: questionId,
     sessionId,
     mode: "single",
-    question: { prompt, context, relevance: "relevance", decisionImpact: "impact" },
-    options: [{ value: "yes", label: "Yes", description: "description", meaning: "meaning", context: "option context" }],
-    context: { codebaseContext: context, problemContext: "problem" }
+    question: { prompt, ambiguity: context },
+    options: [{ value: "yes", label: "Yes", description: "description", impact: "impact" }]
   });
 
   const caller = {
@@ -116,16 +115,36 @@ describe("token-cheap Question discovery", () => {
       .toEqual(["mine", "same-feature"]);
   });
 
-  it("uses a query-bound keyset cursor that remains stable when earlier Questions are inserted", () => {
+  it("uses a compact query-bound keyset cursor that remains stable when earlier Questions are inserted", () => {
     const { db, requests, create, caller } = setup();
     for (let index = 0; index < 3; index += 1) create("current", `cursor-${index}`, `Question ${index}`);
     const first = requests.listQuestions({ caller, pageSize: 2 });
+    expect(first.nextCursor?.length).toBeLessThan(120);
+    expect(first.nextCursor).not.toContain("cursor-1");
     db.prepare("DELETE FROM question_revisions WHERE question_id = ?").run("cursor-0");
     db.prepare("DELETE FROM questions WHERE question_id = ?").run("cursor-0");
     db.prepare("DELETE FROM ask_requests WHERE request_id = ?").run("cursor-0");
     const second = requests.listQuestions({ caller, pageSize: 2, cursor: first.nextCursor });
     expect(second.questions.map((question) => question.questionId)).toEqual(["cursor-2"]);
     expect(() => requests.listQuestions({ caller: { ...caller, feature: "other" }, pageSize: 2, cursor: first.nextCursor })).toThrow(/another query/i);
+    expect(() => requests.listQuestions({ caller, pageSize: 101 })).toThrow(/at most 100/i);
+  });
+
+  it("paginates compact status results with a query-bound 50-row maximum", () => {
+    const { requests, create, caller } = setup();
+    for (let index = 0; index < 4; index += 1) create("current", `status-${index}`, `Status ${index}`);
+
+    const first = (requests as any).listQuestionStatusPage({ caller, pageSize: 2 });
+    expect(first.statuses.map((status: { questionId: string }) => status.questionId)).toEqual(["status-0", "status-1"]);
+    expect(first.nextCursor?.length).toBeLessThan(120);
+    const second = (requests as any).listQuestionStatusPage({ caller, pageSize: 2, cursor: first.nextCursor });
+    expect(second).toEqual({
+      statuses: [
+        { questionId: "status-2", status: "pending" },
+        { questionId: "status-3", status: "pending" }
+      ]
+    });
+    expect(() => (requests as any).listQuestionStatusPage({ caller, pageSize: 51 })).toThrow(/at most 50/i);
   });
 
   it("supports explicit owner, repository, worktree, feature, status, and global relevance filters", () => {
@@ -162,27 +181,26 @@ describe("token-cheap Question discovery", () => {
       updatedAt: "2026-08-13T12:00:00.000Z"
     }]);
     expect(requests.getQuestions({ questionIds: ["controlled"], view: "full" })[0]).toMatchObject({
-      question: { prompt: "Prompt that should stay out of the default view" },
+      question: { prompt: "Prompt that should stay out of the default view", ambiguity: "large private context" },
       options: [{ value: "yes", label: "Yes" }],
-      context: { codebaseContext: "large private context", problemContext: "problem" }
+
     });
   });
 
   it("returns complete latest Question data with non-consuming resolution evidence and no truncation", () => {
     const { requests, create, caller } = setup();
     const largeContext = "large-context-".repeat(1_000);
-    for (let index = 0; index < 31; index += 1) create("current", `detail-${index}`, `Question ${index}`, index === 30 ? largeContext : `context-${index}`);
+    for (let index = 0; index < 20; index += 1) create("current", `detail-${index}`, `Question ${index}`, index === 19 ? largeContext : `context-${index}`);
     requests.answer("detail-0", { selectedValues: ["yes"], note: "must not leak" });
     const discovery = requests as RequestStore & { getQuestions(input: { questionIds: string[]; view?: "control" | "full" }): unknown[] };
 
-    const details = discovery.getQuestions({ questionIds: Array.from({ length: 31 }, (_, index) => `detail-${index}`), view: "full" }) as Array<Record<string, unknown>>;
-    expect(details).toHaveLength(31);
-    expect(details[30]).toMatchObject({
-      questionId: "detail-30",
+    const details = discovery.getQuestions({ questionIds: Array.from({ length: 20 }, (_, index) => `detail-${index}`), view: "full" }) as Array<Record<string, unknown>>;
+    expect(details).toHaveLength(20);
+    expect(details[19]).toMatchObject({
+      questionId: "detail-19",
       revision: 1,
-      question: { prompt: "Question 30", context: largeContext },
-      options: [{ value: "yes", label: "Yes", description: "description", meaning: "meaning", context: "option context" }],
-      context: { codebaseContext: largeContext, problemContext: "problem" }
+      question: { prompt: "Question 19", ambiguity: largeContext },
+      options: [{ value: "yes", label: "Yes", description: "description", impact: "impact" }]
     });
     expect(details[0]).toMatchObject({
       answerId: expect.any(String),
@@ -210,7 +228,10 @@ describe("token-cheap Question discovery", () => {
         firstRead: { reader: OWNER, readAt: "2026-08-13T12:00:00.000Z" }
       }
     });
-    expect((details[30].question as { context: string }).context).toHaveLength(largeContext.length);
+    expect((details[19].question as { ambiguity: string }).ambiguity).toHaveLength(largeContext.length);
+    expect(() => requests.getQuestions({
+      questionIds: Array.from({ length: 21 }, (_, index) => `detail-${index}`)
+    })).toThrow(/at most 20/i);
   });
 
   it("round-trips batch hierarchy changes through complete Question details", () => {
@@ -218,11 +239,11 @@ describe("token-cheap Question discovery", () => {
     const draft = (localRef: string, parent?: { localRef: string }) => ({
       localRef,
       requestId: `hierarchy-${localRef}`,
-      ...(parent ? { parent } : {}),
+      ...(parent ? { parentLocalRef: parent.localRef } : {}),
       mode: "single" as const,
-      question: { prompt: `Resolve ${localRef}?` },
+      question: { prompt: `Resolve ${localRef}?`, ambiguity: "Test ambiguity." },
       options: [{ value: "yes", label: "Yes" }],
-      context: { codebaseContext: "Postbox", problemContext: "Preserve the current hierarchy." }
+
     });
     expect(requests.createBatch("current", [
       draft("root"),

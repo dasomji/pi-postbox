@@ -6,6 +6,10 @@ import QuestionDetail from "./QuestionDetail.svelte";
 const REQUEST: AskRequestSnapshot = {
   requestId: "request-rich-options",
   sessionId: "session-rich-options",
+  revision: 1,
+  ownerRevision: 1,
+  creator: { harness: "pi", ownerId: "test-owner" },
+  owner: { harness: "pi", ownerId: "test-owner" },
   mode: "single",
   question: { prompt: "Which storage strategy should we use?" },
   options: [
@@ -13,8 +17,7 @@ const REQUEST: AskRequestSnapshot = {
       value: "sqlite",
       label: "SQLite",
       description: "Keep the deployment self-contained.",
-      meaning: "Persist decisions in the same local database as sessions.",
-      context: "This avoids introducing a second service for a single-user deployment."
+      impact: "Persist decisions in the same local database as sessions."
     }
   ],
   status: "pending",
@@ -22,12 +25,11 @@ const REQUEST: AskRequestSnapshot = {
 };
 
 describe("selected Postbox Question detail", () => {
-  it("shows the description, meaning, and context supplied for an answer option", () => {
+  it("shows the description and impact supplied for an answer option", () => {
     const { body } = render(QuestionDetail, { props: { request: REQUEST, isMock: true } });
 
     expect(body).toContain("Keep the deployment self-contained.");
-    expect(body).toContain("Meaning: Persist decisions in the same local database as sessions.");
-    expect(body).toContain("Context: This avoids introducing a second service for a single-user deployment.");
+    expect(body).toContain("Impact: Persist decisions in the same local database as sessions.");
   });
 
   it("does not show empty metadata rows when an answer option has no rich metadata", () => {
@@ -39,7 +41,7 @@ describe("selected Postbox Question detail", () => {
 
     const { body } = render(QuestionDetail, { props: { request, isMock: true } });
 
-    expect(body).not.toContain("Meaning:");
+    expect(body).not.toContain("Impact:");
     expect(body).not.toContain("Context:");
   });
 
@@ -55,6 +57,22 @@ describe("selected Postbox Question detail", () => {
     const { body } = render(QuestionDetail, { props: { request, isMock: true } });
     expect(body.indexOf("SQLite")).toBeLessThan(body.indexOf("Stage first"));
     expect(body).toContain("Suggested in Chat");
+  });
+
+  it("renders native radio controls for single-choice Questions", () => {
+    const { body } = render(QuestionDetail, { props: { request: REQUEST, isMock: true } });
+
+    expect(body).toContain('type="radio"');
+    expect(body).not.toContain('type="checkbox"');
+  });
+
+  it("renders rounded checkbox controls for multi-choice Questions", () => {
+    const request = { ...REQUEST, mode: "multi" as const };
+    const { body } = render(QuestionDetail, { props: { request, isMock: true } });
+
+    expect(body).toContain('type="checkbox"');
+    expect(body).not.toContain('type="radio"');
+    expect(body).toContain("rounded-[4px]");
   });
 
   it("keeps a child answerable while linking to its nearest unanswered ancestor", () => {

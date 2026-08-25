@@ -104,7 +104,7 @@ export async function registerExtensionSocket(
     let recoveryOffersComplete = false;
     const pendingRecoveries = new Map<string, {
       requestId: string;
-      forkKind: "exact" | "context-only";
+      forkKind: "exact";
       disposition: "recover" | "delete";
       reason: "pending" | "missing" | "terminal" | "wrong_owner";
     }>();
@@ -367,7 +367,7 @@ export async function registerExtensionSocket(
         const scope = sessionStore.groupingForSession(message.payload.sessionId);
         const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
         if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
-        send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.listQuestionStatus({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload }) }); return;
+        send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.listQuestionStatusPage({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload }) }); return;
       }
       if (message.type === "owner.list") {
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
@@ -376,7 +376,7 @@ export async function registerExtensionSocket(
         }
         try {
           send(socket, { type: "query.result", requestId: message.requestId,
-            payload: sessionStore.listPostboxOwners(message.payload.sessionId, message.payload.scope) });
+            payload: sessionStore.listPostboxOwnersPage(message.payload.sessionId, message.payload) });
         } catch (error) {
           sendAskError(socket, message.requestId, "scope_not_found", error);
         }
@@ -396,14 +396,14 @@ export async function registerExtensionSocket(
         catch (error) { sendAskError(socket, message.requestId, "question_update_failed", error); }
         return;
       }
-      if (message.type === "question.history.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestionHistory(message.payload.questionId, message.payload.view) }); return; }
+      if (message.type === "question.history.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestionHistoryPage(message.payload) }); return; }
       if (message.type === "question.answer.recover") {
         if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Recovery reads require this connection's registered session")); return; }
         const reader = sessionStore.ownerForSession(message.payload.sessionId);
         if (!reader) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
         const question = requestStore.getQuestions({ questionIds: [message.payload.questionId] })[0] as any;
         if (!question || sessionStore.presenceForOwner(question.owner) !== "offline") { sendAskError(socket, message.requestId, "owner_not_offline", new Error("Recovery reads require an offline owner")); return; }
-        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getAnswerForRecovery(message.payload.questionId, reader) }); }
+        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getAnswerForRecovery(message.payload.questionId, reader, message.payload.view) }); }
         catch (error) { sendAskError(socket, message.requestId, "recovery_read_failed", error); }
         return;
       }
@@ -462,15 +462,22 @@ export async function registerExtensionSocket(
           const alreadyExisted = requestStore.get(message.payload.requestId) !== undefined;
           const snapshot = requestStore.create(message.payload);
           broadcaster.broadcast();
+          send(socket, {
+            type: "ask.created",
+            requestId: message.requestId,
+            payload: {
+              requestId: snapshot.requestId,
+              questionId: snapshot.requestId,
+              revision: snapshot.revision,
+              ownerRevision: snapshot.ownerRevision,
+              status: snapshot.status,
+              disposition: alreadyExisted ? "idempotent" : "created"
+            }
+          });
           if (snapshot.result) {
             send(socket, { type: "ask.resolved", requestId: message.requestId, payload: snapshot.result });
             return;
           }
-          send(socket, {
-            type: "ask.created",
-            requestId: message.requestId,
-            payload: { requestId: snapshot.requestId, questionId: snapshot.requestId, revision: 1, status: "pending" }
-          });
           if (!alreadyExisted) {
             void pushNotifier?.notifyNewPendingAsk(snapshot).catch((error: unknown) => {
               app.log.warn({ error, requestId: snapshot.requestId }, "failed to send new ask push notification");
@@ -488,7 +495,7 @@ export async function registerExtensionSocket(
             throw new RequestStoreError("wrong_owner", "Question batches require this connection's registered session");
           }
           expireDue();
-          const receipt = requestStore.createBatch(message.payload.sessionId, message.payload.questions, message.payload.defaults);
+          const receipt = requestStore.createBatch(message.payload.sessionId, message.payload.questions);
           broadcaster.broadcast();
           send(socket, { type: "ask.batch.result", requestId: message.requestId, payload: receipt });
         } catch (error) {

@@ -21,8 +21,8 @@ function setup() {
   const requests = new RequestStore(db, () => now);
   const create = (id: string, parentQuestionId?: string) => requests.create({
     requestId: id, sessionId: "session", mode: "single", parentQuestionId,
-    question: { prompt: `Question ${id}?` }, options: [{ value: "yes", label: "Yes" }],
-    context: { codebaseContext: "Postbox", problemContext: "Wait for an owner-wide decision." },
+    question: { prompt: `Question ${id}?`, ambiguity: "Test ambiguity." }, options: [{ value: "yes", label: "Yes" }],
+
     expiresAt: new Date(now + 30_000).toISOString()
   });
   type WaitResult = Record<string, unknown>;

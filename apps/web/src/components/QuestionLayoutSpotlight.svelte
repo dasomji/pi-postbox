@@ -1,7 +1,7 @@
 <script lang="ts">
   import { OTHER_OPTION_VALUE, type AskRequestSnapshot, type SessionSnapshot } from "@pi-postbox/protocol";
   import { cubicInOut } from "svelte/easing";
-  import { fade, fly, slide } from "svelte/transition";
+  import { fade, fly } from "svelte/transition";
   import { formatTimeAgo } from "../lib/format";
   import { modalFocus } from "../lib/modalFocus";
   import type { QuestionForm } from "../lib/questionForm.svelte";
@@ -27,22 +27,12 @@
   let showContext = $state(false);
   let showNote = $state(false);
   let contextPanelOpener = $state<HTMLElement | null>(null);
-  // "Why this decision matters" starts collapsed to the context line only.
-  let decisionContextExpanded = $state(false);
   // Set when the answer is stamped (submitted); cleared again if the submit errors.
   let stamped = $state(false);
 
-  const hasDecisionContext = $derived(
-    Boolean(request.question.context || request.question.relevance || request.question.decisionImpact)
-  );
-  const hasMoreDecisionContext = $derived(Boolean(request.question.relevance || request.question.decisionImpact));
+  const hasDecisionContext = $derived(Boolean(request.question.ambiguity));
   const hasSidebarContext = $derived(
-    Boolean(
-      request.context?.codebaseContext ||
-        request.context?.problemContext ||
-        request.context?.additionalInfo?.length ||
-        (request.forkReference && Object.values(request.forkReference).some(Boolean))
-    )
+    Boolean(request.forkReference && Object.values(request.forkReference).some(Boolean))
   );
   const hasExistingOther = $derived(request.options.some((option) => option.value === OTHER_OPTION_VALUE));
   const projectLabel = $derived(session?.projectName ?? session?.repoName ?? "Unknown project");
@@ -103,63 +93,19 @@
       {#if hasDecisionContext}
         <!-- Postal double frame with a navy envelope stamp. -->
         <section class="mt-5 rounded-lg border-2 border-history/50 bg-history/5 p-[3px] shadow-postbox-section">
-          <div class="rounded-md border border-history/40 p-3 text-left sm:p-4">
-            {#if hasMoreDecisionContext}
-              <button
-                type="button"
-                class="flex w-full items-start gap-3 text-left"
-                aria-expanded={decisionContextExpanded}
-                onclick={() => (decisionContextExpanded = !decisionContextExpanded)}
-              >
-                <span class="stamp-edge mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-history text-postbox-elevated" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-5 w-5"><rect x="3" y="5" width="18" height="14" rx="1" /><path d="m3 7 9 6 9-6" /></svg>
-                </span>
-                <span class="min-w-0 flex-1">
-                  <span class="flex items-center gap-3">
-                    <span class="text-xs font-bold uppercase tracking-wide text-history-foreground">Why this decision matters</span>
-                    <span class="hidden h-px min-w-4 flex-1 bg-history/40 sm:block" aria-hidden="true"></span>
-                    <span
-                      class="shrink-0 text-history-foreground transition-transform duration-200 {decisionContextExpanded ? 'rotate-180' : ''}"
-                      aria-hidden="true">▾</span
-                    >
-                  </span>
-                  {#if request.question.context}
-                    <span class="mt-1 block whitespace-pre-wrap text-sm leading-relaxed text-postbox-subtle">{request.question.context}</span>
-                  {/if}
-                </span>
-              </button>
-              {#if decisionContextExpanded}
-                <dl class="mt-3 grid gap-3 pl-12 text-sm text-postbox-subtle" transition:slide={{ duration: 180, easing: cubicInOut }}>
-                  {#if request.question.relevance}
-                    <div>
-                      <dt class="font-medium text-postbox-text">Relevance</dt>
-                      <dd class="mt-1 whitespace-pre-wrap leading-relaxed">{request.question.relevance}</dd>
-                    </div>
-                  {/if}
-                  {#if request.question.decisionImpact}
-                    <div>
-                      <dt class="font-medium text-postbox-text">Impact</dt>
-                      <dd class="mt-1 whitespace-pre-wrap leading-relaxed">{request.question.decisionImpact}</dd>
-                    </div>
-                  {/if}
-                </dl>
-              {/if}
-            {:else}
-              <div class="flex items-start gap-3">
-                <span class="stamp-edge mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-history text-postbox-elevated" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-5 w-5"><rect x="3" y="5" width="18" height="14" rx="1" /><path d="m3 7 9 6 9-6" /></svg>
-                </span>
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-3">
-                    <p class="text-xs font-bold uppercase tracking-wide text-history-foreground">Why this decision matters</p>
-                    <span class="hidden h-px min-w-4 flex-1 bg-history/40 sm:block" aria-hidden="true"></span>
-                  </div>
-                  {#if request.question.context}
-                    <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-postbox-subtle">{request.question.context}</p>
-                  {/if}
-                </div>
+          <div class="flex items-start gap-3 rounded-md border border-history/40 p-3 text-left sm:p-4">
+            <span class="stamp-edge mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-history text-postbox-elevated" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-5 w-5"><rect x="3" y="5" width="18" height="14" rx="1" /><path d="m3 7 9 6 9-6" /></svg>
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-3">
+                <p class="text-xs font-bold uppercase tracking-wide text-history-foreground">Ambiguity</p>
+                <span class="hidden h-px min-w-4 flex-1 bg-history/40 sm:block" aria-hidden="true"></span>
               </div>
-            {/if}
+              {#if request.question.ambiguity}
+                <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-postbox-subtle">{request.question.ambiguity}</p>
+              {/if}
+            </div>
           </div>
         </section>
       {/if}
@@ -170,24 +116,38 @@
 
       <div class="mt-3 space-y-3">
         {#each request.options as option (option.value)}
-          <button
-            type="button"
-            disabled={answerDisabled}
-            class="flex w-full items-start gap-3 rounded-lg border p-4 text-left shadow-postbox-section transition {form.isSelected(option.value)
+          <label
+            class="flex w-full items-start gap-3 rounded-lg border p-4 text-left shadow-postbox-section transition {answerDisabled
+              ? 'cursor-not-allowed opacity-60'
+              : 'cursor-pointer'} {form.isSelected(option.value)
               ? 'border-attention bg-attention/5 ring-1 ring-attention'
               : 'border-postbox-border bg-postbox-elevated hover:border-attention-border'}"
-            onclick={() => {
-              form.toggle(option.value);
-              if (option.value === OTHER_OPTION_VALUE) showNote = true;
-            }}
           >
+            <input
+              class="sr-only"
+              type={request.mode === "single" ? "radio" : "checkbox"}
+              name={request.mode === "single" ? `question-${request.requestId}` : undefined}
+              value={option.value}
+              checked={form.isSelected(option.value)}
+              disabled={answerDisabled}
+              onchange={() => {
+                form.toggle(option.value);
+                if (option.value === OTHER_OPTION_VALUE) showNote = true;
+              }}
+            />
             <span
-              class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 {form.isSelected(option.value)
+              class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border-2 {request.mode === 'single' ? 'rounded-full' : 'rounded-[4px]'} {form.isSelected(option.value)
                 ? 'border-attention'
                 : 'border-postbox-border-strong'}"
               aria-hidden="true"
             >
-              {#if form.isSelected(option.value)}<span class="h-2.5 w-2.5 rounded-full bg-attention"></span>{/if}
+              {#if form.isSelected(option.value)}
+                {#if request.mode === "single"}
+                  <span class="h-2.5 w-2.5 rounded-full bg-attention"></span>
+                {:else}
+                  <span class="text-sm font-bold leading-none text-attention">✓</span>
+                {/if}
+              {/if}
             </span>
             <span class="w-px self-stretch bg-postbox-border" aria-hidden="true"></span>
             <span class="min-w-0">
@@ -198,35 +158,48 @@
                 {/if}
               </span>
               {#if option.description}<span class="mt-1 block text-sm text-postbox-muted">{option.description}</span>{/if}
-              {#if option.meaning}<span class="mt-2 block text-sm text-attention-foreground/80">Meaning: {option.meaning}</span>{/if}
-              {#if option.context}<span class="mt-1 block text-sm text-postbox-muted">Context: {option.context}</span>{/if}
+              {#if option.impact}<span class="mt-2 block text-sm text-attention-foreground/80">Impact: {option.impact}</span>{/if}
             </span>
-          </button>
+          </label>
         {/each}
 
         {#if !hasExistingOther}
-          <button
-            type="button"
-            disabled={answerDisabled}
-            class="flex w-full items-start gap-3 rounded-lg border border-dashed p-4 text-left transition {form.isSelected(OTHER_OPTION_VALUE)
+          <label
+            class="flex w-full items-start gap-3 rounded-lg border border-dashed p-4 text-left transition {answerDisabled
+              ? 'cursor-not-allowed opacity-60'
+              : 'cursor-pointer'} {form.isSelected(OTHER_OPTION_VALUE)
               ? 'border-attention bg-attention/5 ring-1 ring-attention'
               : 'border-postbox-border-strong bg-postbox-elevated/60 hover:border-attention-border'}"
-            onclick={chooseOther}
           >
+            <input
+              class="sr-only"
+              type={request.mode === "single" ? "radio" : "checkbox"}
+              name={request.mode === "single" ? `question-${request.requestId}` : undefined}
+              value={OTHER_OPTION_VALUE}
+              checked={form.isSelected(OTHER_OPTION_VALUE)}
+              disabled={answerDisabled}
+              onchange={chooseOther}
+            />
             <span
-              class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 {form.isSelected(OTHER_OPTION_VALUE)
+              class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border-2 {request.mode === 'single' ? 'rounded-full' : 'rounded-[4px]'} {form.isSelected(OTHER_OPTION_VALUE)
                 ? 'border-attention'
                 : 'border-postbox-border-strong'}"
               aria-hidden="true"
             >
-              {#if form.isSelected(OTHER_OPTION_VALUE)}<span class="h-2.5 w-2.5 rounded-full bg-attention"></span>{/if}
+              {#if form.isSelected(OTHER_OPTION_VALUE)}
+                {#if request.mode === "single"}
+                  <span class="h-2.5 w-2.5 rounded-full bg-attention"></span>
+                {:else}
+                  <span class="text-sm font-bold leading-none text-attention">✓</span>
+                {/if}
+              {/if}
             </span>
             <span class="w-px self-stretch bg-postbox-border" aria-hidden="true"></span>
             <span class="min-w-0">
               <span class="block font-display text-base font-semibold text-postbox-text">Other</span>
               <span class="mt-1 block text-sm text-postbox-muted">Choose this when none of the listed answers fit. A note box will open below.</span>
             </span>
-          </button>
+          </label>
         {/if}
       </div>
 

@@ -39,8 +39,13 @@ async function waitForHealth(baseUrl, timeoutMs = 10_000) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`${baseUrl}/healthz`);
-      if (response.ok) return response.json();
-      lastError = new Error(`health returned ${response.status}`);
+      if (response.ok) {
+        const health = await response.json();
+        if (health.instance && typeof health.instance === "object") return health;
+        lastError = new Error("health server instance identity is not ready");
+      } else {
+        lastError = new Error(`health returned ${response.status}`);
+      }
     } catch (error) {
       lastError = error;
     }
@@ -419,18 +424,18 @@ async function main() {
         mode: "single",
         question: {
           prompt: "Is the release smoke path healthy?",
-          relevance: "The release smoke should verify the operator path.",
-          decisionImpact: "A failure here blocks manual testing."
+          ambiguity: "Whether every packaged asynchronous workflow seam is healthy."
         },
         options: [
-          { value: "yes", label: "Yes", meaning: "The server, SSE, answer, and history path work." },
+          { value: "yes", label: "Yes", impact: "The server, SSE, answer, and history path work." },
           { value: "no", label: "No" }
         ],
-        context: {
-          codebaseContext: "Packaged Pi Postbox extension, server, protocol, and web assets.",
-          problemContext: "Smoke verifies one remote handoff without full chat transcripts."
-        },
-        forkReference: { cwd: root, model: "smoke/fake-model" }
+        forkReference: {
+          agentSessionPath: join(tmp, "fake-source.jsonl"),
+          leafId: "smoke-source-leaf",
+          cwd: root,
+          model: "smoke/fake-model"
+        }
       }
     }));
     assert((await created).type === "ask.created", "Ask was not created");
@@ -438,57 +443,29 @@ async function main() {
 
     const activationResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat`, { method: "POST" });
     const activationCommand = await nextMessage(socket);
-    assert(activationCommand.type === "chat.activate", "Fake extension did not receive Chat activation");
-    socket.send(JSON.stringify({
-      type: "chat.error",
+    assert(activationCommand.type === "chat.activate", "Fake extension did not receive exact Chat activation");
+    assert(
+      activationCommand.payload.source.agentSessionPath === join(tmp, "fake-source.jsonl") &&
+        activationCommand.payload.source.leafId === "smoke-source-leaf",
+      "Exact Chat activation did not preserve source transcript coordinates"
+    );
+    const exactReadyMessage = {
+      type: "chat.ready",
       requestId: activationCommand.requestId,
       payload: {
         requestId,
-        error: { code: "source_path_missing", message: "The packaged smoke source is intentionally unavailable." }
-      }
-    }));
-    const exactUnavailable = await activationResponse;
-    const exactUnavailableBody = await exactUnavailable.json();
-    assert(
-      exactUnavailable.status === 409 &&
-        exactUnavailableBody.error?.code === "source_path_missing" &&
-        exactUnavailableBody.error?.contextFallback?.status === "available",
-      "Exact Chat failure did not disclose eligible context-only fallback"
-    );
-
-    const contextActivationResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/context`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ confirmed: true })
-    });
-    const contextActivationCommand = await nextMessage(socket);
-    assert(contextActivationCommand.type === "chat.activate-context", "Fake extension did not receive explicit context-only activation");
-    assert(
-      contextActivationCommand.payload.source.question.prompt === "Is the release smoke path healthy?" &&
-        contextActivationCommand.payload.source.context.codebaseContext.includes("Packaged Pi Postbox") &&
-        contextActivationCommand.payload.source.context.problemContext.includes("Smoke verifies") &&
-        contextActivationCommand.payload.source.model === "smoke/fake-model" &&
-        !("agentSessionPath" in contextActivationCommand.payload.source) &&
-        !("leafId" in contextActivationCommand.payload.source),
-      "Context-only activation did not carry only authoritative bounded handoff context"
-    );
-    const contextReadyMessage = {
-      type: "chat.ready",
-      requestId: contextActivationCommand.requestId,
-      payload: {
-        requestId,
         state: "ready",
-        forkKind: "context-only",
+        forkKind: "exact",
         model: { id: "smoke/fake-model", source: "originating" },
         sequence: 0,
         messages: []
       }
     };
     const noAutoTurnBarrierId = `smoke-no-auto-turn-${randomUUID()}`;
-    const contextActivationResult = await expectNoMessage(
+    const activationResult = await expectNoMessage(
       socket,
-      () => socket.send(JSON.stringify(contextReadyMessage)),
-      contextActivationResponse,
+      () => socket.send(JSON.stringify(exactReadyMessage)),
+      activationResponse,
       () => socket.send(JSON.stringify({
           type: "heartbeat",
           requestId: noAutoTurnBarrierId,
@@ -496,7 +473,7 @@ async function main() {
         })),
       (message) => message.type === "ack" && message.requestId === noAutoTurnBarrierId
     );
-    assert(contextActivationResult.status === 200, "Context-only Question Chat did not activate explicitly");
+    assert(activationResult.status === 200, "Exact Question Chat did not activate");
 
     chatSse = new SseClient(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/events`);
     await chatSse.open();
@@ -509,7 +486,7 @@ async function main() {
       payload: {
         requestId,
         state: "ready",
-        forkKind: "context-only",
+        forkKind: "exact",
         model: { id: "smoke/fake-model", source: "originating" },
         sequence: 0,
         messages: []
@@ -651,12 +628,11 @@ async function main() {
         requestId,
         sessionId,
         mode: "single",
-        question: { prompt: "Is the release smoke path healthy?" },
-        options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }],
-        context: {
-          codebaseContext: "Packaged Pi Postbox extension, server, protocol, and web assets.",
-          problemContext: "Smoke verifies one remote handoff without full chat transcripts."
-        }
+        question: {
+          prompt: "Is the release smoke path healthy?",
+          ambiguity: "Whether every packaged asynchronous workflow seam is healthy."
+        },
+        options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }]
       }
     }));
     assert((await replayCreated).type === "ask.created", "Pending ask did not replay after server restart");
@@ -665,14 +641,14 @@ async function main() {
     socket.send(JSON.stringify({
       type: "chat.recover.offer",
       requestId: "smoke-recovery-offer",
-      payload: { requestId, ownerSessionId: sessionId, forkKind: "context-only" }
+      payload: { requestId, ownerSessionId: sessionId, forkKind: "exact" }
     }));
     const decision = await recoveryDecision;
     assert(decision.type === "chat.reconcile" && decision.payload.action === "recover", "Server did not authorize pending Chat recovery");
     const recoveredSnapshot = {
       requestId,
       state: "ready",
-      forkKind: "context-only",
+      forkKind: "exact",
       model: { id: "smoke/fake-model", source: "originating" },
       sequence: 9,
       messages: [{ id: privateAssistantMessageId, role: "assistant", text: privateAssistantText, status: "stopped" }],
@@ -682,7 +658,7 @@ async function main() {
     socket.send(JSON.stringify({
       type: "chat.reconciled",
       requestId: "smoke-recovery-offer",
-      payload: { requestId, forkKind: "context-only", result: { status: "recovered", snapshot: recoveredSnapshot } }
+      payload: { requestId, forkKind: "exact", result: { status: "recovered", snapshot: recoveredSnapshot } }
     }));
     assert((await recoveryAccepted).type === "ack", "Server did not accept recovered Chat snapshot");
     socket.send(JSON.stringify({
@@ -718,7 +694,7 @@ async function main() {
         proposal: {
           label: "Stage release first",
           description: "Verify the release with a limited cohort.",
-          meaning: "Use a reversible rollout before full release."
+          impact: "Use a reversible rollout before full release."
         }
       }
     }));
@@ -798,9 +774,8 @@ async function main() {
       migratedById.get("legacy-answered")?.result?.selectedValues?.[0] === "yes", "Migrated answered result was incomplete");
     assert(migratedById.get("legacy-cancelled")?.result?.status === "cancelled", "Migrated cancelled result was incomplete");
     assert(migratedById.get("legacy-expired")?.result?.status === "expired", "Migrated expired result was incomplete");
-    assert(migratedById.get("legacy-rich-context")?.question?.context === "legacy detail" &&
-      migratedById.get("legacy-rich-context")?.context?.problemContext === "legacy problem",
-      "Migrated rich Question context was not preserved");
+    assert(!("context" in migratedById.get("legacy-rich-context")),
+      "Migrated top-level handoff context was not stripped");
     assert([...migratedById.values()].every((request) => request.owner?.harness === "legacy" || !request.requestId.startsWith("legacy-")),
       "Legacy migration heuristically borrowed a live harness owner");
     assert(!JSON.stringify({ migrationState, history }).includes('"urgency"'), "Historical urgency leaked into owner contracts");
@@ -829,9 +804,9 @@ async function main() {
     const sendCreate = async (target, id, ownerSessionId, parentQuestionId) => {
       const response = nextMessage(target);
       target.send(JSON.stringify({ type: "ask.create", requestId: `wire-${id}`, payload: {
-        requestId: id, sessionId: ownerSessionId, mode: "single", question: { prompt: `${id}?` },
+        requestId: id, sessionId: ownerSessionId, mode: "single",
+        question: { prompt: `${id}?`, ambiguity: "Which acceptance path should be exercised?" },
         options: [{ value: "yes", label: "Yes" }],
-        context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise the real server seam." },
         ...(parentQuestionId ? { parentQuestionId } : {})
       } }));
       const message = await response;
@@ -857,12 +832,24 @@ async function main() {
     await batchReady;
     const batchReceipt = await executeAskPostbox({
       mode: "batch",
-      defaults: { context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise the published batch tool." } },
       questions: [
-      { localRef: "parent", requestId: parentId, question: `${parentId}?`, options: [{ value: "yes", label: "Yes" }] },
-      { localRef: "child", requestId: childId, parent: { localRef: "parent" }, question: `${childId}?`, options: [{ value: "yes", label: "Yes" }],
-        context: { codebaseContext: "Packaged asynchronous acceptance.", problemContext: "Exercise ordered localRef parenting." } }
-    ] }, batchClient, batchSessionId);
+        {
+          localRef: "parent",
+          requestId: parentId,
+          question: `${parentId}?`,
+          ambiguity: "Which parent acceptance decision should be exercised?",
+          options: [{ value: "yes", label: "Yes" }]
+        },
+        {
+          localRef: "child",
+          requestId: childId,
+          parentLocalRef: "parent",
+          question: `${childId}?`,
+          ambiguity: "Which child acceptance decision should be exercised?",
+          options: [{ value: "yes", label: "Yes" }]
+        }
+      ]
+    }, batchClient, batchSessionId);
     assert(batchReceipt.status === "created" && batchReceipt.items.length === 2 &&
       batchReceipt.items[1].localRef === "child" && batchReceipt.items[1].questionId === childId,
       "Published ask_postbox batch receipt did not preserve localRef ordering");
@@ -929,7 +916,15 @@ async function main() {
     const revised = nextMessage(codexSocket);
     codexSocket.send(JSON.stringify({ type: "question.update", requestId: "authoritative-browser-update", payload: {
       sessionId: codexSessionId, questionId: revisionId,
-      update: { action: "revise", expectedRevision: 1, expectedOwnerRevision: 1, question: { prompt: "Authoritative browser revision?" } }
+      update: {
+        action: "revise",
+        expectedRevision: 1,
+        expectedOwnerRevision: 1,
+        question: {
+          prompt: "Authoritative browser revision?",
+          ambiguity: "Whether stale browser answers are rejected after a Question revision."
+        }
+      }
     } }));
     assert((await revised).type === "query.result", "Authoritative revision was rejected");
     await revisionState;

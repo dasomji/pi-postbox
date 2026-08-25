@@ -59,13 +59,6 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
-function interviewerContext() {
-  return {
-    codebaseContext: "Fastify server with shared protocol schemas.",
-    problemContext: "Exercise the remote decision request lifecycle."
-  };
-}
-
 describe("ask_postbox request loop", () => {
   it("lists pending requests oldest first across restart without priority metadata", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-postbox-order-db-"));
@@ -93,9 +86,8 @@ describe("ask_postbox request loop", () => {
               requestId: ask.requestId,
               sessionId: "session-1",
               mode: "single",
-              question: { prompt: `Resolve ${ask.requestId}?` },
-              options: [{ value: "yes", label: "Yes" }],
-              context: interviewerContext()
+              question: { prompt: `Resolve ${ask.requestId}?`, ambiguity: "Test ambiguity." },
+              options: [{ value: "yes", label: "Yes" }]
             }
           } satisfies ExtensionClientMessage)
         );
@@ -119,33 +111,31 @@ describe("ask_postbox request loop", () => {
     }
   });
 
-  it("rejects direct extension-protocol ask creation without complete interviewer context", async () => {
+  it("accepts direct extension-protocol ask creation without top-level handoff context", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 750 });
     apps.push(app);
     const socket = await connectAndRegister(app);
 
-    const rejected = nextMessage(socket);
-    socket.send(
-      JSON.stringify({
-        type: "ask.create",
-        requestId: "wire-missing-context",
-        payload: {
-          requestId: "ask-missing-context",
-          sessionId: "session-1",
-          mode: "single",
-          question: { prompt: "Which path?" },
-          options: [{ value: "ship", label: "Ship" }],
-          context: { codebaseContext: "Fastify server.", problemContext: "  " }
-        }
-      })
-    );
+    const created = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "ask.create",
+      requestId: "wire-without-context",
+      payload: {
+        requestId: "ask-without-context",
+        sessionId: "session-1",
+        mode: "single",
+        question: { prompt: "Which path?", ambiguity: "Test ambiguity." },
+        options: [{ value: "ship", label: "Ship" }]
+      }
+    }));
 
-    await expect(rejected).resolves.toMatchObject({
-      type: "error",
-      requestId: "wire-missing-context",
-      error: { code: "invalid_message" }
+    await expect(created).resolves.toMatchObject({
+      type: "ask.created",
+      requestId: "wire-without-context",
+      payload: { requestId: "ask-without-context", status: "pending" }
     });
-    expect((await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json()).toEqual({ requests: [] });
+    expect((await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json().requests)
+      .toEqual([expect.objectContaining({ requestId: "ask-without-context" })]);
   });
 
   it("rejects creator-spoofed Chat provenance before state or history serialization", async () => {
@@ -161,9 +151,8 @@ describe("ask_postbox request loop", () => {
         requestId: "ask-spoofed-provenance",
         sessionId: "session-1",
         mode: "single",
-        question: { prompt: "Which path?" },
-        options: [{ value: "ship", label: "Ship", provenance: "chat" }],
-        context: interviewerContext()
+        question: { prompt: "Which path?", ambiguity: "Test ambiguity." },
+        options: [{ value: "ship", label: "Ship", provenance: "chat" }]
       }
     }));
 
@@ -190,12 +179,11 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-1",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Which server framework should v1 use?" },
+          question: { prompt: "Which server framework should v1 use?", ambiguity: "Test ambiguity." },
           options: [
             { value: "fastify", label: "Fastify" },
             { value: "hono", label: "Hono" }
-          ],
-          context: interviewerContext()
+          ]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -210,7 +198,7 @@ describe("ask_postbox request loop", () => {
           sessionId: "session-1",
           status: "pending",
           mode: "single",
-          question: { prompt: "Which server framework should v1 use?" }
+          question: { prompt: "Which server framework should v1 use?", ambiguity: "Test ambiguity." }
         }
       ]
     });
@@ -252,9 +240,8 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-other",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Which path should we take?" },
-          options: [{ value: "ship", label: "Ship it" }],
-          context: interviewerContext()
+          question: { prompt: "Which path should we take?", ambiguity: "Test ambiguity." },
+          options: [{ value: "ship", label: "Ship it" }]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -288,13 +275,12 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-multi",
           sessionId: "session-1",
           mode: "multi",
-          question: { prompt: "Which metadata should be shown?" },
+          question: { prompt: "Which metadata should be shown?", ambiguity: "Test ambiguity." },
           options: [
             { value: "branch", label: "Branch" },
             { value: "machine", label: "Machine" },
             { value: "cwd", label: "CWD" }
-          ],
-          context: interviewerContext()
+          ]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -325,9 +311,8 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-cancel",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Continue?" },
-          options: [{ value: "yes", label: "Yes" }],
-          context: interviewerContext()
+          question: { prompt: "Continue?", ambiguity: "Test ambiguity." },
+          options: [{ value: "yes", label: "Yes" }]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -357,9 +342,8 @@ describe("ask_postbox request loop", () => {
             requestId,
             sessionId: "session-1",
             mode: "single",
-            question: { prompt: `Resolve ${requestId}?` },
-            options: [{ value: "yes", label: "Yes" }],
-            context: interviewerContext()
+            question: { prompt: `Resolve ${requestId}?`, ambiguity: "Test ambiguity." },
+            options: [{ value: "yes", label: "Yes" }]
           }
         } satisfies ExtensionClientMessage)
       );
@@ -401,9 +385,8 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-survives-reload",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Survive reload?" },
-          options: [{ value: "yes", label: "Yes" }],
-          context: interviewerContext()
+          question: { prompt: "Survive reload?", ambiguity: "Test ambiguity." },
+          options: [{ value: "yes", label: "Yes" }]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -424,7 +407,7 @@ describe("ask_postbox request loop", () => {
     expect(snapshot.requests).toEqual([expect.objectContaining({ requestId: "ask-survives-reload", status: "pending" })]);
   });
 
-  it("persists rich handoff context, option meaning, and fork references in public request snapshots", async () => {
+  it("persists option impact and fork references in public request snapshots", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 4_000 });
     apps.push(app);
     const socket = await connectAndRegister(app);
@@ -439,24 +422,16 @@ describe("ask_postbox request loop", () => {
           mode: "single",
           question: {
             prompt: "Which storage boundary should v1 use?",
-            context: "Postbox needs pending asks and resolved decisions to survive restarts.",
-            relevance: "This controls the server persistence shape.",
-            decisionImpact: "It affects migration design and future history queries."
+            ambiguity: "Which storage boundary best balances durability and deployment simplicity?"
           },
           options: [
             {
               value: "sqlite",
               label: "SQLite",
               description: "Use local SQLite.",
-              meaning: "Durable local database with minimal deployment overhead.",
-              context: "Matches the personal Tailscale service boundary."
+              impact: "Durable local database with minimal deployment overhead."
             }
           ],
-          context: {
-            codebaseContext: "Fastify server with better-sqlite3 and shared protocol schemas.",
-            problemContext: "Need an interviewer handoff without streaming full chats.",
-            additionalInfo: [{ kind: "diagram", title: "Decision flow", content: "Pi -> Postbox -> Browser -> Pi" }]
-          },
           forkReference: {
             agentSessionId: "agent-session-1",
             agentSessionPath: "/tmp/session.jsonl",
@@ -474,18 +449,15 @@ describe("ask_postbox request loop", () => {
     expect(pendingResponse.json().requests[0]).toMatchObject({
       requestId: "ask-rich",
       question: {
-        context: "Postbox needs pending asks and resolved decisions to survive restarts.",
-        relevance: "This controls the server persistence shape.",
-        decisionImpact: "It affects migration design and future history queries."
+        ambiguity: "Which storage boundary best balances durability and deployment simplicity?"
       },
-      options: [{ value: "sqlite", meaning: "Durable local database with minimal deployment overhead." }],
-      context: { codebaseContext: "Fastify server with better-sqlite3 and shared protocol schemas." },
+      options: [{ value: "sqlite", impact: "Durable local database with minimal deployment overhead." }],
       forkReference: { agentSessionPath: "/tmp/session.jsonl", leafId: "leaf-1" }
     });
 
     const stateSnapshot = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(stateSnapshot.requests[0]?.options[0]?.context).toContain("Tailscale");
-    expect(stateSnapshot.requests[0]?.context?.additionalInfo?.[0]).toMatchObject({ kind: "diagram", title: "Decision flow" });
+    expect(stateSnapshot.requests[0]?.options[0]?.impact).toContain("deployment overhead");
+    expect(stateSnapshot.requests[0]).not.toHaveProperty("context");
 
     const answerResponse = await app.inject({
       method: "POST",
@@ -495,7 +467,7 @@ describe("ask_postbox request loop", () => {
     expect(answerResponse.statusCode).toBe(200);
     expect(answerResponse.json().request).toMatchObject({
       status: "answered",
-      context: { problemContext: "Need an interviewer handoff without streaming full chats." },
+
       forkReference: { agentSessionId: "agent-session-1" }
     });
   });

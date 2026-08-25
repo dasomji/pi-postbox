@@ -31,10 +31,9 @@ export function createProposeAnswerTool(requestId: string, propose: ProposeAnswe
     label: "Suggest answer option",
     description: "Append one answerable option to the pending Postbox Question. This never selects or submits an answer.",
     parameters: Type.Object({
-      label: Type.String({ minLength: 1, maxLength: 2_000 }),
-      description: Type.Optional(Type.String({ minLength: 1, maxLength: 128_000 })),
-      meaning: Type.Optional(Type.String({ minLength: 1, maxLength: 128_000 })),
-      context: Type.Optional(Type.String({ minLength: 1, maxLength: 128_000 }))
+      label: Type.String({ minLength: 1, maxLength: 2_000, description: "Short user-visible option label." }),
+      description: Type.Optional(Type.String({ minLength: 1, maxLength: 128_000, description: "Explanation that helps the user understand the option." })),
+      impact: Type.Optional(Type.String({ minLength: 1, maxLength: 128_000, description: "What impact and implications would this option have?" }))
     }, { additionalProperties: false }),
     async execute(_toolCallId, input, signal) {
       const parsed = ProposeAnswerPayloadSchema.safeParse(input);

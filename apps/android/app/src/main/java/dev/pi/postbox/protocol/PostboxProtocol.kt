@@ -91,7 +91,6 @@ data class AskRequestSnapshot(
     val mode: AskMode,
     val question: AskQuestion,
     val options: List<AskOption>,
-    val context: HandoffContext? = null,
     val forkReference: ForkReference? = null,
     val status: AskStatus,
     val createdAt: String,
@@ -130,9 +129,7 @@ enum class AskResultStatus {
 @Serializable
 data class AskQuestion(
     val prompt: String,
-    val context: String? = null,
-    val relevance: String? = null,
-    val decisionImpact: String? = null
+    val ambiguity: String? = null
 )
 
 @Serializable
@@ -140,8 +137,7 @@ data class AskOption(
     val value: String,
     val label: String,
     val description: String? = null,
-    val meaning: String? = null,
-    val context: String? = null,
+    val impact: String? = null,
     val provenance: AskOptionProvenance? = null
 )
 
@@ -149,21 +145,6 @@ data class AskOption(
 enum class AskOptionProvenance {
     @SerialName("chat") CHAT
 }
-
-@Serializable
-data class HandoffContext(
-    val codebaseContext: String? = null,
-    val problemContext: String? = null,
-    val additionalInfo: List<RichContextItem>? = null
-)
-
-@Serializable
-data class RichContextItem(
-    val kind: String = "text",
-    val title: String? = null,
-    val content: String,
-    val language: String? = null
-)
 
 @Serializable
 data class ForkReference(

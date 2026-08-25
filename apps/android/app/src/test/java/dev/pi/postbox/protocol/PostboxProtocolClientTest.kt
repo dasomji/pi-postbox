@@ -39,7 +39,7 @@ class PostboxProtocolClientTest {
         val decodedQuestion = snapshot.requests.single()
         assertEquals("ask-protocol-1", decodedQuestion.requestId)
         assertEquals(AskOptionProvenance.CHAT, decodedQuestion.options.first().provenance)
-        assertEquals("Stay idiomatic on Android.", decodedQuestion.options.first().meaning)
+        assertEquals("Stay idiomatic on Android.", decodedQuestion.options.first().impact)
         assertEquals(SemanticState.BLOCKED, snapshot.sessions.single().semanticState)
     }
 

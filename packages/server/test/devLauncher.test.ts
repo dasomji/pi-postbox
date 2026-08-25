@@ -37,6 +37,18 @@ describe("scripts/dev.mjs", () => {
     expect(stderr).toContain("Tailscale exposure is enabled");
   });
 
+  it("reuses checkout-scoped API and web ports across restarts", async () => {
+    const first = await runDevLauncher();
+    const second = await runDevLauncher({}, true, first.root);
+    const backends = second.invocations.filter((entry) => entry.command === "fake-server");
+    const webs = second.invocations.filter((entry) => entry.command === "npm" && entry.args.includes("@pi-postbox/web"));
+
+    expect(backends).toHaveLength(2);
+    expect(valueAfter(backends[1].args, "--port")).toBe(valueAfter(backends[0].args, "--port"));
+    expect(webs).toHaveLength(2);
+    expect(valueAfter(webs[1].args, "--port")).toBe(valueAfter(webs[0].args, "--port"));
+  });
+
   it("fails without stopping anything when an explicitly requested development port is occupied", async () => {
     const result = await runDevLauncher({ PI_POSTBOX_PORT: "32187" }, false);
     // This machine may or may not have production on the canonical port. In either case,
@@ -55,13 +67,16 @@ type Invocation = {
   piPostboxProfile?: string;
 };
 
-async function runDevLauncher(overrides: Record<string, string> = {}, expectSuccess = true) {
-  const root = await mkdtemp(join(tmpdir(), "pi-postbox-dev-launcher-"));
-  tempDirs.push(root);
+async function runDevLauncher(
+  overrides: Record<string, string> = {},
+  expectSuccess = true,
+  existingRoot?: string
+) {
+  const root = existingRoot ?? await mkdtemp(join(tmpdir(), "pi-postbox-dev-launcher-"));
+  if (!existingRoot) tempDirs.push(root);
   const binDir = join(root, "bin");
   const invocationsPath = join(root, "invocations.jsonl");
   const stateHome = join(root, "state");
-  await mkdir(binDir);
 
   const fake = `#!/usr/bin/env node
 const { appendFileSync, readFileSync } = require("node:fs");
@@ -73,18 +88,25 @@ if (command === "npm" && args.includes("build")) process.exit(0);
 if (command === "fake-server") { process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000); }
 if (command === "npm" && args.includes("@pi-postbox/web")) {
   const deadline = Date.now() + 2000;
+  const baseline = Number(process.env.DEV_LAUNCHER_BASELINE_SERVER_COUNT ?? 0);
   while (Date.now() < deadline) {
-    if (readFileSync(process.env.DEV_LAUNCHER_INVOCATIONS, "utf8").includes('"command":"fake-server"')) process.exit(0);
+    const count = (readFileSync(process.env.DEV_LAUNCHER_INVOCATIONS, "utf8").match(/"command":"fake-server"/g) ?? []).length;
+    if (count > baseline) process.exit(0);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
   process.exit(1);
 }
 `;
-  for (const command of ["npm", "fake-server", "tailscale"]) {
-    await writeFile(join(binDir, command), fake);
-    await chmod(join(binDir, command), 0o755);
+  if (!existingRoot) {
+    await mkdir(binDir);
+    for (const command of ["npm", "fake-server", "tailscale"]) {
+      await writeFile(join(binDir, command), fake);
+      await chmod(join(binDir, command), 0o755);
+    }
   }
 
+  const existingInvocations = await readFile(invocationsPath, "utf8").catch(() => "");
+  const baselineServerCount = (existingInvocations.match(/"command":"fake-server"/g) ?? []).length;
   const script = fileURLToPath(new URL("../../../scripts/dev.mjs", import.meta.url));
   const result = spawnSync(process.execPath, [script], {
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
@@ -94,7 +116,8 @@ if (command === "npm" && args.includes("@pi-postbox/web")) {
       XDG_STATE_HOME: stateHome,
       PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
       POSTBOX_DEV_SERVER_EXECUTABLE: join(binDir, "fake-server"),
-      DEV_LAUNCHER_INVOCATIONS: invocationsPath
+      DEV_LAUNCHER_INVOCATIONS: invocationsPath,
+      DEV_LAUNCHER_BASELINE_SERVER_COUNT: String(baselineServerCount)
     },
     encoding: "utf8",
     timeout: 5_000
@@ -104,7 +127,8 @@ if (command === "npm" && args.includes("@pi-postbox/web")) {
   return {
     invocations: text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line) as Invocation) : [],
     stderr: result.stderr,
-    stateHome
+    stateHome,
+    root
   };
 }
 

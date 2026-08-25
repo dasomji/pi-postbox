@@ -19,9 +19,9 @@ describe("owner Question/Answer source of truth", () => {
     const telemetry: Array<Record<string, unknown>> = [];
     const store = new RequestStore(db, () => 2_000, { recordTelemetry: (event) => telemetry.push(event) });
     store.create({ requestId: "question", sessionId: "session", mode: "single",
-      question: { prompt: "Ship?", context: "question context", relevance: "relevant", decisionImpact: "impact" },
-      options: [{ value: "yes", label: "Yes", description: "description", meaning: "meaning", context: "option context" }],
-      context: { codebaseContext: "code", problemContext: "problem" }, expiresAt: "2026-08-14T00:00:00.000Z" });
+      question: { prompt: "Ship?", ambiguity: "Test ambiguity." },
+      options: [{ value: "yes", label: "Yes", description: "description", impact: "impact" }],
+       expiresAt: "2026-08-14T00:00:00.000Z" });
     expect(db.prepare("SELECT count(*) count FROM ask_requests").get()).toEqual({ count: 0 });
     expect(store.get("question")).toMatchObject({ requestId: "question", sessionId: "session", status: "pending" });
     store.answer("question", { expectedRevision: 1, selectedValues: ["yes"], note: "n" });
@@ -29,9 +29,8 @@ describe("owner Question/Answer source of truth", () => {
     expect(JSON.stringify(store.get("question"))).not.toContain("rationale");
     expect(db.prepare("SELECT count(*) count FROM answers WHERE question_id='question'").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT rationale FROM answers WHERE question_id='question'").get()).toEqual({ rationale: null });
-    expect(telemetry).toContainEqual(expect.objectContaining({ operation: "question.create", questionContextLength: 16,
-      relevanceLength: 8, decisionImpactLength: 6, optionDescriptionLength: 11, optionMeaningLength: 7,
-      optionContextLength: 14, requestSerializedBytes: expect.any(Number) }));
+    expect(telemetry).toContainEqual(expect.objectContaining({ operation: "question.create", ambiguityLength: 15,
+      optionDescriptionLength: 11, optionImpactLength: 6, requestSerializedBytes: expect.any(Number) }));
     expect(telemetry).toContainEqual(expect.objectContaining({ operation: "answer.create", noteLength: 1,
       selectedIdCount: 1, answerResponseBytes: expect.any(Number) }));
     expect(JSON.stringify(telemetry)).not.toContain("rationale");

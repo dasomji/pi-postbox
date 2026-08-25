@@ -13,15 +13,14 @@ const askPayload: AskCreatePayload = {
   requestId: "ask-local",
   sessionId: "session-1",
   mode: "single",
-  question: { prompt: "Choose locally?" },
+  question: {
+    prompt: "Choose locally?",
+    ambiguity: "Whether to resolve the pending remote decision from the terminal."
+  },
   options: [
     { value: "yes", label: "Yes" },
     { value: "no", label: "No" }
-  ],
-  context: {
-    codebaseContext: "Pi extension with local fallback commands.",
-    problemContext: "Resolve a pending remote decision from the terminal."
-  }
+  ]
 };
 
 class FakeSocket {

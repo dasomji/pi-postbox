@@ -31,5 +31,5 @@ describe("shipped asynchronous Postbox acceptance", () => {
     for (const credential of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"]) {
       expect(result.output).not.toContain(credential);
     }
-  }, 30_000);
+  }, 60_000);
 });

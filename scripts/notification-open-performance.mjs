@@ -176,21 +176,14 @@ function questionMessage(requestId, prompt) {
       requestId,
       sessionId: "session-performance",
       mode: "single",
-      urgency: "normal",
       question: {
         prompt,
-        context: "A normal-sized pending question used by the notification-open acceptance harness.",
-        relevance: "The browser journey must stay fast as retained History grows.",
-        decisionImpact: "This validates the bounded live-state contract."
+        ambiguity: "Whether notification-open performance stays bounded as retained History grows."
       },
       options: [
         { value: "ship", label: TARGET_OPTION_LABEL, description: "Use the bounded pending-only path." },
         { value: "hold", label: "Hold for more evidence", description: "Do not ship this path yet." }
-      ],
-      context: {
-        codebaseContext: "A production Pi Postbox web build is served by the real Fastify application.",
-        problemContext: "The notification-open journey is measured under deterministic mobile throttling."
-      }
+      ]
     }
   };
 }

@@ -7,19 +7,13 @@ import { openPostboxDatabase, type SqliteDatabase } from "../src/db/database.js"
 import { RequestStore, RequestStoreError } from "../src/services/requestStore.js";
 import { SessionStore } from "../src/services/sessionStore.js";
 
-const CONTEXT = {
-  codebaseContext: "Fastify server backed by SQLite.",
-  problemContext: "Offer one more answer without resolving the Question."
-};
-
 function ask(requestId: string, options: AskCreatePayload["options"] = [{ value: "ship", label: "Ship now" }]): AskCreatePayload {
   return {
     requestId,
     sessionId: "session-owner",
     mode: "single",
-    question: { prompt: "Which release path?" },
-    options,
-    context: CONTEXT
+    question: { prompt: "Which release path?", ambiguity: "Test ambiguity." },
+    options
   };
 }
 
@@ -27,8 +21,7 @@ function proposal(label: string): ProposeAnswerPayload {
   return {
     label,
     description: "Deploy to a limited cohort.",
-    meaning: "A reversible rollout.",
-    context: "The pipeline supports staged deployments."
+    impact: "A reversible rollout."
   };
 }
 
@@ -60,8 +53,7 @@ describe("RequestStore Chat-proposed options", () => {
       value: "chat_opaque_1",
       label: "Stage first",
       description: "Deploy to a limited cohort.",
-      meaning: "A reversible rollout.",
-      context: "The pipeline supports staged deployments.",
+      impact: "A reversible rollout.",
       provenance: "chat"
     });
     expect(appended.request.options).toEqual([

@@ -608,11 +608,8 @@ data class QuestionDetailUiState(
     val sessionId: String,
     val mode: QuestionMode,
     val prompt: String,
-    val questionContext: String?,
-    val relevance: String?,
-    val decisionImpact: String?,
+    val ambiguity: String?,
     val options: List<QuestionOptionUiState>,
-    val handoffContext: dev.pi.postbox.protocol.HandoffContext?,
     val forkReference: dev.pi.postbox.protocol.ForkReference?,
     val selectedValues: List<String> = emptyList(),
     val canSubmit: Boolean = false,
@@ -626,8 +623,7 @@ data class QuestionOptionUiState(
     val value: String,
     val label: String,
     val description: String?,
-    val meaning: String? = null,
-    val context: String? = null,
+    val impact: String? = null,
     val provenance: QuestionOptionProvenance? = null
 )
 
@@ -676,20 +672,16 @@ private fun AskRequestSnapshot.toUiQuestion(
         sessionId = sessionId,
         mode = mode.toQuestionMode(),
         prompt = question.prompt,
-        questionContext = question.context,
-        relevance = question.relevance,
-        decisionImpact = question.decisionImpact,
+        ambiguity = question.ambiguity,
         options = options.map { option ->
             QuestionOptionUiState(
                 value = option.value,
                 label = option.label,
                 description = option.description,
-                meaning = option.meaning,
-                context = option.context,
+                impact = option.impact,
                 provenance = option.provenance?.toQuestionOptionProvenance()
             )
         },
-        handoffContext = context,
         forkReference = forkReference,
         selectedValues = previous
             ?.selectedValues

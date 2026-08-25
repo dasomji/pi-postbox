@@ -1,4 +1,4 @@
-import type { AskCreatePayload, AskResult } from "@pi-postbox/protocol";
+import type { AskCreatePayload } from "@pi-postbox/protocol";
 import { describe, expect, it } from "vitest";
 import {
   askPostboxParameters,
@@ -22,11 +22,8 @@ describe("ask_postbox tool", () => {
         {
           requestId: "question-async-1",
           question: "Ship the release?",
-          options: [{ value: "ship", label: "Ship" }],
-          context: {
-            codebaseContext: "Pi Postbox extension.",
-            problemContext: "The agent must continue while a human decides."
-          }
+          ambiguity: "Whether the release is ready to ship.",
+          options: [{ value: "ship", label: "Ship" }]
         },
         client,
         "pi-control-session"
@@ -36,8 +33,7 @@ describe("ask_postbox tool", () => {
     expect(result).toBe("still-waiting");
     acknowledge();
     await expect(executeAskPostbox({
-      requestId: "question-async-2", question: "Ship?", options: [{ value: "yes", label: "Yes" }],
-      context: { codebaseContext: "Extension", problemContext: "Decision" }
+      requestId: "question-async-2", question: "Ship?", ambiguity: "Whether to ship now.", options: [{ value: "yes", label: "Yes" }]
     }, { createAsk: async (payload) => ({ questionId: payload.requestId, revision: 1, status: "pending" }) }, "pi-control-session")).resolves.toEqual({
       questionId: "question-async-2",
       revision: 1,
@@ -49,10 +45,7 @@ describe("ask_postbox tool", () => {
     const baseInput = {
       requestId: "ask-urgent",
       question: "Which request should be answered first?",
-      context: {
-        codebaseContext: "TypeScript extension that sends structured Postbox asks.",
-        problemContext: "Let the caller place the decision correctly in the attention queue."
-      },
+      ambiguity: "Which pending request should receive attention first.",
       options: [{ value: "this-one", label: "This one" }]
     };
 
@@ -61,27 +54,15 @@ describe("ask_postbox tool", () => {
     expect(createAskPayload(baseInput, "session-1")).not.toHaveProperty("urgency");
   });
 
-  it("reports which required interviewer context field is missing or blank", () => {
-    const baseInput = {
-      requestId: "ask-invalid-context",
+  it("does not expose the removed top-level handoff context", () => {
+    expect(askPostboxParameters.oneOf[0].required).not.toContain("context");
+    expect(askPostboxParameters.properties).not.toHaveProperty("context");
+    expect(createAskPayload({
+      requestId: "ask-without-context",
       question: "Choose deployment target",
+      ambiguity: "Which deployment target should host Postbox.",
       options: [{ value: "local", label: "Local" }]
-    };
-
-    expect(() =>
-      createAskPayload(
-        { ...baseInput, context: { problemContext: "Choose where the Postbox Server should run." } } as AskPostboxInput,
-        "session-1"
-      )
-    ).toThrow("ask_postbox requires non-blank codebaseContext");
-    expect(() =>
-      createAskPayload(
-        { ...baseInput, context: { codebaseContext: "Node.js Postbox Server.", problemContext: "  \n" } },
-        "session-1"
-      )
-    ).toThrow("ask_postbox requires non-blank problemContext");
-    expect(askPostboxParameters.oneOf[0].required).toContain("context");
-    expect(askPostboxParameters.properties.context.required).toEqual(["codebaseContext", "problemContext"]);
+    }, "session-1")).not.toHaveProperty("context");
   });
 
   it("builds single-choice ask payloads for the active session", () => {
@@ -89,10 +70,7 @@ describe("ask_postbox tool", () => {
       {
         requestId: "ask-1",
         question: "Choose deployment target",
-        context: {
-          codebaseContext: "TypeScript extension that sends asks through the shared protocol.",
-          problemContext: "Choose where the Postbox Server should be deployed."
-        },
+        ambiguity: "Which deployment target should host Postbox.",
         options: [
           { value: "local", label: "Local" },
           { value: "remote", label: "Remote" }
@@ -105,7 +83,7 @@ describe("ask_postbox tool", () => {
       requestId: "ask-1",
       sessionId: "session-1",
       mode: "single",
-      question: { prompt: "Choose deployment target" }
+      question: { prompt: "Choose deployment target", ambiguity: "Which deployment target should host Postbox." }
     });
   });
 
@@ -123,10 +101,7 @@ describe("ask_postbox tool", () => {
         requestId: "ask-multi",
         mode: "multi",
         question: "Which metadata should be displayed?",
-        context: {
-          codebaseContext: "TypeScript extension and Svelte dashboard.",
-          problemContext: "Choose which session metadata the dashboard should display."
-        },
+        ambiguity: "Which metadata is useful without cluttering the dashboard.",
         options: [
           { value: "branch", label: "Branch" },
           { value: "machine", label: "Machine" }
@@ -141,7 +116,7 @@ describe("ask_postbox tool", () => {
     expect(formatAskResult(result)).toContain("asynchronously");
   });
 
-  it("accepts rich handoff input while stripping rich context from the final tool result", async () => {
+  it("accepts option detail and fork provenance while returning a compact result", async () => {
     let sentPayload: AskCreatePayload | undefined;
     const client = {
       createAsk: async (payload: AskCreatePayload) => {
@@ -154,14 +129,7 @@ describe("ask_postbox tool", () => {
       {
         requestId: "ask-rich",
         question: "Which storage should v1 use?",
-        questionContext: "Server needs durable request records.",
-        relevance: "This affects the persistence seam.",
-        decisionImpact: "It controls migration and history design.",
-        context: {
-          codebaseContext: "Fastify + SQLite server package.",
-          problemContext: "Remote asks must preserve decision context for a future interviewer.",
-          additionalInfo: [{ kind: "code", title: "Route", content: "POST /api/requests/:id/answer", language: "ts" }]
-        },
+        ambiguity: "Which storage provides durable records without unnecessary deployment complexity?",
         forkReference: {
           agentSessionId: "native-session-1",
           agentSessionPath: "/tmp/session.jsonl",
@@ -173,8 +141,7 @@ describe("ask_postbox tool", () => {
           {
             value: "sqlite",
             label: "SQLite",
-            meaning: "Simple durable local DB",
-            context: "Matches the Tailscale-only v1 deployment."
+            impact: "Simple durable local DB"
           }
         ]
       },
@@ -184,12 +151,9 @@ describe("ask_postbox tool", () => {
 
     expect(sentPayload).toMatchObject({
       question: {
-        context: "Server needs durable request records.",
-        relevance: "This affects the persistence seam.",
-        decisionImpact: "It controls migration and history design."
+        ambiguity: "Which storage provides durable records without unnecessary deployment complexity?"
       },
-      options: [{ value: "sqlite", meaning: "Simple durable local DB" }],
-      context: { codebaseContext: "Fastify + SQLite server package." },
+      options: [{ value: "sqlite", impact: "Simple durable local DB" }],
       forkReference: { leafId: "leaf-123" }
     });
     expect(result).toEqual({ questionId: "ask-rich", revision: 1, status: "pending" });

@@ -76,9 +76,9 @@ describe("durable decision compatibility migration", () => {
 
     requests.create({
       requestId: "question-complete", sessionId: "session-left", mode: "single",
-      question: { prompt: "Which deployment?", context: "Release window", relevance: "Production", decisionImpact: "Chooses rollout" },
-      options: [{ value: "blue", label: "Blue", description: "Blue pool", meaning: "Low risk", context: "Already warm" }],
-      context: { codebaseContext: "Deployment service", problemContext: "Pick a production pool" }
+      question: { prompt: "Which deployment?", ambiguity: "Test ambiguity." },
+      options: [{ value: "blue", label: "Blue", description: "Blue pool", impact: "Low risk" }],
+
     });
 
     expect(() => requests.proposeAnswer("question-complete", "session-right", { label: "Green" }))
@@ -91,9 +91,9 @@ describe("durable decision compatibility migration", () => {
     ]);
     expect(db.prepare(`SELECT question_json, options_json, context_json, status, creator_owner_id, owner_owner_id
       FROM questions WHERE question_id = ?`).get("question-complete")).toEqual({
-      question_json: JSON.stringify({ prompt: "Which deployment?", context: "Release window", relevance: "Production", decisionImpact: "Chooses rollout" }),
-      options_json: JSON.stringify([{ value: "blue", label: "Blue", description: "Blue pool", meaning: "Low risk", context: "Already warm" }]),
-      context_json: JSON.stringify({ codebaseContext: "Deployment service", problemContext: "Pick a production pool" }),
+      question_json: JSON.stringify({ prompt: "Which deployment?", ambiguity: "Test ambiguity." }),
+      options_json: JSON.stringify([{ value: "blue", label: "Blue", description: "Blue pool", impact: "Low risk" }]),
+      context_json: null,
       status: "answered",
       creator_owner_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       owner_owner_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -105,8 +105,8 @@ describe("durable decision compatibility migration", () => {
 
     requests.create({
       requestId: "question-transferred", sessionId: "session-left", mode: "single",
-      question: { prompt: "Transferred choice?" }, options: [{ value: "yes", label: "Yes" }],
-      context: { codebaseContext: "Ownership", problemContext: "Successor must mutate" }
+      question: { prompt: "Transferred choice?", ambiguity: "Test ambiguity." }, options: [{ value: "yes", label: "Yes" }],
+
     });
     db.prepare(`UPDATE questions SET owner_owner_id = ?, revision = revision + 1 WHERE question_id = ?`)
       .run("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "question-transferred");
@@ -151,8 +151,8 @@ describe("durable decision compatibility migration", () => {
       INSERT INTO machines VALUES ('legacy-machine', 'legacy-host', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
       INSERT INTO projects (project_id, name, cwd, created_at, updated_at) VALUES ('legacy-project', 'legacy-repo', '/legacy', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
       INSERT INTO sessions (session_id, machine_id, project_id, cwd, semantic_state, created_at, updated_at) VALUES ('legacy-session', 'legacy-machine', 'legacy-project', '/legacy', 'idle', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
-      INSERT INTO ask_requests (request_id, session_id, mode, prompt, options_json, status, selected_values_json, note, rationale, created_at, resolved_at, updated_at) VALUES ('legacy-request', 'legacy-session', 'single', 'Legacy choice?', '[{"value":"yes","label":"Yes"}]', 'answered', '["yes"]', 'old note', 'old rationale', '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z', '2026-01-01T00:01:00.000Z');
-      INSERT INTO ask_requests (request_id, session_id, mode, prompt, options_json, status, selected_values_json, created_at, updated_at) VALUES ('legacy-pending', 'legacy-session', 'single', 'Pending legacy choice?', '[{"value":"wait","label":"Wait"}]', 'pending', '[]', '2026-01-01T00:02:00.000Z', '2026-01-01T00:02:00.000Z');
+      INSERT INTO ask_requests (request_id, session_id, mode, prompt, options_json, context_json, status, selected_values_json, note, rationale, created_at, resolved_at, updated_at) VALUES ('legacy-request', 'legacy-session', 'single', 'Legacy choice?', '[{"value":"yes","label":"Yes","meaning":"Legacy impact","context":"Legacy background"}]', '{"codebaseContext":"legacy code","problemContext":"legacy problem"}', 'answered', '["yes"]', 'old note', 'old rationale', '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z', '2026-01-01T00:01:00.000Z');
+      INSERT INTO ask_requests (request_id, session_id, mode, prompt, options_json, context_json, status, selected_values_json, created_at, updated_at) VALUES ('legacy-pending', 'legacy-session', 'single', 'Pending legacy choice?', '[{"value":"wait","label":"Wait","meaning":"Stale impact","impact":"Current impact","context":"Legacy background"}]', '{"codebaseContext":"pending legacy code","problemContext":"pending legacy problem"}', 'pending', '[]', '2026-01-01T00:02:00.000Z', '2026-01-01T00:02:00.000Z');
     `);
     legacy.close();
 
@@ -163,6 +163,22 @@ describe("durable decision compatibility migration", () => {
 
     expect(reopened.prepare("SELECT prompt, status, selected_values_json FROM ask_requests WHERE request_id = 'legacy-request'").get())
       .toEqual({ prompt: "Legacy choice?", status: "answered", selected_values_json: '["yes"]' });
+    for (const table of ["ask_requests", "questions", "question_revisions"]) {
+      expect(reopened.prepare(`SELECT count(*) AS count FROM ${table} WHERE context_json IS NOT NULL`).get(),
+        `${table} retained removed top-level handoff context`).toEqual({ count: 0 });
+    }
+    expect(reopened.prepare("SELECT facts_json FROM migration_ledger WHERE migration_key = 'remove-question-context-v1'").get())
+      .toEqual({ facts_json: '{"storedContext":"removed"}' });
+    expect(reopened.prepare("SELECT facts_json FROM migration_ledger WHERE migration_key = 'rename-option-meaning-to-impact-v1'").get())
+      .toEqual({ facts_json: '{"legacyField":"meaning","replacement":"impact"}' });
+    expect(reopened.prepare("SELECT facts_json FROM migration_ledger WHERE migration_key = 'remove-option-context-v1'").get())
+      .toEqual({ facts_json: '{"optionContext":"removed"}' });
+    for (const table of ["ask_requests", "questions", "question_revisions"]) {
+      expect(reopened.prepare(`SELECT options_json FROM ${table} WHERE ${table === "ask_requests" ? "request_id" : "question_id"} = 'legacy-request'`).get())
+        .toEqual({ options_json: '[{"value":"yes","label":"Yes","impact":"Legacy impact"}]' });
+      expect(reopened.prepare(`SELECT options_json FROM ${table} WHERE ${table === "ask_requests" ? "request_id" : "question_id"} = 'legacy-pending'`).get())
+        .toEqual({ options_json: '[{"value":"wait","label":"Wait","impact":"Current impact"}]' });
+    }
     expect(tableColumns(reopened, "owners")).toContain("owner_id");
     expect(tableColumns(reopened, "questions")).toContain("revision");
     expect(tableColumns(reopened, "answers")).toContain("answer_id");

@@ -6,6 +6,13 @@ import {
   UpdateQuestionPayloadSchema,
   ProposeAnswerPayloadSchema,
   OTHER_OPTION_VALUE,
+  POSTBOX_EXPLICIT_ID_MAX,
+  QUESTION_DISCOVERY_PAGE_DEFAULT,
+  QUESTION_DISCOVERY_PAGE_MAX,
+  QUESTION_HISTORY_PAGE_DEFAULT,
+  QUESTION_HISTORY_PAGE_MAX,
+  QUESTION_STATUS_PAGE_DEFAULT,
+  QUESTION_STATUS_PAGE_MAX,
   type AskAnswerPayload,
   type AskCancelPayload,
   type AskCreatePayload,
@@ -15,7 +22,6 @@ import {
   type QuestionHistory,
   type QuestionNonContentEvent,
   type AskQuestionDraft,
-  type AskBatchDefaults,
   type AskBatchQuestionDraft,
   type AskBatchReceipt,
   type AskRequestSnapshot,
@@ -31,6 +37,11 @@ import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "../db/database.js";
 import type { SessionStore } from "./sessionStore.js";
 import { normalizeProposedOptionLabel } from "./proposedOptionPolicy.js";
+import {
+  decodePaginationCursor,
+  encodePaginationCursor,
+  PaginationCursorError
+} from "./paginationCursor.js";
 
 interface AskRequestRow {
   request_id: string;
@@ -47,7 +58,6 @@ interface AskRequestRow {
   prompt: string;
   question_json: string | null;
   options_json: string;
-  context_json: string | null;
   fork_reference_json: string | null;
   parent_question_id: string | null;
   status: AskStatus;
@@ -100,6 +110,25 @@ export interface QuestionDiscoveryFilters {
   global?: boolean;
   cursor?: string;
   pageSize?: number;
+}
+
+export interface QuestionStatusFilters extends QuestionDiscoveryFilters {
+  readState?: "read" | "unread";
+  includeTerminal?: boolean;
+}
+
+export interface QuestionStatusPage {
+  statuses: Array<Record<string, unknown>>;
+  nextCursor?: string;
+}
+
+export interface QuestionHistoryPage {
+  view: "events" | "full";
+  questionId: string;
+  initial?: QuestionHistory["revisions"][number];
+  revisions: Array<QuestionHistory["revisions"][number] | QuestionContentRevision>;
+  events: QuestionHistory["events"];
+  nextCursor?: string;
 }
 
 function resolveQuestionDiscoveryScope(filters: QuestionDiscoveryFilters): QuestionDiscoveryScope {
@@ -242,16 +271,22 @@ export class RequestStore {
     return versions;
   }
 
-  getAnswerForRecovery(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
+  getAnswerForRecovery(
+    questionId: string,
+    reader: { harness: string; ownerId: string },
+    view: "compact" | "full" = "compact"
+  ): Record<string, unknown> {
     const question = this.db.prepare("SELECT owner_harness, owner_owner_id FROM questions WHERE question_id=?").get(questionId) as {
       owner_harness: string; owner_owner_id: string
     } | undefined;
     if (!question) throw new RequestStoreError("request_not_found", "Question not found");
-    return this.readAnswer(
+    const result = this.readAnswer(
       questionId,
       { harness: question.owner_harness, ownerId: question.owner_owner_id },
       reader
     );
+    if (view === "full") return result;
+    return this.compactAnswerRead(result, true);
   }
 
   async waitForPostbox(input: {
@@ -316,7 +351,7 @@ export class RequestStore {
           mode: parsed.mode,
           questionJson: JSON.stringify(parsed.question),
           optionsJson: JSON.stringify(parsed.options),
-          contextJson: JSON.stringify(parsed.context),
+          contextJson: null,
           parentQuestionId: parsed.parentQuestionId ?? null,
           repositoryId: session.repository_id,
           worktreeId: session.worktree_id,
@@ -328,7 +363,7 @@ export class RequestStore {
         (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
         VALUES (@requestId, 1, @questionJson, @optionsJson, @contextJson, @harness, @ownerId, @nowIso)`).run({
           requestId: parsed.requestId, questionJson: JSON.stringify(parsed.question), optionsJson: JSON.stringify(parsed.options),
-          contextJson: parsed.context ? JSON.stringify(parsed.context) : null, harness: session.owner_harness, ownerId: session.owner_id, nowIso
+          contextJson: null, harness: session.owner_harness, ownerId: session.owner_id, nowIso
         });
     });
     createDecision();
@@ -336,31 +371,48 @@ export class RequestStore {
     const snapshot = this.get(parsed.requestId);
     if (!snapshot) throw new Error("created request could not be loaded");
     this.recordTelemetry({ operation: "question.create", ...this.draftTelemetry(parsed),
-      contextSerializedBytes: Buffer.byteLength(JSON.stringify(parsed.context)), optionsSerializedBytes: Buffer.byteLength(JSON.stringify(parsed.options)),
+      optionsSerializedBytes: Buffer.byteLength(JSON.stringify(parsed.options)),
       requestSerializedBytes: Buffer.byteLength(JSON.stringify(parsed)),
       responseCharacterCount: JSON.stringify(snapshot).length });
     return snapshot;
   }
 
-  createOne(sessionId: string, draft: AskQuestionDraft): { questionId: string; revision: number; status: "created"; nudge?: string } {
-    if (draft.parent && "localRef" in draft.parent) {
+  createOne(sessionId: string, draft: AskQuestionDraft): {
+    questionId: string;
+    revision: number;
+    ownerRevision: number;
+    status: "created";
+    questionStatus: AskStatus;
+    nudge?: string;
+  } {
+    if (draft.parentLocalRef !== undefined) {
       throw new RequestStoreError("invalid_parent_reference", "A single Question parent must use a Question ID.");
     }
-    const parentQuestionId = draft.parent && "questionId" in draft.parent ? draft.parent.questionId : undefined;
+    const parentQuestionId = draft.parentQuestionId;
     const existing = this.get(draft.requestId);
-    if (existing) return { questionId: existing.requestId, revision: 1, status: "created" };
+    if (existing) return {
+      questionId: existing.requestId,
+      revision: existing.revision,
+      ownerRevision: existing.ownerRevision,
+      status: "created",
+      questionStatus: existing.status
+    };
     const hierarchy = this.validateHierarchy(parentQuestionId);
-    const { localRef: _localRef, parent: _parent, ...createDraft } = draft;
+    const { localRef: _localRef, parentLocalRef: _parentLocalRef, ...createDraft } = draft;
     const request = this.create({ ...createDraft, sessionId, parentQuestionId });
     const nudge = hierarchy.childCount === 3 ? "This is the fourth direct child Question." : hierarchy.depth === 3 ? "This is a level-four Question." : undefined;
-    return { questionId: request.requestId, revision: 1, status: "created", ...(nudge ? { nudge } : {}) };
+    return {
+      questionId: request.requestId,
+      revision: request.revision,
+      ownerRevision: request.ownerRevision,
+      status: "created",
+      questionStatus: request.status,
+      ...(nudge ? { nudge } : {})
+    };
   }
 
-  createBatch(sessionId: string, compactDrafts: AskBatchQuestionDraft[], defaults?: AskBatchDefaults): AskBatchReceipt {
-    const drafts = compactDrafts.map((draft) => AskQuestionDraftSchema.parse({
-      ...draft,
-      context: draft.context ?? defaults?.context
-    }));
+  createBatch(sessionId: string, compactDrafts: AskBatchQuestionDraft[]): AskBatchReceipt {
+    const drafts = compactDrafts.map((draft) => AskQuestionDraftSchema.parse(draft));
     const items: AskBatchReceipt["items"] = [];
     const localIds = new Map<string, string>();
     let aborted = false;
@@ -379,21 +431,25 @@ export class RequestStore {
             status: "created",
             questionId: existing.requestId,
             revision: existing.revision,
+            ownerRevision: existing.ownerRevision,
+            questionStatus: existing.status,
             disposition: "idempotent"
           });
           continue;
         }
-        if (draft.parent && "localRef" in draft.parent) {
-          parentQuestionId = localIds.get(draft.parent.localRef);
+        if (draft.parentLocalRef !== undefined) {
+          parentQuestionId = localIds.get(draft.parentLocalRef);
           if (!parentQuestionId) {
             aborted = true;
             items.push({ localRef: draft.localRef, status: "rejected", reason: { code: "forward_parent_reference", message: "A batch parent must appear before its child." } });
             continue;
           }
-        } else if (draft.parent && "questionId" in draft.parent) parentQuestionId = draft.parent.questionId;
+        } else {
+          parentQuestionId = draft.parentQuestionId;
+        }
         try {
           this.validateHierarchy(parentQuestionId);
-          const { localRef: _localRef, parent: _parent, ...createDraft } = draft;
+          const { localRef: _localRef, parentLocalRef: _parentLocalRef, ...createDraft } = draft;
           const request = this.create({ ...createDraft, sessionId, parentQuestionId });
           localIds.set(draft.localRef, request.requestId);
           items.push({
@@ -401,6 +457,8 @@ export class RequestStore {
             status: "created",
             questionId: request.requestId,
             revision: request.revision,
+            ownerRevision: request.ownerRevision,
+            questionStatus: request.status,
             disposition: "created"
           });
         } catch (error) {
@@ -416,14 +474,11 @@ export class RequestStore {
     const draftMetrics = drafts.map((draft) => this.draftTelemetry(draft));
     const total = (field: keyof ReturnType<RequestStore["draftTelemetry"]>) => draftMetrics.reduce((sum, metrics) => sum + (metrics[field] ?? 0), 0);
     this.recordTelemetry({ operation: "question.batch.create", batchSize: drafts.length,
-      questionLength: total("questionLength"), questionContextLength: total("questionContextLength"),
-      relevanceLength: total("relevanceLength"), decisionImpactLength: total("decisionImpactLength"),
+      questionLength: total("questionLength"), ambiguityLength: total("ambiguityLength"),
       optionValueLength: total("optionValueLength"), optionLabelLength: total("optionLabelLength"),
-      optionDescriptionLength: total("optionDescriptionLength"), optionMeaningLength: total("optionMeaningLength"),
-      optionContextLength: total("optionContextLength"),
-      contextSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.context))),
+      optionDescriptionLength: total("optionDescriptionLength"), optionImpactLength: total("optionImpactLength"),
       optionsSerializedBytes: Buffer.byteLength(JSON.stringify(drafts.map((draft) => draft.options))),
-      batchSerializedBytes: Buffer.byteLength(JSON.stringify({ ...(defaults ? { defaults } : {}), questions: compactDrafts })),
+      batchSerializedBytes: Buffer.byteLength(JSON.stringify({ questions: compactDrafts })),
       responseCharacterCount: JSON.stringify(receipt).length });
     return receipt;
   }
@@ -460,14 +515,14 @@ export class RequestStore {
     questions: Array<{ questionId: string; question: string }>;
     nextCursor?: string;
   } {
-    const pageSize = filters.pageSize ?? 25;
-    if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
-      throw new RequestStoreError("invalid_page_size", "Question page size must be a positive integer");
-    }
+    const pageSize = filters.pageSize ?? QUESTION_DISCOVERY_PAGE_DEFAULT;
+    this.assertPageSize(pageSize, QUESTION_DISCOVERY_PAGE_MAX, "Question discovery");
     const scope = resolveQuestionDiscoveryScope(filters);
-    const fingerprint = createHash("sha256").update(JSON.stringify({ scope, owner: filters.owner, repository: filters.repository,
+    const cursorQuery = { kind: "questions", scope, owner: filters.owner, repository: filters.repository,
+      worktree: filters.worktree, feature: filters.feature, status: filters.status ?? "pending", caller: filters.caller };
+    const legacyFingerprint = createHash("sha256").update(JSON.stringify({ scope, owner: filters.owner, repository: filters.repository,
       worktree: filters.worktree, feature: filters.feature, status: filters.status ?? "pending", caller: filters.caller })).digest("hex");
-    const cursor = this.decodeQuestionCursor(filters.cursor, fingerprint);
+    const cursor = this.decodeQuestionCursor(filters.cursor, cursorQuery, legacyFingerprint);
     const clauses: string[] = [];
     const parameters: Record<string, unknown> = { limit: pageSize + 1 };
     if (cursor) {
@@ -491,13 +546,18 @@ export class RequestStore {
       question: (JSON.parse(row.question_json) as { prompt: string }).prompt
     }));
     const last = rows[Math.min(pageSize, rows.length) - 1] as any;
-    const result = { questions, ...(hasMore && last ? { nextCursor: this.encodeQuestionCursor(fingerprint, last.created_at, last.question_id) } : {}) };
+    const result = { questions, ...(hasMore && last
+      ? { nextCursor: encodePaginationCursor(cursorQuery, [last.created_at, last.question_id]) }
+      : {}) };
     this.recordTelemetry({ operation: "question.list", responseCharacterCount: JSON.stringify(result).length });
     return result;
   }
 
   getQuestions(input: { questionIds: string[]; view?: "control" | "full" }): Array<Record<string, unknown>> {
     if (input.questionIds.length === 0) return [];
+    if (input.questionIds.length > POSTBOX_EXPLICIT_ID_MAX) {
+      throw new RequestStoreError("too_many_question_ids", `At most ${POSTBOX_EXPLICIT_ID_MAX} Question IDs may be read at once`);
+    }
     const select = this.db.prepare(`SELECT q.*, a.answer_id, a.question_revision AS answer_question_revision,
         a.status AS answer_status, a.selected_values_json AS answer_selected_values_json, a.note AS answer_note,
         a.first_reader_harness, a.first_reader_owner_id, a.first_read_at, a.created_at AS answer_created_at
@@ -553,7 +613,6 @@ export class RequestStore {
         mode: row.mode,
         question: JSON.parse(row.question_json as string),
         options: JSON.parse(row.options_json as string),
-        ...(row.context_json ? { context: JSON.parse(row.context_json as string) } : {}),
         createdAt: row.created_at,
         ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
         ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
@@ -565,13 +624,46 @@ export class RequestStore {
     });
   }
 
-  listQuestionStatus(filters: QuestionDiscoveryFilters & {
-    readState?: "read" | "unread";
-    includeTerminal?: boolean;
-  }): Array<Record<string, unknown>> {
+  listQuestionStatus(filters: QuestionStatusFilters): Array<Record<string, unknown>> {
+    const { cursor: _cursor, pageSize: _pageSize, ...query } = filters;
+    const statuses: Array<Record<string, unknown>> = [];
+    let cursor: string | undefined;
+    do {
+      const page = this.listQuestionStatusPage({
+        ...query,
+        pageSize: QUESTION_STATUS_PAGE_DEFAULT,
+        ...(cursor ? { cursor } : {})
+      });
+      statuses.push(...page.statuses);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return statuses;
+  }
+
+  listQuestionStatusPage(filters: QuestionStatusFilters): QuestionStatusPage {
+    const pageSize = filters.pageSize ?? QUESTION_STATUS_PAGE_DEFAULT;
+    this.assertPageSize(pageSize, QUESTION_STATUS_PAGE_MAX, "Question status");
     const clauses: string[] = [];
-    const parameters: Record<string, unknown> = {};
+    const parameters: Record<string, unknown> = { limit: pageSize + 1 };
     const scope = resolveQuestionDiscoveryScope(filters);
+    const cursorQuery = {
+      kind: "question-status",
+      scope,
+      owner: filters.owner,
+      repository: filters.repository,
+      worktree: filters.worktree,
+      feature: filters.feature,
+      status: filters.status,
+      readState: filters.readState,
+      includeTerminal: filters.includeTerminal ?? false,
+      caller: filters.caller
+    };
+    const cursor = this.decodeKeysetCursor(filters.cursor, cursorQuery);
+    if (cursor) {
+      clauses.push("(q.created_at > @cursorCreatedAt OR (q.created_at = @cursorCreatedAt AND q.question_id > @cursorQuestionId))");
+      parameters.cursorCreatedAt = cursor.createdAt;
+      parameters.cursorQuestionId = cursor.questionId;
+    }
     applyQuestionDiscoveryScope(clauses, parameters, filters, scope);
     if (filters.status) { clauses.push("q.status = @status"); parameters.status = filters.status; }
     if (filters.readState === "read") clauses.push("q.status = 'answered'", "a.status = 'answered'", "a.first_reader_harness IS NOT NULL");
@@ -579,22 +671,32 @@ export class RequestStore {
     else if (!filters.status && !filters.includeTerminal) {
       clauses.push("(q.status = 'pending' OR (q.status = 'answered' AND a.status = 'answered' AND a.first_reader_harness IS NULL))");
     }
-    const rows = this.db.prepare(`SELECT q.question_id, q.status, a.answer_id, a.first_reader_harness
+    const rows = this.db.prepare(`SELECT q.question_id, q.status, q.created_at, a.answer_id, a.first_reader_harness
       FROM questions q
       LEFT JOIN answers a ON a.question_id = q.question_id
       JOIN sessions s ON s.session_id = q.source_session_id
       JOIN projects p ON p.project_id = s.project_id
       WHERE ${clauses.length ? clauses.join(" AND ") : "1 = 1"}
-      ORDER BY q.created_at ASC, q.question_id ASC`).all(parameters) as Array<{
-        question_id: string; status: string; answer_id: string | null; first_reader_harness: string | null
+      ORDER BY q.created_at ASC, q.question_id ASC
+      LIMIT @limit`).all(parameters) as Array<{
+        question_id: string; status: string; created_at: string; answer_id: string | null; first_reader_harness: string | null
       }>;
-    return rows.map((row) => ({
+    const hasMore = rows.length > pageSize;
+    const pageRows = rows.slice(0, pageSize);
+    const statuses = pageRows.map((row) => ({
       questionId: row.question_id,
       status: row.status,
       ...(row.status === "answered" && row.answer_id
         ? { answerId: row.answer_id, answerRead: row.first_reader_harness !== null }
         : {})
     }));
+    const last = pageRows.at(-1);
+    return {
+      statuses,
+      ...(hasMore && last
+        ? { nextCursor: encodePaginationCursor(cursorQuery, [last.created_at, last.question_id]) }
+        : {})
+    };
   }
 
   proposeAnswer(requestId: string, ownerSessionId: string, payload: ProposeAnswerPayload): ProposedAnswerAppend {
@@ -677,12 +779,14 @@ export class RequestStore {
     if (parsed.action === "transfer") {
       if (actor.harness !== parsed.expectedOwner.harness || actor.ownerId !== parsed.expectedOwner.ownerId) throw new RequestStoreError("wrong_owner", "Only the current owner may transfer this Question");
       const versions = this.transferQuestionOwner(questionId, parsed.expectedOwner, parsed.owner, "transfer", parsed.expectedRevision, parsed.expectedOwnerRevision);
-      return { questionId, owner: parsed.owner, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator, ...versions };
+      const control = this.getQuestions({ questionIds: [questionId] })[0];
+      return { questionId, owner: parsed.owner, creator: control?.creator, status: control?.status, ...versions };
     }
     if (parsed.action === "takeover") {
       if (!sessions) throw new RequestStoreError("presence_unavailable", "Owner presence is unavailable");
       const versions = this.takeoverQuestionOwner(questionId, parsed.expectedOwner, actor, sessions, parsed.expectedRevision, parsed.expectedOwnerRevision);
-      return { questionId, owner: actor, creator: this.getQuestions({ questionIds: [questionId] })[0]?.creator, ...versions };
+      const control = this.getQuestions({ questionIds: [questionId] })[0];
+      return { questionId, owner: actor, creator: control?.creator, status: control?.status, ...versions };
     }
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
@@ -699,9 +803,8 @@ export class RequestStore {
       if (parsed.action === "revise") {
         const changes = ["question"];
         if (parsed.options) changes.push("options");
-        if (parsed.context) changes.push("context");
-        this.db.prepare(`UPDATE questions SET revision=?, question_json=?, options_json=COALESCE(?, options_json), context_json=COALESCE(?, context_json), updated_at=? WHERE question_id=?`)
-          .run(revision, JSON.stringify(parsed.question), parsed.options ? JSON.stringify(parsed.options) : null, parsed.context ? JSON.stringify(parsed.context) : null, at, questionId);
+        this.db.prepare(`UPDATE questions SET revision=?, question_json=?, options_json=COALESCE(?, options_json), updated_at=? WHERE question_id=?`)
+          .run(revision, JSON.stringify(parsed.question), parsed.options ? JSON.stringify(parsed.options) : null, at, questionId);
         type = "revision"; facts = { changes };
       } else if (parsed.action === "reparent") {
         this.validateNewParent(questionId, parsed.parentQuestionId);
@@ -733,14 +836,98 @@ export class RequestStore {
   }
 
   getQuestionHistory(questionId: string, view: "events" | "full" = "events"): QuestionEventHistory | QuestionHistory {
-    const revisions = (this.db.prepare("SELECT revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at FROM question_revisions WHERE question_id=? ORDER BY revision").all(questionId) as any[])
-      .map((row) => ({ revision: row.revision, question: JSON.parse(row.question_json), options: JSON.parse(row.options_json),
-        context: row.context_json ? JSON.parse(row.context_json) : undefined,
-        actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at })) as QuestionHistory["revisions"];
-    const events = (this.db.prepare("SELECT type, revision, actor_harness, actor_owner_id, facts_json, created_at FROM question_events WHERE question_id=? ORDER BY event_id").all(questionId) as any[])
-      .map((row) => ({ type: row.type, revision: row.revision, actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at, ...JSON.parse(row.facts_json) })) as QuestionHistory["events"];
-    if (view === "full") return { questionId, revisions, events };
+    const { revisions, events } = this.loadQuestionHistory(questionId);
+    return view === "full"
+      ? { questionId, revisions, events }
+      : this.toEventHistory(questionId, revisions, events);
+  }
 
+  getQuestionHistoryPage(input: {
+    questionId: string;
+    view?: "events" | "full";
+    cursor?: string;
+    pageSize?: number;
+  }): QuestionHistoryPage {
+    const view = input.view ?? "events";
+    const pageSize = input.pageSize ?? QUESTION_HISTORY_PAGE_DEFAULT;
+    this.assertPageSize(pageSize, QUESTION_HISTORY_PAGE_MAX, "Question history");
+    const cursorQuery = { kind: "question-history", questionId: input.questionId, view };
+    return this.db.transaction(() => {
+      let maxRevision: number;
+      let maxEventId: number;
+      let offset: number;
+      if (input.cursor) {
+        const boundary = this.decodeCursorTuple(input.cursor, cursorQuery, 3);
+        [maxRevision, maxEventId, offset] = boundary;
+        if (![maxRevision, maxEventId, offset].every((value) => Number.isSafeInteger(value) && value >= 0)) {
+          throw new RequestStoreError("invalid_cursor", "Question history cursor is invalid or belongs to another query");
+        }
+      } else {
+        maxRevision = (this.db.prepare("SELECT COALESCE(MAX(revision), 0) AS value FROM question_revisions WHERE question_id=?")
+          .get(input.questionId) as { value: number }).value;
+        maxEventId = (this.db.prepare("SELECT COALESCE(MAX(event_id), 0) AS value FROM question_events WHERE question_id=?")
+          .get(input.questionId) as { value: number }).value;
+        offset = 0;
+      }
+
+      const { revisions, events } = this.loadQuestionHistory(input.questionId, maxRevision, maxEventId);
+      let records: Array<{ kind: "initial" | "revision" | "event"; value: any }>;
+      if (view === "full") {
+        records = [
+          ...revisions.map((value) => ({ kind: "revision" as const, value })),
+          ...events.map((value) => ({ kind: "event" as const, value }))
+        ];
+      } else {
+        const history = this.toEventHistory(input.questionId, revisions, events);
+        records = [
+          { kind: "initial", value: history.initial },
+          ...history.revisions.map((value) => ({ kind: "revision" as const, value })),
+          ...history.events.map((value) => ({ kind: "event" as const, value }))
+        ];
+      }
+      if (offset > records.length) {
+        throw new RequestStoreError("invalid_cursor", "Question history cursor is invalid or belongs to another query");
+      }
+      const selected = records.slice(offset, offset + pageSize);
+      const nextOffset = offset + selected.length;
+      const page: QuestionHistoryPage = {
+        view,
+        questionId: input.questionId,
+        revisions: selected.filter((record) => record.kind === "revision").map((record) => record.value),
+        events: selected.filter((record) => record.kind === "event").map((record) => record.value),
+        ...(selected.find((record) => record.kind === "initial")
+          ? { initial: selected.find((record) => record.kind === "initial")!.value }
+          : {}),
+        ...(nextOffset < records.length
+          ? { nextCursor: encodePaginationCursor(cursorQuery, [maxRevision, maxEventId, nextOffset]) }
+          : {})
+      };
+      return page;
+    })();
+  }
+
+  private loadQuestionHistory(
+    questionId: string,
+    maxRevision = Number.MAX_SAFE_INTEGER,
+    maxEventId = Number.MAX_SAFE_INTEGER
+  ): { revisions: QuestionHistory["revisions"]; events: QuestionHistory["events"] } {
+    const revisions = (this.db.prepare(`SELECT revision, question_json, options_json, actor_harness, actor_owner_id, created_at
+      FROM question_revisions WHERE question_id=? AND revision <= ? ORDER BY revision`).all(questionId, maxRevision) as any[])
+      .map((row) => ({ revision: row.revision, question: JSON.parse(row.question_json), options: JSON.parse(row.options_json),
+        actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at })) as QuestionHistory["revisions"];
+    if (revisions.length === 0) throw new RequestStoreError("request_not_found", "Question not found");
+    const events = (this.db.prepare(`SELECT type, revision, actor_harness, actor_owner_id, facts_json, created_at
+      FROM question_events WHERE question_id=? AND event_id <= ? ORDER BY event_id`).all(questionId, maxEventId) as any[])
+      .map((row) => ({ type: row.type, revision: row.revision, actor: { harness: row.actor_harness, ownerId: row.actor_owner_id },
+        at: row.created_at, ...JSON.parse(row.facts_json) })) as QuestionHistory["events"];
+    return { revisions, events };
+  }
+
+  private toEventHistory(
+    questionId: string,
+    revisions: QuestionHistory["revisions"],
+    events: QuestionHistory["events"]
+  ): QuestionEventHistory {
     const initial = revisions[0];
     if (!initial) throw new RequestStoreError("request_not_found", "Question not found");
     const changesByRevision = new Map<number, Set<string>>();
@@ -750,14 +937,9 @@ export class RequestStore {
     const contentRevisions = revisions.slice(1).flatMap((snapshot): QuestionContentRevision[] => {
       const changes = changesByRevision.get(snapshot.revision);
       if (!changes) return [];
-      const revision: QuestionContentRevision = {
-        revision: snapshot.revision,
-        actor: snapshot.actor,
-        at: snapshot.at
-      };
+      const revision: QuestionContentRevision = { revision: snapshot.revision, actor: snapshot.actor, at: snapshot.at };
       if (changes.has("question")) revision.question = snapshot.question;
       if (changes.has("options")) revision.options = snapshot.options;
-      if (changes.has("context") && snapshot.context) revision.context = snapshot.context;
       return [revision];
     });
     const nonContentEvents = events.filter((event) => event.type !== "revision") as QuestionNonContentEvent[];
@@ -928,7 +1110,10 @@ export class RequestStore {
   }
 
   getAnswer(questionId: string, reader: { harness: string; ownerId: string }): Record<string, unknown> {
-    const result = this.readAnswer(questionId, reader, reader);
+    return this.compactAnswerRead(this.readAnswer(questionId, reader, reader), false);
+  }
+
+  private compactAnswerRead(result: Record<string, unknown>, includeReadReceipt: boolean): Record<string, unknown> {
     if (result.type === "pending") return result;
     const question = result.question as { questionId: string; resolvedAt: string };
     if (result.type === "lifecycle") {
@@ -946,7 +1131,8 @@ export class RequestStore {
       questionId: question.questionId,
       answerId: answer.answerId,
       answer: answer.selectedValues,
-      ...(answer.note ? { note: answer.note } : {})
+      ...(answer.note ? { note: answer.note } : {}),
+      ...(includeReadReceipt ? { alreadyRead: result.alreadyRead, firstRead: result.firstRead } : {})
     };
   }
 
@@ -957,11 +1143,11 @@ export class RequestStore {
   ): Record<string, unknown> {
     let output: Record<string, unknown> | undefined;
     this.db.transaction(() => {
-      const question = this.db.prepare(`SELECT question_id, revision, mode, question_json, options_json, context_json,
+      const question = this.db.prepare(`SELECT question_id, revision, mode, question_json, options_json,
           owner_harness, owner_owner_id, status, replacement_question_id, created_at, resolved_at
         FROM questions WHERE question_id = ?`).get(questionId) as {
           question_id: string; revision: number; mode: "single" | "multi";
-          question_json: string; options_json: string; context_json: string | null; owner_harness: string; owner_owner_id: string;
+          question_json: string; options_json: string; owner_harness: string; owner_owner_id: string;
           status: AskStatus; replacement_question_id: string | null; created_at: string; resolved_at: string | null
         } | undefined;
       if (!question) throw new RequestStoreError("request_not_found", "Question not found");
@@ -979,7 +1165,6 @@ export class RequestStore {
       const questionResult = {
         questionId: question.question_id, revision: question.revision, mode: question.mode,
         question: JSON.parse(question.question_json), options: JSON.parse(question.options_json),
-        ...(question.context_json ? { context: JSON.parse(question.context_json) } : {}),
         createdAt: question.created_at, resolvedAt: question.resolved_at
       };
       if (question.status !== "answered") {
@@ -1165,7 +1350,7 @@ export class RequestStore {
   private snapshotSelect(): string {
     return `SELECT q.question_id AS request_id, q.source_session_id AS session_id, q.revision, q.owner_revision,
       q.creator_harness, q.creator_owner_id, q.owner_harness, q.owner_owner_id, a.answer_id, a.first_reader_harness, q.mode,
-      json_extract(q.question_json, '$.prompt') AS prompt, q.question_json, q.options_json, q.context_json,
+      json_extract(q.question_json, '$.prompt') AS prompt, q.question_json, q.options_json,
       q.fork_reference_json, q.parent_question_id, q.status, a.selected_values_json, a.note,
       q.created_at, q.expires_at, q.resolved_at, q.updated_at
       FROM questions q LEFT JOIN answers a ON a.answer_id = (
@@ -1176,14 +1361,11 @@ export class RequestStore {
   private draftTelemetry(draft: Pick<AskCreatePayload, "question" | "options">): Record<string, number> {
     return {
       questionLength: draft.question.prompt.length,
-      questionContextLength: draft.question.context?.length ?? 0,
-      relevanceLength: draft.question.relevance?.length ?? 0,
-      decisionImpactLength: draft.question.decisionImpact?.length ?? 0,
+      ambiguityLength: draft.question.ambiguity.length,
       optionValueLength: draft.options.reduce((sum, option) => sum + option.value.length, 0),
       optionLabelLength: draft.options.reduce((sum, option) => sum + option.label.length, 0),
       optionDescriptionLength: draft.options.reduce((sum, option) => sum + (option.description?.length ?? 0), 0),
-      optionMeaningLength: draft.options.reduce((sum, option) => sum + (option.meaning?.length ?? 0), 0),
-      optionContextLength: draft.options.reduce((sum, option) => sum + (option.context?.length ?? 0), 0)
+      optionImpactLength: draft.options.reduce((sum, option) => sum + (option.impact?.length ?? 0), 0)
     };
   }
 
@@ -1203,7 +1385,6 @@ export class RequestStore {
       mode: row.mode,
       question: this.parseJson(row.question_json, { prompt: row.prompt }) as AskRequestSnapshot["question"],
       options: JSON.parse(row.options_json) as AskRequestSnapshot["options"],
-      context: row.context_json ? (this.parseJson(row.context_json, undefined) as AskRequestSnapshot["context"]) : undefined,
       forkReference: row.fork_reference_json
         ? (this.parseJson(row.fork_reference_json, undefined) as AskRequestSnapshot["forkReference"])
         : undefined,
@@ -1283,17 +1464,52 @@ export class RequestStore {
     return error;
   }
 
-  private decodeQuestionCursor(cursor: string | undefined, fingerprint: string): { createdAt: string; questionId: string } | undefined {
-    if (!cursor) return undefined;
-    try {
-      const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as any;
-      if (parsed.v !== 1 || parsed.fingerprint !== fingerprint || typeof parsed.createdAt !== "string" || typeof parsed.questionId !== "string") throw new Error();
-      return parsed;
-    } catch { throw new RequestStoreError("invalid_cursor", "Question cursor is invalid or belongs to another query"); }
+  private assertPageSize(pageSize: number, maximum: number, label: string): void {
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > maximum) {
+      throw new RequestStoreError("invalid_page_size", `${label} page size must be a positive integer and at most ${maximum}`);
+    }
   }
 
-  private encodeQuestionCursor(fingerprint: string, createdAt: string, questionId: string): string {
-    return Buffer.from(JSON.stringify({ v: 1, fingerprint, createdAt, questionId })).toString("base64url");
+  private decodeQuestionCursor(
+    cursor: string | undefined,
+    query: unknown,
+    legacyFingerprint: string
+  ): { createdAt: string; questionId: string } | undefined {
+    if (!cursor) return undefined;
+    try {
+      const bytes = Buffer.from(cursor, "base64url");
+      if (bytes[0] === 0x7b) {
+        const parsed = JSON.parse(bytes.toString("utf8")) as any;
+        if (parsed.v !== 1 || parsed.fingerprint !== legacyFingerprint
+          || typeof parsed.createdAt !== "string" || typeof parsed.questionId !== "string") throw new Error();
+        return { createdAt: parsed.createdAt, questionId: parsed.questionId };
+      }
+      return this.decodeKeysetCursor(cursor, query)!;
+    } catch {
+      throw new RequestStoreError("invalid_cursor", "Question cursor is invalid or belongs to another query");
+    }
+  }
+
+  private decodeKeysetCursor(
+    cursor: string | undefined,
+    query: unknown
+  ): { createdAt: string; questionId: string } | undefined {
+    if (!cursor) return undefined;
+    const boundary = this.decodeCursorTuple(cursor, query, 2);
+    if (typeof boundary[0] !== "string" || typeof boundary[1] !== "string") {
+      throw new RequestStoreError("invalid_cursor", "Question cursor is invalid or belongs to another query");
+    }
+    return { createdAt: boundary[0], questionId: boundary[1] };
+  }
+
+  private decodeCursorTuple(cursor: string, query: unknown, length: number): any[] {
+    try {
+      const boundary = decodePaginationCursor(cursor, query);
+      if (!Array.isArray(boundary) || boundary.length !== length) throw new PaginationCursorError();
+      return boundary;
+    } catch {
+      throw new RequestStoreError("invalid_cursor", "Pagination cursor is invalid or belongs to another query");
+    }
   }
 
   private toResult(row: AskRequestRow): AskResult | undefined {

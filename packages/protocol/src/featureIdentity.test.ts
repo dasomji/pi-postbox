@@ -30,9 +30,8 @@ describe("repository, worktree, and feature identity contracts", () => {
       requestId: "question-1",
       sessionId: "session-1",
       mode: "single",
-      question: { prompt: "Which path?" },
+      question: { prompt: "Which path?", ambiguity: "Which path belongs to these identities?" },
       options: [{ value: "a", label: "A" }],
-      context: { codebaseContext: "Postbox", problemContext: "Choose a path" },
       repository,
       worktree,
       feature

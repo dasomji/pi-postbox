@@ -7,11 +7,9 @@ export {
   ASK_STATUSES,
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
-  AskCreateHandoffContextSchema,
   AskCreateOptionSchema,
   AskCreatePayloadSchema,
   AskQuestionDraftSchema,
-  AskBatchDefaultsSchema,
   AskBatchQuestionDraftSchema,
   AskPostboxInputSchema,
   AskBatchReceiptSchema,
@@ -33,22 +31,18 @@ export {
   QuestionResolutionSchema,
   QuestionRevisionSnapshotSchema,
   ForkReferenceSchema,
-  HandoffContextSchema,
   OTHER_OPTION_VALUE,
   ProposeAnswerErrorCodeSchema,
   ProposedAnswerOptionSchema,
   ProposeAnswerPayloadSchema,
-  ProposeAnswerResultSchema,
-  RichContextItemSchema
+  ProposeAnswerResultSchema
 } from "./ask.js";
 export type {
   AskAnswerPayload,
   AskCancelPayload,
-  AskCreateHandoffContext,
   AskCreateOption,
   AskCreatePayload,
   AskQuestionDraft,
-  AskBatchDefaults,
   AskBatchQuestionDraft,
   AskPostboxInput,
   AskBatchReceipt,
@@ -69,12 +63,10 @@ export type {
   QuestionResolution,
   QuestionRevisionSnapshot,
   ForkReference,
-  HandoffContext,
   ProposeAnswerErrorCode,
   ProposedAnswerOption,
   ProposeAnswerPayload,
-  ProposeAnswerResult,
-  RichContextItem
+  ProposeAnswerResult
 } from "./ask.js";
 export {
   createHealthResponse,
@@ -83,6 +75,18 @@ export {
   SERVICE_NAME
 } from "./health.js";
 export type { CreateHealthResponseOptions, HealthResponse } from "./health.js";
+export {
+  POSTBOX_CURSOR_MAX_LENGTH,
+  POSTBOX_EXPLICIT_ID_MAX,
+  POSTBOX_OWNER_PAGE_DEFAULT,
+  POSTBOX_OWNER_PAGE_MAX,
+  QUESTION_DISCOVERY_PAGE_DEFAULT,
+  QUESTION_DISCOVERY_PAGE_MAX,
+  QUESTION_HISTORY_PAGE_DEFAULT,
+  QUESTION_HISTORY_PAGE_MAX,
+  QUESTION_STATUS_PAGE_DEFAULT,
+  QUESTION_STATUS_PAGE_MAX
+} from "./limits.js";
 export {
   SERVER_PROFILE_METADATA_VERSION,
   ServerInstanceIdentitySchema,
@@ -120,9 +124,6 @@ export {
   QuestionChatActivationResponseSchema,
   QuestionChatAvailabilityCodeSchema,
   QuestionChatAvailabilityErrorSchema,
-  QuestionChatContextActivationPayloadSchema,
-  QuestionChatContextFallbackAvailabilitySchema,
-  QuestionChatContextSourceSchema,
   QuestionChatEventSchema,
   QuestionChatMessageSchema,
   QuestionChatModelSchema,
@@ -149,9 +150,6 @@ export type {
   QuestionChatActivationResponse,
   QuestionChatAvailabilityCode,
   QuestionChatAvailabilityError,
-  QuestionChatContextActivationPayload,
-  QuestionChatContextFallbackAvailability,
-  QuestionChatContextSource,
   QuestionChatEvent,
   QuestionChatMessage,
   QuestionChatModel,
