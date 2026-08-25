@@ -39,9 +39,7 @@ class PostboxProtocolDtoTest {
 
     @Test
     fun parsesRichOptionFieldsAndAuthoritativeChatProvenance() {
-        val json = representativeStateJson(
-            firstOptionProvenance = "chat"
-        )
+        val json = representativeStateJson(firstOptionProvenance = "chat")
 
         val request = PostboxProtocolJson.decodeStateSnapshot(json).requests.single()
         val option = request.options.first()
@@ -64,6 +62,7 @@ class PostboxProtocolDtoTest {
                       "requestId": "ask-answered-1",
                       "selectedValues": ["kotlinx", "manual"],
                       "note": "Ship the native client first.",
+                      "rationale": "It matches the shared protocol.",
                       "resolvedAt": "2026-06-25T12:05:00.000Z",
                       "futureResultField": "ignored"
                     }
@@ -93,7 +92,7 @@ class PostboxProtocolDtoTest {
                     {
                       "status": "unavailable",
                       "requestId": "ask-unavailable-1",
-                      "note": "Pi Postbox became unavailable before the request could be delivered.",
+                      "rationale": "Pi Postbox became unavailable before the request could be delivered.",
                       "resolvedAt": "2026-06-25T12:06:00.000Z"
                     }
                 """.trimIndent()

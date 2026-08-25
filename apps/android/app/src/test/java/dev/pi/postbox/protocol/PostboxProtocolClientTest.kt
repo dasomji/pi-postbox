@@ -25,9 +25,7 @@ class PostboxProtocolClientTest {
 
     @Test
     fun fetchStateRequestsApiStateAndDecodesSnapshot() = runTest {
-        val responseJson = representativeStateJson(
-            firstOptionProvenance = "chat"
-        )
+        val responseJson = representativeStateJson(firstOptionProvenance = "chat")
         server.enqueue(jsonResponse(responseJson))
         val client = OkHttpPostboxProtocolClient(baseUrl = server.url("/").toString())
 
