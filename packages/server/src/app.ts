@@ -8,7 +8,7 @@ import {
   StateSnapshotSchema,
   type ServerInstanceIdentity,
   type ServerProfileIdentity
-} from "@pi-postbox/protocol";
+} from "./protocol.js";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

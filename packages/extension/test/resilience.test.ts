@@ -144,6 +144,51 @@ describe("PostboxClient pending ask resilience", () => {
     client.stop();
   });
 
+  it("does not let an in-flight stale owner count hide a Question acknowledged before the query result", async () => {
+    FakeSocket.instances = [];
+    const owner = { harness: "pi", ownerId: "session-1" };
+    const client = createClient({
+      registration: { ...registration, session: { ...registration.session, owner } }
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const receipt = client.createAsk({ ...askPayload, requestId: "ask-statusbar-count" });
+    const createCommand = socket.sent.find((message) =>
+      (message as { type?: string; payload?: { requestId?: string } }).type === "ask.create"
+      && (message as { payload?: { requestId?: string } }).payload?.requestId === "ask-statusbar-count"
+    ) as { requestId: string };
+    const snapshotPromise = client.getStatusSnapshot();
+    const statusQuery = socket.sent.findLast((message) =>
+      (message as { type?: string }).type === "owner.status.get"
+    ) as { requestId: string };
+
+    socket.serverMessage({
+      type: "ask.created",
+      requestId: createCommand.requestId,
+      payload: {
+        requestId: "ask-statusbar-count",
+        questionId: "ask-statusbar-count",
+        revision: 1,
+        ownerRevision: 1,
+        status: "pending",
+        disposition: "created"
+      }
+    });
+    await expect(receipt).resolves.toMatchObject({ questionId: "ask-statusbar-count", status: "pending" });
+    expect(client.listPendingAsks()).toHaveLength(1);
+
+    socket.serverMessage({
+      type: "query.result",
+      requestId: statusQuery.requestId,
+      payload: [{ owner, activeQuestionCount: 0, unreadAnswerCount: 0 }]
+    });
+
+    await expect(snapshotPromise).resolves.toMatchObject({ openQuestionCount: 1 });
+    client.stop();
+  });
+
   it("settles discovery queries on correlated error, disconnect, and stop", async () => {
     FakeSocket.instances = [];
     const client = createClient(); client.start();

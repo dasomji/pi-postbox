@@ -3,7 +3,7 @@ import {
   type ProposeAnswerErrorCode,
   type ProposeAnswerPayload,
   type ProposeAnswerResult
-} from "@pi-postbox/protocol";
+} from "./protocol.js";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 

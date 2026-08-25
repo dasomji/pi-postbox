@@ -1,4 +1,4 @@
-import { HistoryRecordSchema, ProjectIconSchema, type HistoryRecord } from "@pi-postbox/protocol";
+import { HistoryRecordSchema, ProjectIconSchema, type HistoryRecord } from "../protocol.js";
 import type { SqliteDatabase } from "../db/database.js";
 import { RequestStore } from "./requestStore.js";
 

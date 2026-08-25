@@ -1,4 +1,4 @@
-import { StateSnapshotSchema, type StateSnapshot } from "@pi-postbox/protocol";
+import { StateSnapshotSchema, type StateSnapshot } from "../protocol.js";
 
 type StateListener = (snapshot: StateSnapshot) => void;
 

@@ -3,7 +3,7 @@ import {
   type FcmTokenPayload,
   type PushConfigResponse,
   type PushSubscriptionPayload
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import webPush from "web-push";
 import type { SqliteDatabase } from "../db/database.js";
 

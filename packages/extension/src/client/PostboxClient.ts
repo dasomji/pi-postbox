@@ -20,7 +20,7 @@ import {
   type ServerProfileIdentity,
   type SessionRegisterPayload,
   type SessionShutdownReason
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import type {
   QuestionChatEvent,
   QuestionChatAvailabilityError,
@@ -30,7 +30,7 @@ import type {
   QuestionChatSource,
   QuestionChatStopPayload,
   QuestionChatStopResponse
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import {
   QuestionChatRuntimeError,
   type QuestionChatReconciliationDecision,
@@ -504,7 +504,10 @@ export class PostboxClient {
           const awaitingPersistence = [...this.pendingCreateReceipts.keys()]
             .filter((requestId) => this.pendingAsks.has(requestId))
             .length;
-          openQuestionCount = Number(status.activeQuestionCount) + awaitingPersistence;
+          openQuestionCount = Math.max(
+            openQuestionCount,
+            Number(status.activeQuestionCount) + awaitingPersistence
+          );
         }
       } catch {
         // Pending client state remains a safe fallback while the durable status query is unavailable.

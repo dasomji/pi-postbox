@@ -1,4 +1,4 @@
-import type { ServerProfileIdentity, ServerProfileMetadataDiagnostic } from "@pi-postbox/protocol";
+import type { ServerProfileIdentity, ServerProfileMetadataDiagnostic } from "./protocol.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import type { ResolveServerTargetResult } from "./serverTargetResolver.js";

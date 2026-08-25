@@ -8,7 +8,7 @@ import {
   QUESTION_HISTORY_PAGE_MAX,
   QUESTION_STATUS_PAGE_MAX,
   type SessionRegisterPayload
-} from "@pi-postbox/protocol";
+} from "./protocol.js";
 import { PostboxClient } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
@@ -830,7 +830,7 @@ async function renderPostboxFooter(
       ?? snapshot.connection.localUrl
       ?? snapshot.connection.activeUrl
       ?? fallbackUrl;
-    openQuestionCount = snapshot.openQuestionCount;
+    openQuestionCount = Math.max(openQuestionCount, snapshot.openQuestionCount);
   } catch {
     // The known target and pending asks still make a useful footer if diagnostics fail.
   }

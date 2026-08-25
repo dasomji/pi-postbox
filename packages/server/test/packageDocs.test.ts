@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -74,13 +74,17 @@ function expectConcepts(text: string, concepts: string[]): void {
 }
 
 describe("release packaging and operator docs", () => {
-  it("routes every packed extension protocol import through the published package entrypoint", async () => {
-    const files = await sourceFiles(join("packages", "extension", "src"));
+  it("routes packed runtime protocol imports through package-relative shims", async () => {
+    const files = await Promise.all([
+      sourceFiles(join("packages", "extension", "src")),
+      sourceFiles(join("packages", "server", "src"))
+    ]).then((groups) => groups.flat());
     const sources = await Promise.all(files.map(async (path) => ({ path, text: await readText(path) })));
-    const workspaceRelativeImports = sources.filter(({ text }) => /(?:\.\.\/)+protocol\/src\//.test(text));
+    const workspacePackageImports = sources.filter(({ text }) => text.includes("@pi-postbox/protocol"));
 
-    expect(workspaceRelativeImports.map(({ path }) => path)).toEqual([]);
-    expect(sources.some(({ text }) => text.includes('from "@pi-postbox/protocol"'))).toBe(true);
+    expect(workspacePackageImports.map(({ path }) => path)).toEqual([]);
+    expect(await readText(join("packages", "extension", "src", "protocol.ts"))).toContain("../../protocol/dist/index.js");
+    expect(await readText(join("packages", "server", "src", "protocol.ts"))).toContain("../../protocol/dist/index.js");
   });
 
   it("exposes the combined public Pi package and shell CLI metadata", async () => {
@@ -110,9 +114,10 @@ describe("release packaging and operator docs", () => {
     expect(packagePath(bin?.["pi-postbox-server"])).toBe("packages/server/dist/cli.js");
     expect(root.dependencies).toMatchObject({
       "@earendil-works/pi-coding-agent": "0.80.10",
-      "@pi-postbox/protocol": "file:packages/protocol",
       typebox: expect.any(String)
     });
+    expect(root.dependencies).not.toHaveProperty("@pi-postbox/protocol");
+    expect(root.bundleDependencies).toBeUndefined();
   });
 
   it("packs the combined runtime without local Pi/cache/secret files", async () => {
@@ -128,6 +133,7 @@ describe("release packaging and operator docs", () => {
       "packages/extension/src/questionChatRuntime.ts",
       "packages/extension/src/repositoryEvidenceTools.ts",
       "packages/extension/src/proposeAnswerTool.ts",
+      "packages/extension/src/protocol.ts",
       "packages/protocol/package.json",
       "packages/protocol/dist/index.js",
       "packages/protocol/dist/serverProfile.js",
@@ -136,6 +142,7 @@ describe("release packaging and operator docs", () => {
       "packages/server/package.json",
       "packages/server/dist/cli.js",
       "packages/server/dist/profileTarget.js",
+      "packages/server/dist/protocol.js",
       "packages/server/dist/routes/requestRoutes.js",
       "packages/server/dist/services/questionChatRelay.js",
       "packages/server/dist/public/index.html",
@@ -167,40 +174,47 @@ describe("release packaging and operator docs", () => {
     expect(forbiddenFiles).toEqual([]);
   }, 120_000);
 
-  it("resolves protocol imports and the CLI from a packed global install", async () => {
+  it("resolves protocol imports and the CLI from a packed global install without a fragile internal link", async () => {
     const packDir = await mkdtemp(join(tmpdir(), "pi-postbox-pack-"));
     const installPrefix = await mkdtemp(join(tmpdir(), "pi-postbox-install-"));
 
     try {
       const tarballPath = await packToDirectory(packDir);
-      await execFileAsync("npm", ["install", "--global", "--prefix", installPrefix, tarballPath], {
-        cwd: installPrefix,
-        env: {
-          ...process.env,
-          NODE_PATH: undefined,
-          npm_config_audit: "false",
-          npm_config_fund: "false"
-        },
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: 180_000
-      });
+      const installPackedPackage = async (): Promise<void> => {
+        await execFileAsync("npm", ["install", "--global", "--prefix", installPrefix, tarballPath], {
+          cwd: installPrefix,
+          env: {
+            ...process.env,
+            NODE_PATH: undefined,
+            npm_config_audit: "false",
+            npm_config_fund: "false"
+          },
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 180_000
+        });
+      };
+
+      await installPackedPackage();
+      await installPackedPackage();
 
       const packageRoot = join(installPrefix, "lib", "node_modules", "@wienerberliner", "pi-postbox");
-      expect(await realpath(join(packageRoot, "node_modules", "@pi-postbox", "protocol"))).toBe(
-        await realpath(join(packageRoot, "packages", "protocol"))
-      );
+      const protocolDependencyRoot = join(packageRoot, "node_modules", "@pi-postbox", "protocol");
+      await expect(
+        lstat(protocolDependencyRoot),
+        "packed updates must not depend on a link into the package being replaced"
+      ).rejects.toMatchObject({ code: "ENOENT" });
       const cliPath = join(packageRoot, "packages", "server", "dist", "cli.js");
       const resolverPath = join(packageRoot, "packages", "server", "dist", "resolve-protocol-from-cli.mjs");
       const extensionDependencyResolverPath = join(packageRoot, "packages", "extension", "src", "resolve-question-chat-runtime.mjs");
       await writeFile(
         resolverPath,
-        'import { SERVICE_NAME } from "@pi-postbox/protocol";\nconsole.log(SERVICE_NAME);\n'
+        'import { SERVICE_NAME } from "./protocol.js";\nconsole.log(SERVICE_NAME);\n'
       );
       await writeFile(
         extensionDependencyResolverPath,
         [
           'import { DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";',
-          'import { QuestionChatSnapshotSchema } from "@pi-postbox/protocol";',
+          'import { QuestionChatSnapshotSchema } from "../../protocol/dist/index.js";',
           'import { Type } from "typebox";',
           'const session = SessionManager.inMemory("/tmp/packed-question-chat");',
           'const settings = SettingsManager.inMemory();',

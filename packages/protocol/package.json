@@ -1,6 +1,6 @@
 {
   "name": "@pi-postbox/protocol",
-  "version": "0.2.3",
+  "version": "0.2.5",
   "description": "Shared Zod protocol schemas for Pi Postbox clients, server, and UI.",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b tsconfig.json --force",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

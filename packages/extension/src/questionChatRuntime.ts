@@ -18,7 +18,7 @@ import {
   type QuestionChatStopPayload,
   type QuestionChatStopResponse,
   type QuestionChatToolActivity
-} from "@pi-postbox/protocol";
+} from "./protocol.js";
 import {
   DefaultResourceLoader,
   ModelRuntime,

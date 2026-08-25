@@ -7,7 +7,7 @@ import {
   type ServerInstanceIdentity,
   type ServerProfileIdentity,
   type ServerProfileMetadataRecord
-} from "@pi-postbox/protocol";
+} from "./protocol.js";
 import type { FastifyInstance } from "fastify";
 import { existsSync, realpathSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";

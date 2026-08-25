@@ -4,7 +4,7 @@ import {
   normalizeLoopbackUrl,
   type ServerProfileIdentity,
   type ServerProfileMetadataRecord
-} from "@pi-postbox/protocol";
+} from "./protocol.js";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";

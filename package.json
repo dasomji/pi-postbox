@@ -1,6 +1,6 @@
 {
   "name": "@wienerberliner/pi-postbox",
-  "version": "0.2.3",
+  "version": "0.2.5",
   "description": "Pi Postbox extension and web service for remote human decision handoffs.",
   "license": "MIT",
   "type": "module",
@@ -20,6 +20,7 @@
     "build": "tsc -b && npm run build -w @pi-postbox/web && node scripts/copy-web-to-server.mjs && node scripts/prune-obsolete-build.mjs",
     "dev": "node scripts/dev.mjs",
     "typecheck": "tsc -b",
+    "pretest": "npm run build -w @pi-postbox/protocol",
     "test": "vitest run",
     "test:notification-performance": "npm run build && node scripts/notification-open-performance.mjs",
     "smoke": "node scripts/smoke-postbox.mjs",
@@ -72,7 +73,6 @@
     "@fastify/compress": "9.1.0",
     "@fastify/static": "9.1.3",
     "@fastify/websocket": "^11.2.0",
-    "@pi-postbox/protocol": "file:packages/protocol",
     "better-sqlite3": "^12.10.0",
     "fastify": "^5.2.1",
     "typebox": "^1.1.38",

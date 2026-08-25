@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { POSTBOX_CURSOR_MAX_LENGTH } from "@pi-postbox/protocol";
+import { POSTBOX_CURSOR_MAX_LENGTH } from "../protocol.js";
 
 const CURSOR_VERSION = 2;
 const QUERY_DIGEST_BYTES = 16;
