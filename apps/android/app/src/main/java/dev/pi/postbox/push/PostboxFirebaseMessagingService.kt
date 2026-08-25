@@ -31,7 +31,8 @@ class PostboxFirebaseMessagingService : FirebaseMessagingService() {
                 resolveCachedPendingIds = { baseUrl, requestId ->
                     PrefetchedStateSnapshotCache.resolvePendingQuestion(baseUrl, requestId)
                 },
-                reconcilePendingIds = notifier::reconcilePendingRequests
+                reconcilePendingIds = notifier::reconcilePendingRequests,
+                reconcileWithoutCachedState = notifier::reconcileResolvedPendingSummary
             )
         }
 
@@ -70,9 +71,10 @@ internal fun reconcileResolvedPushLocally(
     baseUrl: String?,
     cancel: (String) -> Unit,
     resolveCachedPendingIds: (String, String) -> Set<String>?,
-    reconcilePendingIds: (Set<String>) -> Unit
+    reconcilePendingIds: (Set<String>) -> Unit,
+    reconcileWithoutCachedState: (String) -> Unit
 ) {
     cancel(requestId)
-    val pendingIds = baseUrl?.let { resolveCachedPendingIds(it, requestId) } ?: return
-    reconcilePendingIds(pendingIds)
+    val pendingIds = baseUrl?.let { resolveCachedPendingIds(it, requestId) }
+    if (pendingIds == null) reconcileWithoutCachedState(requestId) else reconcilePendingIds(pendingIds)
 }

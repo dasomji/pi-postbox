@@ -20,13 +20,14 @@ object PrefetchedStateSnapshotCache {
 
     private data class Entry(val baseUrl: String, val snapshot: StateSnapshot, val fetchedAtMillis: Long)
 
-    @Volatile
     private var entry: Entry? = null
 
+    @Synchronized
     fun store(baseUrl: String, snapshot: StateSnapshot, nowMillis: Long = System.currentTimeMillis()) {
         entry = Entry(baseUrl = baseUrl, snapshot = snapshot, fetchedAtMillis = nowMillis)
     }
 
+    @Synchronized
     fun freshSnapshotFor(
         baseUrl: String,
         maxAgeMillis: Long = DEFAULT_MAX_AGE_MILLIS,
@@ -56,6 +57,7 @@ object PrefetchedStateSnapshotCache {
             .mapTo(linkedSetOf()) { it.requestId }
     }
 
+    @Synchronized
     fun clear() {
         entry = null
     }

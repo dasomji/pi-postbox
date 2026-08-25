@@ -14,7 +14,8 @@ class PostboxFirebaseMessagingServiceTest {
             baseUrl = "https://postbox.example/",
             cancel = { requestId: String -> cancelled.add(requestId) },
             resolveCachedPendingIds = { _: String, _: String -> setOf("ask-still-pending") },
-            reconcilePendingIds = { pendingIds: Set<String> -> reconciled.add(pendingIds) }
+            reconcilePendingIds = { pendingIds: Set<String> -> reconciled.add(pendingIds) },
+            reconcileWithoutCachedState = {}
         )
 
         assertEquals(listOf("ask-resolved"), cancelled)
@@ -30,9 +31,26 @@ class PostboxFirebaseMessagingServiceTest {
             baseUrl = "https://postbox.example/",
             cancel = {},
             resolveCachedPendingIds = { _: String, _: String -> emptySet() },
-            reconcilePendingIds = { pendingIds: Set<String> -> reconciled.add(pendingIds) }
+            reconcilePendingIds = { pendingIds: Set<String> -> reconciled.add(pendingIds) },
+            reconcileWithoutCachedState = {}
         )
 
         assertEquals(listOf(emptySet<String>()), reconciled)
+    }
+
+    @Test
+    fun resolvedPushRecomputesSummaryFromActiveNotificationsWhenCacheIsMissingOrStale() {
+        val fallbackReconciliations = mutableListOf<String>()
+
+        reconcileResolvedPushLocally(
+            requestId = "ask-resolved",
+            baseUrl = "https://postbox.example/",
+            cancel = {},
+            resolveCachedPendingIds = { _: String, _: String -> null },
+            reconcilePendingIds = {},
+            reconcileWithoutCachedState = fallbackReconciliations::add
+        )
+
+        assertEquals(listOf("ask-resolved"), fallbackReconciliations)
     }
 }

@@ -129,6 +129,22 @@ class AndroidPendingQuestionNotifier(
         reconcilePendingSummary(pendingRequestIds.size)
     }
 
+    /** Recompute the badge after a resolved push when no authoritative cached queue is available. */
+    fun reconcileResolvedPendingSummary(requestId: String) {
+        val resolvedNotificationId = requestId.hashCode()
+        val pendingCount = try {
+            notificationManager.activeNotifications.count { notification ->
+                isPendingQuestionNotification(
+                    channelId = notification.notification.channelId,
+                    notificationId = notification.id
+                ) && notification.id != resolvedNotificationId
+            }
+        } catch (_: SecurityException) {
+            return
+        }
+        reconcilePendingSummary(pendingCount)
+    }
+
     @SuppressLint("MissingPermission")
     private fun reconcilePendingSummary(pendingCount: Int) {
         if (pendingCount == 0) {
@@ -244,10 +260,13 @@ internal fun shouldCancelDuringPendingReconciliation(
     channelId: String?,
     notificationId: Int,
     pendingNotificationIds: Set<Int>
-): Boolean = channelId == AndroidPendingQuestionNotifier.CHANNEL_ID &&
-    notificationId != AndroidPendingQuestionNotifier.PROTOCOL_MISMATCH_NOTIFICATION_ID &&
-    notificationId != AndroidPendingQuestionNotifier.PENDING_SUMMARY_NOTIFICATION_ID &&
+): Boolean = isPendingQuestionNotification(channelId, notificationId) &&
     notificationId !in pendingNotificationIds
+
+internal fun isPendingQuestionNotification(channelId: String?, notificationId: Int): Boolean =
+    channelId == AndroidPendingQuestionNotifier.CHANNEL_ID &&
+        notificationId != AndroidPendingQuestionNotifier.PROTOCOL_MISMATCH_NOTIFICATION_ID &&
+        notificationId != AndroidPendingQuestionNotifier.PENDING_SUMMARY_NOTIFICATION_ID
 
 fun Intent.postboxNotificationRequestId(): String? {
     if (action != NotificationTapTarget.ACTION_OPEN_QUESTION) return null
