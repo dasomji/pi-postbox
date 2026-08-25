@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import androidx.core.content.ContextCompat
 import java.lang.SecurityException
 import dev.pi.postbox.MainActivity
@@ -126,33 +127,56 @@ class AndroidPendingQuestionNotifier(
         } catch (_: SecurityException) {
             // Notification access can change while the app is running; reconciliation is best-effort.
         }
-        reconcilePendingSummary(pendingRequestIds.size)
+        reconcilePendingSummary(pendingRequestIds)
     }
 
     /** Recompute the badge after a resolved push when no authoritative cached queue is available. */
     fun reconcileResolvedPendingSummary(requestId: String) {
         val resolvedNotificationId = requestId.hashCode()
-        val pendingCount = try {
+        val resolution = try {
             val activeNotifications = notificationManager.activeNotifications
-            pendingCountAfterResolvedPush(
-                summaryCount = activeNotifications
-                    .firstOrNull { it.id == PENDING_SUMMARY_NOTIFICATION_ID }
-                    ?.notification
-                    ?.number
-                    ?.takeIf { it > 0 },
+            val summary = activeNotifications.firstOrNull { it.id == PENDING_SUMMARY_NOTIFICATION_ID }?.notification
+            val authoritativePendingIds = summary?.extras
+                ?.getStringArray(EXTRA_PENDING_REQUEST_IDS)
+                ?.toSet()
+            if (authoritativePendingIds != null) {
+                reconcilePendingSummary(authoritativePendingIds - requestId)
+                return
+            }
+            pendingSummaryAfterResolvedPush(
+                summaryCount = summary?.number?.takeIf { it > 0 },
                 activePendingNotificationIds = activeNotifications
                     .filter { isPendingQuestionNotification(it.notification.channelId, it.id) }
                     .mapTo(hashSetOf()) { it.id },
-                resolvedNotificationId = resolvedNotificationId
+                resolvedNotificationId = resolvedNotificationId,
+                resolvedRequestId = requestId,
+                alreadyResolvedRequestIds = summary?.extras
+                    ?.getStringArray(EXTRA_RESOLVED_REQUEST_IDS)
+                    ?.toSet()
+                    .orEmpty()
             )
         } catch (_: SecurityException) {
             return
         }
-        reconcilePendingSummary(pendingCount)
+        reconcilePendingSummary(
+            pendingCount = resolution.pendingCount,
+            resolvedRequestIds = resolution.resolvedRequestIds
+        )
+    }
+
+    private fun reconcilePendingSummary(pendingRequestIds: Set<String>) {
+        reconcilePendingSummary(
+            pendingCount = pendingRequestIds.size,
+            pendingRequestIds = pendingRequestIds
+        )
     }
 
     @SuppressLint("MissingPermission")
-    private fun reconcilePendingSummary(pendingCount: Int) {
+    private fun reconcilePendingSummary(
+        pendingCount: Int,
+        pendingRequestIds: Set<String>? = null,
+        resolvedRequestIds: Set<String> = emptySet()
+    ) {
         if (pendingCount == 0) {
             notificationManager.cancel(PENDING_SUMMARY_NOTIFICATION_ID)
             return
@@ -173,6 +197,12 @@ class AndroidPendingQuestionNotifier(
                     .setGroup(PENDING_QUESTIONS_GROUP_KEY)
                     .setGroupSummary(true)
                     .setNumber(pendingCount)
+                    .setExtras(Bundle().apply {
+                        pendingRequestIds?.let { putStringArray(EXTRA_PENDING_REQUEST_IDS, it.sorted().toTypedArray()) }
+                        if (resolvedRequestIds.isNotEmpty()) {
+                            putStringArray(EXTRA_RESOLVED_REQUEST_IDS, resolvedRequestIds.sorted().toTypedArray())
+                        }
+                    })
                     .setOngoing(true)
                     .setOnlyAlertOnce(true)
                     .setShowWhen(false)
@@ -255,6 +285,8 @@ class AndroidPendingQuestionNotifier(
         const val PENDING_SUMMARY_CHANNEL_DESCRIPTION: String = "Quiet pending-question total used for the launcher badge."
         const val PRIVATE_NOTIFICATION_TEXT: String = "Open Postbox to review and answer."
         const val EXTRA_REQUEST_ID: String = "dev.pi.postbox.extra.REQUEST_ID"
+        internal const val EXTRA_PENDING_REQUEST_IDS: String = "dev.pi.postbox.extra.PENDING_REQUEST_IDS"
+        internal const val EXTRA_RESOLVED_REQUEST_IDS: String = "dev.pi.postbox.extra.RESOLVED_REQUEST_IDS"
         const val ACTION_OPEN_PROTOCOL_MISMATCH: String = "dev.pi.postbox.OPEN_PROTOCOL_MISMATCH"
         const val PROTOCOL_MISMATCH_NOTIFICATION_ID: Int = 0x50524f54
         const val PENDING_SUMMARY_NOTIFICATION_ID: Int = 0x50424f58
@@ -274,13 +306,27 @@ internal fun isPendingQuestionNotification(channelId: String?, notificationId: I
         notificationId != AndroidPendingQuestionNotifier.PROTOCOL_MISMATCH_NOTIFICATION_ID &&
         notificationId != AndroidPendingQuestionNotifier.PENDING_SUMMARY_NOTIFICATION_ID
 
-internal fun pendingCountAfterResolvedPush(
+internal data class PendingSummaryResolution(
+    val pendingCount: Int,
+    val resolvedRequestIds: Set<String>
+)
+
+internal fun pendingSummaryAfterResolvedPush(
     summaryCount: Int?,
     activePendingNotificationIds: Set<Int>,
-    resolvedNotificationId: Int
-): Int = summaryCount
-    ?.let { (it - 1).coerceAtLeast(0) }
-    ?: activePendingNotificationIds.count { it != resolvedNotificationId }
+    resolvedNotificationId: Int,
+    resolvedRequestId: String,
+    alreadyResolvedRequestIds: Set<String>
+): PendingSummaryResolution {
+    val currentCount = summaryCount ?: activePendingNotificationIds.count { it != resolvedNotificationId }
+    if (resolvedRequestId in alreadyResolvedRequestIds) {
+        return PendingSummaryResolution(currentCount, alreadyResolvedRequestIds)
+    }
+    return PendingSummaryResolution(
+        pendingCount = summaryCount?.let { (it - 1).coerceAtLeast(0) } ?: currentCount,
+        resolvedRequestIds = alreadyResolvedRequestIds + resolvedRequestId
+    )
+}
 
 fun Intent.postboxNotificationRequestId(): String? {
     if (action != NotificationTapTarget.ACTION_OPEN_QUESTION) return null

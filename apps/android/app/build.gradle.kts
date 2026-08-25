@@ -15,8 +15,8 @@ android {
         applicationId = "dev.pi.postbox"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.4.6"
+        versionCode = 11
+        versionName = "0.4.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

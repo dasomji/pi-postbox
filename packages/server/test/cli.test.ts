@@ -30,8 +30,8 @@ describe("pi-postbox-server profile CLI", () => {
       databasePath: join(process.env.HOME!, ".pi-postbox", "postbox.sqlite"),
       metadataPath: join(process.env.HOME!, ".pi-postbox", "active-local", "server.json"),
       tailscaleEnabled: true,
-      version: "0.2.13",
-      buildId: expect.stringMatching(/^0\.2\.13\+sha256\.[a-f0-9]{16}$/)
+      version: "0.2.14",
+      buildId: expect.stringMatching(/^0\.2\.14\+sha256\.[a-f0-9]{16}$/)
     });
   });
 

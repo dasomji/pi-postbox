@@ -1,6 +1,6 @@
 {
   "name": "@pi-postbox/web",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "typecheck": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@pi-postbox/protocol": "0.2.13",
+    "@pi-postbox/protocol": "0.2.14",
     "marked": "^18.0.5"
   },
   "devDependencies": {
