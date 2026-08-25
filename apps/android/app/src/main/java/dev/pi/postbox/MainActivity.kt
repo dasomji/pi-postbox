@@ -43,6 +43,7 @@ import dev.pi.postbox.notification.AndroidPendingQuestionNotifier
 import dev.pi.postbox.notification.NotificationPermissionState
 import dev.pi.postbox.notification.PendingQuestionNotificationTracker
 import dev.pi.postbox.notification.postboxNotificationRequestId
+import dev.pi.postbox.notification.AndroidPendingQuestionNotifier.Companion.ACTION_OPEN_PROTOCOL_MISMATCH
 import dev.pi.postbox.onboarding.InvalidServerUrlReason
 import dev.pi.postbox.onboarding.OkHttpPostboxHealthVerifier
 import dev.pi.postbox.onboarding.ServerOnboardingState
@@ -51,7 +52,10 @@ import dev.pi.postbox.onboarding.ServerUrlWarning
 import dev.pi.postbox.onboarding.SharedPreferencesVerifiedServerUrlStore
 import dev.pi.postbox.protocol.OkHttpPostboxProtocolClient
 import dev.pi.postbox.protocol.OkHttpPostboxStateStream
+import dev.pi.postbox.protocol.ProtocolMismatchNotice
+import dev.pi.postbox.protocol.ProtocolSupportLabel
 import dev.pi.postbox.push.PostboxFcmTokenRegistration
+import dev.pi.postbox.push.ProtocolMismatchEvidenceStore
 import dev.pi.postbox.question.AndroidKeystoreQuestionDraftStore
 import dev.pi.postbox.question.QuestionWorkflowScreen
 import dev.pi.postbox.question.QuestionWorkflowViewModel
@@ -64,6 +68,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var notificationPermissionController: AndroidNotificationPermissionController
     private var notificationPermissionState: NotificationPermissionState by mutableStateOf(NotificationPermissionState.Unknown)
     private var openQuestionRequestId: String? by mutableStateOf(null)
+    private var pushProtocolMismatch: dev.pi.postbox.protocol.ProtocolMismatch? by mutableStateOf(null)
 
     private val requestNotificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -76,13 +81,17 @@ class MainActivity : ComponentActivity() {
         notificationPermissionController = AndroidNotificationPermissionController(applicationContext)
         notificationPermissionState = notificationPermissionController.currentState()
         openQuestionRequestId = intent.postboxNotificationRequestId()
+        pushProtocolMismatch = ProtocolMismatchEvidenceStore(applicationContext).load()
 
         setContent {
             val viewModel = remember {
                 ServerOnboardingViewModel(
                     verifier = OkHttpPostboxHealthVerifier(),
                     store = SharedPreferencesVerifiedServerUrlStore(applicationContext)
-                ).also { it.loadSavedServerUrl() }
+                )
+            }
+            LaunchedEffect(viewModel) {
+                viewModel.loadSavedServerUrlFromUi()
             }
 
             PostboxApp(
@@ -91,6 +100,12 @@ class MainActivity : ComponentActivity() {
                 notificationPermissionState = notificationPermissionState,
                 openQuestionRequestId = openQuestionRequestId,
                 onOpenQuestionRequestConsumed = { openQuestionRequestId = null },
+                pushProtocolMismatch = pushProtocolMismatch,
+                onDismissPushProtocolMismatch = {
+                    ProtocolMismatchEvidenceStore(applicationContext).clear()
+                    AndroidPendingQuestionNotifier(applicationContext).cancelProtocolMismatch()
+                    pushProtocolMismatch = null
+                },
                 onRequestNotificationPermissionIfNeeded = ::requestNotificationPermissionIfNeeded
             )
         }
@@ -100,6 +115,9 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         openQuestionRequestId = intent.postboxNotificationRequestId()
+        if (intent.action == ACTION_OPEN_PROTOCOL_MISMATCH) {
+            pushProtocolMismatch = ProtocolMismatchEvidenceStore(applicationContext).load()
+        }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -123,6 +141,8 @@ private fun PostboxApp(
     notificationPermissionState: NotificationPermissionState,
     openQuestionRequestId: String?,
     onOpenQuestionRequestConsumed: () -> Unit,
+    pushProtocolMismatch: dev.pi.postbox.protocol.ProtocolMismatch?,
+    onDismissPushProtocolMismatch: () -> Unit,
     onRequestNotificationPermissionIfNeeded: () -> Unit
 ) {
     PostboxTheme {
@@ -130,6 +150,10 @@ private fun PostboxApp(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
+            if (pushProtocolMismatch != null) {
+                PushProtocolMismatchDetails(pushProtocolMismatch, onDismissPushProtocolMismatch)
+                return@Surface
+            }
             when (val state = viewModel.state) {
                 is ServerOnboardingState.Ready -> {
                     RequestNotificationPermissionOnce(onRequestNotificationPermissionIfNeeded)
@@ -139,7 +163,8 @@ private fun PostboxApp(
                         notificationPermissionState = notificationPermissionState,
                         openQuestionRequestId = openQuestionRequestId,
                         onOpenQuestionRequestConsumed = onOpenQuestionRequestConsumed,
-                        onEditServerUrl = viewModel::editServerUrl
+                        onEditServerUrl = viewModel::editServerUrl,
+                        onProtocolMismatch = { mismatch -> viewModel.reportProtocolMismatch(state.baseUrl, mismatch) }
                     )
                 }
                 else -> ServerOnboardingScreen(
@@ -150,6 +175,25 @@ private fun PostboxApp(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun PushProtocolMismatchDetails(
+    mismatch: dev.pi.postbox.protocol.ProtocolMismatch,
+    onDismiss: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        ProtocolMismatchNotice(mismatch)
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = onDismiss) { Text("Acknowledge") }
     }
 }
 
@@ -206,9 +250,14 @@ private fun ServerOnboardingScreen(
                 isError = state is ServerOnboardingState.InvalidUrl ||
                     state is ServerOnboardingState.Unreachable ||
                     state is ServerOnboardingState.NonPostboxServer ||
-                    state is ServerOnboardingState.InvalidHealthResponse,
+                    state is ServerOnboardingState.InvalidHealthResponse ||
+                    state is ServerOnboardingState.IncompatibleProtocol,
                 supportingText = { OnboardingSupportingText(state) }
             )
+            if (state is ServerOnboardingState.IncompatibleProtocol) {
+                Spacer(modifier = Modifier.height(12.dp))
+                ProtocolMismatchNotice(state.mismatch)
+            }
             Spacer(modifier = Modifier.height(16.dp))
             Button(
                 enabled = !verifying,
@@ -219,6 +268,12 @@ private fun ServerOnboardingScreen(
                 Text(if (verifying) "Checking…" else "Verify server")
             }
         }
+
+        ProtocolSupportLabel(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 12.dp)
+        )
 
         // Airmail envelope edge along the bottom, matching the question screen.
         Box(
@@ -244,6 +299,9 @@ private fun OnboardingSupportingText(state: ServerOnboardingState) {
         is ServerOnboardingState.Unreachable -> "Could not reach ${state.baseUrl}. Check the URL and try again."
         is ServerOnboardingState.NonPostboxServer -> "${state.baseUrl} answered, but it is not a Pi Postbox server."
         is ServerOnboardingState.InvalidHealthResponse -> "${state.baseUrl} did not return a valid Postbox health response."
+        is ServerOnboardingState.IncompatibleProtocol ->
+            "Protocol mismatch. This Android build supports protocol ${state.mismatch.supportedVersion}; " +
+                "the server reports ${state.mismatch.receivedVersionLabel}. Update Android or the Postbox server so their protocol versions match."
         is ServerOnboardingState.Verifying -> "Checking ${state.baseUrl}/healthz…"
         else -> "The app will verify /healthz before saving this URL."
     }
@@ -252,6 +310,7 @@ private fun OnboardingSupportingText(state: ServerOnboardingState) {
         is ServerOnboardingState.Unreachable -> state.warning
         is ServerOnboardingState.NonPostboxServer -> state.warning
         is ServerOnboardingState.InvalidHealthResponse -> state.warning
+        is ServerOnboardingState.IncompatibleProtocol -> state.warning
         else -> null
     }
     val warningText = warning?.toDisplayText()
@@ -270,7 +329,8 @@ private fun ConnectedQuestionWorkflow(
     notificationPermissionState: NotificationPermissionState,
     openQuestionRequestId: String?,
     onOpenQuestionRequestConsumed: () -> Unit,
-    onEditServerUrl: () -> Unit
+    onEditServerUrl: () -> Unit,
+    onProtocolMismatch: (dev.pi.postbox.protocol.ProtocolMismatch) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     val appContext = LocalContext.current.applicationContext
@@ -290,7 +350,8 @@ private fun ConnectedQuestionWorkflow(
             draftStore = questionDraftStore,
             pendingQuestionNotificationTracker = PendingQuestionNotificationTracker(),
             onPendingQuestionNotifications = notificationPoster::postAll,
-            onPendingRequestIdsObserved = notificationPoster::reconcilePendingRequests
+            onPendingRequestIdsObserved = notificationPoster::reconcilePendingRequests,
+            onProtocolMismatch = onProtocolMismatch
         )
     }
 
@@ -315,7 +376,11 @@ private fun ConnectedQuestionWorkflow(
         workflowViewModel.updateNotificationPermissionState(notificationPermissionState)
     }
     LaunchedEffect(state.baseUrl) {
-        PostboxFcmTokenRegistration.registerIfAvailable(appContext, state.baseUrl)
+        PostboxFcmTokenRegistration.registerIfAvailable(
+            appContext,
+            state.baseUrl,
+            onProtocolMismatch = onProtocolMismatch
+        )
     }
     LaunchedEffect(workflowViewModel, openQuestionRequestId) {
         openQuestionRequestId?.let { requestId ->
@@ -346,7 +411,13 @@ private fun ConnectedQuestionWorkflow(
         onSendQuestionChatStarter = workflowViewModel::sendQuestionChatStarter,
         onStopQuestionChat = workflowViewModel::stopQuestionChat,
         onReviewQuestionChatSuggestion = workflowViewModel::reviewQuestionChatSuggestion,
-        onHandleBack = workflowViewModel::handleBack
+        onHandleBack = workflowViewModel::handleBack,
+        serverIdentityText = state.health?.let { health ->
+            buildString {
+                append("Server v${health.version} · protocol ${health.protocolVersion}")
+                append(" · build ${health.buildId}")
+            }
+        }
     )
 }
 

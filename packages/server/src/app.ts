@@ -4,6 +4,9 @@ import websocket from "@fastify/websocket";
 import {
   createHealthResponse,
   HealthResponseSchema,
+  POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER,
+  POSTBOX_PROTOCOL_VERSION_HEADER,
+  PROTOCOL_VERSION,
   QuestionChatUnavailableResponseSchema,
   StateSnapshotSchema,
   type ServerInstanceIdentity,
@@ -195,10 +198,30 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
 
   app.addHook("onSend", async (request, reply, payload) => {
     if (request.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
-    return payload;
+    if (!isProtocolHttpSurface(request.url)) return payload;
+
+    reply.header(POSTBOX_PROTOCOL_VERSION_HEADER, PROTOCOL_VERSION);
+    if (reply.statusCode === 204 || typeof payload !== "string") return payload;
+    const contentType = String(reply.getHeader("content-type") ?? "");
+    if (!contentType.includes("application/json")) return payload;
+
+    const parsed = safeJsonObject(payload);
+    return parsed ? JSON.stringify({ ...parsed, protocolVersion: PROTOCOL_VERSION }) : payload;
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    if (isProtocolHttpSurface(request.url)) {
+      reply.header(POSTBOX_PROTOCOL_VERSION_HEADER, PROTOCOL_VERSION);
+      const received = request.headers[POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER.toLowerCase()];
+      if (typeof received === "string" && received !== PROTOCOL_VERSION) {
+        return reply.code(426).send({
+          error: "incompatible_protocol",
+          supportedProtocolVersion: PROTOCOL_VERSION,
+          receivedProtocolVersion: privacySafeProtocolVersion(received)
+        });
+      }
+    }
+
     const isQuestionChatControl = /^\/api\/requests\/[^/?]+\/chat(?:[/?]|$)/.test(request.url);
     if (!isQuestionChatControl && !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
@@ -286,4 +309,24 @@ function isAllowedBrowserOrigin(origin: string, host: string | undefined): boole
   } catch {
     return false;
   }
+}
+
+function isProtocolHttpSurface(url: string): boolean {
+  const path = url.split("?", 1)[0];
+  return path === "/healthz" || path === "/api" || path.startsWith("/api/");
+}
+
+function safeJsonObject(payload: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(payload);
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function privacySafeProtocolVersion(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(value) ? value : "<invalid>";
 }

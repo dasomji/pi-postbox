@@ -15,7 +15,11 @@ import dev.pi.postbox.protocol.PresenceState
 import dev.pi.postbox.protocol.PostboxRequestAlreadyResolvedException
 import dev.pi.postbox.protocol.PostboxStateStream
 import dev.pi.postbox.protocol.PostboxStateStreamStatus
+import dev.pi.postbox.protocol.ProtocolMessageSource
+import dev.pi.postbox.protocol.ProtocolMismatch
+import dev.pi.postbox.protocol.ProtocolMismatchReason
 import dev.pi.postbox.protocol.StateSnapshot
+import java.time.Instant
 import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -758,6 +762,24 @@ class QuestionWorkflowViewModelTest {
         assertEquals(1, client.fetchStateCalls)
         assertEquals(listOf("ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
         assertNull(viewModel.state.visibleQuestion?.submissionError)
+    }
+
+    @Test
+    fun answerSubmissionIncludesQuestionRevisionRequiredByServer() = runTest {
+        val request = singlePendingQuestion().copy(revision = 7)
+        val client = RecordingPostboxProtocolClient(questionWorkflowState(requests = listOf(request)))
+        client.afterAnswer = {
+            client.currentState = questionWorkflowState(requests = emptyList())
+        }
+        val viewModel = startedViewModel(client)
+
+        viewModel.selectQuestion(request.requestId)
+        viewModel.toggleOption("loopback")
+        viewModel.submitAnswer()
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.visibleQuestion?.submissionError)
+        assertEquals(7, client.answers.single().expectedRevision)
     }
 
     @Test
@@ -1515,6 +1537,37 @@ class QuestionWorkflowViewModelTest {
         assertEquals(listOf("disconnected"), viewModel.state.visibleQuestion?.selectedValues)
     }
 
+    @Test
+    fun protocolMismatchIsTerminalAndIgnoresLaterStreamSnapshots() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        val stream = FakePostboxStateStream()
+        val reconciled = mutableListOf<Set<String>>()
+        val viewModel = QuestionWorkflowViewModel(
+            baseUrl = VERIFIED_BASE_URL,
+            protocolClient = client,
+            stateStream = stream,
+            coroutineScope = backgroundScope,
+            onPendingRequestIdsObserved = { reconciled += it }
+        )
+        viewModel.start()
+        stream.emit(PostboxStateStreamStatus.Connected(client.currentState))
+        advanceUntilIdle()
+        val reconciliationsBeforeMismatch = reconciled.size
+
+        stream.emit(PostboxStateStreamStatus.IncompatibleProtocol(foreignProtocolMismatch()))
+        advanceUntilIdle()
+        stream.emit(PostboxStateStreamStatus.Connected(questionWorkflowState()))
+        viewModel.start()
+        advanceUntilIdle()
+
+        assertEquals(QuestionConnectionState.INCOMPATIBLE_PROTOCOL, viewModel.state.connectionState)
+        assertTrue(viewModel.state.pendingQuestions.isEmpty())
+        assertNull(viewModel.state.visibleQuestion)
+        assertEquals(reconciliationsBeforeMismatch, reconciled.size)
+        assertEquals(1, stream.startCount)
+        assertEquals(1, stream.closeCount)
+    }
+
     private suspend fun kotlinx.coroutines.test.TestScope.startedViewModel(
         client: RecordingPostboxProtocolClient,
         stream: FakePostboxStateStream = FakePostboxStateStream(),
@@ -1536,10 +1589,19 @@ class QuestionWorkflowViewModelTest {
     }
 }
 
+private fun foreignProtocolMismatch() = ProtocolMismatch(
+    supportedVersion = dev.pi.postbox.protocol.GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION,
+    receivedVersion = "0.0.1",
+    source = ProtocolMessageSource.STATE_STREAM,
+    observedAt = Instant.parse("2026-08-25T12:00:00Z"),
+    reason = ProtocolMismatchReason.DIFFERENT_VERSION
+)
+
 private data class RecordedAnswer(
     val requestId: String,
     val selectedValues: List<String>,
-    val note: String?
+    val note: String?,
+    val expectedRevision: Int = 1
 )
 
 private data class RecordedCancel(
@@ -1571,7 +1633,7 @@ private class RecordingPostboxProtocolClient(
     }
 
     override suspend fun answerRequest(requestId: String, payload: AskAnswerPayload) {
-        answers += RecordedAnswer(requestId, payload.selectedValues, payload.note)
+        answers += RecordedAnswer(requestId, payload.selectedValues, payload.note, payload.expectedRevision)
         beforeAnswerCompletes?.invoke()
         afterAnswer?.invoke()
         answerError?.let { throw it }

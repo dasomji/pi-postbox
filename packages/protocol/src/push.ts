@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PROTOCOL_VERSION } from "./health.js";
 
 export const PushConfigSourceSchema = z.enum(["configured", "generated"]);
 
@@ -138,9 +139,35 @@ export const FcmTokenDeletePayloadSchema = z.object({
   token: FcmTokenSchema
 });
 
+export const FcmAskCreatedDataSchema = z.object({
+  protocolVersion: z.literal(PROTOCOL_VERSION),
+  type: z.literal("ask.created"),
+  requestId: z.string().min(1).max(200),
+  sessionId: z.string().min(1).max(200),
+  projectId: z.string().min(1).optional(),
+  projectName: z.string().min(1).optional(),
+  sessionTitle: z.string().min(1).optional(),
+  title: z.string().min(1),
+  body: z.string().min(1)
+}).strict();
+
+export const FcmAskResolvedDataSchema = z.object({
+  protocolVersion: z.literal(PROTOCOL_VERSION),
+  type: z.literal("ask.resolved"),
+  requestId: z.string().min(1).max(200)
+}).strict();
+
+export const FcmPostboxDataSchema = z.discriminatedUnion("type", [
+  FcmAskCreatedDataSchema,
+  FcmAskResolvedDataSchema
+]);
+
 export type PushConfigSource = z.infer<typeof PushConfigSourceSchema>;
 export type PushConfigResponse = z.infer<typeof PushConfigResponseSchema>;
 export type PushSubscriptionPayload = z.infer<typeof PushSubscriptionPayloadSchema>;
 export type PushSubscriptionDeletePayload = z.infer<typeof PushSubscriptionDeletePayloadSchema>;
 export type FcmTokenPayload = z.infer<typeof FcmTokenPayloadSchema>;
 export type FcmTokenDeletePayload = z.infer<typeof FcmTokenDeletePayloadSchema>;
+export type FcmAskCreatedData = z.infer<typeof FcmAskCreatedDataSchema>;
+export type FcmAskResolvedData = z.infer<typeof FcmAskResolvedDataSchema>;
+export type FcmPostboxData = z.infer<typeof FcmPostboxDataSchema>;

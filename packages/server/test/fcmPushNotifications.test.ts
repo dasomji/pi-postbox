@@ -1,4 +1,4 @@
-import type { ExtensionClientMessage } from "@pi-postbox/protocol";
+import { PROTOCOL_VERSION, type ExtensionClientMessage } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -144,6 +144,23 @@ describe("FCM token routes", () => {
     expect(deleted.statusCode).toBe(204);
   });
 
+  it("rejects a mismatched client before FCM registration can mutate state", async () => {
+    const send = vi.fn(async () => undefined);
+    const app = await createAppWithFcmSender(send);
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/push/fcm-tokens",
+      headers: { "x-postbox-client-protocol-version": "0.0.1" },
+      payload: { token: "must-not-register", platform: "android" }
+    });
+    expect(rejected.statusCode).toBe(426);
+
+    const socket = await connectAndRegister(app);
+    await createAsk(socket, "ask-no-mismatched-token", "No incompatible device fanout.");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid FCM token payloads", async () => {
     const app = await createAppWithFcmSender(vi.fn(async () => undefined));
 
@@ -228,7 +245,7 @@ describe("new pending ask FCM notifications", () => {
     await waitForExpect(() => expect(send).toHaveBeenCalledTimes(2));
     expect(send.mock.calls[1]?.[0]).toBe("device-token-1");
     const message = send.mock.calls[1]?.[1] as FcmDataMessage;
-    expect(message.data).toEqual({ type: "ask.resolved", requestId: "ask-fcm-resolve-1" });
+    expect(message.data).toEqual({ protocolVersion: PROTOCOL_VERSION, type: "ask.resolved", requestId: "ask-fcm-resolve-1" });
   });
 
   it("does not dismiss a durable pending ask on session shutdown", async () => {

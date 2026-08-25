@@ -2,6 +2,34 @@ package dev.pi.postbox.push
 
 import dev.pi.postbox.notification.NotificationTapTargetFactory
 import dev.pi.postbox.notification.PendingQuestionNotification
+import dev.pi.postbox.protocol.PostboxProtocolMismatchException
+import dev.pi.postbox.protocol.ProtocolCompatibilityGate
+import dev.pi.postbox.protocol.ProtocolMessageSource
+import dev.pi.postbox.protocol.ProtocolMismatch
+
+sealed interface PostboxPushDecision {
+    data class Created(val notification: PendingQuestionNotification) : PostboxPushDecision
+    data class Resolved(val requestId: String) : PostboxPushDecision
+    data class IncompatibleProtocol(val mismatch: ProtocolMismatch) : PostboxPushDecision
+    data object Ignored : PostboxPushDecision
+}
+
+fun decodePostboxPushData(
+    data: Map<String, String>,
+    compatibilityGate: ProtocolCompatibilityGate = ProtocolCompatibilityGate(),
+    tapTargetFactory: NotificationTapTargetFactory = NotificationTapTargetFactory()
+): PostboxPushDecision {
+    try {
+        compatibilityGate.requireCompatible(data["protocolVersion"], ProtocolMessageSource.FCM)
+    } catch (error: PostboxProtocolMismatchException) {
+        return PostboxPushDecision.IncompatibleProtocol(error.mismatch)
+    }
+
+    val resolved = resolvedQuestionRequestIdFromPushData(data)
+    if (resolved != null) return PostboxPushDecision.Resolved(resolved)
+    val notification = pendingQuestionNotificationFromPushData(data, tapTargetFactory)
+    return notification?.let(PostboxPushDecision::Created) ?: PostboxPushDecision.Ignored
+}
 
 /**
  * Maps the data payload of a server-sent FCM message to the same notification event the in-app

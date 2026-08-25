@@ -5,6 +5,10 @@ import dev.pi.postbox.protocol.PostboxProtocolHttpException
 import dev.pi.postbox.protocol.defaultProtocolHttpClient
 import dev.pi.postbox.protocol.toPostboxBaseUrl
 import dev.pi.postbox.protocol.withPathSegments
+import dev.pi.postbox.protocol.POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.POSTBOX_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.ProtocolCompatibilityGate
+import dev.pi.postbox.protocol.ProtocolMessageSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -24,7 +28,8 @@ internal data class FcmTokenRegistrationPayload(
 )
 
 class OkHttpFcmTokenRegistrar(
-    private val client: OkHttpClient = defaultProtocolHttpClient()
+    private val client: OkHttpClient = defaultProtocolHttpClient(),
+    private val compatibilityGate: ProtocolCompatibilityGate = ProtocolCompatibilityGate()
 ) : FcmTokenRegistrar {
     override suspend fun register(baseUrl: String, token: String) = withContext(Dispatchers.IO) {
         val body = Json.encodeToString(
@@ -33,10 +38,15 @@ class OkHttpFcmTokenRegistrar(
         )
         val request = Request.Builder()
             .url(baseUrl.toPostboxBaseUrl().withPathSegments(listOf("api", "push", "fcm-tokens")))
+            .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
         client.newCall(request).execute().use { response ->
+            compatibilityGate.requireCompatible(
+                response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                ProtocolMessageSource.FCM
+            )
             if (!response.isSuccessful) {
                 throw PostboxProtocolHttpException(response.code, response.body?.string().orEmpty())
             }

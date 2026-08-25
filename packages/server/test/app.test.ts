@@ -28,6 +28,30 @@ describe("Pi Postbox server bootstrap", () => {
     });
     expect(health.profile).toEqual({ kind: "production", id: "production" });
     expect(health.instance).toBeUndefined();
+    expect(response.headers["x-postbox-protocol-version"]).toBe(PROTOCOL_VERSION);
+  });
+
+  it("versions Android-facing API responses and rejects a foreign client before routing", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:" });
+    apps.push(app);
+
+    const current = await app.inject({ method: "GET", url: "/api/state" });
+    expect(current.headers["x-postbox-protocol-version"]).toBe(PROTOCOL_VERSION);
+    expect(current.json()).toMatchObject({ protocolVersion: PROTOCOL_VERSION });
+
+    const incompatible = await app.inject({
+      method: "GET",
+      url: "/api/state",
+      headers: { "x-postbox-client-protocol-version": "0.0.1" }
+    });
+    expect(incompatible.statusCode).toBe(426);
+    expect(incompatible.headers["x-postbox-protocol-version"]).toBe(PROTOCOL_VERSION);
+    expect(incompatible.json()).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      error: "incompatible_protocol",
+      supportedProtocolVersion: PROTOCOL_VERSION,
+      receivedProtocolVersion: "0.0.1"
+    });
   });
 
   it("returns the current profile-scoped server identity after the CLI sets it", async () => {

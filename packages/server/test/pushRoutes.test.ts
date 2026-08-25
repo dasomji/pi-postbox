@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPostboxApp } from "../src/app.js";
+import { PROTOCOL_VERSION } from "@pi-postbox/protocol";
 
 const apps: Array<{ close: () => Promise<void> }> = [];
 
@@ -36,6 +37,7 @@ describe("push configuration and subscription routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
       available: true,
       publicKey: vapidPublicKey,
       source: "configured"

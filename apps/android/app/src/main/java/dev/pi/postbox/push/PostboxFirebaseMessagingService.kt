@@ -12,9 +12,13 @@ import dev.pi.postbox.onboarding.SharedPreferencesVerifiedServerUrlStore
  */
 class PostboxFirebaseMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
-        val resolvedRequestId = resolvedQuestionRequestIdFromPushData(message.data)
-        val notification = if (resolvedRequestId == null) pendingQuestionNotificationFromPushData(message.data) else null
-        if (resolvedRequestId == null && notification == null) return
+        val decision = decodePostboxPushData(message.data)
+        if (decision is PostboxPushDecision.IncompatibleProtocol) {
+            ProtocolMismatchEvidenceStore(applicationContext).save(decision.mismatch)
+            AndroidPendingQuestionNotifier(applicationContext).postProtocolMismatch(decision.mismatch)
+            return
+        }
+        if (decision is PostboxPushDecision.Ignored) return
 
         // Fetch the fresh state now, in the push execution window, so an app open in the next
         // couple of minutes renders the current queue immediately instead of stale data.
@@ -22,17 +26,19 @@ class PostboxFirebaseMessagingService : FirebaseMessagingService() {
             PostboxStatePrefetch.prefetch(baseUrl)
         }
 
-        if (resolvedRequestId != null) {
-            AndroidPendingQuestionNotifier(applicationContext).cancel(resolvedRequestId)
-            return
-        }
-        if (notification != null) {
-            AndroidPendingQuestionNotifier(applicationContext).post(notification)
+        when (decision) {
+            is PostboxPushDecision.Resolved -> AndroidPendingQuestionNotifier(applicationContext).cancel(decision.requestId)
+            is PostboxPushDecision.Created -> AndroidPendingQuestionNotifier(applicationContext).post(decision.notification)
+            is PostboxPushDecision.IncompatibleProtocol,
+            PostboxPushDecision.Ignored -> Unit
         }
     }
 
     override fun onNewToken(token: String) {
         val baseUrl = SharedPreferencesVerifiedServerUrlStore(applicationContext).loadVerifiedServerUrl() ?: return
-        PostboxFcmTokenRegistration.upload(baseUrl, token)
+        PostboxFcmTokenRegistration.upload(baseUrl, token) { mismatch ->
+            ProtocolMismatchEvidenceStore(applicationContext).save(mismatch)
+            AndroidPendingQuestionNotifier(applicationContext).postProtocolMismatch(mismatch)
+        }
     }
 }

@@ -1,4 +1,4 @@
-import type { AskRequestSnapshot, AskResult, PushSubscriptionPayload, SessionSnapshot } from "../protocol.js";
+import { FcmAskCreatedDataSchema, FcmAskResolvedDataSchema, PROTOCOL_VERSION, type AskRequestSnapshot, type AskResult, type PushSubscriptionPayload, type SessionSnapshot } from "../protocol.js";
 import type { RequestOptions as WebPushRequestOptions } from "web-push";
 import webPush from "web-push";
 import { isUnregisteredFcmError, type FcmSender } from "./fcmSender.js";
@@ -32,7 +32,11 @@ export class PushNotifier {
     const payload: ResolvedAskPushPayload = {
       data: { type: "ask.resolved", requestId: result.requestId }
     };
-    await Promise.all([this.notifyWebPushSubscriptions(payload), this.notifyFcmTokens(payload.data)]);
+    const fcmData = FcmAskResolvedDataSchema.parse({
+      protocolVersion: PROTOCOL_VERSION,
+      ...payload.data
+    });
+    await Promise.all([this.notifyWebPushSubscriptions(payload), this.notifyFcmTokens(fcmData)]);
   }
 
   private async notifyWebPushSubscriptions(payload: NewAskPushPayload | ResolvedAskPushPayload): Promise<void> {
@@ -129,6 +133,7 @@ interface ResolvedAskPushPayload {
 // FCM data messages only carry string values; the Android app rebuilds the notification from these keys.
 function buildFcmData(payload: NewAskPushPayload): Record<string, string> {
   const data: Record<string, string> = {
+    protocolVersion: PROTOCOL_VERSION,
     type: payload.data.type,
     requestId: payload.data.requestId,
     sessionId: payload.data.sessionId,
@@ -138,7 +143,7 @@ function buildFcmData(payload: NewAskPushPayload): Record<string, string> {
   if (payload.data.projectId) data.projectId = payload.data.projectId;
   if (payload.data.projectName) data.projectName = payload.data.projectName;
   if (payload.data.sessionTitle) data.sessionTitle = payload.data.sessionTitle;
-  return data;
+  return FcmAskCreatedDataSchema.parse(data);
 }
 
 function isGonePushError(error: unknown): boolean {

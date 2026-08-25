@@ -1,5 +1,10 @@
 package dev.pi.postbox.questionchat
 
+import dev.pi.postbox.protocol.GeneratedPostboxProtocolContract
+import dev.pi.postbox.protocol.ProtocolMessageSource
+import dev.pi.postbox.protocol.ProtocolMismatch
+import dev.pi.postbox.protocol.ProtocolMismatchReason
+import java.time.Instant
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -182,6 +187,36 @@ class QuestionChatOwnerTest {
 
         assertEquals(listOf(RecordedStop("ask-1", "android-stop-1")), client.stopCalls)
         assertEquals(QuestionChatState.GENERATING, owner.state.value.session?.snapshot?.state)
+    }
+
+    @Test
+    fun incompatibleMidstreamFactHardBlocksOwnerAndIgnoresLaterEventsAndCommands() = runTest {
+        val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
+        val snapshot = readySnapshot()
+        val client = FakeQuestionChatHttpClient(
+            probeResult = QuestionChatProbeResult.Ready(snapshot),
+            snapshot = snapshot
+        )
+        val mismatches = mutableListOf<ProtocolMismatch>()
+        val owner = QuestionChatOwner(client, transport, backgroundScope, onProtocolMismatch = mismatches::add)
+        owner.dispatch(QuestionChatIntent.SetForeground(true))
+        owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
+        advanceUntilIdle()
+
+        transport.emitIncompatible()
+        transport.emitEvent(
+            QuestionChatStreamEvent.Event(
+                "ask-1",
+                QuestionChatEvent.Lifecycle("ask-1", 99, QuestionChatState.GENERATING)
+            )
+        )
+        owner.dispatch(QuestionChatIntent.DraftChanged("must not send"))
+        owner.dispatch(QuestionChatIntent.SendDraft)
+        advanceUntilIdle()
+
+        assertEquals(1, mismatches.size)
+        assertNull(owner.state.value.session)
+        assertTrue(client.sendCalls.isEmpty())
     }
 
     @Test
@@ -698,5 +733,19 @@ private class FakeQuestionChatEventTransport : QuestionChatEventTransport {
 
     fun emitStale(message: String) {
         listener?.invoke(QuestionChatEventTransportFact.Stale(QuestionChatTransportException(message)))
+    }
+
+    fun emitIncompatible() {
+        listener?.invoke(
+            QuestionChatEventTransportFact.IncompatibleProtocol(
+                ProtocolMismatch(
+                    supportedVersion = GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION,
+                    receivedVersion = "0.0.1",
+                    source = ProtocolMessageSource.QUESTION_CHAT_STREAM,
+                    observedAt = Instant.parse("2026-08-25T12:00:00Z"),
+                    reason = ProtocolMismatchReason.DIFFERENT_VERSION
+                )
+            )
+        )
     }
 }

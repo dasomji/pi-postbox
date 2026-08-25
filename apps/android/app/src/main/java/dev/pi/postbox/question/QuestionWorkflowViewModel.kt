@@ -14,6 +14,8 @@ import dev.pi.postbox.protocol.AskRequestSnapshot
 import dev.pi.postbox.protocol.AskStatus
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.protocol.PostboxProtocolClient
+import dev.pi.postbox.protocol.PostboxProtocolMismatchException
+import dev.pi.postbox.protocol.ProtocolMismatch
 import dev.pi.postbox.protocol.PostboxRequestAlreadyResolvedException
 import dev.pi.postbox.protocol.PostboxStateStream
 import dev.pi.postbox.protocol.PostboxStateStreamStatus
@@ -51,11 +53,13 @@ class QuestionWorkflowViewModel(
     private val pendingQuestionNotificationTracker: PendingQuestionNotificationTracker? = null,
     private val onPendingQuestionNotifications: (List<PendingQuestionNotification>) -> Unit = {},
     private val onPendingRequestIdsObserved: (Set<String>) -> Unit = {},
+    private val onProtocolMismatch: (ProtocolMismatch) -> Unit = {},
     private val prefetchedSnapshotProvider: (String) -> StateSnapshot? = { PrefetchedStateSnapshotCache.freshSnapshotFor(it) },
     private val questionChatOwner: QuestionChatOwner = QuestionChatOwner(
         httpClient = OkHttpQuestionChatHttpClient(baseUrl),
         eventTransport = OkHttpQuestionChatEventTransport(baseUrl),
-        scope = coroutineScope
+        scope = coroutineScope,
+        onProtocolMismatch = onProtocolMismatch
     )
 ) {
     var state: QuestionWorkflowState by mutableStateOf(
@@ -91,7 +95,7 @@ class QuestionWorkflowViewModel(
     }
 
     fun start() {
-        if (started) return
+        if (started || state.protocolMismatch != null) return
         started = true
         observationActive = true
         questionChatOwner.dispatch(QuestionChatIntent.SetForeground(true))
@@ -142,6 +146,7 @@ class QuestionWorkflowViewModel(
     }
 
     fun startQuestionChat() {
+        if (state.protocolMismatch != null) return
         questionChatShell.selectTab(QuestionChatWorkspaceTab.CHAT)
         updateQuestionChatState()
         val ownerState = questionChatOwner.state.value
@@ -164,22 +169,27 @@ class QuestionWorkflowViewModel(
     }
 
     fun retryQuestionChat() {
+        if (state.protocolMismatch != null) return
         questionChatOwner.dispatch(QuestionChatIntent.Retry)
     }
 
     fun updateQuestionChatDraft(text: String) {
+        if (state.protocolMismatch != null) return
         questionChatOwner.dispatch(QuestionChatIntent.DraftChanged(text))
     }
 
     fun sendQuestionChatDraft() {
+        if (state.protocolMismatch != null) return
         questionChatOwner.dispatch(QuestionChatIntent.SendDraft)
     }
 
     fun sendQuestionChatStarter(starter: QuestionChatStarter) {
+        if (state.protocolMismatch != null) return
         questionChatOwner.dispatch(QuestionChatIntent.SendStarter(starter))
     }
 
     fun stopQuestionChat() {
+        if (state.protocolMismatch != null) return
         questionChatOwner.dispatch(QuestionChatIntent.Stop)
     }
 
@@ -199,6 +209,7 @@ class QuestionWorkflowViewModel(
     }
 
     fun refreshQuestions() {
+        if (state.protocolMismatch != null) return
         if (state.isRefreshing) return
         state = state.copy(
             isRefreshing = true,
@@ -375,6 +386,7 @@ class QuestionWorkflowViewModel(
     }
 
     fun submitAnswer(note: String? = null) {
+        if (state.protocolMismatch != null) return
         val visible = state.visibleQuestion ?: return
         if (visible.isSubmitting || !visible.canSubmit) return
 
@@ -386,6 +398,7 @@ class QuestionWorkflowViewModel(
                 protocolClient.answerRequest(
                     requestId = visible.requestId,
                     payload = AskAnswerPayload(
+                        expectedRevision = visible.revision,
                         selectedValues = visible.selectedValues,
                         note = note ?: visible.note.trim().ifBlank { null }
                     )
@@ -395,6 +408,8 @@ class QuestionWorkflowViewModel(
                     previousVisible = visible.copy(draftPersistenceError = null),
                     preferFirstPending = true
                 )
+            } catch (exception: PostboxProtocolMismatchException) {
+                hardBlockForMismatch(exception.mismatch)
             } catch (exception: PostboxRequestAlreadyResolvedException) {
                 refreshState(
                     previousVisible = visible,
@@ -419,6 +434,7 @@ class QuestionWorkflowViewModel(
      * requiring it to be the visible question first.
      */
     fun dismissQuestion(requestId: String) {
+        if (state.protocolMismatch != null) return
         if (state.dismissingRequestId != null) return
         state = state.copy(dismissingRequestId = requestId, dismissError = null)
         coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -432,6 +448,8 @@ class QuestionWorkflowViewModel(
                     preferFirstPending = state.navigationSelection ==
                         QuestionNavigationSelection.Question(requestId)
                 )
+            } catch (exception: PostboxProtocolMismatchException) {
+                hardBlockForMismatch(exception.mismatch)
             } catch (exception: PostboxRequestAlreadyResolvedException) {
                 // Someone else resolved it in the meantime; the refreshed queue is answer enough.
                 refreshState()
@@ -446,6 +464,7 @@ class QuestionWorkflowViewModel(
     }
 
     fun cancelQuestion(note: String? = null) {
+        if (state.protocolMismatch != null) return
         val visible = state.visibleQuestion ?: return
         if (visible.isSubmitting || !visible.availableActions.contains(QuestionAction.CANCEL)) return
 
@@ -466,6 +485,8 @@ class QuestionWorkflowViewModel(
                         message = "Question cancelled."
                     )
                 )
+            } catch (exception: PostboxProtocolMismatchException) {
+                hardBlockForMismatch(exception.mismatch)
             } catch (exception: PostboxRequestAlreadyResolvedException) {
                 refreshState(
                     previousVisible = visible,
@@ -519,6 +540,8 @@ class QuestionWorkflowViewModel(
                 connectionState = QuestionConnectionState.CONNECTED,
                 connectionMessage = null
             )
+        } catch (exception: PostboxProtocolMismatchException) {
+            hardBlockForMismatch(exception.mismatch)
         } catch (exception: IOException) {
             state = state.copy(
                 isLoading = false,
@@ -585,7 +608,38 @@ class QuestionWorkflowViewModel(
                     )
                 }
             }
+            is PostboxStateStreamStatus.IncompatibleProtocol -> {
+                hardBlockForMismatch(status.mismatch)
+            }
         }
+    }
+
+    private fun hardBlockForMismatch(mismatch: ProtocolMismatch) {
+        if (state.protocolMismatch != null) return
+        observationActive = false
+        started = false
+        streamJob?.cancel()
+        streamJob = null
+        stateStream.close()
+        questionChatOwner.dispatch(QuestionChatIntent.SetForeground(false))
+        questionChatOwner.bind(null)
+        questionChatShell.bind(null)
+        questionChatActivationRequested = false
+        state = state.copy(
+            isLoading = false,
+            isRefreshing = false,
+            isSyncing = false,
+            connectionState = QuestionConnectionState.INCOMPATIBLE_PROTOCOL,
+            connectionMessage = mismatch.toDisplayMessage(),
+            protocolMismatch = mismatch,
+            sessions = emptyList(),
+            pendingQuestions = emptyList(),
+            visibleQuestion = null,
+            navigationSelection = null,
+            questionChat = null,
+            errorMessage = null
+        )
+        onProtocolMismatch(mismatch)
     }
 
     private fun applySnapshot(
@@ -598,6 +652,7 @@ class QuestionWorkflowViewModel(
         connectionState: QuestionConnectionState = state.connectionState,
         connectionMessage: String? = state.connectionMessage
     ) {
+        if (state.protocolMismatch != null) return
         latestSnapshot = snapshot
         val pendingRequests = snapshot.requests
             .filter { it.status == AskStatus.PENDING }
@@ -871,6 +926,7 @@ class QuestionWorkflowViewModel(
     }
 
     private fun updateQuestionChatState() {
+        if (state.protocolMismatch != null) return
         val ownerState = questionChatOwner.state.value
         if (ownerState.key != null && ownerState.knownStarted && ownerState.session != null && !questionChatShell.state.runtimeReady) {
             if (questionChatActivationRequested) {
@@ -918,7 +974,8 @@ data class QuestionWorkflowState(
     val errorMessage: String? = null,
     val notificationStatusMessage: String? = null,
     val dismissingRequestId: String? = null,
-    val dismissError: String? = null
+    val dismissError: String? = null,
+    val protocolMismatch: ProtocolMismatch? = null
 )
 
 data class QuestionChatWorkflowUiState(
@@ -941,13 +998,20 @@ enum class QuestionConnectionState {
     CONNECTING,
     CONNECTED,
     DISCONNECTED,
-    ERROR
+    ERROR,
+    INCOMPATIBLE_PROTOCOL
 }
+
+private fun ProtocolMismatch.toDisplayMessage(): String =
+    "Protocol mismatch. This Android build supports protocol $supportedVersion. " +
+        "The ${source.displayName} uses protocol $receivedVersionLabel. " +
+        "Update Android or the Postbox server so their protocol versions match."
 
 enum class QuestionTerminalState {
     ANSWERED,
     CANCELLED,
     EXPIRED,
+    SUPERSEDED,
     ALREADY_RESOLVED
 }
 
@@ -985,6 +1049,7 @@ data class QuestionListItemUiState(
 data class QuestionDetailUiState(
     val requestId: String,
     val sessionId: String,
+    val revision: Int = 1,
     val mode: QuestionMode,
     val prompt: String,
     val ambiguity: String?,
@@ -1022,7 +1087,7 @@ private fun SessionSnapshot.toUiState(): QuestionSessionUiState = QuestionSessio
     title = title,
     projectName = projectName,
     machineName = machineName,
-    semanticState = semanticState.name.lowercase(),
+    semanticState = semanticState.wireValue,
     presence = presence.name.lowercase(),
     branch = branch,
     disconnectedAt = disconnectedAt,
@@ -1059,6 +1124,7 @@ private fun AskRequestSnapshot.toUiQuestion(
     return QuestionDetailUiState(
         requestId = requestId,
         sessionId = sessionId,
+        revision = revision,
         mode = mode.toQuestionMode(),
         prompt = question.prompt,
         ambiguity = question.ambiguity,
@@ -1130,4 +1196,5 @@ private fun AskStatus.toTerminalState(): QuestionTerminalState? = when (this) {
     AskStatus.ANSWERED -> QuestionTerminalState.ANSWERED
     AskStatus.CANCELLED -> QuestionTerminalState.CANCELLED
     AskStatus.EXPIRED -> QuestionTerminalState.EXPIRED
+    AskStatus.SUPERSEDED -> QuestionTerminalState.SUPERSEDED
 }

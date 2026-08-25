@@ -2,6 +2,11 @@ package dev.pi.postbox.questionchat
 
 import dev.pi.postbox.protocol.toPostboxBaseUrl
 import dev.pi.postbox.protocol.withPathSegments
+import dev.pi.postbox.protocol.POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.POSTBOX_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.PostboxProtocolMismatchException
+import dev.pi.postbox.protocol.ProtocolCompatibilityGate
+import dev.pi.postbox.protocol.ProtocolMessageSource
 import java.io.Closeable
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -32,7 +37,8 @@ interface QuestionChatEventTransport {
 
 class OkHttpQuestionChatEventTransport(
     baseUrl: String,
-    private val httpClient: OkHttpClient = defaultQuestionChatEventHttpClient()
+    private val httpClient: OkHttpClient = defaultQuestionChatEventHttpClient(),
+    private val compatibilityGate: ProtocolCompatibilityGate = ProtocolCompatibilityGate()
 ) : QuestionChatEventTransport {
     private val base: HttpUrl = baseUrl.toPostboxBaseUrl()
 
@@ -45,12 +51,17 @@ class OkHttpQuestionChatEventTransport(
         val request = Request.Builder()
             .url(base.withPathSegments(listOf("api", "requests", requestId, "chat", "events")))
             .header("Accept", "text/event-stream")
+            .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
             .get()
             .build()
         val call = httpClient.newCall(request)
         val job = scope.launch {
             try {
                 call.execute().use { response ->
+                    compatibilityGate.requireCompatible(
+                        response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                        ProtocolMessageSource.QUESTION_CHAT_STREAM
+                    )
                     if (!response.isSuccessful) {
                         throw QuestionChatTransportException("Question Chat event stream failed with HTTP ${response.code}")
                     }
@@ -58,6 +69,7 @@ class OkHttpQuestionChatEventTransport(
                     onFact(QuestionChatEventTransportFact.Open)
                     val body = response.body ?: throw QuestionChatTransportException("Missing Question Chat event stream body")
                     val parser = QuestionChatSseParser(body.source())
+                    var incompatible = false
                     while (true) {
                         val payload = try {
                             parser.readNextEventData()
@@ -66,7 +78,9 @@ class OkHttpQuestionChatEventTransport(
                             break
                         } ?: break
                         try {
-                            val event = parseQuestionChatStreamEvent(parseJsonObject(payload))
+                            val event = compatibilityGate.decodeVersioned(payload, ProtocolMessageSource.QUESTION_CHAT_STREAM) {
+                                parseQuestionChatStreamEvent(parseJsonObject(it))
+                            }
                             if (event.requestId != requestId) {
                                 onFact(
                                     QuestionChatEventTransportFact.Stale(
@@ -76,12 +90,19 @@ class OkHttpQuestionChatEventTransport(
                                 continue
                             }
                             onFact(QuestionChatEventTransportFact.Event(event))
+                        } catch (error: PostboxProtocolMismatchException) {
+                            onFact(QuestionChatEventTransportFact.IncompatibleProtocol(error.mismatch))
+                            incompatible = true
+                            break
                         } catch (error: QuestionChatTransportException) {
                             onFact(QuestionChatEventTransportFact.Stale(error))
                         }
                     }
-                    onFact(QuestionChatEventTransportFact.EndOfStream)
+                    if (!incompatible) onFact(QuestionChatEventTransportFact.EndOfStream)
                 }
+            } catch (error: PostboxProtocolMismatchException) {
+                if (!ready.isCompleted) ready.completeExceptionally(error)
+                onFact(QuestionChatEventTransportFact.IncompatibleProtocol(error.mismatch))
             } catch (error: Throwable) {
                 if (!ready.isCompleted) ready.completeExceptionally(error)
                 onFact(QuestionChatEventTransportFact.Failure(error))

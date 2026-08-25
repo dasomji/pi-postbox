@@ -1,5 +1,9 @@
 package dev.pi.postbox.questionchat
 
+import dev.pi.postbox.protocol.GeneratedPostboxProtocolContract
+import dev.pi.postbox.protocol.POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.POSTBOX_PROTOCOL_VERSION_HEADER
+import dev.pi.postbox.protocol.PostboxProtocolMismatchException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -35,6 +39,7 @@ class QuestionChatTransportTest {
         val request = server.takeRequest(1, TimeUnit.SECONDS) ?: error("Expected activation request")
         assertEquals("POST", request.method)
         assertEquals("/api/requests/ask%2Fslash%20space/chat", request.path)
+        assertEquals(GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION, request.getHeader(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER))
         val snapshot = (response as QuestionChatActivationResult.Ready).snapshot
         assertEquals("ask/slash space", snapshot.requestId)
         assertEquals(QuestionChatForkKind.EXACT, snapshot.forkKind)
@@ -54,11 +59,45 @@ class QuestionChatTransportTest {
     }
 
     @Test
+    fun activationRejectsForeignProtocolBeforeDecodingErrorBody() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(426)
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, "0.0.1")
+                .setBody("""{"protocolVersion":"0.0.1","status":"future-undecodable"}""")
+        )
+
+        try {
+            OkHttpQuestionChatHttpClient(server.url("/").toString()).activateExact("ask-1")
+            fail("Expected protocol mismatch")
+        } catch (error: PostboxProtocolMismatchException) {
+            assertEquals("0.0.1", error.mismatch.receivedVersion)
+        }
+    }
+
+    @Test
+    fun activationRejectsMissingProtocolEvidenceBeforeTypedDecode() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"status":"future-undecodable"}""")
+        )
+
+        try {
+            OkHttpQuestionChatHttpClient(server.url("/").toString()).activateExact("ask-1")
+            fail("Expected protocol mismatch")
+        } catch (error: PostboxProtocolMismatchException) {
+            assertEquals(null, error.mismatch.receivedVersion)
+        }
+    }
+
+    @Test
     fun probeMapsChatNotStartedUnavailableWithoutThrowing() = runTest {
         server.enqueue(
             MockResponse()
                 .setResponseCode(409)
                 .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody(chatUnavailableResponse(code = "chat_not_started", message = "Chat has not started."))
         )
         val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
@@ -93,6 +132,7 @@ class QuestionChatTransportTest {
             MockResponse()
                 .setResponseCode(503)
                 .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody(chatUnavailableResponse(code = "extension_offline", message = "Extension is offline."))
         )
         val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
@@ -116,9 +156,11 @@ class QuestionChatTransportTest {
             MockResponse()
                 .setResponseCode(429)
                 .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody(
                     """
                         {
+                          "protocolVersion": "${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}",
                           "status": "unavailable",
                           "error": {
                             "code": "rate_limited",
@@ -151,6 +193,7 @@ class QuestionChatTransportTest {
             MockResponse()
                 .setResponseCode(409)
                 .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody(chatUnavailableResponse(code = "request_not_pending", message = "Already terminal."))
         )
         val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
@@ -175,6 +218,7 @@ class QuestionChatTransportTest {
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody("\"$tooLargePayload\"")
         )
         val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
@@ -222,12 +266,13 @@ class QuestionChatTransportTest {
             append("\n\n")
             append("event: ignored\r")
             append("data: {\r")
-            append("data: \"requestId\":\"ask-1\",\"sequence\":2,\"type\":\"assistant.text.delta\",\"messageId\":\"a-1\",\"text\":\"안녕하세요 🌍\"}\r\r")
+            append("data: \"protocolVersion\":\"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}\",\"requestId\":\"ask-1\",\"sequence\":2,\"type\":\"assistant.text.delta\",\"messageId\":\"a-1\",\"text\":\"안녕하세요 🌍\"}\r\r")
         }
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody(streamBody)
         )
         val transport = OkHttpQuestionChatEventTransport(server.url("/").toString())
@@ -250,15 +295,61 @@ class QuestionChatTransportTest {
     }
 
     @Test
+    fun upgradeRequiredEventStreamSurfacesIncompatibleProtocol() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(426)
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, "0.0.1")
+                .setBody("""{"protocolVersion":"0.0.1","error":"incompatible_protocol"}""")
+        )
+        val transport = OkHttpQuestionChatEventTransport(server.url("/").toString())
+        val facts = mutableListOf<QuestionChatEventTransportFact>()
+
+        val connection = transport.open("ask-1") { facts += it }
+        try {
+            connection.ready.await()
+            fail("Expected protocol mismatch")
+        } catch (error: PostboxProtocolMismatchException) {
+            assertEquals("0.0.1", error.mismatch.receivedVersion)
+        }
+        connection.join()
+        assertTrue(facts.any { it is QuestionChatEventTransportFact.IncompatibleProtocol })
+        assertFalse(facts.any { it is QuestionChatEventTransportFact.EndOfStream })
+    }
+
+    @Test
+    fun foreignMidstreamEventStopsBeforeApplyingLaterEvents() = runBlocking {
+        val current = chatEventJson(type = "message.started")
+        val foreign = current.replace(GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION, "0.0.1")
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
+                .setBody("data: $current\n\ndata: $foreign\n\ndata: $current\n\n")
+        )
+        val facts = mutableListOf<QuestionChatEventTransportFact>()
+        val connection = OkHttpQuestionChatEventTransport(server.url("/").toString()).open("ask-1") { facts += it }
+
+        connection.ready.await()
+        connection.join()
+
+        assertEquals(1, facts.filterIsInstance<QuestionChatEventTransportFact.Event>().size)
+        assertEquals(1, facts.filterIsInstance<QuestionChatEventTransportFact.IncompatibleProtocol>().size)
+        assertFalse(facts.any { it is QuestionChatEventTransportFact.EndOfStream })
+    }
+
+    @Test
     fun wrongRequestAndMalformedFramesSurfaceStaleFacts() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody(
                     buildString {
-                        append("data: {\"requestId\":\"ask-2\",\"sequence\":1,\"type\":\"message.started\",\"message\":{\"id\":\"a-1\",\"role\":\"assistant\",\"text\":\"\",\"status\":\"streaming\"}}\n\n")
-                        append("data: {not json}\n\n")
+                        append("data: {\"protocolVersion\":\"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}\",\"requestId\":\"ask-2\",\"sequence\":1,\"type\":\"message.started\",\"message\":{\"id\":\"a-1\",\"role\":\"assistant\",\"text\":\"\",\"status\":\"streaming\"}}\n\n")
+                        append("data: {\"protocolVersion\":\"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}\",\"broken\":true}\n\n")
                     }
                 )
         )
@@ -279,7 +370,8 @@ class QuestionChatTransportTest {
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "text/event-stream; charset=utf-8")
-                .setBody("data: {\"requestId\":\"ask-1\",\"type\":\"transport\",\"state\":\"resuming\"}\n\n")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
+                .setBody("data: {\"protocolVersion\":\"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}\",\"requestId\":\"ask-1\",\"type\":\"transport\",\"state\":\"resuming\"}\n\n")
         )
         val transport = OkHttpQuestionChatEventTransport(server.url("/").toString())
         val facts = mutableListOf<QuestionChatEventTransportFact>()
@@ -300,6 +392,7 @@ class QuestionChatTransportTest {
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
                 .setBody("data: $oversized\n\n")
         )
         val transport = OkHttpQuestionChatEventTransport(server.url("/").toString())
@@ -319,7 +412,8 @@ class QuestionChatTransportTest {
 private fun jsonResponse(body: String): MockResponse = MockResponse()
     .setResponseCode(200)
     .setHeader("Content-Type", "application/json; charset=utf-8")
-    .setBody(body)
+    .setHeader(POSTBOX_PROTOCOL_VERSION_HEADER, GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION)
+    .setBody(body.replaceFirst("{", "{\"protocolVersion\":\"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}\","))
 
 private fun chatReadyResponse(
     requestId: String = "ask-1",
@@ -347,6 +441,7 @@ private fun chatReadyResponse(
 private fun chatUnavailableResponse(code: String, message: String): String =
     """
         {
+          "protocolVersion": "${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}",
           "status": "unavailable",
           "error": {
             "code": "$code",
@@ -358,6 +453,7 @@ private fun chatUnavailableResponse(code: String, message: String): String =
 private fun chatEventJson(type: String): String =
     if (type == "message.started") {
         "{" +
+            "\"protocolVersion\":\"${GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION}\"," +
             "\"requestId\":\"ask-1\"," +
             "\"sequence\":1," +
             "\"type\":\"message.started\"," +

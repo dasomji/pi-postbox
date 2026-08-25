@@ -1,6 +1,6 @@
 {
   "name": "@wienerberliner/pi-postbox",
-  "version": "0.2.5",
+  "version": "0.2.7",
   "description": "Pi Postbox extension and web service for remote human decision handoffs.",
   "license": "MIT",
   "type": "module",
@@ -24,6 +24,8 @@
     "test": "vitest run",
     "test:notification-performance": "npm run build && node scripts/notification-open-performance.mjs",
     "smoke": "node scripts/smoke-postbox.mjs",
+    "generate:android-protocol-contract": "npm run build -w @pi-postbox/protocol && node scripts/generate-android-protocol-contract.mjs",
+    "check:android-protocol-contract": "npm run build -w @pi-postbox/protocol && node scripts/generate-android-protocol-contract.mjs --check",
     "prepack": "npm run build"
   },
   "bin": {

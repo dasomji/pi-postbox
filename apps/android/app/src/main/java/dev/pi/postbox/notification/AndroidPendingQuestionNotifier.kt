@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import java.lang.SecurityException
 import dev.pi.postbox.MainActivity
 import dev.pi.postbox.R
+import dev.pi.postbox.protocol.ProtocolMismatch
 
 class AndroidNotificationPermissionController(private val context: Context) {
     fun currentState(): NotificationPermissionState = policy().permissionState(permissionGranted = hasPostNotificationsPermission())
@@ -72,13 +73,53 @@ class AndroidPendingQuestionNotifier(
         notificationManager.cancel(requestId.hashCode())
     }
 
+    fun cancelProtocolMismatch() {
+        notificationManager.cancel(PROTOCOL_MISMATCH_NOTIFICATION_ID)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun postProtocolMismatch(mismatch: ProtocolMismatch) {
+        if (!permissionController.currentState().toAvailability().canPostNotifications) return
+        ensureChannel()
+        val intent = Intent(context, MainActivity::class.java).apply {
+            action = ACTION_OPEN_PROTOCOL_MISMATCH
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            PROTOCOL_MISMATCH_NOTIFICATION_ID,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val safeText = "Supports ${mismatch.supportedVersion}; received ${mismatch.receivedVersionLabel}."
+        try {
+            notificationManager.notify(
+                PROTOCOL_MISMATCH_NOTIFICATION_ID,
+                Notification.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_postbox_notification)
+                    .setContentTitle("Postbox update required")
+                    .setContentText(safeText)
+                    .setStyle(Notification.BigTextStyle().bigText(safeText))
+                    .setContentIntent(pendingIntent)
+                    .setAutoCancel(true)
+                    .build()
+            )
+        } catch (_: SecurityException) {
+            // Notification permission can change between preflight and posting.
+        }
+    }
+
     /** Cancel app-owned notifications whose questions are no longer in the pending snapshot. */
     fun reconcilePendingRequests(pendingRequestIds: Set<String>) {
         val pendingNotificationIds = pendingRequestIds.mapTo(hashSetOf()) { it.hashCode() }
         try {
             notificationManager.activeNotifications
                 .filter { notification ->
-                    notification.notification.channelId == CHANNEL_ID && notification.id !in pendingNotificationIds
+                    shouldCancelDuringPendingReconciliation(
+                        channelId = notification.notification.channelId,
+                        notificationId = notification.id,
+                        pendingNotificationIds = pendingNotificationIds
+                    )
                 }
                 .forEach { notification -> notificationManager.cancel(notification.id) }
         } catch (_: SecurityException) {
@@ -125,8 +166,18 @@ class AndroidPendingQuestionNotifier(
         const val CHANNEL_DESCRIPTION: String = "Local notifications for newly observed pending Postbox questions while the app is active."
         const val PRIVATE_NOTIFICATION_TEXT: String = "Open Postbox to review and answer."
         const val EXTRA_REQUEST_ID: String = "dev.pi.postbox.extra.REQUEST_ID"
+        const val ACTION_OPEN_PROTOCOL_MISMATCH: String = "dev.pi.postbox.OPEN_PROTOCOL_MISMATCH"
+        const val PROTOCOL_MISMATCH_NOTIFICATION_ID: Int = 0x50524f54
     }
 }
+
+internal fun shouldCancelDuringPendingReconciliation(
+    channelId: String?,
+    notificationId: Int,
+    pendingNotificationIds: Set<Int>
+): Boolean = channelId == AndroidPendingQuestionNotifier.CHANNEL_ID &&
+    notificationId != AndroidPendingQuestionNotifier.PROTOCOL_MISMATCH_NOTIFICATION_ID &&
+    notificationId !in pendingNotificationIds
 
 fun Intent.postboxNotificationRequestId(): String? {
     if (action != NotificationTapTarget.ACTION_OPEN_QUESTION) return null

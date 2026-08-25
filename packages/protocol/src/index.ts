@@ -16,6 +16,7 @@ export {
   AskAnswerEventSchema,
   AskModeSchema,
   AskOptionSchema,
+  AskOptionProvenanceSchema,
   AskQuestionSchema,
   AskRequestSnapshotSchema,
   AskReceiptSchema,
@@ -126,8 +127,11 @@ export {
   QuestionChatAvailabilityErrorSchema,
   QuestionChatEventSchema,
   QuestionChatMessageSchema,
+  QuestionChatAssistantStatusSchema,
   QuestionChatModelSchema,
+  QuestionChatModelSourceSchema,
   QuestionChatSendHttpResponseSchema,
+  QuestionChatSendModeSchema,
   QuestionChatSendPayloadSchema,
   QuestionChatSendResponseSchema,
   QuestionChatSnapshotHttpResponseSchema,
@@ -137,6 +141,7 @@ export {
   QuestionChatStopPayloadSchema,
   QuestionChatStopResponseSchema,
   QuestionChatToolActivitySchema,
+  QuestionChatToolStateSchema,
   QuestionChatToolActionSchema,
   QuestionChatToolNameSchema,
   QuestionChatPostboxToolNameSchema,
@@ -181,6 +186,9 @@ export type { HistoryRecord, HistoryResponse, HistorySessionMetadata } from "./h
 export {
   FcmTokenDeletePayloadSchema,
   FcmTokenPayloadSchema,
+  FcmAskCreatedDataSchema,
+  FcmAskResolvedDataSchema,
+  FcmPostboxDataSchema,
   PushConfigResponseSchema,
   PushConfigSourceSchema,
   PushSubscriptionDeletePayloadSchema,
@@ -189,6 +197,9 @@ export {
 export type {
   FcmTokenDeletePayload,
   FcmTokenPayload,
+  FcmAskCreatedData,
+  FcmAskResolvedData,
+  FcmPostboxData,
   PushConfigResponse,
   PushConfigSource,
   PushSubscriptionDeletePayload,
@@ -234,3 +245,20 @@ export { ExtensionClientMessageSchema, ExtensionServerMessageSchema } from "./ws
 export type { ExtensionClientMessage, ExtensionServerMessage } from "./ws.js";
 export { QuestionTelemetryEventSchema } from "./questionTelemetry.js";
 export type { QuestionTelemetryEvent } from "./questionTelemetry.js";
+export {
+  IncompatibleProtocolResponseSchema,
+  POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER,
+  POSTBOX_PROTOCOL_VERSION_HEADER,
+  ProtocolMessageMetadataSchema,
+  ReportedProtocolVersionSchema,
+  VersionedAskMutationResponseSchema,
+  VersionedQuestionChatActivationResponseSchema,
+  VersionedQuestionChatSendHttpResponseSchema,
+  VersionedQuestionChatSnapshotHttpResponseSchema,
+  VersionedQuestionChatStopHttpResponseSchema,
+  VersionedQuestionChatStreamEventSchema,
+  VersionedRequestErrorResponseSchema,
+  VersionedStateSnapshotSchema,
+  withProtocolVersion
+} from "./versioning.js";
+export type { IncompatibleProtocolResponse, VersionedStateSnapshot } from "./versioning.js";

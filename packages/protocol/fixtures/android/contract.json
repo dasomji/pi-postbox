@@ -1,0 +1,2038 @@
+{
+  "protocolVersion": "0.1.9",
+  "fingerprint": "ad5e1496494a3a09bdc06fc33a078468b1d8d721600bfff55b1ca733080d7c07",
+  "androidVersionName": "0.4.2",
+  "androidVersionCode": 6,
+  "wireValues": {
+    "semanticStates": [
+      "working",
+      "blocked",
+      "waiting_for_postbox",
+      "idle",
+      "unknown"
+    ],
+    "presenceStates": [
+      "live",
+      "stale",
+      "offline"
+    ],
+    "askModes": [
+      "single",
+      "multi"
+    ],
+    "askStatuses": [
+      "pending",
+      "answered",
+      "cancelled",
+      "expired",
+      "superseded"
+    ],
+    "askResultStatuses": [
+      "answered",
+      "cancelled",
+      "expired",
+      "unavailable"
+    ],
+    "askOptionProvenances": [
+      "chat"
+    ],
+    "questionChatStates": [
+      "ready",
+      "generating",
+      "stopping",
+      "stopped",
+      "interrupted"
+    ],
+    "questionChatAvailabilityCodes": [
+      "request_missing",
+      "request_not_pending",
+      "extension_offline",
+      "source_path_missing",
+      "source_leaf_missing",
+      "wrong_owner",
+      "command_timeout",
+      "runtime_failure",
+      "chat_not_started",
+      "invalid_command",
+      "duplicate_command",
+      "runtime_busy",
+      "forbidden_origin",
+      "rate_limited"
+    ],
+    "questionChatAssistantStatuses": [
+      "streaming",
+      "final",
+      "stopped",
+      "interrupted"
+    ],
+    "questionChatToolStates": [
+      "running",
+      "success",
+      "error",
+      "stale"
+    ],
+    "questionChatToolNames": [
+      "repository_read",
+      "repository_grep",
+      "repository_find",
+      "repository_list",
+      "propose_answer"
+    ],
+    "questionChatEventTypes": [
+      "lifecycle",
+      "message.started",
+      "assistant.text.delta",
+      "message.finished",
+      "tool.started",
+      "tool.finished",
+      "transport"
+    ],
+    "questionChatModelSources": [
+      "originating",
+      "pi-default"
+    ],
+    "questionChatSendModes": [
+      "turn",
+      "steer"
+    ],
+    "fcmTypes": [
+      "ask.created",
+      "ask.resolved"
+    ]
+  },
+  "fixtures": {
+    "health": {
+      "ok": true,
+      "service": "pi-postbox",
+      "version": "0.2.7",
+      "buildId": "0.2.7+contract",
+      "protocolVersion": "0.1.9",
+      "profile": {
+        "kind": "production",
+        "id": "production"
+      },
+      "uptimeMs": 123,
+      "timestamp": "2026-08-25T12:00:00.000Z"
+    },
+    "states": [
+      {
+        "protocolVersion": "0.1.9",
+        "sessions": [
+          {
+            "sessionId": "session-working",
+            "machineId": "machine-1",
+            "machineName": "Workstation",
+            "hostname": "host",
+            "projectId": "project-1",
+            "projectName": "Postbox",
+            "cwd": "/repo",
+            "semanticState": "working",
+            "presence": "live",
+            "updatedAt": "2026-08-25T12:00:00.000Z",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "requests": [
+          {
+            "requestId": "ask-pending",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "pending",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-answered",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "answered",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-cancelled",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "cancelled",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-expired",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "expired",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-superseded",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "superseded",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "timestamp": "2026-08-25T12:00:00.000Z"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "sessions": [
+          {
+            "sessionId": "session-blocked",
+            "machineId": "machine-1",
+            "machineName": "Workstation",
+            "hostname": "host",
+            "projectId": "project-1",
+            "projectName": "Postbox",
+            "cwd": "/repo",
+            "semanticState": "blocked",
+            "presence": "stale",
+            "updatedAt": "2026-08-25T12:00:00.000Z",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "requests": [
+          {
+            "requestId": "ask-pending",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "pending",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-answered",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "answered",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-cancelled",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "cancelled",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-expired",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "expired",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-superseded",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "superseded",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "timestamp": "2026-08-25T12:00:00.000Z"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "sessions": [
+          {
+            "sessionId": "session-waiting_for_postbox",
+            "machineId": "machine-1",
+            "machineName": "Workstation",
+            "hostname": "host",
+            "projectId": "project-1",
+            "projectName": "Postbox",
+            "cwd": "/repo",
+            "semanticState": "waiting_for_postbox",
+            "presence": "offline",
+            "updatedAt": "2026-08-25T12:00:00.000Z",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "requests": [
+          {
+            "requestId": "ask-pending",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "pending",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-answered",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "answered",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-cancelled",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "cancelled",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-expired",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "expired",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-superseded",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "superseded",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "timestamp": "2026-08-25T12:00:00.000Z"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "sessions": [
+          {
+            "sessionId": "session-idle",
+            "machineId": "machine-1",
+            "machineName": "Workstation",
+            "hostname": "host",
+            "projectId": "project-1",
+            "projectName": "Postbox",
+            "cwd": "/repo",
+            "semanticState": "idle",
+            "presence": "live",
+            "updatedAt": "2026-08-25T12:00:00.000Z",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "requests": [
+          {
+            "requestId": "ask-pending",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "pending",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-answered",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "answered",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-cancelled",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "cancelled",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-expired",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "expired",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-superseded",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "superseded",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "timestamp": "2026-08-25T12:00:00.000Z"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "sessions": [
+          {
+            "sessionId": "session-unknown",
+            "machineId": "machine-1",
+            "machineName": "Workstation",
+            "hostname": "host",
+            "projectId": "project-1",
+            "projectName": "Postbox",
+            "cwd": "/repo",
+            "semanticState": "unknown",
+            "presence": "stale",
+            "updatedAt": "2026-08-25T12:00:00.000Z",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "requests": [
+          {
+            "requestId": "ask-pending",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "pending",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-answered",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "answered",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-cancelled",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "cancelled",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-expired",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "multi",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "expired",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          },
+          {
+            "requestId": "ask-superseded",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "superseded",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            }
+          }
+        ],
+        "timestamp": "2026-08-25T12:00:00.000Z"
+      }
+    ],
+    "answerCancel": [
+      {
+        "kind": "answer.success",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "result": {
+            "status": "answered",
+            "requestId": "ask-contract-1",
+            "selectedValues": [
+              "yes"
+            ],
+            "resolvedAt": "2026-08-25T12:01:00.000Z"
+          },
+          "request": {
+            "requestId": "ask-contract-1",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "answered",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            },
+            "resolvedAt": "2026-08-25T12:01:00.000Z"
+          }
+        }
+      },
+      {
+        "kind": "cancel.success",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "result": {
+            "status": "cancelled",
+            "requestId": "ask-contract-1",
+            "resolvedAt": "2026-08-25T12:01:00.000Z"
+          },
+          "request": {
+            "requestId": "ask-contract-1",
+            "sessionId": "session-contract-1",
+            "revision": 2,
+            "ownerRevision": 1,
+            "creator": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "owner": {
+              "harness": "pi",
+              "ownerId": "11111111-1111-4111-8111-111111111111"
+            },
+            "mode": "single",
+            "question": {
+              "prompt": "Choose a contract fixture",
+              "ambiguity": "Which branch should Android decode?"
+            },
+            "options": [
+              {
+                "value": "yes",
+                "label": "Yes",
+                "provenance": "chat"
+              }
+            ],
+            "status": "cancelled",
+            "createdAt": "2026-08-25T12:00:00.000Z",
+            "parentQuestionId": "ask-parent-1",
+            "repository": {
+              "repositoryId": "repo-1"
+            },
+            "worktree": {
+              "worktreeId": "worktree-1",
+              "machineId": "machine-1",
+              "path": "/repo"
+            },
+            "feature": {
+              "featureId": "feature-1",
+              "name": "Protocol"
+            },
+            "resolvedAt": "2026-08-25T12:01:00.000Z"
+          }
+        }
+      },
+      {
+        "kind": "result.expired",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "result": {
+            "status": "expired",
+            "requestId": "ask-contract-1",
+            "resolvedAt": "2026-08-25T12:01:00.000Z"
+          }
+        }
+      },
+      {
+        "kind": "result.unavailable",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "result": {
+            "status": "unavailable",
+            "requestId": "ask-contract-1",
+            "resolvedAt": "2026-08-25T12:01:00.000Z"
+          }
+        }
+      },
+      {
+        "kind": "request.error",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "error": "request_already_resolved",
+          "message": "Already resolved."
+        }
+      }
+    ],
+    "questionChatHttp": [
+      {
+        "kind": "activation.ready",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "ready",
+          "snapshot": {
+            "requestId": "ask-contract-1",
+            "state": "ready",
+            "forkKind": "exact",
+            "model": {
+              "id": "test/model",
+              "source": "originating"
+            },
+            "sequence": 0,
+            "messages": [
+              {
+                "id": "user-1",
+                "role": "user",
+                "text": "Explain this",
+                "status": "final"
+              },
+              {
+                "id": "assistant-streaming",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "streaming"
+              },
+              {
+                "id": "assistant-final",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "final"
+              },
+              {
+                "id": "assistant-stopped",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "stopped"
+              },
+              {
+                "id": "assistant-interrupted",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "interrupted"
+              }
+            ],
+            "tools": [
+              {
+                "id": "tool-running",
+                "tool": "repository_read",
+                "target": "/repo/file",
+                "state": "running"
+              },
+              {
+                "id": "tool-success",
+                "tool": "repository_grep",
+                "target": "/repo/file",
+                "state": "success"
+              },
+              {
+                "id": "tool-error",
+                "tool": "repository_find",
+                "target": "/repo/file",
+                "state": "error"
+              },
+              {
+                "id": "tool-stale",
+                "tool": "repository_list",
+                "target": "/repo/file",
+                "state": "stale"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "activation.unavailable",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "unavailable",
+          "error": {
+            "code": "extension_offline",
+            "message": "Extension is offline."
+          }
+        }
+      },
+      {
+        "kind": "snapshot.ready",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "ready",
+          "snapshot": {
+            "requestId": "ask-contract-1",
+            "state": "ready",
+            "forkKind": "exact",
+            "model": {
+              "id": "test/default",
+              "source": "pi-default",
+              "fallbackReason": "Originating model unavailable"
+            },
+            "sequence": 0,
+            "messages": [
+              {
+                "id": "user-1",
+                "role": "user",
+                "text": "Explain this",
+                "status": "final"
+              },
+              {
+                "id": "assistant-streaming",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "streaming"
+              },
+              {
+                "id": "assistant-final",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "final"
+              },
+              {
+                "id": "assistant-stopped",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "stopped"
+              },
+              {
+                "id": "assistant-interrupted",
+                "role": "assistant",
+                "text": "Explanation",
+                "status": "interrupted"
+              }
+            ],
+            "tools": [
+              {
+                "id": "tool-running",
+                "tool": "repository_read",
+                "target": "/repo/file",
+                "state": "running"
+              },
+              {
+                "id": "tool-success",
+                "tool": "repository_grep",
+                "target": "/repo/file",
+                "state": "success"
+              },
+              {
+                "id": "tool-error",
+                "tool": "repository_find",
+                "target": "/repo/file",
+                "state": "error"
+              },
+              {
+                "id": "tool-stale",
+                "tool": "repository_list",
+                "target": "/repo/file",
+                "state": "stale"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "kind": "snapshot.unavailable",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "unavailable",
+          "error": {
+            "code": "extension_offline",
+            "message": "Extension is offline."
+          }
+        }
+      },
+      {
+        "kind": "send.turn",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "accepted",
+          "clientCommandId": "cmd-turn",
+          "mode": "turn"
+        }
+      },
+      {
+        "kind": "send.steer",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "accepted",
+          "clientCommandId": "cmd-steer",
+          "mode": "steer"
+        }
+      },
+      {
+        "kind": "send.unavailable",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "unavailable",
+          "error": {
+            "code": "extension_offline",
+            "message": "Extension is offline."
+          }
+        }
+      },
+      {
+        "kind": "stop.accepted",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "accepted",
+          "clientCommandId": "cmd-stop"
+        }
+      },
+      {
+        "kind": "stop.unavailable",
+        "payload": {
+          "protocolVersion": "0.1.9",
+          "status": "unavailable",
+          "error": {
+            "code": "extension_offline",
+            "message": "Extension is offline."
+          }
+        }
+      }
+    ],
+    "questionChatAvailability": [
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "request_missing",
+          "message": "Canonical request_missing response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "request_not_pending",
+          "message": "Canonical request_not_pending response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "extension_offline",
+          "message": "Canonical extension_offline response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "source_path_missing",
+          "message": "Canonical source_path_missing response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "source_leaf_missing",
+          "message": "Canonical source_leaf_missing response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "wrong_owner",
+          "message": "Canonical wrong_owner response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "command_timeout",
+          "message": "Canonical command_timeout response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "runtime_failure",
+          "message": "Canonical runtime_failure response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "chat_not_started",
+          "message": "Canonical chat_not_started response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "invalid_command",
+          "message": "Canonical invalid_command response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "duplicate_command",
+          "message": "Canonical duplicate_command response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "runtime_busy",
+          "message": "Canonical runtime_busy response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "forbidden_origin",
+          "message": "Canonical forbidden_origin response."
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "status": "unavailable",
+        "error": {
+          "code": "rate_limited",
+          "message": "Canonical rate_limited response."
+        }
+      }
+    ],
+    "questionChatEvents": [
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 1,
+        "type": "lifecycle",
+        "state": "ready"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 2,
+        "type": "lifecycle",
+        "state": "generating"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 3,
+        "type": "lifecycle",
+        "state": "stopping"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 4,
+        "type": "lifecycle",
+        "state": "stopped"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 5,
+        "type": "lifecycle",
+        "state": "interrupted"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 6,
+        "type": "message.started",
+        "message": {
+          "id": "user-start",
+          "role": "user",
+          "text": "Hello",
+          "status": "final"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 7,
+        "type": "message.started",
+        "message": {
+          "id": "assistant-start-streaming",
+          "role": "assistant",
+          "text": "",
+          "status": "streaming"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 8,
+        "type": "message.started",
+        "message": {
+          "id": "assistant-start-final",
+          "role": "assistant",
+          "text": "",
+          "status": "final"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 9,
+        "type": "message.started",
+        "message": {
+          "id": "assistant-start-stopped",
+          "role": "assistant",
+          "text": "",
+          "status": "stopped"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 10,
+        "type": "message.started",
+        "message": {
+          "id": "assistant-start-interrupted",
+          "role": "assistant",
+          "text": "",
+          "status": "interrupted"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 11,
+        "type": "assistant.text.delta",
+        "messageId": "assistant-1",
+        "text": "delta"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 12,
+        "type": "message.finished",
+        "messageId": "assistant-final",
+        "text": "done",
+        "status": "final"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 13,
+        "type": "message.finished",
+        "messageId": "assistant-stopped",
+        "text": "done",
+        "status": "stopped"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 14,
+        "type": "message.finished",
+        "messageId": "assistant-interrupted",
+        "text": "done",
+        "status": "interrupted"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 15,
+        "type": "tool.started",
+        "activity": {
+          "id": "running-repository_read",
+          "tool": "repository_read",
+          "target": "/repo",
+          "state": "running"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 16,
+        "type": "tool.started",
+        "activity": {
+          "id": "running-repository_grep",
+          "tool": "repository_grep",
+          "target": "/repo",
+          "state": "running"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 17,
+        "type": "tool.started",
+        "activity": {
+          "id": "running-repository_find",
+          "tool": "repository_find",
+          "target": "/repo",
+          "state": "running"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 18,
+        "type": "tool.started",
+        "activity": {
+          "id": "running-repository_list",
+          "tool": "repository_list",
+          "target": "/repo",
+          "state": "running"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 19,
+        "type": "tool.started",
+        "activity": {
+          "id": "running-propose_answer",
+          "tool": "propose_answer",
+          "target": "/repo",
+          "state": "running"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 20,
+        "type": "tool.finished",
+        "activity": {
+          "id": "finished-success",
+          "tool": "repository_read",
+          "target": "/repo",
+          "state": "success"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 21,
+        "type": "tool.finished",
+        "activity": {
+          "id": "finished-error",
+          "tool": "repository_read",
+          "target": "/repo",
+          "state": "error"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "sequence": 22,
+        "type": "tool.finished",
+        "activity": {
+          "id": "finished-stale",
+          "tool": "repository_read",
+          "target": "/repo",
+          "state": "stale"
+        }
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "type": "transport",
+        "state": "online"
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "requestId": "ask-contract-1",
+        "type": "transport",
+        "state": "offline"
+      }
+    ],
+    "fcm": [
+      {
+        "protocolVersion": "0.1.9",
+        "type": "ask.created",
+        "requestId": "ask-contract-1",
+        "sessionId": "session-contract-1",
+        "title": "New Postbox question",
+        "body": "Postbox needs your input."
+      },
+      {
+        "protocolVersion": "0.1.9",
+        "type": "ask.resolved",
+        "requestId": "ask-contract-1"
+      }
+    ]
+  }
+}

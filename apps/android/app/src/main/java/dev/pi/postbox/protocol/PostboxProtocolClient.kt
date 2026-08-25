@@ -20,15 +20,16 @@ interface PostboxProtocolClient {
 
 class OkHttpPostboxProtocolClient(
     baseUrl: String,
-    private val client: OkHttpClient = defaultProtocolHttpClient()
+    private val client: OkHttpClient = defaultProtocolHttpClient(),
+    private val compatibilityGate: ProtocolCompatibilityGate = ProtocolCompatibilityGate()
 ) : PostboxProtocolClient {
     private val base: HttpUrl = baseUrl.toPostboxBaseUrl()
 
-    override suspend fun fetchHealth(): HealthResponse = getJson(pathSegments = listOf("healthz")) { body ->
+    override suspend fun fetchHealth(): HealthResponse = getJson(pathSegments = listOf("healthz"), source = ProtocolMessageSource.HEALTH) { body ->
         PostboxProtocolJson.json.decodeFromString(HealthResponse.serializer(), body)
     }
 
-    override suspend fun fetchState(): StateSnapshot = getJson(pathSegments = listOf("api", "state")) { body ->
+    override suspend fun fetchState(): StateSnapshot = getJson(pathSegments = listOf("api", "state"), source = ProtocolMessageSource.STATE_HTTP) { body ->
         PostboxProtocolJson.decodeStateSnapshot(body)
     }
 
@@ -48,29 +49,40 @@ class OkHttpPostboxProtocolClient(
         )
     }
 
-    private suspend fun <T> getJson(pathSegments: List<String>, decode: (String) -> T): T = withContext(Dispatchers.IO) {
+    private suspend fun <T> getJson(pathSegments: List<String>, source: ProtocolMessageSource, decode: (String) -> T): T = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(base.withPathSegments(pathSegments))
+            .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
             .get()
             .build()
 
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
+            compatibilityGate.requireCompatible(response.header(POSTBOX_PROTOCOL_VERSION_HEADER), source)
+            if (body.isNotBlank()) compatibilityGate.requireCompatible(compatibilityGate.extractReportedVersion(body), source)
             if (!response.isSuccessful) {
                 throw PostboxProtocolHttpException(response.code, body)
             }
-            decode(body)
+            compatibilityGate.decodeVersioned(body, source, decode)
         }
     }
 
     private suspend fun postJson(pathSegments: List<String>, body: String, requestId: String) = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(base.withPathSegments(pathSegments))
+            .header(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER, compatibilityGate.supportedVersion)
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
         client.newCall(request).execute().use { response ->
             val responseBody = response.body?.string().orEmpty()
+            compatibilityGate.requireCompatible(response.header(POSTBOX_PROTOCOL_VERSION_HEADER), ProtocolMessageSource.STATE_HTTP)
+            if (responseBody.isNotBlank()) {
+                compatibilityGate.requireCompatible(
+                    compatibilityGate.extractReportedVersion(responseBody),
+                    ProtocolMessageSource.STATE_HTTP
+                )
+            }
             if (response.code == 409) {
                 val error = PostboxErrorResponse.parse(responseBody)
                 throw PostboxRequestAlreadyResolvedException(
