@@ -8,7 +8,7 @@ The product requirements document is in [`docs/prd/pi-postbox.md`](docs/prd/pi-p
 
 ## Current status
 
-Version 0.2.7 coordinates protocol 0.1.9 with Android 0.4.2 (build 6), generated cross-language conformance fixtures, exact-match version gating, and hard-block mismatch UX.
+Version 0.2.9 coordinates protocol 0.1.9 with Android 0.4.2 (build 6), generated cross-language conformance fixtures, exact-match version gating, hard-block mismatch UX, durable Answer-driven agent auto-wake, and answer-ready widget cleanup after reads.
 
 Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `write_question`, WebSocket session registration, SSE browser state, SQLite persistence/history, structured Questions and options, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script. Version 0.2.6 updates Android 0.4.1 to include the server-required Question revision when submitting an Answer. Version 0.2.5 keeps the footer and status surfaces from undercounting a locally tracked open Question when the durable owner snapshot is briefly stale, makes published package updates robust on npm 11, and prebuilds the shared protocol before clean-checkout test runs. Version 0.2.3 adds validated npm Trusted Publishing from pushes to the main branch through GitHub Actions OIDC. Version 0.2.2 adds complete npm license and source metadata, fixes the published CLI bin path, and excludes test source from the package tarball. Version 0.2.1 bounds and paginates every model-facing bulk read, uses compact stateless cursors, hides inactive historical owners by default, trims repeated list fields, and preserves checkout development ports across restarts. Version 0.2.0 replaces the separate model-facing create/update tools with one explicit-action `write_question` surface and returns reusable current Question handles from creation. Version 0.1.9 requires a concise ambiguity for new Questions, simplifies parent and expiry inputs, renames option `meaning` to `impact`, removes top-level handoff context and per-option context, removes reconstructed Question Chat, and renders single/multi choice with accessible ballot controls. Version 0.1.8 exposed single-Question create/idempotent receipt disposition and safely required a full Pi restart when `/reload` retained an incompatible shared protocol dependency. Version 0.1.7 reduced model-facing tool schemas, strictly described exact-owner filters, and made recovery reads compact by default with an explicit full view while preserving strict server-side action validation and internal provenance/expiry compatibility.
 
@@ -82,7 +82,7 @@ pi-postbox-server
 
 ## Agent tool contracts
 
-`write_question` is the single model-facing write surface. Use `action: "create"` or `action: "create_batch"` to persist Questions, and `revise`, `cancel`, `supersede`, `reparent`, `transfer`, or `takeover` to change an existing Question. Creation returns after durable persistence rather than waiting for a human Answer. Continue any independent work and do not poll `get_answer`, `list_question_status`, or `list_questions`: Postbox notifies the owning Pi Session when an Answer is available. If that human decision becomes the only remaining blocker, call `wait_for_postbox` once to enter explicit idle/waiting mode; after it wakes, read the relevant Question with `get_answer`.
+`write_question` is the single model-facing write surface. Use `action: "create"` or `action: "create_batch"` to persist Questions, and `revise`, `cancel`, `supersede`, `reparent`, `transfer`, or `takeover` to change an existing Question. Creation returns after durable persistence rather than waiting for a human Answer. Continue any independent work and do not poll `get_answer`, `list_question_status`, or `list_questions`: by default, Postbox coalesces Answer notifications and starts a follow-up agent turn for an owning Pi Session that is no longer running. The privacy-preserving wake contains Question identifiers, never Answer content, and tells the agent to read with `get_answer`. If that human decision becomes the only remaining blocker during the current turn, `wait_for_postbox` remains available as an explicit idle/waiting mode.
 
 Batch idempotency is per Question: put a stable `requestId` on each item. A top-level batch `requestId` is invalid because Postbox does not claim an atomic batch-level idempotency contract. Questions may refer to an earlier item with `parentLocalRef`; the server validates the ordered batch before persisting independent Question records:
 
@@ -112,7 +112,7 @@ Agent query tools use small workflow-oriented results by default:
 - `list_questions` returns at most 100 records per page; `list_question_status` returns at most 50. Both accept only `scope` and a strict `{ "harness": "…", "ownerId": "…" }` owner filter on the model-facing surface, and return `nextCursor` when another page exists.
 - `list_postbox_owners()` derives the caller's feature scope, omits offline zero-count historical owners by default, and returns paged coarse presence and active/unread counts (100 maximum per page). Set `includeInactive: true` only for audit workflows.
 - `get_postbox_owner_status({ owners })` accepts at most 20 exact owner identities.
-- `get_answer({ questionId })` returns `{ "type": "pending", "status": "pending", "questionId": "…" }` while the Question remains unresolved; this is a normal bounded result, not an error.
+- `get_answer({ questionId })` returns `{ "type": "pending", "status": "pending", "questionId": "…" }` while the Question remains unresolved; this is a normal bounded result, not an error. After it successfully reads an Answer, the extension clears only that Answer's matching answer-ready widget.
 
 Pagination cursors are opaque, compact, stateless, and bound to the original query. Copy them unchanged into the next call with the same filters; malformed or cross-query cursors are rejected.
 
@@ -149,9 +149,12 @@ The extension resolves a server profile from the loaded package. Installed npm/g
 
 ```json
 {
-  "serverUrl": "http://127.0.0.1:32187"
+  "serverUrl": "http://127.0.0.1:32187",
+  "autoWake": true
 }
 ```
+
+Answer auto-wake is enabled by default. Set `"autoWake": false` in the profile config, or set `PI_POSTBOX_AUTO_WAKE=off`, to keep widget-only notifications without starting an agent turn. `PI_POSTBOX_AUTO_WAKE=on` overrides a disabled config value.
 
 Override config location with `PI_POSTBOX_CONFIG_PATH` or `PI_POSTBOX_CONFIG_DIR`. The extension creates a generated machine id on first startup and persists it in this config file. That generated machine id is stable across sessions; hostname and dashboard aliases provide human-readable names.
 

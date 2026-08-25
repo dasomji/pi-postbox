@@ -74,9 +74,14 @@ Example config:
 
 ```json
 {
-  "serverUrl": "http://127.0.0.1:32187"
+  "serverUrl": "http://127.0.0.1:32187",
+  "autoWake": true
 }
 ```
+
+Answer auto-wake is enabled by default. When an Answer arrives while the owning Pi Session is not explicitly waiting, the extension durably records a wake intent, coalesces notifications arriving in the same short burst, and injects a privacy-preserving follow-up message that starts a turn if the agent is idle. The message includes Question identifiers but no Question text or Answer content. If Pi stops after recording the intent but before persisting the follow-up message, the active session branch recovers the wake after restart without duplicating already-persisted wakes.
+
+Set `"autoWake": false` to retain the answer-ready widget without starting an agent turn. The `PI_POSTBOX_AUTO_WAKE` environment variable overrides the JSON value; accepted enabling values are `1`, `true`, `yes`, `on`, and `enabled`, while `0`, `false`, `no`, `off`, and `disabled` disable it.
 
 The extension creates and persists a generated machine id in this same config file on first use. That generated machine id is the stable identity used by the dashboard. Hostname is also sent for display, and the dashboard can persist a friendlier machine alias.
 
@@ -114,7 +119,9 @@ The icon path is resolved by the extension on the Pi machine, converted into a s
 
 ## Agent notification and explicit waiting
 
-The `write_question` create actions return after durable persistence and include a reusable current Question handle. The owning Pi Session receives a lightweight notification when an Answer becomes available, so agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. When the decision is the sole remaining blocker, call `wait_for_postbox` once to enter explicit idle/blocked mode; after it wakes, call `get_answer` for the relevant Question. Cancelling that ephemeral wait leaves durable Questions and Answers intact.
+The `write_question` create actions return after durable persistence and include a reusable current Question handle. Agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. With default auto-wake enabled, an Answer notification starts a privacy-preserving follow-up turn when the owning Pi Session is idle; the agent then calls `get_answer` for the notified Question identifiers. A successful Answer read clears only the matching answer-ready widget; pending and lifecycle-only reads leave Answer widgets unchanged. Multiple notifications in the batching window produce one turn.
+
+When the decision is the sole remaining blocker during an active turn, `wait_for_postbox` can still enter explicit idle/blocked mode. The server does not send proactive Answer notifications while that owner is explicitly waiting, so the wait result resumes the existing turn without also scheduling an auto-wake follow-up. Cancelling that ephemeral wait leaves durable Questions and Answers intact. Disable auto-wake with `autoWake: false` or `PI_POSTBOX_AUTO_WAKE=off` when widget-only notification behavior is preferred.
 
 ## Local fallback commands and browser command
 

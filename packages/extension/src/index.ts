@@ -35,8 +35,15 @@ import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./sta
 import { PiQuestionChatRuntimeAdapter, QuestionChatRuntimeRegistry } from "./questionChatRuntime.js";
 import { FileAnswerNotificationInbox } from "./answerNotificationInbox.js";
 import { resolveServerProfile, type ResolvedServerProfile } from "./serverProfile.js";
+import { readExtensionConfig } from "./config.js";
+import {
+  AnswerAutoWakeCoordinator,
+  resolveAnswerAutoWakeEnabled,
+  type AnswerAutoWakePiApi,
+  type AnswerAutoWakeSessionManager
+} from "./answerAutoWake.js";
 
-interface PiLikeApi {
+interface PiLikeApi extends AnswerAutoWakePiApi {
   on(event: string, handler: (event: unknown, ctx: PiLikeContext) => unknown): void;
   getSessionName?: () => string | undefined;
   registerTool?: (definition: unknown) => void;
@@ -51,9 +58,9 @@ interface PiLikeContext {
     confirm?: (title: string, message: string) => Promise<boolean>;
     notify?: (message: string, level?: string) => void;
     setStatus?: (key: string, value: string) => void;
-    setWidget?: (key: string, value: string[]) => void;
+    setWidget?: (key: string, value: string[] | undefined) => void;
   };
-  sessionManager?: {
+  sessionManager?: AnswerAutoWakeSessionManager & {
     getSessionId?: () => string;
     getSessionFile?: () => string | undefined;
     getLeafId?: () => string | undefined;
@@ -101,7 +108,7 @@ interface SessionUiScope {
   deactivate(): void;
   notify(message: string, level?: string): void;
   setStatus(key: string, value: string): void;
-  setWidget(key: string, value: string[]): void;
+  setWidget(key: string, value: string[] | undefined): void;
 }
 
 export interface StartRegistrationOptions {
@@ -138,6 +145,7 @@ let currentRegistration: SessionRegisterPayload | undefined;
 let semanticStateController: SemanticStateController | undefined;
 let activeUiScope: SessionUiScope | undefined;
 let profileSupervisor: ProfileSupervisor | undefined;
+let answerAutoWakeCoordinator: AnswerAutoWakeCoordinator | undefined;
 let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
 let unavailableNote = "Pi Postbox is not connected.";
 const registrationWaiters = new Set<() => void>();
@@ -236,7 +244,11 @@ export default function postboxExtension(pi: PiLikeApi): void {
     async execute(_toolCallId: string, params: { questionId: string }, signal?: AbortSignal) {
       if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
       if (!client) throw new Error(unavailableNote);
+      const answerUiScope = activeUiScope;
       const result = AnswerReadResultSchema.parse(await client.getAnswer(params.questionId, signal));
+      if ("answerId" in result && answerUiScope?.isActive()) {
+        answerUiScope.setWidget(answerNotificationWidgetKey(result.answerId), undefined);
+      }
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
   });
@@ -386,6 +398,8 @@ export default function postboxExtension(pi: PiLikeApi): void {
     stopProfileSupervisor();
     activeUiScope = undefined;
     activeSessionRegistrationContext = undefined;
+    answerAutoWakeCoordinator?.stop();
+    answerAutoWakeCoordinator = undefined;
     client?.stop();
     client = undefined;
     currentRegistration = undefined;
@@ -450,12 +464,23 @@ async function registerResolvedTarget(
   options: StartRegistrationOptions
 ): Promise<void> {
   unavailableNote = "Pi Postbox is not connected.";
+  let registrationAutoWakeCoordinator: AnswerAutoWakeCoordinator | undefined;
 
   try {
-    const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity, profile);
+    const [registration, extensionConfig] = await Promise.all([
+      collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity, profile),
+      readExtensionConfig(env, profile)
+    ]);
     if (!uiScope.isActive()) return;
     currentRegistration = registration;
+    answerAutoWakeCoordinator?.stop();
     client?.stop();
+    registrationAutoWakeCoordinator = new AnswerAutoWakeCoordinator({
+      pi,
+      sessionManager: ctx.sessionManager,
+      enabled: resolveAnswerAutoWakeEnabled(env, extensionConfig.autoWake)
+    });
+    answerAutoWakeCoordinator = registrationAutoWakeCoordinator;
     let footerRenderVersion = 0;
     let postboxClient!: PostboxClient;
     const renderFooter = () => {
@@ -483,18 +508,22 @@ async function registerResolvedTarget(
       onLocalFallbackStatus: renderFooter,
       onAnswerAvailable: (notification, deliveryId) => {
         // Stable widget identity makes at-least-once transport replay owner-visible exactly once.
-        uiScope.setWidget(`postbox-answer-${deliveryId}`, [
+        uiScope.setWidget(answerNotificationWidgetKey(deliveryId), [
           `Postbox answer ready for “${notification.question}” (${notification.questionId}). Use get_answer.`
         ]);
+        registrationAutoWakeCoordinator?.notify(notification, deliveryId);
       },
       answerNotificationInbox: new FileAnswerNotificationInbox(env, undefined, profile),
       questionChats
     });
     client = postboxClient;
     postboxClient.start();
+    registrationAutoWakeCoordinator.recover();
     renderFooter();
     notifyRegistrationWaiters();
   } catch (error) {
+    registrationAutoWakeCoordinator?.stop();
+    if (answerAutoWakeCoordinator === registrationAutoWakeCoordinator) answerAutoWakeCoordinator = undefined;
     if (!uiScope.isActive()) return;
     const message = error instanceof Error ? error.message : String(error);
     uiScope.notify(`Pi Postbox registration skipped: ${message}`, "warn");
@@ -791,6 +820,10 @@ function formatUnavailableNote(result: Extract<ResolveServerTargetResult, { stat
   const codes = [...new Set(result.diagnostics.map((diagnostic) => diagnostic.code))];
   if (codes.length === 0) return "Pi Postbox is not connected.";
   return `Pi Postbox is unavailable after profile target resolution (${codes.join(", ")}).`;
+}
+
+function answerNotificationWidgetKey(answerId: string): string {
+  return `postbox-answer-${answerId}`;
 }
 
 function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {

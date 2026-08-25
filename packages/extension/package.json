@@ -1,6 +1,6 @@
 {
   "name": "@pi-postbox/extension",
-  "version": "0.2.7",
+  "version": "0.2.9",
   "description": "Pi extension that registers sessions with Pi Postbox and exposes write_question.",
   "type": "module",
   "main": "src/index.ts",
@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.10",
-    "@pi-postbox/protocol": "0.2.7",
+    "@pi-postbox/protocol": "0.2.9",
     "typebox": "^1.1.38",
     "ws": "^8.21.0"
   },

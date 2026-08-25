@@ -96,7 +96,7 @@ const stateFixtures = wireValues.semanticStates.map((semanticState, index) => ({
 stateFixtures.forEach((fixture) => VersionedStateSnapshotSchema.parse(fixture));
 
 const health = {
-  ok: true, service: "pi-postbox", version: "0.2.7", buildId: "0.2.7+contract", protocolVersion: PROTOCOL_VERSION,
+  ok: true, service: "pi-postbox", version: "0.2.9", buildId: "0.2.9+contract", protocolVersion: PROTOCOL_VERSION,
   profile: { kind: "production", id: "production" }, uptimeMs: 123, timestamp: "2026-08-25T12:00:00.000Z"
 };
 HealthResponseSchema.parse(health);
