@@ -1,6 +1,6 @@
 {
   "name": "@wienerberliner/pi-postbox",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Pi Postbox extension and web service for remote human decision handoffs.",
   "license": "MIT",
   "type": "module",
