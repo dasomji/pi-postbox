@@ -26,7 +26,7 @@ class QuestionChatTransportTest {
     }
 
     @Test
-    fun activationUsesEncodedPathAndDecodesContextFallback() = runTest {
+    fun exactActivationUsesEncodedPathAndDecodesSnapshot() = runTest {
         server.enqueue(jsonResponse(chatReadyResponse(requestId = "ask/slash space")))
         val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
 
@@ -41,17 +41,16 @@ class QuestionChatTransportTest {
     }
 
     @Test
-    fun contextActivationPostsConfirmedBody() = runTest {
+    fun exactActivationRejectsRemovedContextOnlySnapshot() = runTest {
         server.enqueue(jsonResponse(chatReadyResponse(forkKind = "context-only")))
         val client = OkHttpQuestionChatHttpClient(server.url("/").toString())
 
-        val response = client.activateContext("ask-1")
-
-        val request = server.takeRequest(1, TimeUnit.SECONDS) ?: error("Expected context activation request")
-        assertEquals("POST", request.method)
-        assertEquals("/api/requests/ask-1/chat/context", request.path)
-        assertTrue(request.body.readUtf8().contains("\"confirmed\":true"))
-        assertEquals(QuestionChatForkKind.CONTEXT_ONLY, (response as QuestionChatActivationResult.Ready).snapshot.forkKind)
+        try {
+            client.activateExact("ask-1")
+            fail("Expected context-only snapshot to be rejected")
+        } catch (error: QuestionChatTransportException) {
+            assertTrue(error.message.orEmpty().contains("fork kind"))
+        }
     }
 
     @Test
@@ -104,8 +103,7 @@ class QuestionChatTransportTest {
             QuestionChatSnapshotResult.Unavailable(
                 QuestionChatAvailabilityError(
                     code = QuestionChatAvailabilityCode.EXTENSION_OFFLINE,
-                    message = "Extension is offline.",
-                    contextFallback = QuestionChatContextFallbackAvailability.Available
+                    message = "Extension is offline."
                 )
             ),
             response
@@ -163,8 +161,7 @@ class QuestionChatTransportTest {
             QuestionChatCommandResult.Unavailable(
                 QuestionChatAvailabilityError(
                     code = QuestionChatAvailabilityCode.REQUEST_NOT_PENDING,
-                    message = "Already terminal.",
-                    contextFallback = QuestionChatContextFallbackAvailability.Available
+                    message = "Already terminal."
                 )
             ),
             response
@@ -353,10 +350,7 @@ private fun chatUnavailableResponse(code: String, message: String): String =
           "status": "unavailable",
           "error": {
             "code": "$code",
-            "message": "$message",
-            "contextFallback": {
-              "status": "available"
-            }
+            "message": "$message"
           }
         }
     """.trimIndent()

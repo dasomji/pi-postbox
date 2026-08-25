@@ -1,4 +1,4 @@
-import { HealthResponseSchema, type ActiveLocalTargetIdentity } from "@pi-postbox/protocol";
+import { HealthResponseSchema, PROTOCOL_VERSION, type ServerInstanceIdentity } from "@pi-postbox/protocol";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,30 +23,36 @@ describe("Pi Postbox server bootstrap", () => {
     expect(health).toMatchObject({
       ok: true,
       service: "pi-postbox",
-      protocolVersion: "0.1.0",
+      protocolVersion: PROTOCOL_VERSION,
       uptimeMs: 2_345
     });
-    expect(health.localTarget).toBeUndefined();
+    expect(health.profile).toEqual({ kind: "production", id: "production" });
+    expect(health.instance).toBeUndefined();
   });
 
-  it("returns the current active-local identity from health after the CLI sets it", async () => {
-    let localTarget: ActiveLocalTargetIdentity | undefined;
+  it("returns the current profile-scoped server identity after the CLI sets it", async () => {
+    let serverInstance: ServerInstanceIdentity | undefined;
+    const profile = { kind: "development" as const, id: "development:0123456789abcdef" };
     const app = await createPostboxApp({
       databasePath: ":memory:",
-      localTarget: () => localTarget
-    } as Parameters<typeof createPostboxApp>[0] & { localTarget: () => ActiveLocalTargetIdentity | undefined });
+      profile,
+      buildId: "test-build",
+      serverInstance: () => serverInstance
+    });
     apps.push(app);
 
-    localTarget = {
-      role: "dev",
+    serverInstance = {
+      profile,
       instanceId: "33333333-3333-4333-8333-333333333333",
-      url: "http://127.0.0.1:32187/"
+      url: "http://127.0.0.1:32187/",
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build"
     };
 
     const response = await app.inject({ method: "GET", url: "/healthz" });
 
     expect(response.statusCode).toBe(200);
-    expect(HealthResponseSchema.parse(response.json()).localTarget).toEqual(localTarget);
+    expect(HealthResponseSchema.parse(response.json()).instance).toEqual(serverInstance);
   });
 
   it("prevents browsers and intermediaries from storing dynamic API responses", async () => {

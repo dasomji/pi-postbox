@@ -4,7 +4,7 @@
 
 A Postbox Question currently gives the user structured context, fixed answer options, and an optional Note, but the user may still not understand the asking agent's terminology, the underlying technical concepts, or the trade-offs well enough to make a confident decision. Resolving that uncertainty requires leaving Postbox, finding the originating Pi Session, and manually reconstructing the context. That defeats the focused remote-decision workflow, especially from a phone.
 
-The originating Pi Session already contains the best context for helping with the decision. Postbox also stores the exact session/leaf reference and structured handoff context. The user needs an optional, question-scoped Chat that can fork that context, teach or elaborate as needed, inspect only safe read-only repository evidence, and suggest additional answer options without polluting or unblocking the originating Pi Session prematurely.
+The originating Pi Session already contains the best context for helping with the decision. Postbox records the exact session path and leaf reference. The user needs an optional, question-scoped Chat that can fork that source context, teach or elaborate as needed, inspect only safe read-only repository evidence, and suggest additional answer options without polluting or unblocking the originating Pi Session prematurely.
 
 The feature must preserve Postbox's core boundary: the Postbox Question remains the authoritative decision object, the user remains the only actor who can submit its answer, and Postbox must not become a general full-transcript coding-agent dashboard.
 
@@ -34,12 +34,12 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 12. As a user, I want Chat to use the originating session's model when possible, so that its behavior remains consistent with the asking agent.
 13. As a user, I want a clear fallback to Pi's configured default model when the originating model is unavailable, so that Chat can still work without silently changing behavior.
 14. As a user, I do not want a model picker in this focused workflow, so that Chat remains about the decision rather than agent configuration.
-15. As a user, I want Chat to offer an explicit context-only fallback when the exact session file or leaf is missing, so that stored handoff context can still help me.
-16. As a user, I want context-only fallback clearly labeled and manually confirmed, so that I know it is not the exact source fork.
-17. As a user, I do not want an automatic degraded fallback, so that incomplete context is never presented as complete.
-18. As a user, I want every new Postbox Question to include codebase and problem context, so that a context-only interviewer has a useful minimum handoff.
-19. As a user with legacy Postbox Questions, I want them to remain readable even when they lack newly required context, so that an upgrade does not destroy history.
-20. As a user with a legacy question lacking context, I want context-only Chat reported as unavailable, so that Postbox does not invent a handoff.
+15. As a user, I want a precise unavailable error when the exact session file or leaf is missing, so that Postbox does not imply Chat recovered source context it does not have.
+16. As a user, I do not want a reconstructed or degraded fallback, so that incomplete context is never presented as the originating conversation.
+17. As a user with historical Postbox Questions, I want them to remain readable and answerable even when their source transcript is unavailable, so that an upgrade does not destroy history.
+18. As a user, I want every new Postbox Question to state its ambiguity, so that the decision remains understandable even without Chat.
+19. As a user, I want exact source coordinates captured when Pi has them, so that Question Chat can fork the true decision point.
+20. As a user with a Question lacking exact source coordinates, I want Chat reported as unavailable, so that Postbox does not invent a handoff.
 21. As a user, I want Chat to inspect relevant repository files read-only, so that it can verify facts before advising me.
 22. As a user, I want repository reads confined to the originating Git worktree, so that Chat cannot roam across my machine.
 23. As a user running Pi below a monorepo root, I want Chat to access the whole originating worktree, so that relevant sibling packages are not hidden.
@@ -68,7 +68,7 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 46. As a user, I want further work after a terminal model failure to require an explicit action, so that Chat does not spend or retry indefinitely.
 47. As a user, I want the interviewer to suggest an answer not covered by the original choices, so that the decision form can evolve as understanding improves.
 48. As a user, I want each suggestion appended as a normal selectable option, so that I can answer through the existing Postbox Question workflow.
-49. As a user, I want a proposed option to support the same visible label, description, meaning, and context as an original option, so that it can be explained properly.
+49. As a user, I want a proposed option to support the same visible label, description, and impact as an original option, so that it can be explained properly.
 50. As a user, I want Postbox—not the model—to generate the proposed option's internal value, so that identity is collision-free and trustworthy.
 51. As a user, I want proposed options marked Suggested in Chat, so that I can distinguish later interviewer additions from the asking agent's original choices.
 52. As a user, I want proposed options appended in order and left immutable, so that the available answers have a stable history.
@@ -132,7 +132,7 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 ### Resource and model boundary
 
 - Build the fork with a dedicated resource loader that disables inherited extensions, skills, prompt templates, themes, and context-file discovery.
-- Supply a focused interviewer system prompt containing the authoritative Postbox Question, current options, required handoff context, tool boundaries, and the rule that only the user can resolve the question.
+- Supply a focused interviewer system prompt containing the authoritative Postbox Question, current options, tool boundaries, and the rule that only the user can resolve the question. The exact fork itself supplies the originating conversation context.
 - Do not make a model call merely to start or resume Chat.
 - On the first user action, static starters map to deterministic instructions:
   - Elaborate explains the asking agent's language and intent.
@@ -141,14 +141,13 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 - Resolve the recorded originating model first. If it is missing, unavailable, or unauthenticated, use Pi's configured default and surface the fallback clearly in Chat. Do not add model-selection UI.
 - Do not expose or render private thinking/reasoning deltas. User-visible assistant text, lifecycle state, approved tool activity, and proposal confirmations are the only streamed model/runtime content.
 
-### Context contract and degraded fallback
+### Exact source contract and unavailable behavior
 
-- New ask creation requires a `context` object with non-empty `codebaseContext` and `problemContext`. `additionalInfo` remains optional and bounded.
-- Update the `ask_postbox` tool contract and every first-party producer to enforce the new minimum context.
-- Keep persisted request snapshot parsing tolerant of legacy rows where context is absent. Creation strictness and historical-read compatibility are separate schemas/paths.
-- Exact source reference remains optional for compatibility. Chat activation without a usable source file and leaf returns a typed source-unavailable response that says whether context fallback is possible.
-- Context-only fallback is a separate, explicit user-confirmed start command. It creates a clearly labeled fresh temporary session from required handoff context rather than claiming to be an exact fork.
-- Legacy questions without both required context fields cannot use context-only fallback and receive a precise unavailable reason.
+- New ask creation requires a non-blank Question ambiguity; it does not accept a top-level handoff-context object.
+- The extension records the originating source session path and leaf when available.
+- Persisted request snapshots remain tolerant of historical rows without source coordinates.
+- Chat activation without a usable source file and leaf returns a typed `source_path_missing` or `source_leaf_missing` response.
+- Postbox does not create a reconstructed, synthetic, or context-only runtime. Historical Questions remain readable and answerable, but Chat stays unavailable when an exact fork cannot be created.
 
 ### Read-only tools and sandbox
 
@@ -162,7 +161,7 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 ### Proposed answer options
 
 - `propose_answer` appends one new selectable option; it does not select an existing option, apply a draft, populate Note, populate Rationale, submit, cancel, or resolve.
-- The model may supply the visible option label and optional description, meaning, and context within the same finite limits as original options.
+- The model may supply the visible option label and optional description and impact within the same finite limits as original options.
 - The model never supplies the authoritative option identifier. The server generates a collision-free opaque value.
 - Proposal execution crosses the existing extension/server control plane and completes only after the server atomically validates and appends the option.
 - The server rechecks that the Postbox Question is pending, the originating extension/session owns the request, payload limits pass, the generated value is unique, and the total option count remains within the established maximum.
@@ -178,14 +177,14 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 - Preserve the accepted topology: one outbound extension WebSocket, browser HTTP actions, and SSE for reactive browser events. Do not add a direct browser-to-extension connection.
 - Extend the shared extension protocol with correlated, finite commands for Chat start/recovery, snapshot, send/steer, stop, and lifecycle cleanup; add normalized snapshot/event/result messages in the reverse direction.
 - Browser-facing request resources expose four behaviors at the highest seam:
-  - idempotently start or explicitly context-start a pending Question Chat;
+  - idempotently start an exact-fork Chat for a pending Postbox Question;
   - fetch/resynchronize the current snapshot from the owning extension;
   - send a client-command-ID plus bounded user text;
   - stop the active model turn.
 - Use a question-scoped SSE stream for normalized Chat events rather than putting token deltas into persisted full-state snapshots. The existing state SSE remains responsible for durable Question changes, including appended proposed options.
 - When a user message arrives during generation, dispatch it through Pi's steering behavior for the active turn. Otherwise dispatch it as the next ordinary prompt.
 - Browser command retries use stable client command IDs and receive idempotent accepted/completed responses. Do not silently queue commands while the extension is offline.
-- Typed errors distinguish at least: request missing, request not pending, Chat not started, extension offline, source unavailable, context fallback unavailable, invalid/duplicate command, rate limited, command timeout, and runtime failure.
+- Typed errors distinguish at least: request missing, request not pending, Chat not started, extension offline, source unavailable, invalid/duplicate command, rate limited, command timeout, and runtime failure.
 - State-changing Chat routes use the existing same-origin protection and finite body limits. Add bounded per-origin/request Chat command rate limits to constrain model spend and abuse.
 - The server routes commands only to the live extension registered for the Postbox Session that owns the question. Extension and server both revalidate ownership and pending status at side-effect time.
 - The server may relay transient events to connected browsers but must not make those events durable. A server restart requires a fresh extension snapshot.
@@ -212,16 +211,16 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 - Keep the direct runtime compatible with the Pi SDK revision validated during research (0.80.10) or update the adapter and tests deliberately if the package advances.
 - Ensure built protocol, server, extension, and web assets required for Question Chat are included in the one user-facing package under the accepted packaging ADR.
 - Document that Chat adds model spend and scoped repository-read capability under the existing Tailscale-only trust boundary.
-- Preserve unknown-field tolerance and additive snapshot compatibility where possible. The new required context is intentionally strict for new ask creation while historical snapshots remain tolerant.
+- Preserve unknown-field tolerance and additive snapshot compatibility where possible. New Questions require ambiguity while historical snapshots without it remain readable.
 
 ## Testing Decisions
 
 - Tests assert externally observable behavior and process-boundary contracts, not private class structure, exact internal event-handler calls, generated CSS, or Pi SDK implementation details.
 - The confirmed primary acceptance seam is one running Fastify app with temporary SQLite, a fake originating extension connected through the real extension WebSocket, browser-facing HTTP actions, and real SSE clients. A deterministic fake Question Chat runtime emits snapshots, deltas, tool activity, proposal calls, failures, and lifecycle events without provider credentials.
 - Through that primary seam, cover:
-  - strict new context validation and tolerant legacy snapshots;
-  - pending-only, idempotent Chat activation;
-  - exact-fork unavailable responses and explicit context-only fallback;
+  - strict new ambiguity validation and tolerant legacy snapshots;
+  - pending-only, idempotent exact-fork Chat activation;
+  - exact-fork source-unavailable responses with no reconstructed fallback;
   - snapshot synchronization followed by ordered streaming events;
   - ordinary prompt versus in-progress steering behavior;
   - client-command deduplication;
@@ -231,7 +230,7 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
   - proposal append, generated identity, provenance, state SSE broadcast, selection validity, and resolved History retention;
   - option limit, invalid proposal, wrong owner, and terminal-race rejection;
   - no Chat transcript appearing in SQLite-backed state or History.
-- Add one narrow extension runtime-adapter seam using temporary fixture Pi session files and a deterministic injected AgentSession/model boundary. Cover exact root-to-leaf branch isolation, source immutability, private output placement, no inherited resources, explicit tool allowlist, source-model fallback, context-only labeling, Stop, dispose, restart recovery, and terminal cleanup.
+- Add one narrow extension runtime-adapter seam using temporary fixture Pi session files and a deterministic injected AgentSession/model boundary. Cover exact root-to-leaf branch isolation, source immutability, private output placement, no inherited resources, explicit tool allowlist, source-model fallback, source-unavailable failure, Stop, dispose, restart recovery, and terminal cleanup.
 - At the runtime-adapter seam, test filesystem wrappers with real temporary directories and repositories: worktree-root discovery, non-Git cwd fallback, `..` escape, absolute escape, symlink escape, ignored paths, secret-like paths, finite traversal/matches/output, and ordinary tracked/untracked source access.
 - Add focused protocol schema tests for every new browser/extension command, event, snapshot, provenance field, size limit, and legacy compatibility case.
 - Add focused RequestStore tests at its existing transaction seam for atomic proposal append, pending-only enforcement, unique server-generated values, immutable provenance, option maximum, answer validation against proposed values, first-terminal-transition wins, and persistence across server restart.
@@ -245,7 +244,7 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
   - Chat proposal confirmation and Question-tab navigation;
   - proposed option badge without auto-selection or Note mutation.
 - Prefer behavior-level Svelte state/component tests. Existing store tests and mobile/static UI tests are prior art; static source assertions alone are insufficient for streaming and interaction state where a behavior test is practical.
-- Extend the packaged smoke path with a fake extension/runtime exchange proving: registration, context-complete ask creation, Chat activation, one streamed response, one proposed option, option selection/answer, terminal cleanup signal, state/history correctness, and packaged UI availability. Do not require live model credentials.
+- Extend the packaged smoke path with a fake extension/runtime exchange proving: registration, ambiguity-complete ask creation, exact-fork Chat activation, one streamed response, one proposed option, option selection/answer, terminal cleanup signal, state/history correctness, legacy context removal, and packaged UI availability. Do not require live model credentials.
 - Run the existing full typecheck, unit/integration suite, production build, package-content checks, and smoke test to guard the combined package, lifecycle ADRs, answer loop, SSE state, security, and Tailscale behavior from regressions.
 
 ## Out of Scope
@@ -255,7 +254,7 @@ Desktop adds a fixed-width right Chat sidebar while making the existing left nav
 - Persisting Question Chat messages, deltas, tool output, or transcripts in server SQLite.
 - Showing Question Chat transcripts after a Postbox Question resolves.
 - Automatically starting Chat or automatically generating a first model turn.
-- Automatically using context-only fallback without user confirmation.
+- Reconstructing a synthetic Question Chat when the exact source path or leaf is unavailable.
 - Multiple independent Chats per Postbox Question.
 - Collaborative multi-user chat, writer leases, presence cursors, or conflict-resolution UX.
 - Pi CLI RPC child processes, containers, or a direct browser-to-extension connection.

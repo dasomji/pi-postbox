@@ -13,15 +13,14 @@ const askPayload: AskCreatePayload = {
   requestId: "ask-local",
   sessionId: "session-1",
   mode: "single",
-  question: { prompt: "Choose locally?" },
+  question: {
+    prompt: "Choose locally?",
+    ambiguity: "Whether to resolve the pending remote decision from the terminal."
+  },
   options: [
     { value: "yes", label: "Yes" },
     { value: "no", label: "No" }
-  ],
-  context: {
-    codebaseContext: "Pi extension with local fallback commands.",
-    problemContext: "Resolve a pending remote decision from the terminal."
-  }
+  ]
 };
 
 class FakeSocket {
@@ -76,14 +75,21 @@ function createClient(options: Partial<ConstructorParameters<typeof PostboxClien
 }
 
 function selectedTarget(url: string, role: "dev" | "production" = "dev", instanceId = `${role}-instance`) {
+  const profile = role === "dev"
+    ? { kind: "development" as const, id: "development:0123456789abcdef" as const }
+    : { kind: "production" as const, id: "production" as const };
   return {
     status: "selected" as const,
+    profile: {} as never,
     target: {
-      source: "active-local" as const,
+      source: "profile-metadata" as const,
       url,
-      role,
+      profile,
+      version: "0.1.3",
+      protocolVersion: "0.1.3",
       instanceId,
-      activeLocalPollingEnabled: true
+      buildId: "test-build",
+      profilePollingEnabled: true
     },
     diagnostics: []
   };
@@ -163,24 +169,22 @@ describe("local Postbox fallback", () => {
           expiresAt: undefined
         }
       ],
-      answerPendingAsk: (input: { requestId?: string; selectedValues: string[]; note?: string; rationale?: string }) => {
+      answerPendingAsk: (input: { requestId?: string; selectedValues: string[]; note?: string }) => {
         const result: AskResult = {
           status: "answered",
           requestId: input.requestId ?? "ask-command",
           selectedValues: input.selectedValues,
           note: input.note,
-          rationale: input.rationale,
           resolvedAt: "2026-06-03T00:00:00.000Z"
         };
         results.push(result);
         return result;
       },
-      cancelPendingAsk: (input: { requestId?: string; note?: string; rationale?: string }) => {
+      cancelPendingAsk: (input: { requestId?: string; note?: string }) => {
         const result: AskResult = {
           status: "cancelled",
           requestId: input.requestId ?? "ask-command",
           note: input.note,
-          rationale: input.rationale,
           resolvedAt: "2026-06-03T00:00:01.000Z"
         };
         results.push(result);
@@ -190,11 +194,11 @@ describe("local Postbox fallback", () => {
     registerPostboxFallbackCommands(fakePi, () => fakeClient);
     const ctx: FakeCommandContext = { ui: { notify: (message) => notifications.push(message) } };
 
-    await fakePi.commands.get("postbox-answer")?.handler("yes --note terminal choice --rationale fastest", ctx);
+    await fakePi.commands.get("postbox-answer")?.handler("yes --note terminal choice", ctx);
     await fakePi.commands.get("postbox-cancel")?.handler("ask-command --note stop here", ctx);
 
     expect(results).toEqual([
-      expect.objectContaining({ status: "answered", selectedValues: ["yes"], note: "terminal choice", rationale: "fastest" }),
+      expect.objectContaining({ status: "answered", selectedValues: ["yes"], note: "terminal choice" }),
       expect.objectContaining({ status: "cancelled", requestId: "ask-command", note: "stop here" })
     ]);
     expect(notifications).toEqual([expect.stringContaining("Postbox answered ask-command"), expect.stringContaining("Postbox cancelled ask-command")]);
@@ -239,8 +243,9 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       targetAffinityTimeoutMs: 5_000,
+      inspectTailscale: async () => ({ state: "unavailable" }),
       onStatus: (status) => statuses.push(status),
       onLocalFallbackStatus: (status) => localStatuses.push(status?.message ?? "cleared")
     } as never);
@@ -256,6 +261,9 @@ describe("local Postbox fallback", () => {
 
     expect(FakeSocket.instances).toHaveLength(1);
     expect(statuses.some((status) => status.includes("deferred") && status.includes("3500"))).toBe(true);
+    expect((await client.getStatusSnapshot()).diagnostics).toContain(
+      "target-switch-deferred:http://127.0.0.1:3500/:pinned-origin-affinity<=5000ms"
+    );
     expect(localStatuses.at(-1)).toContain("ask-pinned");
     expect(messagesOfType(productionSocket, "ask.create")).toHaveLength(1);
 
@@ -320,7 +328,7 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       reconnectMs: 100,
       onStatus: (status) => statuses.push(status)
     } as never);
@@ -360,7 +368,7 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       reconnectMs: 100,
       targetAffinityTimeoutMs: 250
     } as never);
@@ -381,7 +389,7 @@ describe("local Postbox fallback", () => {
     expect(settled).toMatchObject({
       status: "unavailable",
       requestId: "ask-dead-origin",
-      rationale: expect.stringMatching(/undeliverable|unavailable|dead origin/i)
+      note: expect.stringMatching(/undeliverable|unavailable|dead origin/i)
     });
 
     await vi.advanceTimersByTimeAsync(100);
@@ -400,7 +408,7 @@ describe("local Postbox fallback", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
+      profilePollMs: 25,
       reconnectMs: 100,
       targetAffinityTimeoutMs: 250,
       onStatus: (status) => statuses.push(status)

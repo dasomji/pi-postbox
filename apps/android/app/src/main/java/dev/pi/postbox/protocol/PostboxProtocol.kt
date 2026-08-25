@@ -85,30 +85,29 @@ enum class PresenceState {
 data class AskRequestSnapshot(
     val requestId: String,
     val sessionId: String,
+    val revision: Int = 1,
+    val creator: OwnerIdentity? = null,
+    val owner: OwnerIdentity? = null,
     val mode: AskMode,
-    val urgency: AskUrgency = AskUrgency.NORMAL,
     val question: AskQuestion,
     val options: List<AskOption>,
-    val context: HandoffContext? = null,
     val forkReference: ForkReference? = null,
     val status: AskStatus,
     val createdAt: String,
     val expiresAt: String? = null,
     val resolvedAt: String? = null,
-    val result: AskResult? = null
+    val result: AskResult? = null,
+    val answerId: String? = null,
+    val answerRead: Boolean? = null
 )
+
+@Serializable
+data class OwnerIdentity(val harness: String, val ownerId: String)
 
 @Serializable
 enum class AskMode {
     @SerialName("single") SINGLE,
     @SerialName("multi") MULTI
-}
-
-@Serializable
-enum class AskUrgency {
-    @SerialName("low") LOW,
-    @SerialName("normal") NORMAL,
-    @SerialName("high") HIGH
 }
 
 @Serializable
@@ -130,9 +129,7 @@ enum class AskResultStatus {
 @Serializable
 data class AskQuestion(
     val prompt: String,
-    val context: String? = null,
-    val relevance: String? = null,
-    val decisionImpact: String? = null
+    val ambiguity: String? = null
 )
 
 @Serializable
@@ -140,8 +137,7 @@ data class AskOption(
     val value: String,
     val label: String,
     val description: String? = null,
-    val meaning: String? = null,
-    val context: String? = null,
+    val impact: String? = null,
     val provenance: AskOptionProvenance? = null
 )
 
@@ -149,21 +145,6 @@ data class AskOption(
 enum class AskOptionProvenance {
     @SerialName("chat") CHAT
 }
-
-@Serializable
-data class HandoffContext(
-    val codebaseContext: String? = null,
-    val problemContext: String? = null,
-    val additionalInfo: List<RichContextItem>? = null
-)
-
-@Serializable
-data class RichContextItem(
-    val kind: String = "text",
-    val title: String? = null,
-    val content: String,
-    val language: String? = null
-)
 
 @Serializable
 data class ForkReference(
@@ -199,17 +180,27 @@ data class HealthResponse(
     val ok: Boolean,
     val service: String,
     val version: String,
+    val buildId: String,
     val protocolVersion: String,
+    val profile: ServerProfileIdentity,
     val uptimeMs: Long? = null,
     val timestamp: String? = null,
-    val localTarget: ActiveLocalTargetIdentity? = null
+    val instance: ServerInstanceIdentity? = null
 )
 
 @Serializable
-data class ActiveLocalTargetIdentity(
-    val role: String,
+data class ServerProfileIdentity(
+    val kind: String,
+    val id: String
+)
+
+@Serializable
+data class ServerInstanceIdentity(
+    val profile: ServerProfileIdentity,
     val instanceId: String,
-    val url: String
+    val url: String,
+    val protocolVersion: String,
+    val buildId: String
 )
 
 @Serializable

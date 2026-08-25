@@ -39,7 +39,6 @@ enum class QuestionChatStarter {
 sealed interface QuestionChatIntent {
     data class SetForeground(val foreground: Boolean) : QuestionChatIntent
     data object ActivateExact : QuestionChatIntent
-    data object ActivateContextFallback : QuestionChatIntent
     data object Retry : QuestionChatIntent
     data class DraftChanged(val text: String) : QuestionChatIntent
     data object SendDraft : QuestionChatIntent
@@ -59,8 +58,6 @@ sealed interface QuestionChatActivationUiState {
     data object Idle : QuestionChatActivationUiState
     data object Probing : QuestionChatActivationUiState
     data object ActivatingExact : QuestionChatActivationUiState
-    data object ActivatingContextFallback : QuestionChatActivationUiState
-    data class AwaitingContextFallbackConfirmation(val error: QuestionChatAvailabilityError) : QuestionChatActivationUiState
     data class Unavailable(val error: QuestionChatAvailabilityError) : QuestionChatActivationUiState
 }
 
@@ -154,7 +151,6 @@ open class QuestionChatOwner(
                 }
             }
             QuestionChatIntent.ActivateExact -> mutableState.value.key?.let { startExactActivation(it, generation) }
-            QuestionChatIntent.ActivateContextFallback -> mutableState.value.key?.let { startContextActivation(it, generation) }
             QuestionChatIntent.Retry -> mutableState.value.key?.let { key ->
                 if (mutableState.value.knownStarted) startSynchronize(key, generation) else startProbe(key, generation)
             }
@@ -238,50 +234,6 @@ open class QuestionChatOwner(
         launchTracked {
             try {
                 when (val result = httpClient.activateExact(key.requestId)) {
-                    is QuestionChatActivationResult.Ready -> reduceIfCurrent(key, expectedGeneration) {
-                        mutableState.value = mutableState.value.copy(
-                            knownStarted = true,
-                            activation = QuestionChatActivationUiState.Idle,
-                            session = QuestionChatSessionUiState(result.snapshot, QuestionChatConnectionState.SYNCHRONIZING)
-                        )
-                        scheduleRenderedAssistantMessageParses(key, expectedGeneration, result.snapshot)
-                        scheduleSynchronize(key, expectedGeneration)
-                    }
-                    is QuestionChatActivationResult.Unavailable -> reduceIfCurrent(key, expectedGeneration) {
-                        mutableState.value = mutableState.value.copy(
-                            activation = if (
-                                (result.error.code == QuestionChatAvailabilityCode.SOURCE_PATH_MISSING ||
-                                    result.error.code == QuestionChatAvailabilityCode.SOURCE_LEAF_MISSING) &&
-                                    result.error.contextFallback == QuestionChatContextFallbackAvailability.Available
-                            ) {
-                                QuestionChatActivationUiState.AwaitingContextFallbackConfirmation(result.error)
-                            } else {
-                                QuestionChatActivationUiState.Unavailable(result.error)
-                            }
-                        )
-                    }
-                }
-            } catch (_: CancellationException) {
-                return@launchTracked
-            } catch (error: Exception) {
-                reduceIfCurrent(key, expectedGeneration) {
-                    mutableState.value = mutableState.value.copy(
-                        activation = QuestionChatActivationUiState.Unavailable(runtimeFailure(error))
-                    )
-                }
-            }
-        }
-    }
-
-    private fun startContextActivation(key: QuestionChatBindingKey, expectedGeneration: Long) {
-        mutableState.value = mutableState.value.copy(
-            activation = QuestionChatActivationUiState.ActivatingContextFallback,
-            actionUnavailable = null,
-            actionMessage = null
-        )
-        launchTracked {
-            try {
-                when (val result = httpClient.activateContext(key.requestId)) {
                     is QuestionChatActivationResult.Ready -> reduceIfCurrent(key, expectedGeneration) {
                         mutableState.value = mutableState.value.copy(
                             knownStarted = true,

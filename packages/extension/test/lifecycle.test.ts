@@ -65,7 +65,7 @@ describe("Pi semantic state lifecycle reporting", () => {
     expect(client.states).toEqual(["working", "idle"]);
   });
 
-  it("marks ask_postbox waits blocked, clears to working after answer, and emits Herdr-compatible events", async () => {
+  it("keeps working while ask_postbox waits only for persistence acknowledgement", async () => {
     const client = new FakeClient();
     const pi = new FakePi();
     const controller = createSemanticStateController(() => client, pi, { idleDebounceMs: 0 });
@@ -75,25 +75,14 @@ describe("Pi semantic state lifecycle reporting", () => {
       {
         requestId: "ask-state",
         question: "Which path should we take?",
-        context: {
-          codebaseContext: "Pi extension semantic-state lifecycle.",
-          problemContext: "Represent a pending remote decision as blocked work."
-        },
+        ambiguity: "Which path best preserves the lifecycle contract.",
         options: [{ value: "a", label: "A" }]
       },
       {
-        ask: async (payload) => {
-          expect(client.states.at(-1)).toBe("blocked");
-          expect(pi.herdrEvents.at(-1)).toEqual({
-            eventName: "herdr:blocked",
-            data: { active: true, label: "Which path should we take?" }
-          });
-          return {
-            status: "answered",
-            requestId: payload.requestId,
-            selectedValues: ["a"],
-            resolvedAt: "2026-06-03T00:00:00.000Z"
-          };
+        createAsk: async (payload) => {
+          expect(client.states.at(-1)).toBe("working");
+          expect(pi.herdrEvents).toEqual([]);
+          return { status: "pending", questionId: payload.requestId, revision: 1 } as const;
         }
       },
       "session-1",
@@ -101,12 +90,9 @@ describe("Pi semantic state lifecycle reporting", () => {
       controller
     );
 
-    expect(result.status).toBe("answered");
-    expect(client.states).toEqual(["working", "blocked", "working"]);
-    expect(pi.herdrEvents).toEqual([
-      { eventName: "herdr:blocked", data: { active: true, label: "Which path should we take?" } },
-      { eventName: "herdr:blocked", data: { active: false } }
-    ]);
+    expect(result.status).toBe("pending");
+    expect(client.states).toEqual(["working"]);
+    expect(pi.herdrEvents).toEqual([]);
   });
 
   it("surfaces local ask_user calls as blocked until their tool result arrives", () => {
@@ -120,6 +106,18 @@ describe("Pi semantic state lifecycle reporting", () => {
     pi.emit("tool_result", { toolName: "ask_user", toolCallId: "ask-user-1" });
 
     expect(client.states).toEqual(["working", "blocked", "working"]);
+  });
+
+  it("publishes a first-class Postbox wait state while keeping Herdr signaling independent", () => {
+    const client = new FakeClient();
+    const pi = new FakePi();
+    const controller = createSemanticStateController(() => client, pi, { idleDebounceMs: 0 });
+    controller.markWorking();
+    const release = controller.beginAskPostboxWait();
+    expect(client.states.at(-1)).toBe("waiting_for_postbox");
+    expect(pi.herdrEvents.at(-1)).toMatchObject({ eventName: "herdr:blocked", data: { active: true } });
+    release();
+    expect(client.states.at(-1)).toBe("working");
   });
 
   it("does not send a semantic session shutdown release for reload", () => {

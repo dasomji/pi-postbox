@@ -1,15 +1,17 @@
 import {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
-  createHealthResponse,
-  type ActiveLocalRole,
-  type ActiveLocalTargetIdentity
+  PROTOCOL_VERSION,
+  SERVER_PROFILE_METADATA_VERSION,
+  createHealthResponse
 } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveServerProfile } from "../src/serverProfile.js";
+
+type TestLocalRole = "dev" | "production";
+type TestLocalTarget = { role: TestLocalRole; instanceId: string; url: string };
 
 const childProcessMock = vi.hoisted(() => ({
   children: [] as Array<{
@@ -64,6 +66,7 @@ vi.mock("node:fs", async () => {
 const postboxClientMock = vi.hoisted(() => ({
   options: [] as Array<{ serverUrl: string; resolveTarget?: () => unknown; activeLocalPollingEnabled?: boolean }>,
   asks: [] as unknown[],
+  receiptDisposition: "created" as "created" | "idempotent",
   started: 0,
   stopped: 0
 }));
@@ -97,6 +100,17 @@ vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
         return [];
       }
 
+      createAsk(payload: { requestId: string }) {
+        postboxClientMock.asks.push(payload);
+        return Promise.resolve({
+          questionId: payload.requestId,
+          revision: 1,
+          ownerRevision: 1,
+          status: "pending" as const,
+          disposition: postboxClientMock.receiptDisposition
+        });
+      }
+
       ask(payload: { requestId: string; options: Array<{ value: string }> }) {
         postboxClientMock.asks.push(payload);
         return Promise.resolve({
@@ -121,12 +135,10 @@ const DEV_INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
 const LOCAL_TARGET_URL = "http://127.0.0.1:3500/";
 
 const askInput = {
+  action: "create" as const,
   requestId: "ask-autostart",
   question: "Proceed with the local Postbox autostart?",
-  context: {
-    codebaseContext: "Pi extension with package-local Postbox Server autostart.",
-    problemContext: "Recover a reachable dashboard before sending a remote decision."
-  },
+  ambiguity: "Whether the local Postbox server should be started automatically.",
   options: [{ value: "yes", label: "Yes" }]
 };
 
@@ -140,6 +152,7 @@ afterEach(async () => {
   fsMock.packageLocalCliExists = true;
   postboxClientMock.options.length = 0;
   postboxClientMock.asks.length = 0;
+  postboxClientMock.receiptDisposition = "created";
   postboxClientMock.started = 0;
   postboxClientMock.stopped = 0;
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -176,7 +189,7 @@ describe("package-local Postbox server autostart", () => {
       await vi.waitFor(() => expect(postboxClientMock.started).toBe(1));
 
       await expect(toolResult).resolves.toMatchObject({
-        details: { status: "answered", requestId: "ask-autostart", selectedValues: ["yes"] }
+        details: { status: "pending", questionId: "ask-autostart", revision: 1 }
       });
       expect(postboxClientMock.options.at(-1)).toMatchObject({ serverUrl: LOCAL_TARGET_URL });
       expect(postboxClientMock.asks.at(-1)).toMatchObject({ requestId: "ask-autostart" });
@@ -201,6 +214,38 @@ describe("package-local Postbox server autostart", () => {
     expect(postboxClientMock.options.at(-1)).toMatchObject({ serverUrl: "https://postbox.tailnet.example:32187/" });
     expect(postboxClientMock.started).toBe(1);
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  });
+
+  it("write_question exposes an idempotent single-Question handle to the model", async () => {
+    const preferredUrl = "https://postbox.tailnet.example:32187/";
+    const env = await tempConfigEnv({ PI_POSTBOX_URL: preferredUrl });
+    const health = healthFetch({
+      "https://postbox.tailnet.example:32187/healthz": createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS })
+    });
+    vi.stubGlobal("fetch", health.fetch);
+    postboxClientMock.receiptDisposition = "idempotent";
+    const harness = createPiHarness();
+    postboxExtension(harness.pi);
+
+    await withProcessEnv(env, async () => {
+      harness.emit("session_start", {}, createSessionContext(harness.statuses));
+      await vi.waitFor(() => expect(postboxClientMock.started).toBe(1));
+
+      const result = await harness.askTool.execute("call-idempotent", {
+        ...askInput,
+        requestId: "ask-replayed"
+      });
+
+      expect(result.details).toEqual({
+        action: "create",
+        questionId: "ask-replayed",
+        revision: 1,
+        ownerRevision: 1,
+        status: "pending",
+        disposition: "idempotent"
+      });
+      expect(JSON.parse(result.content[0]?.text)).toEqual(result.details);
+    });
   });
 
   it("ask_postbox re-checks a recovered preferred server before autostarting", async () => {
@@ -234,7 +279,7 @@ describe("package-local Postbox server autostart", () => {
       });
 
       expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ details: { status: "answered", requestId: "ask-recovered-preferred" } });
+      expect(result).toMatchObject({ details: { status: "pending", questionId: "ask-recovered-preferred" } });
       expect(postboxClientMock.options.at(-1)).toMatchObject({ serverUrl: preferredUrl });
       expect(postboxClientMock.asks.at(-1)).toMatchObject({ requestId: "ask-recovered-preferred" });
     });
@@ -265,9 +310,49 @@ describe("package-local Postbox server autostart", () => {
       });
 
       expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ details: { status: "answered", requestId: "ask-recovered-active-local" } });
+      expect(result).toMatchObject({ details: { status: "pending", questionId: "ask-recovered-active-local" } });
       expect(postboxClientMock.options.at(-1)).toMatchObject({ serverUrl: LOCAL_TARGET_URL });
       expect(postboxClientMock.asks.at(-1)).toMatchObject({ requestId: "ask-recovered-active-local" });
+    });
+  });
+
+  it("ask_postbox requires a full Pi restart instead of autostarting over an exact live profile with a newer protocol", async () => {
+    const newerProtocolVersion = "0.1.9";
+    const env = await tempConfigEnv({ PI_POSTBOX_AUTOSTART_TIMEOUT_MS: "50" });
+    await writeMetadata(env, {
+      role: "dev",
+      instanceId: DEV_INSTANCE_ID,
+      url: LOCAL_TARGET_URL,
+      updatedAt: new Date().toISOString(),
+      protocolVersion: newerProtocolVersion
+    });
+    const compatibleShape = healthResponse({ role: "dev", instanceId: DEV_INSTANCE_ID, url: LOCAL_TARGET_URL });
+    const health = healthFetch({
+      "http://127.0.0.1:3500/healthz": {
+        ...compatibleShape,
+        protocolVersion: newerProtocolVersion,
+        instance: { ...compatibleShape.instance!, protocolVersion: newerProtocolVersion }
+      }
+    });
+    vi.stubGlobal("fetch", health.fetch);
+    const harness = createPiHarness();
+    postboxExtension(harness.pi);
+
+    await withProcessEnv(env, async () => {
+      harness.emit("session_start", {}, createSessionContext(harness.statuses));
+      await vi.waitFor(() => expect(harness.statuses).toContain("Postbox unavailable"));
+
+      const pending = harness.askTool.execute("call-restart-required", {
+        ...askInput,
+        requestId: "ask-restart-required"
+      });
+      const result = await pending;
+
+      expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+      expect(postboxClientMock.asks).toEqual([]);
+      expect(result).toMatchObject({ details: { status: "unavailable", requestId: "ask-restart-required" } });
+      expect(result.details.note).toMatch(/full Pi restart/i);
+      expect(result.content[0]?.text).toMatch(/full Pi restart/i);
     });
   });
 
@@ -284,7 +369,7 @@ describe("package-local Postbox server autostart", () => {
 
       expect(vi.mocked(spawn)).not.toHaveBeenCalled();
       expect(result).toMatchObject({ details: { status: "unavailable", requestId: "ask-off" } });
-      expect(result.details.rationale).toMatch(/PI_POSTBOX_AUTOSTART=off|autostart disabled/i);
+      expect(result.details.note).toMatch(/PI_POSTBOX_AUTOSTART=off|autostart disabled/i);
     });
   });
 
@@ -309,7 +394,7 @@ describe("package-local Postbox server autostart", () => {
       await vi.advanceTimersByTimeAsync(50);
       await expect(pending).resolves.toMatchObject({ details: { status: "unavailable", requestId: "ask-timeout" } });
       expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
-      expect((await pending).details.rationale).toMatch(/timed out|timeout|50ms/i);
+      expect((await pending).details.note).toMatch(/timed out|timeout|50ms/i);
     });
   });
 
@@ -377,17 +462,17 @@ describe("package-local Postbox server autostart", () => {
       expect(vi.mocked(spawn)).not.toHaveBeenCalled();
 
       const first = harness.askTool.execute("call-path-failure-1", { ...askInput, requestId: "ask-path-failure-1" });
-      await vi.waitFor(() => expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1), { interval: 1, timeout: 10 });
+      await vi.waitFor(() => expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1), { interval: 1, timeout: 100 });
       expectPathFallbackSpawn();
       childProcessMock.children.at(-1)?.emit("error", new Error("spawn pi-postbox-server ENOENT"));
       expect(getPostboxAutostartFailureDiagnostic(process.env)).toMatch(/pi-postbox-server|ENOENT|autostart failed/i);
       await vi.advanceTimersByTimeAsync(50);
 
       await expect(first).resolves.toMatchObject({ details: { status: "unavailable", requestId: "ask-path-failure-1" } });
-      expect((await first).details.rationale).toMatch(/ENOENT|autostart failed/i);
+      expect((await first).details.note).toMatch(/ENOENT|autostart failed/i);
 
       const second = harness.askTool.execute("call-path-failure-2", { ...askInput, requestId: "ask-path-failure-2" });
-      await vi.waitFor(() => expect(vi.mocked(spawn)).toHaveBeenCalledTimes(2), { interval: 1, timeout: 10 });
+      await vi.waitFor(() => expect(vi.mocked(spawn)).toHaveBeenCalledTimes(2), { interval: 1, timeout: 100 });
       expectPathFallbackSpawn(1);
       childProcessMock.children.at(-1)?.emit("error", new Error("spawn pi-postbox-server ENOENT"));
       await vi.advanceTimersByTimeAsync(50);
@@ -421,8 +506,8 @@ function createPiHarness() {
     pi,
     statuses,
     get askTool() {
-      const tool = tools.get("ask_postbox");
-      if (!tool) throw new Error("ask_postbox was not registered");
+      const tool = tools.get("write_question");
+      if (!tool) throw new Error("write_question was not registered");
       return tool;
     },
     emit(event: string, data: unknown, ctx: Record<string, unknown>) {
@@ -469,18 +554,40 @@ async function withProcessEnv<T>(env: NodeJS.ProcessEnv, fn: () => Promise<T>): 
 
 async function writeMetadata(
   env: NodeJS.ProcessEnv,
-  record: { role: ActiveLocalRole; instanceId: string; url: string; updatedAt: string }
+  record: { role: TestLocalRole; instanceId: string; url: string; updatedAt: string; protocolVersion?: string }
 ): Promise<void> {
-  const activeLocalDir = join(dirname(env.PI_POSTBOX_CONFIG_PATH!), ACTIVE_LOCAL_METADATA_DIRECTORY);
-  await mkdir(activeLocalDir, { recursive: true });
+  const profile = resolveServerProfile({ env });
+  await mkdir(dirname(profile.metadataPath), { recursive: true });
   await writeFile(
-    join(activeLocalDir, ACTIVE_LOCAL_METADATA_FILENAMES[record.role]),
-    `${JSON.stringify({ version: 1, ...record }, null, 2)}\n`
+    profile.metadataPath,
+    `${JSON.stringify({
+      version: SERVER_PROFILE_METADATA_VERSION,
+      profile: { kind: profile.kind, id: profile.id },
+      instanceId: record.instanceId,
+      url: record.url,
+      protocolVersion: record.protocolVersion ?? PROTOCOL_VERSION,
+      buildId: "test-build",
+      updatedAt: record.updatedAt
+    }, null, 2)}\n`
   );
 }
 
-function healthResponse(localTarget: ActiveLocalTargetIdentity) {
-  return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget });
+function healthResponse(localTarget: TestLocalTarget) {
+  const profile = resolveServerProfile();
+  const profileIdentity = { kind: profile.kind, id: profile.id } as const;
+  return createHealthResponse({
+    startedAtMs: NOW_MS - 1_000,
+    nowMs: NOW_MS,
+    profile: profileIdentity,
+    buildId: "test-build",
+    instance: {
+      profile: profileIdentity,
+      instanceId: localTarget.instanceId,
+      url: localTarget.url,
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build"
+    }
+  });
 }
 
 function healthFetch(responses: Record<string, unknown | Error>) {
@@ -505,14 +612,20 @@ function healthFetch(responses: Record<string, unknown | Error>) {
 function expectPackageLocalSpawn(): void {
   const call = vi.mocked(spawn).mock.calls[0];
   expect(call?.[0]).toBe(process.execPath);
-  expect(call?.[1]).toEqual(expect.arrayContaining([expect.stringMatching(/packages[/\\]server[/\\]dist[/\\]cli\.js$/), "serve", "--active-local-role", "production"]));
+  expect(call?.[1]).toEqual(expect.arrayContaining([
+    expect.stringMatching(/packages[/\\]server[/\\]dist[/\\]cli\.js$/),
+    "serve",
+    "--profile",
+    expect.stringMatching(/^development:[a-f0-9]{16}$/)
+  ]));
   expect(call?.[1]).not.toContain("--no-tailscale");
+  expect(call?.[1]).not.toContain("--active-local-role");
 }
 
 function expectPathFallbackSpawn(callIndex = 0): void {
   const call = vi.mocked(spawn).mock.calls[callIndex];
   expect(call?.[0]).toBe("pi-postbox-server");
-  expect(call?.[1]).toEqual(expect.arrayContaining(["serve", "--active-local-role", "production"]));
+  expect(call?.[1]).toEqual(expect.arrayContaining(["serve", "--profile", expect.stringMatching(/^development:/)]));
   expect(call?.[1]).not.toContain("--no-tailscale");
 }
 

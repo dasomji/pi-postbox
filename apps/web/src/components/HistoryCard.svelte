@@ -28,7 +28,6 @@
   <dl class="mt-4 grid gap-3 text-sm">
     {#if selectedLabels}<MetadataRow label="Answer" value={selectedLabels} />{/if}
     {#if result && "note" in result && result.note}<MetadataRow label="Note" value={result.note} />{/if}
-    {#if result?.rationale}<MetadataRow label="Rationale" value={result.rationale} />{/if}
     <MetadataRow label="Created" value={formatTimestamp(request.createdAt)} />
     {#if request.resolvedAt}<MetadataRow label="Resolved" value={formatTimestamp(request.resolvedAt)} />{/if}
     <MetadataRow label="Session" value={session.title ?? session.sessionId} />

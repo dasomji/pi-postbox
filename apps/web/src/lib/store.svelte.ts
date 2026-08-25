@@ -1,5 +1,4 @@
 import {
-  compareAskUrgency,
   StateSnapshotSchema,
   type AskRequestSnapshot,
   type HealthResponse,
@@ -35,7 +34,7 @@ export interface ProjectGroup {
 }
 
 export function comparePendingRequests(a: AskRequestSnapshot, b: AskRequestSnapshot): number {
-  return compareAskUrgency(a.urgency, b.urgency) || Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  return Date.parse(a.createdAt) - Date.parse(b.createdAt);
 }
 
 class PostboxStore {
@@ -46,6 +45,7 @@ class PostboxStore {
    */
   private readonly locallyResolvingRequestIds = new Set<string>();
   private locallyRetainedRequest: AskRequestSnapshot | undefined;
+  private displayedRequest: AskRequestSnapshot | undefined;
   private historyLoadPromise: Promise<HistoryResponse> | undefined;
   private snapshotLoadPromise: Promise<StateSnapshot> | undefined;
   private readonly snapshotWaiters = new Set<{
@@ -115,6 +115,8 @@ class PostboxStore {
       ?? (this.locallyRetainedRequest?.requestId === selection.requestId ? this.locallyRetainedRequest : undefined);
   });
 
+  displayedSelectedRequest = $derived.by(() => this.displayedRequest?.requestId === this.selectedRequest?.requestId ? this.displayedRequest : this.selectedRequest);
+
   selectedSession = $derived.by<SessionSnapshot | undefined>(() => {
     const selection = this.selection;
     if (selection.kind === "session") {
@@ -133,16 +135,21 @@ class PostboxStore {
   }
 
   selectSession(sessionId: string): void {
+    this.displayedRequest = undefined;
     this.locallyRetainedRequest = undefined;
     this.selection = { kind: "session", sessionId };
   }
 
   selectRequest(requestId: string): void {
+    if (this.selection.kind !== "request" || this.selection.requestId !== requestId) {
+      this.displayedRequest = this.requests.find((request) => request.requestId === requestId);
+    }
     if (this.locallyRetainedRequest?.requestId !== requestId) this.locallyRetainedRequest = undefined;
     this.selection = { kind: "request", requestId };
   }
 
   selectProject(projectId: string): void {
+    this.displayedRequest = undefined;
     this.locallyRetainedRequest = undefined;
     this.selection = { kind: "project", projectId };
   }
@@ -154,6 +161,7 @@ class PostboxStore {
   }
 
   clearSelection(): void {
+    this.displayedRequest = undefined;
     this.locallyRetainedRequest = undefined;
     this.selection = { kind: "none" };
   }
@@ -195,16 +203,10 @@ class PostboxStore {
     this.locallyResolvingRequestIds.delete(requestId);
   }
 
-  /** Land where the next decision is: the project's queue while it still has open questions, otherwise the main page. */
-  routeAfterRequestResolved(sessionId: string): void {
-    const session = this.sessions.find((candidate) => candidate.sessionId === sessionId);
-    const projectId = session?.projectId;
-    const projectHasOpenQuestions =
-      projectId !== undefined &&
-      this.sessions.some(
-        (candidate) => candidate.projectId === projectId && this.openQuestionsFor(candidate.sessionId).length > 0
-      );
-    if (projectId !== undefined && projectHasOpenQuestions) this.selectProject(projectId);
+  /** Continue the decision workflow with the oldest open question, or return home when none remain. */
+  routeAfterRequestResolved(): void {
+    const nextRequest = this.pendingRequests[0];
+    if (nextRequest) this.selectRequest(nextRequest.requestId);
     else this.clearSelection();
   }
 
@@ -215,6 +217,7 @@ class PostboxStore {
         ?? (this.locallyRetainedRequest?.requestId === selection.requestId ? this.locallyRetainedRequest : undefined)
       : undefined;
 
+    if (previouslySelectedRequest && !this.displayedRequest) this.displayedRequest = previouslySelectedRequest;
     this.snapshot = { status: "ready", data: next };
     this.syncing = false;
     this.lastSnapshotAtMs = Date.now();
@@ -237,7 +240,7 @@ class PostboxStore {
       this.locallyRetainedRequest = previouslySelectedRequest;
       return;
     }
-    if (previouslySelectedRequest) this.routeAfterRequestResolved(previouslySelectedRequest.sessionId);
+    if (previouslySelectedRequest) this.routeAfterRequestResolved();
   }
 
   async loadSnapshot(fetchCurrentSnapshot: () => Promise<StateSnapshot> = fetchSnapshot): Promise<void> {
@@ -301,14 +304,6 @@ class PostboxStore {
     let fallbackTimer: ReturnType<typeof setInterval> | undefined;
     let events: EventSource | undefined;
 
-    void fetchHealth()
-      .then((health) => {
-        if (!cancelled) this.connection = { status: "connected", health };
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
-      });
-
     const applySnapshot = (next: StateSnapshot) => {
       if (!cancelled) this.applyStateSnapshot(next);
     };
@@ -327,19 +322,33 @@ class PostboxStore {
       fallbackTimer = setInterval(load, 5_000);
     };
 
-    if (!("EventSource" in window)) {
-      startPollingFallback();
-    } else {
-      events = new EventSource("/api/state/events");
-      events.addEventListener("state", (event) => {
-        try {
-          applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
-        } catch (error) {
-          if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
-        }
+    const startStateTransport = () => {
+      if (!("EventSource" in window)) {
+        startPollingFallback();
+      } else {
+        events = new EventSource("/api/state/events");
+        events.addEventListener("state", (event) => {
+          try {
+            applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
+          } catch (error) {
+            if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
+          }
+        });
+        events.onerror = () => startPollingFallback();
+      }
+    };
+
+    // Compatibility is negotiated before any state payload is parsed. This turns an
+    // old API/new UI mismatch into a targeted health diagnostic instead of a Zod error.
+    void fetchHealth()
+      .then((health) => {
+        if (cancelled) return;
+        this.connection = { status: "connected", health };
+        startStateTransport();
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
       });
-      events.onerror = () => startPollingFallback();
-    }
 
     // Returning from the background: the SSE stream may be dead or throttled, so refetch right
     // away, and stop claiming "no open questions" if what we show is more than briefly stale.

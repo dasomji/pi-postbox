@@ -17,8 +17,11 @@ afterEach(cleanup);
 const REQUEST: AskRequestSnapshot = {
   requestId: "question-one",
   sessionId: "session-one",
+  revision: 1,
+  ownerRevision: 1,
+  creator: { harness: "pi", ownerId: "test-owner" },
+  owner: { harness: "pi", ownerId: "test-owner" },
   mode: "single",
-  urgency: "normal",
   question: { prompt: "Which path should we take?" },
   options: [{ value: "a", label: "Path A" }],
   status: "pending",
@@ -64,10 +67,6 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false, act
   const close = vi.fn();
   return {
     activate: vi.fn(async (): Promise<QuestionChatActivationResponse> => ({ status: "ready", snapshot: active })),
-    activateContext: vi.fn(async (): Promise<QuestionChatActivationResponse> => ({
-      status: "ready",
-      snapshot: { ...active, forkKind: "context-only" }
-    })),
     fetchSnapshot: vi.fn(async () => active),
     probeSnapshot: vi.fn(async (): Promise<QuestionChatProbeResult> => alreadyRunning
       ? { status: "ready" as const, snapshot: active }
@@ -127,7 +126,7 @@ describe("responsive Question Chat workspace", () => {
         chatApi: chatBoundary()
       }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Path A" }));
+    await fireEvent.click(screen.getByRole("radio", { name: "Path A" }));
     await fireEvent.click(screen.getByRole("button", { name: "+ Add a note" }));
     await fireEvent.input(screen.getByPlaceholderText("Add nuance for the coding agent…"), { target: { value: "Keep my draft" } });
 
@@ -143,10 +142,10 @@ describe("responsive Question Chat workspace", () => {
     });
 
     expect((screen.getByPlaceholderText("Add nuance for the coding agent…") as HTMLTextAreaElement).value).toBe("Keep my draft");
-    expect(screen.getByRole("button", { name: "Path A" }).className).toContain("bg-attention/5");
-    expect(screen.getByRole("button", { name: /Stage first Suggested in Chat/ }).className).not.toContain("bg-attention/5");
-    await fireEvent.click(screen.getByRole("button", { name: /Stage first Suggested in Chat/ }));
-    expect(screen.getByRole("button", { name: /Stage first Suggested in Chat/ }).className).toContain("bg-attention/5");
+    expect((screen.getByRole("radio", { name: "Path A" }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("radio", { name: /Stage first Suggested in Chat/ }) as HTMLInputElement).checked).toBe(false);
+    await fireEvent.click(screen.getByRole("radio", { name: /Stage first Suggested in Chat/ }));
+    expect((screen.getByRole("radio", { name: /Stage first Suggested in Chat/ }) as HTMLInputElement).checked).toBe(true);
     expect((screen.getByPlaceholderText("Add nuance for the coding agent…") as HTMLTextAreaElement).value).toBe("Keep my draft");
   });
 
@@ -215,82 +214,6 @@ describe("responsive Question Chat workspace", () => {
     expect(await screen.findByRole("heading", { name: "Question Chat" })).toBeTruthy();
     expect(chatApi.activate).not.toHaveBeenCalled();
     expect(chatApi.probeSnapshot).toHaveBeenCalledTimes(2);
-  });
-
-  it("offers eligible context-only Chat as a separate disclosed action and waits for inline confirmation", async () => {
-    const media = mediaController(true);
-    const chatApi = chatBoundary();
-    chatApi.activate.mockResolvedValue({
-      status: "unavailable",
-      error: {
-        code: "source_path_missing",
-        message: "The exact source session is unavailable.",
-        contextFallback: { status: "available" }
-      }
-    });
-    chatApi.fetchSnapshot.mockResolvedValue({ ...snapshot(), forkKind: "context-only" });
-    render(QuestionDetail, {
-      props: {
-        request: REQUEST,
-        isMock: true,
-        layoutState: new BrowserLayoutState(),
-        matchMedia: () => media.query,
-        chatApi
-      }
-    });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("exact source session is unavailable");
-    expect(chatApi.activateContext).not.toHaveBeenCalled();
-
-    await fireEvent.click(screen.getByRole("button", { name: "Start context-only interviewer" }));
-    const confirmation = await screen.findByRole("group", { name: "Start context-only interviewer?" });
-    expect(confirmation.textContent).toContain("fresh private interviewer session");
-    expect(confirmation.textContent).toContain("persisted handoff context");
-    expect(confirmation.textContent).toContain("not an exact fork of the originating Pi Session");
-    expect(chatApi.activateContext).not.toHaveBeenCalled();
-    await fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("group", { name: "Start context-only interviewer?" })).toBeNull();
-    expect(chatApi.activateContext).not.toHaveBeenCalled();
-
-    await fireEvent.click(screen.getByRole("button", { name: "Start context-only interviewer" }));
-    await fireEvent.click(screen.getByRole("button", { name: "Cancel context-only interviewer" }));
-    expect(screen.queryByRole("group", { name: "Start context-only interviewer?" })).toBeNull();
-    expect(chatApi.activateContext).not.toHaveBeenCalled();
-
-    await fireEvent.click(screen.getByRole("button", { name: "Start context-only interviewer" }));
-    await fireEvent.click(screen.getByRole("button", { name: "Confirm context-only interviewer" }));
-    expect(await screen.findByText("Context-only · degraded")).toBeTruthy();
-    expect(screen.getByText(/context-only interviewer uses persisted handoff context/i)).toBeTruthy();
-    expect(chatApi.activateContext).toHaveBeenCalledOnce();
-    expect(chatApi.activate).toHaveBeenCalledOnce();
-  });
-
-  it("shows the precise legacy-context ineligibility state without a fallback action", async () => {
-    const media = mediaController(true);
-    const chatApi = chatBoundary();
-    chatApi.activate.mockResolvedValue({
-      status: "unavailable",
-      error: {
-        code: "source_leaf_missing",
-        message: "The exact source leaf is unavailable.",
-        contextFallback: { status: "unavailable", reason: "missing_problem_context" }
-      }
-    });
-    render(QuestionDetail, {
-      props: {
-        request: REQUEST,
-        isMock: true,
-        layoutState: new BrowserLayoutState(),
-        matchMedia: () => media.query,
-        chatApi
-      }
-    });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("persisted problem context");
-    expect(screen.queryByRole("button", { name: "Start context-only interviewer" })).toBeNull();
-    expect(chatApi.activateContext).not.toHaveBeenCalled();
   });
 
   it("adds a fixed responsive desktop sidebar and hide/reopens presentation without lifecycle commands", async () => {

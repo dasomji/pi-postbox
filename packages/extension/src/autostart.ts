@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveServerProfile, type ResolvedServerProfile } from "./serverProfile.js";
 
 export interface PostboxAutostartResult {
   status: "started" | "already-started" | "disabled" | "failed";
@@ -16,6 +16,7 @@ export interface PostboxAutostartStatusSnapshot {
 
 export interface PostboxAutostartOptions {
   onFailure?: (diagnostic: string) => void;
+  profile?: ResolvedServerProfile;
 }
 
 interface AutostartedProcess {
@@ -64,23 +65,29 @@ export function ensurePostboxServerAutostarted(
     };
   }
 
-  const key = autostartKey(env);
+  const profile = options.profile ?? resolveServerProfile({ env });
+  const key = profile.stateDir;
   const existing = autostartedByConfigBase.get(key);
   if (existing && isSpawnedChildStillRunning(existing.child)) {
     return { status: "already-started", diagnostic: existing.diagnostic };
   }
   if (existing) autostartedByConfigBase.delete(key);
 
-  const command = resolveAutostartCommand();
+  const command = resolveAutostartCommand(profile);
+  let logDescriptor: number | undefined;
   try {
+    mkdirSync(profile.stateDir, { recursive: true, mode: 0o700 });
+    logDescriptor = openSync(profile.logPath, "a", 0o600);
     const child = spawn(command.executable, command.args, {
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", logDescriptor, logDescriptor],
       env: {
         ...process.env,
         ...env
       }
     });
+    closeSync(logDescriptor);
+    logDescriptor = undefined;
     child.once("error", (error) => {
       clearAutostartedChild(key, child);
       rememberAutostartFailure(
@@ -102,29 +109,42 @@ export function ensurePostboxServerAutostarted(
     autostartedByConfigBase.set(key, { child, diagnostic: command.diagnostic });
     return { status: "started", diagnostic: command.diagnostic };
   } catch (error) {
+    if (logDescriptor !== undefined) closeSync(logDescriptor);
     const diagnostic = `Pi Postbox autostart failed: ${messageFrom(error)}`;
     rememberAutostartFailure(key, diagnostic, options);
     return { status: "failed", diagnostic };
   }
 }
 
-function resolveAutostartCommand(): { executable: string; args: string[]; diagnostic: string } {
+export function resolveAutostartCommand(profile: ResolvedServerProfile): { executable: string; args: string[]; diagnostic: string } {
   const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
   const packageLocalCli = join(packageRoot, "packages", "server", "dist", "cli.js");
-  const serverArgs = ["serve", "--active-local-role", "production"];
+  const serverArgs = [
+    "serve",
+    "--profile",
+    profile.id,
+    "--profile-state-dir",
+    profile.stateDir,
+    "--database",
+    profile.databasePath
+  ];
+  if (profile.kind === "development") {
+    const developmentUi = join(packageRoot, "apps", "web", "dist");
+    if (existsSync(developmentUi)) serverArgs.push("--ui-dist-dir", developmentUi);
+  }
 
   if (existsSync(packageLocalCli)) {
     return {
       executable: process.execPath,
       args: [packageLocalCli, ...serverArgs],
-      diagnostic: `Started package-local Pi Postbox server via ${packageLocalCli}.`
+      diagnostic: `Started package-local Pi Postbox server via ${packageLocalCli} for profile ${profile.id}.`
     };
   }
 
   return {
     executable: "pi-postbox-server",
     args: serverArgs,
-    diagnostic: "Started Pi Postbox server from pi-postbox-server on PATH because the package-local CLI was not found."
+    diagnostic: `Started Pi Postbox server from pi-postbox-server on PATH for profile ${profile.id} because the package-local CLI was not found.`
   };
 }
 
@@ -148,7 +168,5 @@ function messageFrom(error: unknown): string {
 }
 
 function autostartKey(env: NodeJS.ProcessEnv): string {
-  if (env.PI_POSTBOX_CONFIG_DIR) return env.PI_POSTBOX_CONFIG_DIR;
-  if (env.PI_POSTBOX_CONFIG_PATH) return dirname(env.PI_POSTBOX_CONFIG_PATH);
-  return join(homedir(), ".pi-postbox");
+  return resolveServerProfile({ env }).stateDir;
 }

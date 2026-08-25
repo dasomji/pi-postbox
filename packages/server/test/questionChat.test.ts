@@ -87,7 +87,8 @@ async function registerOtherSession(app: FastifyInstance): Promise<WebSocket> {
     payload: {
       machine: { machineId: "machine-other", hostname: "other-host" },
       project: { projectId: "project-other", name: "Other project", cwd: "/other" },
-      session: { sessionId: "session-other", cwd: "/other", semanticState: "blocked" }
+      session: { sessionId: "session-other", cwd: "/other", semanticState: "blocked",
+        owner: { harness: "pi", ownerId: "native-pi-session-other" } }
     }
   } satisfies ExtensionClientMessage));
   await expect(nextMessage(socket, "other session registration")).resolves.toMatchObject({ type: "registered" });
@@ -138,6 +139,7 @@ async function setup(options: {
           sessionId: "session-chat-owner",
           cwd: "/repo",
           semanticState: "blocked",
+          owner: { harness: "pi", ownerId: "native-pi-session-chat-owner" },
           agentSessionPath: options.sessionPath === null ? undefined : "/private/session-start.jsonl",
           leafId: options.leafId === null ? undefined : "leaf-at-session-start"
         }
@@ -170,9 +172,9 @@ async function setup(options: {
         requestId: "ask-chat",
         sessionId: "session-chat-owner",
         mode: "single",
-        question: { prompt: "Which design?" },
+        question: { prompt: "Which design?", ambiguity: "Test ambiguity." },
         options: options.askOptions ?? [{ value: "a", label: "A" }],
-        context: { codebaseContext: "A real Fastify server.", problemContext: "Choose the design." },
+
         forkReference: {
           agentSessionPath: "/browser-must-not-control/source.jsonl",
           leafId: "untrusted-leaf",
@@ -186,7 +188,7 @@ async function setup(options: {
   await nextMessage(socket);
   if ("legacyContext" in options) {
     const db = openPostboxDatabase(databasePath);
-    db.prepare("UPDATE ask_requests SET context_json = ? WHERE request_id = 'ask-chat'").run(
+    db.prepare("UPDATE questions SET context_json = ? WHERE question_id = 'ask-chat'").run(
       options.legacyContext === null ? null : JSON.stringify(options.legacyContext)
     );
     db.close();
@@ -227,8 +229,7 @@ describe("Question Chat activation relay", () => {
         proposal: {
           label: "Stage first",
           description: "Deploy to a limited cohort.",
-          meaning: "A reversible rollout.",
-          context: "The release pipeline supports cohorts."
+          impact: "A reversible rollout."
         }
       }
     } satisfies ExtensionClientMessage));
@@ -258,7 +259,7 @@ describe("Question Chat activation relay", () => {
     const answer = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: [proposedValue], note: "Prefer the reversible path." }
+      payload: { expectedRevision: 2, selectedValues: [proposedValue], note: "Prefer the reversible path." }
     });
     await expect(nextMessage(socket, "proposal answer cleanup")).resolves.toMatchObject({
       type: "chat.cleanup",
@@ -276,7 +277,7 @@ describe("Question Chat activation relay", () => {
     });
 
     const db = openPostboxDatabase(databasePath);
-    const stored = db.prepare("SELECT options_json FROM ask_requests WHERE request_id = ?").get("ask-chat") as { options_json: string };
+    const stored = db.prepare("SELECT options_json FROM questions WHERE question_id = ?").get("ask-chat") as { options_json: string };
     db.close();
     expect(stored.options_json).not.toContain("proposal-command-1");
     expect(stored.options_json).not.toContain("tool");
@@ -309,7 +310,7 @@ describe("Question Chat activation relay", () => {
       error: { code: "invalid_message" }
     });
 
-    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
+    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { expectedRevision: 1, selectedValues: ["a"] } });
     await nextMessage(socket, "terminal cleanup");
     await answer;
     socket.send(JSON.stringify({
@@ -372,11 +373,11 @@ describe("Question Chat activation relay", () => {
     const { app, socket } = await setup();
     await activateChat(app, socket);
 
-    const messagesPromise = nextMessages(socket, 3, "proposal race result and terminal messages");
+    const messagesPromise = nextMessages(socket, 2, "proposal race result and terminal cleanup");
     const answerPromise = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
     socket.send(JSON.stringify({
       type: "chat.propose-answer",
@@ -433,7 +434,8 @@ describe("Question Chat activation relay", () => {
       payload: {
         machine: { machineId: "machine-chat", hostname: "chat-host" },
         project: { projectId: "project-chat", name: "Chat project", cwd: "/repo" },
-        session: { sessionId: "session-chat-owner", cwd: "/repo", semanticState: "blocked" }
+        session: { sessionId: "session-chat-owner", cwd: "/repo", semanticState: "blocked",
+          owner: { harness: "pi", ownerId: "native-pi-session-chat-owner" } }
       }
     } satisfies ExtensionClientMessage));
     await expect(nextMessage(socket, "restart registration")).resolves.toMatchObject({ type: "registered" });
@@ -484,7 +486,7 @@ describe("Question Chat activation relay", () => {
     const answer = await app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
     expect(answer.statusCode).toBe(200);
     await expect(terminalCleanup).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
@@ -495,177 +497,6 @@ describe("Question Chat activation relay", () => {
       payload: { requestId: "ask-chat", forkKind: "exact", result: { status: "recovered", snapshot: recovered } }
     } satisfies ExtensionClientMessage));
     await expect(lateCleanup).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
-  });
-
-  it("offers but never auto-starts an eligible context-only fallback, then relays only the explicit confirmed command", async () => {
-    const { app, socket } = await setup({ sessionPath: null });
-    let unexpectedCommand = false;
-    const observeUnexpected = () => {
-      unexpectedCommand = true;
-    };
-    socket.once("message", observeUnexpected);
-
-    const exact = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    expect(exact.statusCode).toBe(409);
-    expect(exact.json()).toMatchObject({
-      status: "unavailable",
-      error: { code: "source_path_missing", contextFallback: { status: "available" } }
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(unexpectedCommand).toBe(false);
-    socket.off("message", observeUnexpected);
-
-    const activation = app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    const command = await nextMessage(socket);
-    expect(command).toMatchObject({
-      type: "chat.activate-context",
-      payload: {
-        requestId: "ask-chat",
-        ownerSessionId: "session-chat-owner",
-        source: {
-          cwd: "/repo",
-          model: "anthropic/claude-sonnet-4",
-          mode: "single",
-          question: { prompt: "Which design?" },
-          options: [{ value: "a", label: "A" }],
-          context: { codebaseContext: "A real Fastify server.", problemContext: "Choose the design." }
-        }
-      }
-    });
-    if (command.type !== "chat.activate-context") throw new Error("Expected explicit context-only activation command");
-    const snapshot: QuestionChatSnapshot = { ...readySnapshot(), forkKind: "context-only" };
-    socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId, payload: snapshot } satisfies ExtensionClientMessage));
-    expect((await activation).json()).toEqual({ status: "ready", snapshot });
-
-    const eventResponse = await fetch(`http://127.0.0.1:${listenerPort(app)}/api/requests/ask-chat/chat/events`);
-    const events = createSseReader(eventResponse);
-    const send = app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/messages",
-      payload: { clientCommandId: "context-message-1", message: "Explain the persisted context." }
-    });
-    const sendCommand = await nextMessage(socket);
-    expect(sendCommand).toMatchObject({ type: "chat.send", payload: { command: { clientCommandId: "context-message-1" } } });
-    if (sendCommand.type !== "chat.send") throw new Error("Expected context Chat send command");
-    socket.send(JSON.stringify({
-      type: "chat.send.accepted",
-      requestId: sendCommand.requestId,
-      payload: {
-        requestId: "ask-chat",
-        response: { status: "accepted", clientCommandId: "context-message-1", mode: "turn" }
-      }
-    } satisfies ExtensionClientMessage));
-    expect((await send).statusCode).toBe(200);
-    socket.send(JSON.stringify({
-      type: "chat.event",
-      payload: { requestId: "ask-chat", sequence: 1, type: "lifecycle", state: "generating" }
-    } satisfies ExtensionClientMessage));
-    await expect(events.next()).resolves.toMatchObject({ sequence: 1, state: "generating" });
-    await events.close();
-
-    const cancel = app.inject({ method: "POST", url: "/api/requests/ask-chat/cancel", payload: {} });
-    await expect(nextMessage(socket)).resolves.toMatchObject({
-      type: "chat.cleanup",
-      payload: { requestId: "ask-chat", reason: "cancelled" }
-    });
-    expect((await cancel).statusCode).toBe(200);
-  });
-
-  it("rejects unconfirmed and legacy-ineligible context-only starts with a precise typed reason", async () => {
-    const { app } = await setup({
-      sessionPath: null,
-      legacyContext: { codebaseContext: "Still readable, but missing problem context." }
-    });
-    const exact = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    expect(exact.json()).toMatchObject({
-      error: {
-        code: "source_path_missing",
-        contextFallback: { status: "unavailable", reason: "missing_problem_context" }
-      }
-    });
-
-    const unconfirmed = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: false }
-    });
-    expect(unconfirmed.statusCode).toBe(400);
-    expect(unconfirmed.json()).toMatchObject({ status: "unavailable", error: { code: "invalid_command" } });
-
-    const ineligible = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    expect(ineligible.statusCode).toBe(409);
-    expect(ineligible.json()).toMatchObject({
-      status: "unavailable",
-      error: {
-        code: "context_fallback_unavailable",
-        contextFallback: { status: "unavailable", reason: "missing_problem_context" }
-      }
-    });
-  });
-
-  it("keeps a legacy context-ineligible Question exact-fork-capable while its source exists", async () => {
-    const { app, socket } = await setup({ legacyContext: null });
-    const activation = app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    const command = await nextMessage(socket);
-    expect(command.type).toBe("chat.activate");
-    if (command.type !== "chat.activate") throw new Error("Expected legacy exact activation");
-    socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId, payload: readySnapshot() } satisfies ExtensionClientMessage));
-    expect((await activation).statusCode).toBe(200);
-
-    const context = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    expect(context.json()).toMatchObject({
-      status: "unavailable",
-      error: {
-        code: "context_fallback_unavailable",
-        contextFallback: { status: "unavailable", reason: "missing_codebase_and_problem_context" }
-      }
-    });
-  });
-
-  it("does not let context-only activation replace an already-running exact fork", async () => {
-    const { app, socket } = await setup();
-    await activateChat(app, socket);
-    let unexpectedCommand = false;
-    socket.once("message", () => {
-      unexpectedCommand = true;
-    });
-    const conflict = await app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    expect(conflict.statusCode).toBe(409);
-    expect(conflict.json()).toMatchObject({ status: "unavailable", error: { code: "runtime_busy" } });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(unexpectedCommand).toBe(false);
-  });
-
-  it("rejects an activation snapshot whose fork kind does not match the requested command", async () => {
-    const { app, socket } = await setup({ sessionPath: null });
-    const activation = app.inject({
-      method: "POST",
-      url: "/api/requests/ask-chat/chat/context",
-      payload: { confirmed: true }
-    });
-    const command = await nextMessage(socket);
-    if (command.type !== "chat.activate-context") throw new Error("Expected context activation");
-    socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId, payload: readySnapshot() } satisfies ExtensionClientMessage));
-    expect((await activation).json()).toMatchObject({
-      status: "unavailable",
-      error: { code: "runtime_failure" }
-    });
   });
 
   it("keeps a newer same-kind activation authoritative when an earlier concurrent attempt fails", async () => {
@@ -1198,16 +1029,13 @@ describe("Question Chat activation relay", () => {
     const command = await nextMessage(socket, "terminal-race send command");
     if (command.type !== "chat.send") throw new Error("Expected Chat send command");
 
-    const terminalMessages = nextMessages(socket, 2, "terminal cleanup messages");
+    const terminalMessage = nextMessage(socket, "terminal cleanup message");
     const answer = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
-    expect(await terminalMessages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "chat.cleanup", payload: expect.objectContaining({ requestId: "ask-chat" }) }),
-      expect.objectContaining({ type: "ask.resolved", payload: expect.objectContaining({ requestId: "ask-chat" }) })
-    ]));
+    expect(await terminalMessage).toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
     expect((await answer).statusCode).toBe(200);
     expect((await send).json()).toEqual({
       status: "unavailable",
@@ -1260,9 +1088,9 @@ describe("Question Chat activation relay", () => {
     expect(missing.statusCode).toBe(404);
     expect(missing.json()).toMatchObject({ status: "unavailable", error: { code: "request_missing" } });
 
-    const unstartedTerminalMessage = nextMessage(socket);
+    const noLegacyBlockingResolution = expectNoMessage(socket);
     await app.inject({ method: "POST", url: "/api/requests/ask-chat/cancel", payload: {} });
-    await expect(unstartedTerminalMessage).resolves.toMatchObject({ type: "ask.resolved", payload: { requestId: "ask-chat" } });
+    await noLegacyBlockingResolution;
     const terminal = await app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
     expect(terminal.statusCode).toBe(409);
     expect(terminal.json()).toMatchObject({ status: "unavailable", error: { code: "request_not_pending" } });
@@ -1291,7 +1119,7 @@ describe("Question Chat activation relay", () => {
     const response = app.inject({
       method: "POST",
       url: `/api/requests/ask-chat/${transition}`,
-      payload: transition === "answer" ? { selectedValues: ["a"] } : {}
+      payload: transition === "answer" ? { expectedRevision: 1, selectedValues: ["a"] } : {}
     });
     await expect(nextMessage(socket)).resolves.toMatchObject({
       type: "chat.cleanup",
@@ -1309,7 +1137,7 @@ describe("Question Chat activation relay", () => {
     const answer = app.inject({
       method: "POST",
       url: "/api/requests/ask-chat/answer",
-      payload: { selectedValues: ["a"] }
+      payload: { expectedRevision: 1, selectedValues: ["a"] }
     });
     await expect(nextMessage(socket)).resolves.toMatchObject({
       type: "chat.cleanup",
@@ -1373,6 +1201,7 @@ describe("Question Chat activation relay", () => {
           sessionId: "session-chat-owner",
           cwd: "/repo",
           semanticState: "blocked",
+          owner: { harness: "pi", ownerId: "native-pi-session-chat-owner" },
           agentSessionPath: "/private/question-time.jsonl",
           leafId: "leaf-at-question"
         }
@@ -1384,7 +1213,7 @@ describe("Question Chat activation relay", () => {
     });
   });
 
-  it("sends cleanup on expiry and owning Pi session shutdown", async () => {
+  it("sends cleanup on expiry but preserves a Question on owning Pi session shutdown", async () => {
     let nowMs = Date.parse("2026-07-17T12:00:00.000Z");
     const expiredSetup = await setup({
       expiresAt: "2026-07-17T12:00:01.000Z",
@@ -1408,10 +1237,9 @@ describe("Question Chat activation relay", () => {
         payload: { sessionId: "session-chat-owner", reason: "quit" }
       } satisfies ExtensionClientMessage)
     );
-    await expect(nextMessage(shutdownSetup.socket)).resolves.toMatchObject({
-      type: "chat.cleanup",
-      payload: { requestId: "ask-chat", reason: "cancelled" }
-    });
+    await expect(nextMessage(shutdownSetup.socket)).resolves.toMatchObject({ type: "ack" });
+    expect((await shutdownSetup.app.inject({ method: "GET", url: "/api/state" })).json().requests)
+      .toContainEqual(expect.objectContaining({ requestId: "ask-chat", status: "pending" }));
   });
 
   it("relays private tool activity but does not add Chat transcript or tool data to durable state after cleanup", async () => {
@@ -1474,7 +1302,7 @@ describe("Question Chat activation relay", () => {
     expect(JSON.stringify(state)).not.toContain("messages");
     expect(JSON.stringify(state)).not.toContain("server-must-not-store-this-tool-output");
 
-    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { selectedValues: ["a"] } });
+    const answer = app.inject({ method: "POST", url: "/api/requests/ask-chat/answer", payload: { expectedRevision: 1, selectedValues: ["a"] } });
     await expect(nextMessage(socket)).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
     expect((await answer).statusCode).toBe(200);
     const history = (await app.inject({ method: "GET", url: "/api/history" })).json();
@@ -1484,7 +1312,7 @@ describe("Question Chat activation relay", () => {
     expect(JSON.stringify(history)).not.toContain("server-must-not-store-this-live-tool-output");
 
     const database = openPostboxDatabase(databasePath);
-    const durableRow = database.prepare("SELECT * FROM ask_requests WHERE request_id = ?").get("ask-chat") as Record<string, unknown>;
+    const durableRow = database.prepare("SELECT * FROM questions WHERE question_id = ?").get("ask-chat") as Record<string, unknown>;
     database.close();
     expect(Object.keys(durableRow)).not.toContain("chat");
     expect(Object.keys(durableRow)).not.toContain("messages");

@@ -4,7 +4,6 @@ internal fun representativeStateJson(
     timestamp: String = "2026-06-25T12:00:00.000Z",
     requestId: String = "ask-protocol-1",
     requestStatus: String = "pending",
-    requestUrgency: String? = null,
     firstOptionProvenance: String? = null,
     resolvedAt: String? = null,
     resultJson: String? = null
@@ -47,12 +46,10 @@ internal fun representativeStateJson(
         {
           "requestId": "$requestId",
           "sessionId": "session-1",
-          "mode": "multi",${requestUrgency?.let { "\n          \"urgency\": \"$it\"," }.orEmpty()}
+          "mode": "multi",
           "question": {
             "prompt": "Choose protocol client behavior",
-            "context": "Native app needs to match the server contract.",
-            "relevance": "Android users need live decisions.",
-            "decisionImpact": "Defines the first public client boundary.",
+            "ambiguity": "Which client behavior preserves the public protocol boundary?",
             "futureQuestionField": "ignored"
           },
           "options": [
@@ -60,8 +57,7 @@ internal fun representativeStateJson(
               "value": "kotlinx",
               "label": "Use Kotlin serialization",
               "description": "Generate small DTOs backed by kotlinx.serialization.",
-              "meaning": "Stay idiomatic on Android.",
-              "context": "Existing project already has the dependency.",${firstOptionProvenance?.let { "\n              \"provenance\": \"$it\"," }.orEmpty()}
+              "impact": "Stay idiomatic on Android.",${firstOptionProvenance?.let { "\n              \"provenance\": \"$it\"," }.orEmpty()}
               "futureOptionField": "ignored"
             },
             {
@@ -69,20 +65,6 @@ internal fun representativeStateJson(
               "label": "Manual parsing"
             }
           ],
-          "context": {
-            "codebaseContext": "Fastify server with shared protocol schemas.",
-            "problemContext": "Remote asks must preserve decision context for a future interviewer.",
-            "additionalInfo": [
-              {
-                "kind": "code",
-                "title": "Route",
-                "content": "POST /api/requests/:id/answer",
-                "language": "ts",
-                "futureContextField": "ignored"
-              }
-            ],
-            "futureHandoffField": "ignored"
-          },
           "forkReference": {
             "agentSessionId": "native-session-1",
             "agentSessionPath": "/tmp/native-session.jsonl",

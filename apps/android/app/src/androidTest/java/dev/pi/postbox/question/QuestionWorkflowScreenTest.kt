@@ -8,9 +8,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertIsNotSelected
-import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
-import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -21,7 +19,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
@@ -30,7 +27,6 @@ import androidx.compose.ui.unit.dp
 import dev.pi.postbox.questionchat.QuestionChatActivationUiState
 import dev.pi.postbox.questionchat.QuestionChatBindingKey
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
-import dev.pi.postbox.questionchat.QuestionChatContextFallbackAvailability
 import dev.pi.postbox.questionchat.QuestionChatAvailabilityCode
 import dev.pi.postbox.questionchat.QuestionChatAvailabilityError
 import dev.pi.postbox.questionchat.QuestionChatForkKind
@@ -54,24 +50,20 @@ class QuestionWorkflowScreenTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun questionDetailShowsUrgencyRichOptionFieldsAndChatProvenanceAccessibly() {
+    fun questionDetailShowsRichOptionFieldsAndChatProvenanceAccessibly() {
         var toggledValue: String? = null
         val question = QuestionDetailUiState(
             requestId = "ask-high",
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
-            urgency = QuestionUrgency.HIGH,
             prompt = "Choose a storage strategy",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(
                 QuestionOptionUiState(
                     value = "sqlite",
                     label = "SQLite",
                     description = "Keep deployment self-contained.",
-                    meaning = "Persist decisions beside session state.",
-                    context = "No second service is required."
+                    impact = "Persist decisions beside session state."
                 ),
                 QuestionOptionUiState(
                     value = "chat_stage",
@@ -80,7 +72,6 @@ class QuestionWorkflowScreenTest {
                     provenance = QuestionOptionProvenance.CHAT
                 )
             ),
-            handoffContext = null,
             forkReference = null,
             selectedValues = listOf("sqlite"),
             canSubmit = true,
@@ -101,8 +92,7 @@ class QuestionWorkflowScreenTest {
                             prompt = question.prompt,
                             mode = question.mode,
                             createdAt = "2026-07-29T10:00:00.000Z",
-                            expiresAt = null,
-                            urgency = question.urgency
+                            expiresAt = null
                         )
                     ),
                     visibleQuestion = question,
@@ -112,13 +102,8 @@ class QuestionWorkflowScreenTest {
             onToggleOption = { toggledValue = it }
         )
 
-        composeRule.onNode(
-            hasText("High urgency", substring = true) and
-                hasContentDescription("Question detail priority: High urgency")
-        ).assertIsDisplayed()
         composeRule.onNodeWithText("Keep deployment self-contained.").assertIsDisplayed()
-        composeRule.onNodeWithText("Meaning: Persist decisions beside session state.").assertIsDisplayed()
-        composeRule.onNodeWithText("Context: No second service is required.").assertIsDisplayed()
+        composeRule.onNodeWithText("Impact: Persist decisions beside session state.").assertIsDisplayed()
         composeRule.onNodeWithText("Suggested in Chat").assertIsDisplayed()
 
         composeRule.onNode(hasText("SQLite", substring = true) and hasClickAction()).assertIsSelected()
@@ -139,11 +124,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a release path",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship now", null)),
-            handoffContext = null,
             forkReference = null,
             selectedValues = listOf("ship"),
             canSubmit = true,
@@ -208,11 +190,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a release path",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship now", null)),
-            handoffContext = null,
             forkReference = null,
             selectedValues = listOf("ship"),
             note = "Restored secure note",
@@ -245,11 +224,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a release path",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship now", null)),
-            handoffContext = null,
             forkReference = null,
             selectedValues = listOf("ship"),
             note = privateNote,
@@ -277,11 +253,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a deployment target",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship", null)),
-            handoffContext = null,
             forkReference = null,
             selectedValues = listOf("ship"),
             canSubmit = true,
@@ -315,11 +288,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a deployment target",
-            questionContext = "Need a mobile-safe choice.",
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = "Which deployment target is mobile-safe?",
             options = listOf(QuestionOptionUiState("ship", "Ship", null)),
-            handoffContext = null,
             forkReference = null,
             availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
         )
@@ -356,22 +326,19 @@ class QuestionWorkflowScreenTest {
     }
 
     @Test
-    fun exactForkFailureShowsContextFallbackInTheChatTabAndRequiresExplicitConfirmation() {
+    fun exactForkFailureStaysUnavailableAndOffersRetry() {
         val question = QuestionDetailUiState(
-            requestId = "ask-context-fallback",
+            requestId = "ask-exact-fork-unavailable",
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a deployment target",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship", null)),
-            handoffContext = null,
             forkReference = null,
             availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
         )
         val chatKey = QuestionChatBindingKey("https://postbox.example/", question.requestId)
-        var confirms = 0
+        var retries = 0
 
         setQuestionScreen(
             stateProvider = {
@@ -381,27 +348,24 @@ class QuestionWorkflowScreenTest {
                         selectedTab = QuestionChatWorkspaceTab.CHAT,
                         owner = QuestionChatOwnerState(
                             key = chatKey,
-                            activation = QuestionChatActivationUiState.AwaitingContextFallbackConfirmation(
+                            activation = QuestionChatActivationUiState.Unavailable(
                                 QuestionChatAvailabilityError(
                                     code = QuestionChatAvailabilityCode.SOURCE_LEAF_MISSING,
-                                    message = "The recorded source leaf is unavailable.",
-                                    contextFallback = QuestionChatContextFallbackAvailability.Available
+                                    message = "The recorded source leaf is unavailable."
                                 )
                             )
                         )
                     )
                 )
             },
-            onConfirmContextOnlyQuestionChat = { confirms += 1 }
+            onRetryQuestionChat = { retries += 1 }
         )
 
         composeRule.onNodeWithTag(QUESTION_CHAT_WORKSPACE_CHAT_TAB_TEST_TAG).assertIsSelected()
         composeRule.onNodeWithText("The recorded source leaf is unavailable.").assertIsDisplayed()
-        composeRule.onNodeWithText("Start context-only interviewer").performScrollTo().assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("This starts a fresh private interviewer session from persisted handoff context. It is not an exact fork of the originating Pi Session.")
-            .assertIsDisplayed()
-        composeRule.onNodeWithText("Confirm context-only interviewer").assertIsDisplayed().performClick()
-        composeRule.runOnIdle { assertEquals(1, confirms) }
+        composeRule.onNodeWithText("Retry").assertIsDisplayed().performClick()
+        composeRule.runOnIdle { assertEquals(1, retries) }
+        composeRule.onAllNodesWithText("Start context-only interviewer").assertCountEquals(0)
     }
 
     @Test
@@ -411,11 +375,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a deployment target",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship", null)),
-            handoffContext = null,
             forkReference = null,
             availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
         )
@@ -486,11 +447,8 @@ class QuestionWorkflowScreenTest {
             sessionId = "session-1",
             mode = QuestionMode.SINGLE,
             prompt = "Choose a deployment target",
-            questionContext = null,
-            relevance = null,
-            decisionImpact = null,
+            ambiguity = null,
             options = listOf(QuestionOptionUiState("ship", "Ship", null)),
-            handoffContext = null,
             forkReference = null,
             availableActions = listOf(QuestionAction.SUBMIT, QuestionAction.CANCEL)
         )
@@ -544,7 +502,7 @@ class QuestionWorkflowScreenTest {
                     isLoading = false,
                     isSyncing = false,
                     connectionState = QuestionConnectionState.CONNECTED,
-                    pendingQuestions = listOf(question("normal", QuestionUrgency.NORMAL)),
+                    pendingQuestions = listOf(question("normal")),
                     navigationSelection = QuestionNavigationSelection.Queue
                 )
             },
@@ -558,7 +516,7 @@ class QuestionWorkflowScreenTest {
     }
 
     @Test
-    fun queueShowsEveryUrgencyLevel() {
+    fun queueShowsEveryPendingQuestion() {
         setQuestionScreen(
             stateProvider = {
                 QuestionWorkflowState(
@@ -567,23 +525,17 @@ class QuestionWorkflowScreenTest {
                     isSyncing = false,
                     connectionState = QuestionConnectionState.CONNECTED,
                     pendingQuestions = listOf(
-                        question("high", QuestionUrgency.HIGH),
-                        question("normal", QuestionUrgency.NORMAL),
-                        question("low", QuestionUrgency.LOW)
+                        question("first"),
+                        question("second"),
+                        question("third")
                     ),
                     navigationSelection = QuestionNavigationSelection.Queue
                 )
             }
         )
 
-        listOf("High urgency", "Normal urgency", "Low urgency").forEach { urgencyLabel ->
-            composeRule.onNode(
-                hasTestTag(QUESTION_QUEUE_TEST_TAG) and
-                    hasAnyDescendant(hasText(urgencyLabel, substring = true)) and
-                    hasAnyDescendant(
-                        hasContentDescription("Question priority: $urgencyLabel", substring = true)
-                    )
-            ).assertIsDisplayed()
+        listOf("first question", "second question", "third question").forEach { prompt ->
+            composeRule.onNodeWithText(prompt).assertIsDisplayed()
         }
     }
 
@@ -595,7 +547,6 @@ class QuestionWorkflowScreenTest {
         onRetryDraftSave: () -> Unit = {},
         onRefresh: () -> Unit = {},
         onStartQuestionChat: () -> Unit = {},
-        onConfirmContextOnlyQuestionChat: () -> Unit = {},
         onRetryQuestionChat: () -> Unit = {},
         onSelectQuestionChatTab: (QuestionChatWorkspaceTab) -> Unit = {},
         onQuestionChatDraftChanged: (String) -> Unit = {},
@@ -622,7 +573,6 @@ class QuestionWorkflowScreenTest {
                     onEditServerUrl = {},
                     onRefresh = onRefresh,
                     onStartQuestionChat = onStartQuestionChat,
-                    onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat,
                     onRetryQuestionChat = onRetryQuestionChat,
                     onSelectQuestionChatTab = onSelectQuestionChatTab,
                     onQuestionChatDraftChanged = onQuestionChatDraftChanged,
@@ -648,22 +598,20 @@ class QuestionWorkflowScreenTest {
                 prompt = question.prompt,
                 mode = question.mode,
                 createdAt = "2026-07-29T10:00:00.000Z",
-                expiresAt = null,
-                urgency = question.urgency
+                expiresAt = null
             )
         ),
         visibleQuestion = question,
         navigationSelection = QuestionNavigationSelection.Question(question.requestId)
     )
 
-    private fun question(requestId: String, urgency: QuestionUrgency) = QuestionListItemUiState(
+    private fun question(requestId: String) = QuestionListItemUiState(
         requestId = requestId,
         sessionId = "session-1",
         prompt = "$requestId question",
         mode = QuestionMode.SINGLE,
         createdAt = "2026-07-29T10:00:00.000Z",
-        expiresAt = null,
-        urgency = urgency
+        expiresAt = null
     )
 
     private fun questionChatWorkflowState(

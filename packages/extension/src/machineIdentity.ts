@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { readExtensionConfig, writeExtensionConfig, type ExtensionConfig } from "./config.js";
+import { resolveServerProfile, type ResolvedServerProfile } from "./serverProfile.js";
 
 export interface MachineIdentity {
   machineId: string;
   hostname: string;
 }
 
-export async function getMachineIdentity(env: NodeJS.ProcessEnv = process.env): Promise<MachineIdentity> {
-  const config = await readExtensionConfig(env);
+export async function getMachineIdentity(
+  env: NodeJS.ProcessEnv = process.env,
+  profile: ResolvedServerProfile = resolveServerProfile({ env })
+): Promise<MachineIdentity> {
+  const config = await readExtensionConfig(env, profile);
   const machineId = config.machineId ?? `machine_${randomUUID()}`;
 
   if (!config.machineId) {
-    await writeExtensionConfig({ ...config, machineId } satisfies ExtensionConfig, env);
+    await writeExtensionConfig({ ...config, machineId } satisfies ExtensionConfig, env, profile);
   }
 
   return { machineId, hostname: hostname() };

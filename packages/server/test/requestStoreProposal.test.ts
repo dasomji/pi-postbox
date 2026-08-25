@@ -7,19 +7,13 @@ import { openPostboxDatabase, type SqliteDatabase } from "../src/db/database.js"
 import { RequestStore, RequestStoreError } from "../src/services/requestStore.js";
 import { SessionStore } from "../src/services/sessionStore.js";
 
-const CONTEXT = {
-  codebaseContext: "Fastify server backed by SQLite.",
-  problemContext: "Offer one more answer without resolving the Question."
-};
-
 function ask(requestId: string, options: AskCreatePayload["options"] = [{ value: "ship", label: "Ship now" }]): AskCreatePayload {
   return {
     requestId,
     sessionId: "session-owner",
     mode: "single",
-    question: { prompt: "Which release path?" },
-    options,
-    context: CONTEXT
+    question: { prompt: "Which release path?", ambiguity: "Test ambiguity." },
+    options
   };
 }
 
@@ -27,8 +21,7 @@ function proposal(label: string): ProposeAnswerPayload {
   return {
     label,
     description: "Deploy to a limited cohort.",
-    meaning: "A reversible rollout.",
-    context: "The pipeline supports staged deployments."
+    impact: "A reversible rollout."
   };
 }
 
@@ -42,7 +35,7 @@ describe("RequestStore Chat-proposed options", () => {
     sessions.register("connection-owner", {
       machine: { machineId: "machine-1", hostname: "workstation" },
       project: { projectId: "project-1", name: "postbox", cwd: "/repo" },
-      session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user" }
+      session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user", owner: { harness: "pi", ownerId: "agent" } }
     });
   });
 
@@ -54,29 +47,35 @@ describe("RequestStore Chat-proposed options", () => {
   it("atomically appends an authoritative, answerable option without persisting Chat internals", () => {
     const store = new RequestStore(db, () => 2_000, { generateProposedOptionValue: () => "chat_opaque_1" });
     store.create(ask("ask-success"));
-    db.prepare("UPDATE ask_requests SET note = ?, rationale = ? WHERE request_id = ?")
-      .run("draft-note", "draft-rationale", "ask-success");
-
     const appended = store.proposeAnswer("ask-success", "session-owner", proposal("Stage first"));
 
     expect(appended.option).toEqual({
       value: "chat_opaque_1",
       label: "Stage first",
       description: "Deploy to a limited cohort.",
-      meaning: "A reversible rollout.",
-      context: "The pipeline supports staged deployments.",
+      impact: "A reversible rollout.",
       provenance: "chat"
     });
     expect(appended.request.options).toEqual([
       { value: "ship", label: "Ship now" },
       appended.option
     ]);
-    const row = db.prepare("SELECT options_json, note, rationale FROM ask_requests WHERE request_id = ?")
-      .get("ask-success") as { options_json: string; note: string; rationale: string };
+    const row = db.prepare("SELECT options_json FROM questions WHERE question_id = ?")
+      .get("ask-success") as { options_json: string };
     expect(JSON.parse(row.options_json)).toEqual(appended.request.options);
-    expect(row).toMatchObject({ note: "draft-note", rationale: "draft-rationale" });
     expect(row.options_json).not.toContain("toolCall");
     expect(row.options_json).not.toContain("transcript");
+    expect(store.getQuestionHistory("ask-success")).toMatchObject({
+      initial: { revision: 1, options: [{ value: "ship", label: "Ship now" }] },
+      revisions: [{
+        revision: 2,
+        options: [{ value: "ship", label: "Ship now" }, expect.objectContaining({ value: "chat_opaque_1" })],
+        actor: { harness: "pi", ownerId: "agent" },
+        at: expect.any(String)
+      }],
+      events: []
+    });
+    expect(JSON.stringify(store.getQuestionHistory("ask-success"))).not.toMatch(/selectedValues|rationale|draft-note/);
 
     expect(store.answer("ask-success", { selectedValues: [appended.option.value] })).toMatchObject({
       status: "answered",
@@ -94,7 +93,7 @@ describe("RequestStore Chat-proposed options", () => {
       fileSessions.register("connection-owner", {
         machine: { machineId: "machine-1", hostname: "workstation" },
         project: { projectId: "project-1", name: "postbox", cwd: "/repo" },
-        session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user" }
+        session: { sessionId: "session-owner", cwd: "/repo", semanticState: "waiting_for_user", owner: { harness: "pi", ownerId: "agent" } }
       });
       const firstStore = new RequestStore(fileDb, () => 2_000, {
         generateProposedOptionValue: () => "chat_durable"

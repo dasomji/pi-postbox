@@ -68,6 +68,7 @@ export async function registerExtensionSocket(
   pushNotifier?: PushNotifier,
   questionChatRelay?: QuestionChatRelay
 ): Promise<void> {
+  const activeSessionWaits = new Map<string, { connectionId: string; requestId: string; controller: AbortController; socket: WebSocket }>();
   app.get("/api/extension/ws", { websocket: true }, (socket, request) => {
     const origin = request.headers.origin;
     if (origin) {
@@ -86,10 +87,24 @@ export async function registerExtensionSocket(
     const connectionId = randomUUID();
     const unsubscribers = new Set<() => void>();
     let registeredSessionId: string | undefined;
+    const waitAbortControllers = new Map<string, AbortController>();
+    const flushAnswerNotifications = () => {
+      if (!registeredSessionId || socket.readyState !== 1 || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
+      const owner = sessionStore.ownerForSession(registeredSessionId);
+      if (!owner || !sessionStore.isConnectedNonWaitingOwner(registeredSessionId, owner)) return;
+      for (const answer of requestStore.claimProactiveAnswerNotifications(owner, connectionId, sessionStore)) {
+        send(socket, {
+          type: "answer.available",
+          requestId: `answer_available_${answer.answerId}`,
+          payload: { questionId: answer.questionId, question: answer.question, answerId: answer.answerId }
+        });
+      }
+    };
+    unsubscribers.add(requestStore.onAnswerAvailable(() => flushAnswerNotifications()));
     let recoveryOffersComplete = false;
     const pendingRecoveries = new Map<string, {
       requestId: string;
-      forkKind: "exact" | "context-only";
+      forkKind: "exact";
       disposition: "recover" | "delete";
       reason: "pending" | "missing" | "terminal" | "wrong_owner";
     }>();
@@ -284,17 +299,144 @@ export async function registerExtensionSocket(
       }
 
       if (message.type === "session.register") {
-        registeredSessionId = message.payload.session.sessionId;
-        recoveryOffersComplete = false;
-        pendingRecoveries.clear();
-        sessionStore.register(connectionId, message.payload);
-        questionChatRelay?.bind(message.payload.session.sessionId, connectionId, socket);
+        const displacedWait = activeSessionWaits.get(message.payload.session.sessionId);
+        if (displacedWait) {
+          send(displacedWait.socket, { type: "postbox.wait.result", requestId: displacedWait.requestId,
+            payload: { type: "lifecycle", event: "connection_replaced", sessionId: message.payload.session.sessionId } });
+          displacedWait.controller.abort();
+        }
+        try {
+          const feature = sessionStore.register(connectionId, message.payload);
+          registeredSessionId = message.payload.session.sessionId;
+          recoveryOffersComplete = false;
+          pendingRecoveries.clear();
+          questionChatRelay?.bind(message.payload.session.sessionId, connectionId, socket);
+          broadcaster.broadcast();
+          send(socket, {
+            type: "registered",
+            requestId: message.requestId,
+            payload: { sessionId: message.payload.session.sessionId, presence: "live", feature }
+          });
+          flushAnswerNotifications();
+        } catch (error) {
+          sendAskError(socket, message.requestId, "session_registration_failed", error);
+        }
+        return;
+      }
+
+      if (message.type === "feature.action") {
+        try {
+          if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+            throw new Error("Feature actions require this connection's registered session");
+          }
+          const feature = sessionStore.selectFeature(message.payload.sessionId, message.payload);
+          broadcaster.broadcast();
+          send(socket, { type: "registered", requestId: message.requestId,
+            payload: { sessionId: message.payload.sessionId, presence: "live", feature } });
+        } catch (error) { sendAskError(socket, message.requestId, "feature_action_failed", error); }
+        return;
+      }
+
+      if (message.type === "answer.available.ack") {
+        if (!registeredSessionId || !sessionStore.isCurrentConnection(registeredSessionId, connectionId)) return;
+        const owner = sessionStore.ownerForSession(registeredSessionId);
+        if (owner) requestStore.acknowledgeOwnerNotification(message.payload.answerId, owner, connectionId);
+        return;
+      }
+
+      if (message.type === "question.list") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "scope_not_found", new Error("Question discovery requires this connection's registered session"));
+          return;
+        }
+        const scope = sessionStore.groupingForSession(message.payload.sessionId);
+        if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
+        const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
+        const level = message.payload.scope ?? (message.payload.global ? "global" : "owner");
+        const result = requestStore.listQuestions({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload });
+        const resultScope = { ...scope, level };
+        send(socket, { type: "question.list.result", requestId: message.requestId, payload: { scope: resultScope, ...result } });
+        return;
+      }
+      if (message.type === "questions.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestions(message.payload) }); return; }
+      if (message.type === "question.status.list") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "scope_not_found", new Error("Question status requires this connection's registered session"));
+          return;
+        }
+        const scope = sessionStore.groupingForSession(message.payload.sessionId);
+        const owner = sessionStore.ownerForSession(message.payload.sessionId) ?? { harness: "legacy", ownerId: message.payload.sessionId };
+        if (!scope) { sendAskError(socket, message.requestId, "scope_not_found", new Error("Session has no discovery scope")); return; }
+        send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.listQuestionStatusPage({ caller: { owner, repository: scope.repositoryId, worktree: scope.worktreeId, feature: scope.featureId }, ...message.payload }) }); return;
+      }
+      if (message.type === "owner.list") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "scope_not_found", new Error("Owner discovery requires this connection's registered session"));
+          return;
+        }
+        try {
+          send(socket, { type: "query.result", requestId: message.requestId,
+            payload: sessionStore.listPostboxOwnersPage(message.payload.sessionId, message.payload) });
+        } catch (error) {
+          sendAskError(socket, message.requestId, "scope_not_found", error);
+        }
+        return;
+      }
+      if (message.type === "owner.status.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: sessionStore.getPostboxOwnerStatus(message.payload.owners) }); return; }
+      if (message.type === "question.update") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Question updates require this connection's registered session")); return; }
+        const actor = sessionStore.ownerForSession(message.payload.sessionId);
+        if (!actor) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
+        try {
+          const payload = requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update, sessionStore);
+          if (message.payload.update.action === "transfer" || message.payload.update.action === "takeover") questionChatRelay?.disposeNonTerminal(message.payload.questionId);
+          broadcaster.broadcast();
+          send(socket, { type: "query.result", requestId: message.requestId, payload });
+        }
+        catch (error) { sendAskError(socket, message.requestId, "question_update_failed", error); }
+        return;
+      }
+      if (message.type === "question.history.get") { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getQuestionHistoryPage(message.payload) }); return; }
+      if (message.type === "question.answer.recover") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Recovery reads require this connection's registered session")); return; }
+        const reader = sessionStore.ownerForSession(message.payload.sessionId);
+        if (!reader) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
+        const question = requestStore.getQuestions({ questionIds: [message.payload.questionId] })[0] as any;
+        if (!question || sessionStore.presenceForOwner(question.owner) !== "offline") { sendAskError(socket, message.requestId, "owner_not_offline", new Error("Recovery reads require an offline owner")); return; }
+        try { send(socket, { type: "query.result", requestId: message.requestId, payload: requestStore.getAnswerForRecovery(message.payload.questionId, reader, message.payload.view) }); }
+        catch (error) { sendAskError(socket, message.requestId, "recovery_read_failed", error); }
+        return;
+      }
+      if (message.type === "postbox.wait") {
+        if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          sendAskError(socket, message.requestId, "wait_not_owner", new Error("Postbox wait requires this connection's registered session")); return;
+        }
+        const owner = sessionStore.ownerForSession(message.payload.sessionId);
+        if (!owner) { sendAskError(socket, message.requestId, "wait_owner_missing", new Error("Session has no owner identity")); return; }
+        const waitAbortController = new AbortController();
+        waitAbortControllers.set(message.requestId, waitAbortController);
+        activeSessionWaits.set(message.payload.sessionId, { connectionId, requestId: message.requestId, controller: waitAbortController, socket });
+        const priorSemanticState = sessionStore.semanticStateForSession(message.payload.sessionId) ?? "working";
+        void requestStore.waitForPostbox({ owner, signal: waitAbortController.signal,
+          publishSemanticState: (semanticState) => sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: semanticState as any }) })
+          .then((payload) => send(socket, { type: "postbox.wait.result", requestId: message.requestId, payload }))
+          .catch((error) => { if (error instanceof Error && error.name !== "AbortError") sendAskError(socket, message.requestId, "wait_failed", error); })
+          .finally(() => {
+            waitAbortControllers.delete(message.requestId);
+            const active = activeSessionWaits.get(message.payload.sessionId);
+            if (active?.connectionId === connectionId && active.requestId === message.requestId) activeSessionWaits.delete(message.payload.sessionId);
+            if (sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+              sessionStore.updateSession({ sessionId: message.payload.sessionId, semanticState: priorSemanticState });
+              broadcaster.broadcast();
+            }
+          });
         broadcaster.broadcast();
-        send(socket, {
-          type: "registered",
-          requestId: message.requestId,
-          payload: { sessionId: message.payload.session.sessionId, presence: "live" }
-        });
+        return;
+      }
+      if (message.type === "postbox.wait.cancel") {
+        if (message.payload.sessionId === registeredSessionId && sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+          waitAbortControllers.get(message.payload.waitRequestId)?.abort();
+        }
         return;
       }
 
@@ -302,6 +444,7 @@ export async function registerExtensionSocket(
         sessionStore.heartbeat(connectionId, message.payload.sessionId, message.payload.semanticState);
         broadcaster.broadcast();
         send(socket, { type: "ack", requestId: message.requestId, payload: { type: "heartbeat" } });
+        flushAnswerNotifications();
         return;
       }
 
@@ -309,6 +452,7 @@ export async function registerExtensionSocket(
         sessionStore.updateSession(message.payload);
         broadcaster.broadcast();
         send(socket, { type: "ack", requestId: message.requestId, payload: { type: "session.update" } });
+        flushAnswerNotifications();
         return;
       }
 
@@ -318,28 +462,57 @@ export async function registerExtensionSocket(
           const alreadyExisted = requestStore.get(message.payload.requestId) !== undefined;
           const snapshot = requestStore.create(message.payload);
           broadcaster.broadcast();
+          send(socket, {
+            type: "ask.created",
+            requestId: message.requestId,
+            payload: {
+              requestId: snapshot.requestId,
+              questionId: snapshot.requestId,
+              revision: snapshot.revision,
+              ownerRevision: snapshot.ownerRevision,
+              status: snapshot.status,
+              disposition: alreadyExisted ? "idempotent" : "created"
+            }
+          });
           if (snapshot.result) {
             send(socket, { type: "ask.resolved", requestId: message.requestId, payload: snapshot.result });
             return;
           }
-          send(socket, {
-            type: "ask.created",
-            requestId: message.requestId,
-            payload: { requestId: snapshot.requestId, status: "pending" }
-          });
           if (!alreadyExisted) {
             void pushNotifier?.notifyNewPendingAsk(snapshot).catch((error: unknown) => {
               app.log.warn({ error, requestId: snapshot.requestId }, "failed to send new ask push notification");
             });
           }
-          const unsubscribe = requestStore.onResolved(snapshot.requestId, (result) => {
-            if (socket.readyState === 1) {
-              send(socket, { type: "ask.resolved", requestId: snapshot.requestId, payload: result });
-            }
-          });
-          unsubscribers.add(unsubscribe);
         } catch (error) {
           sendAskError(socket, message.requestId, "ask_create_failed", error);
+        }
+        return;
+      }
+
+      if (message.type === "ask.batch.create") {
+        try {
+          if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) {
+            throw new RequestStoreError("wrong_owner", "Question batches require this connection's registered session");
+          }
+          expireDue();
+          const receipt = requestStore.createBatch(message.payload.sessionId, message.payload.questions);
+          broadcaster.broadcast();
+          send(socket, { type: "ask.batch.result", requestId: message.requestId, payload: receipt });
+        } catch (error) {
+          sendAskError(socket, message.requestId, "ask_batch_create_failed", error);
+        }
+        return;
+      }
+
+      if (message.type === "answer.get") {
+        try {
+          if (!registeredSessionId) throw new RequestStoreError("wrong_owner", "Register before reading an Answer");
+          const owner = sessionStore.ownerForSession(registeredSessionId);
+          if (!owner) throw new RequestStoreError("wrong_owner", "Registered session has no native owner identity");
+          const result = requestStore.getAnswer(message.payload.questionId, owner);
+          send(socket, { type: "answer.result", requestId: message.requestId, payload: result as never });
+        } catch (error) {
+          sendAskError(socket, message.requestId, "answer_get_failed", error);
         }
         return;
       }
@@ -368,15 +541,20 @@ export async function registerExtensionSocket(
         return;
       }
 
-      if (message.payload.reason !== "reload") {
-        requestStore.cancelPendingForSession(message.payload.sessionId, lifecycleShutdownRationale(message.payload.reason));
-        sessionStore.shutdown(message.payload.sessionId);
-        broadcaster.broadcast();
-      }
+      sessionStore.shutdown(message.payload.sessionId);
+      broadcaster.broadcast();
       send(socket, { type: "ack", requestId: message.requestId, payload: { type: "session.shutdown" } });
     });
 
     socket.on("close", () => {
+      for (const controller of waitAbortControllers.values()) controller.abort();
+      waitAbortControllers.clear();
+      if (registeredSessionId) {
+        try {
+          const owner = sessionStore.ownerForSession(registeredSessionId);
+          if (owner) requestStore.releaseProactiveNotificationClaims(owner, connectionId);
+        } catch { /* app teardown may close SQLite before the socket close callback */ }
+      }
       for (const unsubscribe of unsubscribers) unsubscribe();
       unsubscribers.clear();
       sessionStore.disconnectConnection(connectionId);

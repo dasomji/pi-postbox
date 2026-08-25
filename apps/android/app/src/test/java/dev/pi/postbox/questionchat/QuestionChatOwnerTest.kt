@@ -42,13 +42,12 @@ class QuestionChatOwnerTest {
     }
 
     @Test
-    fun exactActivationOffersExplicitContextFallbackOnTypedSourceFailure() = runTest {
+    fun exactActivationStaysUnavailableOnTypedSourceFailure() = runTest {
         val client = FakeQuestionChatHttpClient(
             exactActivation = QuestionChatActivationResult.Unavailable(
                 QuestionChatAvailabilityError(
                     code = QuestionChatAvailabilityCode.SOURCE_LEAF_MISSING,
-                    message = "Leaf missing.",
-                    contextFallback = QuestionChatContextFallbackAvailability.Available
+                    message = "Leaf missing."
                 )
             )
         )
@@ -60,17 +59,17 @@ class QuestionChatOwnerTest {
         owner.dispatch(QuestionChatIntent.ActivateExact)
         advanceUntilIdle()
 
-        assertTrue(owner.state.value.activation is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation)
+        assertTrue(owner.state.value.activation is QuestionChatActivationUiState.Unavailable)
         assertFalse(owner.state.value.knownStarted)
     }
 
     @Test
-    fun contextActivationTransitionsIntoKnownStartedOnlineState() = runTest {
+    fun exactActivationTransitionsIntoKnownStartedOnlineState() = runTest {
         val transport = FakeQuestionChatEventTransport().apply { openReady.complete(Unit) }
         val snapshot = readySnapshot(sequence = 1)
         val client = FakeQuestionChatHttpClient(
             probeResult = QuestionChatProbeResult.NotStarted,
-            contextActivation = QuestionChatActivationResult.Ready(snapshot),
+            exactActivation = QuestionChatActivationResult.Ready(snapshot),
             snapshot = snapshot
         )
         val owner = QuestionChatOwner(client, transport, backgroundScope)
@@ -78,7 +77,7 @@ class QuestionChatOwnerTest {
         owner.bind(QuestionChatBindingKey(TEST_BASE_URL, "ask-1"))
         advanceUntilIdle()
 
-        owner.dispatch(QuestionChatIntent.ActivateContextFallback)
+        owner.dispatch(QuestionChatIntent.ActivateExact)
         advanceUntilIdle()
 
         assertTrue(owner.state.value.knownStarted)
@@ -634,7 +633,6 @@ private data class RecordedStop(val requestId: String, val clientCommandId: Stri
 private class FakeQuestionChatHttpClient(
     private val probeResult: QuestionChatProbeResult = QuestionChatProbeResult.NotStarted,
     private val exactActivation: QuestionChatActivationResult = QuestionChatActivationResult.Ready(readySnapshot()),
-    private val contextActivation: QuestionChatActivationResult = QuestionChatActivationResult.Ready(readySnapshot()),
     private val snapshot: QuestionChatSnapshot = readySnapshot(),
     private val snapshotResult: QuestionChatSnapshotResult? = null,
     private val sendResult: QuestionChatCommandResult<QuestionChatSendResponse> = QuestionChatCommandResult.Accepted(
@@ -653,8 +651,6 @@ private class FakeQuestionChatHttpClient(
     val stopCalls = mutableListOf<RecordedStop>()
 
     override suspend fun activateExact(requestId: String): QuestionChatActivationResult = exactActivation
-
-    override suspend fun activateContext(requestId: String): QuestionChatActivationResult = contextActivation
 
     override suspend fun probeSnapshot(requestId: String): QuestionChatProbeResult {
         probeCalls += requestId

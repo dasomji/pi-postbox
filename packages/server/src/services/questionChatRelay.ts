@@ -8,7 +8,6 @@ import {
   type ExtensionServerMessage,
   type QuestionChatActivationResponse,
   type QuestionChatAvailabilityError,
-  type QuestionChatContextSource,
   type QuestionChatEvent,
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
@@ -36,11 +35,11 @@ export interface QuestionChatRelayOptions {
   commandDedupeCapacity?: number;
 }
 
-type PendingKind = "activate-exact" | "activate-context" | "snapshot" | "send" | "stop";
+type PendingKind = "activate-exact" | "snapshot" | "send" | "stop";
 export interface QuestionChatIdentity {
   requestId: string;
   ownerSessionId: string;
-  forkKind: "exact" | "context-only";
+  forkKind: "exact";
 }
 interface PendingCommand {
   kind: PendingKind;
@@ -163,23 +162,9 @@ export class QuestionChatRelay {
     }, callerKey);
   }
 
-  async activateContext(
-    requestId: string,
-    ownerSessionId: string,
-    source: QuestionChatContextSource,
-    callerKey?: string
-  ): Promise<QuestionChatActivationResponse> {
-    const identity: QuestionChatIdentity = { requestId, ownerSessionId, forkKind: "context-only" };
-    return this.activateKind(identity, "activate-context", {
-      type: "chat.activate-context",
-      requestId: "",
-      payload: { requestId, ownerSessionId, source }
-    }, callerKey);
-  }
-
   private async activateKind(
     identity: QuestionChatIdentity,
-    pendingKind: Extract<PendingKind, "activate-exact" | "activate-context">,
+    pendingKind: "activate-exact",
     message: ExtensionServerMessage & { requestId: string },
     callerKey?: string
   ): Promise<QuestionChatActivationResponse> {
@@ -279,9 +264,9 @@ export class QuestionChatRelay {
 
   resolveReady(commandId: string, connectionId: string, snapshot: QuestionChatSnapshot): void {
     const pending = this.pending.get(commandId);
-    if (!pending || (pending.kind !== "activate-exact" && pending.kind !== "activate-context")) return;
+    if (!pending || pending.kind !== "activate-exact") return;
     const normalized = QuestionChatSnapshotSchema.parse(snapshot);
-    const expectedKind = pending.kind === "activate-exact" ? "exact" : "context-only";
+    const expectedKind = "exact";
     if (normalized.forkKind !== expectedKind) {
       this.resolveError(commandId, connectionId, normalized.requestId, {
         code: "runtime_failure",
@@ -359,6 +344,15 @@ export class QuestionChatRelay {
     }
     this.send(extension.socket, { type: "chat.cleanup", payload: { requestId, reason } });
     this.activeChats.delete(requestId);
+  }
+
+  disposeNonTerminal(requestId: string): void {
+    const identity = this.activeChats.get(requestId);
+    if (!identity) return;
+    this.activeChats.delete(requestId);
+    this.subscribers.delete(requestId);
+    const extension = this.extensions.get(identity.ownerSessionId);
+    if (extension?.socket.readyState === 1) this.send(extension.socket, { type: "chat.cleanup", payload: { requestId, reason: "wrong_owner" } });
   }
 
   rejectRecovery(identity: QuestionChatIdentity, reason: QuestionChatCleanupReason): void {

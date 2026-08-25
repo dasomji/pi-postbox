@@ -51,7 +51,6 @@ class QuestionChatImeGeometryTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
-                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize(),

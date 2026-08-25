@@ -52,7 +52,8 @@ function registrationMessage(sessionId = "session-history-1", projectId = "proje
         cwd: "/worktrees/history",
         branch: "feature/history",
         worktreePath: "/worktrees/history",
-        semanticState: "blocked"
+        semanticState: "blocked",
+        owner: { harness: "pi", ownerId: `owner-${sessionId}` }
       }
     }
   };
@@ -79,7 +80,7 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
-function askCreateMessage(requestId: string, prompt = `Question ${requestId}`): ExtensionClientMessage {
+function askCreateMessage(requestId: string, prompt = `Question ${requestId}`, expiresAt?: string): ExtensionClientMessage {
   return {
     type: "ask.create",
     requestId: `wire-${requestId}`,
@@ -89,32 +90,25 @@ function askCreateMessage(requestId: string, prompt = `Question ${requestId}`): 
       mode: "single",
       question: {
         prompt,
-        context: "A focused decision needs an audit trail.",
-        relevance: "History helps understand prior choices.",
-        decisionImpact: "This affects later implementation slices."
+        ambiguity: "Which implementation direction should the audit trail preserve?"
       },
       options: [
         {
           value: "ship",
           label: "Ship it",
-          meaning: "Proceed with the implementation.",
-          context: "The user accepts this direction."
+          impact: "Proceed with the implementation."
         },
         { value: "hold", label: "Hold" }
       ],
-      context: {
-        codebaseContext: "Fastify + SQLite request storage already persists rich ask context.",
-        problemContext: "The user needs decision audit records without full chat transcripts.",
-        additionalInfo: [{ kind: "code", title: "No transcript", content: "history stores ask payloads, not chats", language: "text" }]
-      },
-      forkReference: { agentSessionId: "agent-history", leafId: "leaf-history", cwd: "/worktrees/history" }
+      forkReference: { agentSessionId: "agent-history", leafId: "leaf-history", cwd: "/worktrees/history" },
+      expiresAt
     }
   };
 }
 
-async function createAsk(socket: WebSocket, requestId: string): Promise<void> {
+async function createAsk(socket: WebSocket, requestId: string, expiresAt?: string): Promise<void> {
   const created = nextMessage(socket);
-  socket.send(JSON.stringify(askCreateMessage(requestId)));
+  socket.send(JSON.stringify(askCreateMessage(requestId, `Question ${requestId}`, expiresAt)));
   await expect(created).resolves.toMatchObject({ type: "ask.created", payload: { requestId, status: "pending" } });
 }
 
@@ -187,10 +181,10 @@ describe("question history", () => {
       const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
       const pending = state.requests.find((request) => request.requestId === "legacy-pending");
       expect(pending).toMatchObject({
-        urgency: "normal",
         question: { prompt: "Legacy pending question" },
         forkReference: { leafId: "legacy-leaf" }
       });
+      expect(pending?.question.ambiguity).toBeUndefined();
       expect(pending?.context).toBeUndefined();
       expect(state.requests.some((request) => request.requestId === "legacy-answered")).toBe(false);
 
@@ -201,13 +195,14 @@ describe("question history", () => {
         result: { status: "answered", selectedValues: ["ship"] },
         forkReference: { agentSessionPath: "/worktrees/history/.pi/session.jsonl", leafId: "legacy-leaf" }
       });
+      expect(answered?.question.ambiguity).toBeUndefined();
       expect(answered?.context).toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it("returns terminal requests with answer, timestamps, session/project/machine metadata, rich context, and persists across restart", async () => {
+  it("returns terminal requests with answer, timestamps, session/project/machine metadata, and persists across restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-postbox-history-db-"));
     const databasePath = join(dir, "postbox.sqlite");
 
@@ -219,14 +214,12 @@ describe("question history", () => {
       await createAsk(socket, "ask-history");
 
       now = 2_000;
-      const resolved = nextMessage(socket);
       const answer = await app.inject({
         method: "POST",
         url: "/api/requests/ask-history/answer",
-        payload: { selectedValues: ["ship"], note: "Proceed", rationale: "The audit trail has enough context." }
+        payload: { expectedRevision: 1, selectedValues: ["ship"], note: "Proceed" }
       });
       expect(answer.statusCode).toBe(200);
-      await resolved;
 
       await app.close();
       apps.pop();
@@ -245,16 +238,10 @@ describe("question history", () => {
           result: {
             status: "answered",
             selectedValues: ["ship"],
-            note: "Proceed",
-            rationale: "The audit trail has enough context."
+            note: "Proceed"
           },
           question: {
-            relevance: "History helps understand prior choices.",
-            decisionImpact: "This affects later implementation slices."
-          },
-          context: {
-            codebaseContext: "Fastify + SQLite request storage already persists rich ask context.",
-            additionalInfo: [{ kind: "code", title: "No transcript" }]
+            ambiguity: "Which implementation direction should the audit trail preserve?"
           },
           forkReference: { agentSessionId: "agent-history", leafId: "leaf-history" }
         },
@@ -272,7 +259,7 @@ describe("question history", () => {
         }
       });
       expect(history.history[0]?.request.options).toEqual(
-        expect.arrayContaining([expect.objectContaining({ value: "ship", meaning: "Proceed with the implementation." })])
+        expect.arrayContaining([expect.objectContaining({ value: "ship", impact: "Proceed with the implementation." })])
       );
       expect(history.history[0]?.request.createdAt).toBe(new Date(1_000).toISOString());
       expect(history.history[0]?.request.resolvedAt).toBe(new Date(2_000).toISOString());
@@ -283,22 +270,18 @@ describe("question history", () => {
 
   it("includes cancelled and expired terminal requests in history", async () => {
     let now = 5_000;
-    const app = await createPostboxApp({ databasePath: ":memory:", now: () => now, askTimeoutMs: 500, expirySweepMs: 0 });
+    const app = await createPostboxApp({ databasePath: ":memory:", now: () => now, expirySweepMs: 0 });
     apps.push(app);
     const socket = await connectAndRegister(app);
 
     await createAsk(socket, "ask-cancelled");
-    const cancelled = nextMessage(socket);
     const cancelResponse = await app.inject({ method: "POST", url: "/api/requests/ask-cancelled/cancel", payload: { note: "Not today" } });
     expect(cancelResponse.statusCode).toBe(200);
-    await cancelled;
 
-    await createAsk(socket, "ask-expired");
-    const expired = nextMessage(socket);
+    await createAsk(socket, "ask-expired", new Date(5_500).toISOString());
     now = 5_501;
     const historyResponse = await app.inject({ method: "GET", url: "/api/history" });
     expect(historyResponse.statusCode).toBe(200);
-    await expired;
 
     const history = HistoryResponseSchema.parse(historyResponse.json());
     expect(history.history.map((record) => record.request.status)).toEqual(["expired", "cancelled"]);
@@ -312,60 +295,52 @@ describe("question history", () => {
     });
   });
 
-  it("prunes terminal history by max age without deleting pending requests", async () => {
+  it("retains terminal history regardless of age", async () => {
     let now = 10_000;
     const app = await createPostboxApp({
       databasePath: ":memory:",
       now: () => now,
-      expirySweepMs: 0,
-      historyRetentionMaxAgeMs: 1_000
+      expirySweepMs: 0
     });
     apps.push(app);
     const socket = await connectAndRegister(app);
 
     await createAsk(socket, "ask-old-terminal");
-    const oldResolved = nextMessage(socket);
-    await app.inject({ method: "POST", url: "/api/requests/ask-old-terminal/answer", payload: { selectedValues: ["ship"] } });
-    await oldResolved;
+    await app.inject({ method: "POST", url: "/api/requests/ask-old-terminal/answer", payload: { expectedRevision: 1, selectedValues: ["ship"] } });
 
     await createAsk(socket, "ask-still-pending");
     now = 12_001;
 
     const pruneResponse = await app.inject({ method: "POST", url: "/api/history/prune" });
-    expect(pruneResponse.statusCode).toBe(200);
-    expect(pruneResponse.json()).toMatchObject({ pruned: 1 });
+    expect(pruneResponse.statusCode).toBe(404);
 
     const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
-    expect(history.history).toHaveLength(0);
+    expect(history.history).toHaveLength(1);
 
     const state = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
     expect(state.requests).toEqual([expect.objectContaining({ requestId: "ask-still-pending", status: "pending" })]);
   });
 
-  it("prunes terminal history by max record count while keeping the newest terminal records", async () => {
+  it("retains all terminal history without a record cap", async () => {
     let now = 20_000;
     const app = await createPostboxApp({
       databasePath: ":memory:",
       now: () => now,
-      expirySweepMs: 0,
-      historyRetentionMaxRecords: 2
+      expirySweepMs: 0
     });
     apps.push(app);
     const socket = await connectAndRegister(app);
 
     for (const requestId of ["ask-count-1", "ask-count-2", "ask-count-3"]) {
       await createAsk(socket, requestId);
-      const resolved = nextMessage(socket);
-      await app.inject({ method: "POST", url: `/api/requests/${requestId}/answer`, payload: { selectedValues: ["ship"] } });
-      await resolved;
+      await app.inject({ method: "POST", url: `/api/requests/${requestId}/answer`, payload: { expectedRevision: 1, selectedValues: ["ship"] } });
       now += 1_000;
     }
 
     const pruneResponse = await app.inject({ method: "POST", url: "/api/history/prune" });
-    expect(pruneResponse.statusCode).toBe(200);
-    expect(pruneResponse.json()).toMatchObject({ pruned: 1 });
+    expect(pruneResponse.statusCode).toBe(404);
 
     const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
-    expect(history.history.map((record) => record.request.requestId)).toEqual(["ask-count-3", "ask-count-2"]);
+    expect(history.history.map((record) => record.request.requestId)).toEqual(["ask-count-3", "ask-count-2", "ask-count-1"]);
   });
 });

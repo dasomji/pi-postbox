@@ -37,7 +37,6 @@ private val questionChatJson = Json {
 
 interface QuestionChatHttpClient {
     suspend fun activateExact(requestId: String): QuestionChatActivationResult
-    suspend fun activateContext(requestId: String): QuestionChatActivationResult
     suspend fun probeSnapshot(requestId: String): QuestionChatProbeResult
     suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshotResult
     suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatCommandResult<QuestionChatSendResponse>
@@ -55,15 +54,6 @@ class OkHttpQuestionChatHttpClient(
             request = Request.Builder()
                 .url(base.withPathSegments(listOf("api", "requests", requestId, "chat")))
                 .post(ByteArray(0).toRequestBody(null))
-                .build(),
-            maxBytes = QuestionChatTransportLimits.SNAPSHOT_JSON_BODY_MAX_BYTES
-        ) { _, body -> parseActivationResponse(body) }
-
-    override suspend fun activateContext(requestId: String): QuestionChatActivationResult =
-        withJsonResponse(
-            request = Request.Builder()
-                .url(base.withPathSegments(listOf("api", "requests", requestId, "chat", "context")))
-                .post("{\"confirmed\":true}".toRequestBody(JSON_MEDIA_TYPE))
                 .build(),
             maxBytes = QuestionChatTransportLimits.SNAPSHOT_JSON_BODY_MAX_BYTES
         ) { _, body -> parseActivationResponse(body) }
@@ -262,15 +252,8 @@ private fun parseModel(body: JsonObject): QuestionChatModel = QuestionChatModel(
 private fun parseAvailabilityError(body: JsonObject): QuestionChatAvailabilityError = QuestionChatAvailabilityError(
     code = QuestionChatAvailabilityCode.fromWire(body.requiredString("code")),
     message = body.requiredString("message"),
-    retryAfterMs = body["retryAfterMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
-    contextFallback = body["contextFallback"]?.jsonObject?.let(::parseContextFallback)
+    retryAfterMs = body["retryAfterMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
 )
-
-private fun parseContextFallback(body: JsonObject): QuestionChatContextFallbackAvailability = when (body.requiredString("status")) {
-    "available" -> QuestionChatContextFallbackAvailability.Available
-    "unavailable" -> QuestionChatContextFallbackAvailability.Unavailable(body.requiredString("reason"))
-    else -> throw QuestionChatTransportException("Unknown context fallback status")
-}
 
 private fun parseMessage(body: JsonObject): QuestionChatMessage = when (body.requiredString("role")) {
     "user" -> QuestionChatMessage.User(

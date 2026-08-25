@@ -1,0 +1,224 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { openPostboxDatabase, type SqliteDatabase } from "../src/db/database.js";
+import { RequestStore } from "../src/services/requestStore.js";
+import { SessionStore } from "../src/services/sessionStore.js";
+
+const CREATOR = { harness: "pi", ownerId: "creator" };
+const SIBLING = { harness: "pi", ownerId: "sibling" };
+const RECOVERY = { harness: "claude-code", ownerId: "recovery" };
+const databases: SqliteDatabase[] = [];
+afterEach(() => databases.splice(0).forEach((db) => db.close()));
+
+function setup() {
+  let now = Date.parse("2026-08-13T12:00:00.000Z");
+  const db = openPostboxDatabase(":memory:"); databases.push(db);
+  const sessions = new SessionStore(db, () => now, { staleAfterMs: 1_000, offlineAfterMs: 5_000 });
+  const register = (sessionId: string, owner: typeof CREATOR, lineage?: Record<string, unknown>) => sessions.register(sessionId, {
+    machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
+    session: { sessionId, cwd: "/repo", semanticState: "working", owner, lineage }
+  } as any);
+  register("creator-session", CREATOR);
+  register("sibling-session", SIBLING, { harnessSessionId: "shared", parentOwnerId: CREATOR.ownerId, rootOwnerId: CREATOR.ownerId });
+  register("recovery-session", RECOVERY);
+  const store = new RequestStore(db, () => now) as any;
+  store.create({ requestId: "question", sessionId: "creator-session", mode: "single",
+    question: { prompt: "Recover this?", ambiguity: "Test ambiguity." }, options: [{ value: "yes", label: "Yes" }],
+     });
+  return { db, sessions, store, advance: (ms: number) => { now += ms; } };
+}
+
+describe("deliberate Question ownership transfer and recovery", () => {
+  it("versions ownership independently and rejects stale owner snapshots after transfer", () => {
+    const { store } = setup();
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({
+      creator: CREATOR,
+      owner: CREATOR,
+      revision: 1,
+      ownerRevision: 1
+    });
+
+    expect(store.updateQuestion("question", CREATOR, {
+      action: "transfer",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1,
+      expectedOwner: CREATOR,
+      owner: SIBLING
+    })).toMatchObject({ owner: SIBLING, revision: 1, ownerRevision: 2 });
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({
+      creator: CREATOR,
+      owner: SIBLING,
+      revision: 1,
+      ownerRevision: 2
+    });
+    expect(store.getQuestionHistory("question").events).toContainEqual(expect.objectContaining({
+      type: "owner_changed",
+      revision: 1,
+      ownerRevision: 2,
+      previousOwner: CREATOR,
+      owner: SIBLING,
+      actor: CREATOR,
+      at: expect.any(String)
+    }));
+
+    expect(() => store.updateQuestion("question", SIBLING, {
+      action: "cancel",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1
+    })).toThrowError(expect.objectContaining({ code: "stale_owner_revision" }));
+    expect(() => store.updateQuestion("question", SIBLING, {
+      action: "transfer",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1,
+      expectedOwner: SIBLING,
+      owner: RECOVERY
+    })).toThrowError(expect.objectContaining({ code: "stale_owner_revision" }));
+
+    expect(store.updateQuestion("question", SIBLING, {
+      action: "revise",
+      expectedRevision: 1,
+      expectedOwnerRevision: 2,
+      question: { prompt: "Recovered?", ambiguity: "Test ambiguity." }
+    })).toMatchObject({ revision: 2, ownerRevision: 2 });
+  });
+
+  it("allows takeover only when the expected owner is offline, never merely stale", () => {
+    const { sessions, store, advance } = setup();
+    advance(2_000);
+    expect(sessions.getPostboxOwnerStatus([CREATOR])[0]?.presence).toBe("stale");
+    expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions)).toThrowError(expect.objectContaining({ code: "owner_not_offline" }));
+    advance(5_000);
+    expect(sessions.getPostboxOwnerStatus([CREATOR])[0]?.presence).toBe("offline");
+    expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions, 1, 1)).not.toThrow();
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({
+      revision: 1,
+      ownerRevision: 2,
+      owner: RECOVERY
+    });
+    expect(store.getQuestionHistory("question").events).toContainEqual(expect.objectContaining({
+      type: "owner_changed", revision: 1, ownerRevision: 2,
+      actor: RECOVERY, previousOwner: CREATOR, owner: RECOVERY, reason: "takeover"
+    }));
+    expect(() => store.takeoverQuestionOwner("question", RECOVERY, SIBLING, sessions, 1, 1))
+      .toThrowError(expect.objectContaining({ code: "stale_owner_revision" }));
+  });
+
+  it("uses expected-owner compare-and-swap so exactly one racing takeover wins", () => {
+    const { sessions, store, advance } = setup(); advance(10_000);
+    const outcomes = [SIBLING, RECOVERY].map((candidate) => {
+      try { store.takeoverQuestionOwner("question", CREATOR, candidate, sessions); return "won"; }
+      catch { return "lost"; }
+    });
+    expect(outcomes.sort()).toEqual(["lost", "won"]);
+  });
+
+  it("loses takeover authority when the expected owner reconnects before the atomic CAS", () => {
+    const { sessions, store, advance } = setup(); advance(10_000);
+    expect(sessions.getPostboxOwnerStatus([CREATOR])[0]?.presence).toBe("offline");
+    sessions.register("creator-reconnected", {
+      machine: { machineId: "machine", hostname: "host" }, project: { projectId: "project", name: "repo", cwd: "/repo" },
+      session: { sessionId: "creator-session", cwd: "/repo", semanticState: "working", owner: CREATOR }
+    });
+    expect(() => store.takeoverQuestionOwner("question", CREATOR, RECOVERY, sessions, 1))
+      .toThrowError(expect.objectContaining({ code: "owner_not_offline" }));
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ owner: CREATOR });
+  });
+
+  it("does not grant siblings, parents, roots, or shared lineage owner-only authority or automatic succession", () => {
+    const { store } = setup();
+    expect(() => store.updateQuestion("question", SIBLING, {
+      action: "cancel", expectedRevision: 1, expectedOwnerRevision: 1
+    })).toThrowError(expect.objectContaining({ code: "wrong_owner" }));
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ owner: CREATOR });
+  });
+
+  it("does not treat lineage, transcript residency, or native completion metadata as takeover authority", () => {
+    const { db, sessions, store, advance } = setup();
+    db.prepare("UPDATE sessions SET agent_session_path=?, semantic_state='idle' WHERE session_id='creator-session'")
+      .run("/tmp/completed-session.jsonl");
+    advance(2_000);
+    expect(sessions.getPostboxOwnerStatus([CREATOR])[0]?.presence).toBe("stale");
+    expect(() => store.takeoverQuestionOwner("question", CREATOR, SIBLING, sessions, {
+      nativeCompleted: true, processResident: false, transcriptExists: true
+    })).toThrowError(expect.objectContaining({ code: "owner_not_offline" }));
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ owner: CREATOR });
+  });
+
+  it("keeps pending and lifecycle recovery branches compact", () => {
+    const { store } = setup();
+    expect(store.getAnswerForRecovery("question", RECOVERY)).toEqual({
+      type: "pending",
+      status: "pending",
+      questionId: "question"
+    });
+    store.updateQuestion("question", CREATOR, {
+      action: "cancel",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1,
+      note: "No longer needed."
+    });
+    expect(store.getAnswerForRecovery("question", RECOVERY)).toEqual({
+      type: "lifecycle",
+      status: "cancelled",
+      questionId: "question",
+      note: "No longer needed.",
+      resolvedAt: "2026-08-13T12:00:00.000Z"
+    });
+  });
+
+  it("returns compact recovery output by default and preserves the complete view explicitly", () => {
+    const { db, store, advance } = setup();
+    const answered = store.answer("question", { expectedRevision: 1, selectedValues: ["yes"], note: "Ship it." });
+    db.prepare("UPDATE questions SET context_json = ? WHERE question_id = ?")
+      .run('{"codebaseContext":"must not escape"}', "question");
+    advance(10_000);
+    const answerId = answered.answerId as string;
+    expect(store.getAnswerForRecovery("question", RECOVERY)).toEqual({
+      questionId: "question",
+      answerId,
+      answer: ["yes"],
+      note: "Ship it.",
+      alreadyRead: false,
+      firstRead: {
+        reader: RECOVERY,
+        readAt: "2026-08-13T12:00:10.000Z"
+      }
+    });
+    expect(store.getAnswerForRecovery("question", SIBLING, "full")).toEqual({
+      alreadyRead: true,
+      question: {
+        questionId: "question",
+        revision: 1,
+        mode: "single",
+        question: { prompt: "Recover this?", ambiguity: "Test ambiguity." },
+        options: [{ value: "yes", label: "Yes" }],
+
+        createdAt: "2026-08-13T12:00:00.000Z",
+        resolvedAt: "2026-08-13T12:00:00.000Z"
+      },
+      answer: {
+        answerId,
+        questionRevision: 1,
+        status: "answered",
+        selectedValues: ["yes"],
+        note: "Ship it.",
+        createdAt: "2026-08-13T12:00:00.000Z"
+      },
+      firstRead: {
+        reader: RECOVERY,
+        readAt: "2026-08-13T12:00:10.000Z"
+      }
+    });
+    expect(store.getAnswerForRecovery("question", SIBLING)).toEqual({
+      questionId: "question",
+      answerId,
+      answer: ["yes"],
+      note: "Ship it.",
+      alreadyRead: true,
+      firstRead: {
+        reader: RECOVERY,
+        readAt: "2026-08-13T12:00:10.000Z"
+      }
+    });
+    expect(store.getQuestions({ questionIds: ["question"] })[0]).toMatchObject({ creator: CREATOR, owner: CREATOR });
+  });
+});

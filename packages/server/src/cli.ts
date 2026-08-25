@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 import {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
-  ActiveLocalRoleSchema,
   HealthResponseSchema,
+  PROTOCOL_VERSION,
   SERVICE_NAME,
-  parseActiveLocalMetadataRecord,
-  type ActiveLocalRole,
-  type ActiveLocalMetadataRecord,
-  type ActiveLocalTargetIdentity
+  parseServerProfileMetadataRecord,
+  type ServerInstanceIdentity,
+  type ServerProfileIdentity,
+  type ServerProfileMetadataRecord
 } from "@pi-postbox/protocol";
 import type { FastifyInstance } from "fastify";
 import { existsSync, realpathSync } from "node:fs";
@@ -16,15 +14,15 @@ import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createPostboxApp, type ActiveLocalTargetAwareApp } from "./app.js";
+import { createPostboxApp, type ServerInstanceAwareApp } from "./app.js";
+import { getServerRuntimeIdentity } from "./runtimeIdentity.js";
 import {
-  cleanupActiveLocalTarget,
-  createActiveLocalInstanceId,
-  publishActiveLocalTarget,
-  refreshActiveLocalTarget,
-  toActiveLocalTargetIdentity,
-  type ActiveLocalTargetOwner
-} from "./activeLocalTarget.js";
+  cleanupProfileTarget,
+  createProfileInstanceId,
+  publishProfileTarget,
+  refreshProfileTarget,
+  type ProfileTargetOwner
+} from "./profileTarget.js";
 import {
   exposePostboxWithTailscale,
   inspectPostboxTailscaleStatus,
@@ -41,18 +39,19 @@ export interface CliOptions {
   host: string;
   port: number;
   uiDistDir?: string;
-  databasePath?: string;
-  activeLocalRole: ActiveLocalRole;
-  askTimeoutMs?: number;
-  historyRetentionMaxAgeMs?: number;
-  historyRetentionMaxRecords?: number;
+  databasePath: string;
+  profile: ServerProfileIdentity;
+  profileStateDir: string;
+  metadataPath: string;
+  version: string;
+  buildId: string;
   sessionHideOfflineAfterMs?: number;
   sessionRetentionMs?: number;
   fcmServiceAccountPath?: string;
 }
 
-export function defaultCliDatabasePath(): string {
-  return join(homedir(), ".pi-postbox", "postbox.sqlite");
+export function defaultCliDatabasePath(stateDir = join(homedir(), ".pi-postbox")): string {
+  return join(stateDir, "postbox.sqlite");
 }
 
 function parsePositiveDurationMs(value: string, label: string): number {
@@ -72,8 +71,6 @@ function parsePositiveDurationMs(value: string, label: string): number {
 
 export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
   const command: "serve" | "status" = argv[0] === "status" ? "status" : "serve";
-  const tailscaleEnv = (env.PI_POSTBOX_TAILSCALE ?? "").toLowerCase();
-  const tailscaleEnabled = !argv.includes("--no-tailscale") && !["off", "0", "false", "no"].includes(tailscaleEnv);
   const statusJson = command === "status" && argv.includes("--json");
 
   const getFlagValue = (name: string): string | undefined => {
@@ -85,49 +82,26 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     return equalsArg?.slice(prefix.length);
   };
 
+  const profile = parseServerProfileIdentity(getFlagValue("--profile") ?? env.PI_POSTBOX_PROFILE ?? "production");
+  const profileStateDir = getFlagValue("--profile-state-dir")
+    ?? env.PI_POSTBOX_PROFILE_STATE_DIR
+    ?? env.PI_POSTBOX_CONFIG_DIR
+    ?? (env.PI_POSTBOX_CONFIG_PATH ? dirname(env.PI_POSTBOX_CONFIG_PATH) : undefined)
+    ?? defaultProfileStateDir(profile, env);
+  const metadataPath = join(profileStateDir, "active-local", "server.json");
+  const tailscaleEnv = (env.PI_POSTBOX_TAILSCALE ?? "").toLowerCase();
+  const tailscaleDisabled = argv.includes("--no-tailscale") || ["off", "0", "false", "no"].includes(tailscaleEnv);
+  const tailscaleEnabled = !tailscaleDisabled;
+  const runtimeIdentity = getServerRuntimeIdentity();
+
   const host = getFlagValue("--host") ?? env.PI_POSTBOX_HOST ?? "127.0.0.1";
-  const portText = getFlagValue("--port") ?? env.PI_POSTBOX_PORT ?? String(DEFAULT_POSTBOX_PORT);
+  const portText = getFlagValue("--port") ?? env.PI_POSTBOX_PORT ?? String(profile.kind === "production" ? DEFAULT_POSTBOX_PORT : 0);
   const port = Number.parseInt(portText, 10);
 
-  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+  if (!Number.isInteger(port) || port < 0 || port > 65_535 || (profile.kind === "production" && port === 0)) {
     throw new Error(`Invalid port: ${portText}`);
   }
 
-  const activeLocalRoleText = getFlagValue("--active-local-role") ?? env.PI_POSTBOX_ACTIVE_LOCAL_ROLE ?? "production";
-  const activeLocalRole = ActiveLocalRoleSchema.safeParse(activeLocalRoleText);
-  if (!activeLocalRole.success) {
-    throw new Error(`Invalid active-local role: ${activeLocalRoleText}`);
-  }
-
-  const askTimeoutText = getFlagValue("--ask-timeout-ms") ?? env.PI_POSTBOX_ASK_TIMEOUT_MS;
-  let askTimeoutMs: number | undefined;
-  if (askTimeoutText !== undefined) {
-    const parsedAskTimeoutMs = Number.parseInt(askTimeoutText, 10);
-    if (!Number.isInteger(parsedAskTimeoutMs) || parsedAskTimeoutMs <= 0) {
-      throw new Error(`Invalid ask timeout: ${askTimeoutText}`);
-    }
-    askTimeoutMs = parsedAskTimeoutMs;
-  }
-
-  const historyRetentionMaxAgeText = getFlagValue("--history-retention-max-age-ms") ?? env.PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS;
-  let historyRetentionMaxAgeMs: number | undefined;
-  if (historyRetentionMaxAgeText !== undefined) {
-    const parsed = Number.parseInt(historyRetentionMaxAgeText, 10);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      throw new Error(`Invalid history retention max age: ${historyRetentionMaxAgeText}`);
-    }
-    historyRetentionMaxAgeMs = parsed;
-  }
-
-  const historyRetentionMaxRecordsText = getFlagValue("--history-retention-max-records") ?? env.PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS;
-  let historyRetentionMaxRecords: number | undefined;
-  if (historyRetentionMaxRecordsText !== undefined) {
-    const parsed = Number.parseInt(historyRetentionMaxRecordsText, 10);
-    if (!Number.isInteger(parsed) || parsed < 0) {
-      throw new Error(`Invalid history retention max records: ${historyRetentionMaxRecordsText}`);
-    }
-    historyRetentionMaxRecords = parsed;
-  }
 
   const sessionHideOfflineAfterText =
     getFlagValue("--session-hide-offline-after-ms") ?? env.PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS;
@@ -147,16 +121,29 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv): CliOpti
     host,
     port,
     uiDistDir: getFlagValue("--ui-dist-dir") ?? env.PI_POSTBOX_UI_DIST_DIR,
-    databasePath: getFlagValue("--database") ?? env.PI_POSTBOX_DATABASE ?? defaultCliDatabasePath(),
-    activeLocalRole: activeLocalRole.data,
-    askTimeoutMs,
-    historyRetentionMaxAgeMs,
-    historyRetentionMaxRecords,
+    databasePath: getFlagValue("--database") ?? env.PI_POSTBOX_DATABASE ?? defaultCliDatabasePath(profileStateDir),
+    profile,
+    profileStateDir,
+    metadataPath,
+    version: runtimeIdentity.version,
+    buildId: getFlagValue("--build-id") ?? env.PI_POSTBOX_BUILD_ID ?? runtimeIdentity.buildId,
     sessionHideOfflineAfterMs,
     sessionRetentionMs,
     fcmServiceAccountPath:
-      getFlagValue("--fcm-service-account") ?? env.PI_POSTBOX_FCM_SERVICE_ACCOUNT ?? defaultFcmServiceAccountPath(env)
+      getFlagValue("--fcm-service-account") ?? env.PI_POSTBOX_FCM_SERVICE_ACCOUNT ?? defaultFcmServiceAccountPath(profileStateDir)
   };
+}
+
+function parseServerProfileIdentity(value: string): ServerProfileIdentity {
+  if (value === "production") return { kind: "production", id: "production" };
+  if (/^development:[a-f0-9]{16}$/.test(value)) return { kind: "development", id: value };
+  throw new Error(`Invalid server profile: ${value}`);
+}
+
+function defaultProfileStateDir(profile: ServerProfileIdentity, env: NodeJS.ProcessEnv): string {
+  if (profile.kind === "production") return join(homedir(), ".pi-postbox");
+  const stateHome = env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
+  return join(stateHome, "pi-postbox", "dev", profile.id.slice("development:".length));
 }
 
 function isAddressInUseError(error: unknown): boolean {
@@ -187,7 +174,7 @@ export function describePostboxPortSelection(requestedPort: number, listenAddres
   return undefined;
 }
 
-function activeLocalPublicationUrl(listenAddress: string, requestedHost: string): string {
+function profilePublicationUrl(listenAddress: string, requestedHost: string): string {
   if (requestedHost !== "0.0.0.0" && requestedHost !== "::") {
     return listenAddress;
   }
@@ -200,25 +187,22 @@ function activeLocalPublicationUrl(listenAddress: string, requestedHost: string)
 export interface ListenWithPortFallbackOptions {
   host: string;
   port: number;
-  activeLocalRole?: ActiveLocalRole;
-  env?: NodeJS.ProcessEnv;
+  profile: ServerProfileIdentity;
+  metadataPath: string;
+  buildId: string;
   warn?: (message: string) => void;
   instanceId?: string;
   heartbeatIntervalMs?: number;
 }
 
 export async function listenWithPortFallback(app: FastifyInstance, options: ListenWithPortFallbackOptions): Promise<string> {
-  let owner: ActiveLocalTargetOwner | undefined;
+  let owner: ProfileTargetOwner | undefined;
   let heartbeatTimer: NodeJS.Timeout | undefined;
 
-  if (options.activeLocalRole) {
-    app.addHook("onClose", async () => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (owner) {
-        await cleanupActiveLocalTarget(owner);
-      }
-    });
-  }
+  app.addHook("onClose", async () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (owner) await cleanupProfileTarget(owner);
+  });
 
   let address: string;
   try {
@@ -228,45 +212,52 @@ export async function listenWithPortFallback(app: FastifyInstance, options: List
     address = await app.listen({ host: options.host, port: 0 });
   }
 
-  if (options.activeLocalRole) {
-    const candidateOwner: ActiveLocalTargetOwner = {
-      role: options.activeLocalRole,
-      url: activeLocalPublicationUrl(address, options.host),
-      instanceId: options.instanceId ?? createActiveLocalInstanceId(),
-      env: options.env,
+  {
+    const candidateOwner: ProfileTargetOwner = {
+      profile: options.profile,
+      metadataPath: options.metadataPath,
+      url: profilePublicationUrl(address, options.host),
+      instanceId: options.instanceId ?? createProfileInstanceId(),
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: options.buildId,
       warn: options.warn
     };
-    const publication = await publishActiveLocalTarget(candidateOwner);
+    const publication = await publishProfileTarget(candidateOwner);
     if (publication.ok) {
       owner = candidateOwner;
-      (app as ActiveLocalTargetAwareApp).setActiveLocalTarget?.(toActiveLocalTargetIdentity(publication.record));
+      (app as ServerInstanceAwareApp).setServerInstance?.(toServerInstanceIdentity(publication.record));
 
       const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000;
       if (heartbeatIntervalMs > 0) {
         heartbeatTimer = setInterval(async () => {
           if (!owner) return;
-          const refreshed = await refreshActiveLocalTarget(owner);
+          const refreshed = await refreshProfileTarget(owner);
           if (refreshed.ok) {
-            (app as ActiveLocalTargetAwareApp).setActiveLocalTarget?.(toActiveLocalTargetIdentity(refreshed.record));
+            (app as ServerInstanceAwareApp).setServerInstance?.(toServerInstanceIdentity(refreshed.record));
           } else if (refreshed.reason === "not-owner") {
             owner = undefined;
-            (app as ActiveLocalTargetAwareApp).setActiveLocalTarget?.(undefined);
+            (app as ServerInstanceAwareApp).setServerInstance?.(undefined);
           }
         }, heartbeatIntervalMs);
         heartbeatTimer.unref?.();
       }
     } else {
-      (app as ActiveLocalTargetAwareApp).setActiveLocalTarget?.(undefined);
+      (app as ServerInstanceAwareApp).setServerInstance?.(undefined);
     }
   }
 
   return address;
 }
 
+function toServerInstanceIdentity(record: ServerProfileMetadataRecord): ServerInstanceIdentity {
+  const { profile, instanceId, url, protocolVersion, buildId } = record;
+  return { profile, instanceId, url, protocolVersion, buildId };
+}
+
 export interface PostboxServerStatusReport {
   localUrl?: string;
   tailnetUrl?: string;
-  role?: ActiveLocalRole;
+  profile: ServerProfileIdentity;
   availability: "running" | "unavailable";
   health: "ok" | "unreachable" | "unknown";
   tailscale: Pick<PostboxTailscaleStatus, "state" | "diagnostic" | "remediation" | "httpsPort">;
@@ -274,42 +265,61 @@ export interface PostboxServerStatusReport {
   diagnostics: string[];
 }
 
-const ACTIVE_LOCAL_STATUS_TTL_MS = 60_000;
-const ACTIVE_LOCAL_STATUS_HEALTH_TIMEOUT_MS = 1_500;
-const ACTIVE_LOCAL_STATUS_ROLE_ORDER: ActiveLocalRole[] = ["dev", "production"];
+const PROFILE_STATUS_TTL_MS = 60_000;
+const PROFILE_STATUS_HEALTH_TIMEOUT_MS = 1_500;
 
 export interface CollectPostboxServerStatusOptions {
   fetch?: typeof fetch;
   nowMs?: number;
   healthTimeoutMs?: number;
   inspectTailscale?: (options: PostboxTailscaleOptions) => Promise<PostboxTailscaleStatus>;
+  profile?: ServerProfileIdentity;
+  metadataPath?: string;
 }
 
 export async function collectPostboxServerStatus(
   env: NodeJS.ProcessEnv = process.env,
   options: CollectPostboxServerStatusOptions = {}
 ): Promise<PostboxServerStatusReport> {
+  const profile = options.profile ?? { kind: "production", id: "production" };
+  const stateDir = env.PI_POSTBOX_PROFILE_STATE_DIR ?? env.PI_POSTBOX_CONFIG_DIR ?? defaultProfileStateDir(profile, env);
+  const metadataPath = options.metadataPath ?? join(stateDir, "active-local", "server.json");
   const diagnostics: string[] = [];
-  const records = await readStatusMetadataRecords(env, diagnostics, options.nowMs);
-  const selected = await selectHealthyStatusTarget(records, diagnostics, options);
-  const target = selected.target;
-  const health: "ok" | "unreachable" | "unknown" = target ? "ok" : selected.sawHealthFailure ? "unreachable" : "unknown";
+  const record = await readStatusMetadataRecord(metadataPath, profile, diagnostics, options.nowMs);
+  let target: ServerInstanceIdentity | undefined;
+  let health: "ok" | "unreachable" | "unknown" = "unknown";
+  if (record) {
+    const updatedAtMs = Date.parse(record.updatedAt);
+    if ((options.nowMs ?? Date.now()) - updatedAtMs > PROFILE_STATUS_TTL_MS) {
+      diagnostics.push(`${profile.id}: stale`);
+    } else {
+      const candidate = toServerInstanceIdentity(record);
+      const probe = await probePostboxHealth(record.url, candidate, options);
+      if (probe.ok) {
+        target = candidate;
+        health = "ok";
+      } else {
+        health = "unreachable";
+        diagnostics.push(`${profile.id}: ${probe.code}`);
+      }
+    }
+  }
 
   const inspectTailscale = options.inspectTailscale ?? inspectPostboxTailscaleStatus;
   const tailscale: PostboxTailscaleStatus = target
-    ? await inspectTailscale({ localUrl: target.url, role: target.role })
+    ? await inspectTailscale({ localUrl: target.url, profile })
     : {
         state: "unavailable",
         localUrl: "",
-        role: "production",
-        diagnostic: "No healthy active local Postbox target is published."
+        profile,
+        diagnostic: "No healthy Postbox target is published for this profile."
       };
 
   const tailnetUrl = tailscale.tailnetUrl;
   return {
     localUrl: target?.url,
     tailnetUrl,
-    role: target?.role,
+    profile,
     availability: target ? "running" : "unavailable",
     health,
     tailscale: {
@@ -323,41 +333,10 @@ export async function collectPostboxServerStatus(
   };
 }
 
-async function selectHealthyStatusTarget(
-  records: ActiveLocalMetadataRecord[],
-  diagnostics: string[],
-  options: Pick<CollectPostboxServerStatusOptions, "fetch" | "healthTimeoutMs" | "nowMs">
-): Promise<{ target?: ActiveLocalTargetIdentity; sawHealthFailure: boolean }> {
-  const nowMs = options.nowMs ?? Date.now();
-  let sawHealthFailure = false;
-
-  for (const role of ACTIVE_LOCAL_STATUS_ROLE_ORDER) {
-    const record = records.find((candidate) => candidate.role === role);
-    if (!record) continue;
-
-    const updatedAtMs = Date.parse(record.updatedAt);
-    if (!Number.isFinite(updatedAtMs) || updatedAtMs > nowMs || nowMs - updatedAtMs > ACTIVE_LOCAL_STATUS_TTL_MS) {
-      diagnostics.push(`${role}: stale`);
-      continue;
-    }
-
-    const target = { role: record.role, instanceId: record.instanceId, url: record.url };
-    const health = await probePostboxHealth(record.url, target, options);
-    if (health.ok) {
-      return { target, sawHealthFailure };
-    }
-
-    sawHealthFailure = true;
-    diagnostics.push(`${role}: ${health.code}`);
-  }
-
-  return { sawHealthFailure };
-}
-
 function formatStatusText(report: PostboxServerStatusReport): string {
   const lines = ["Pi Postbox status"];
   lines.push(`Local URL: ${report.localUrl ?? "unavailable"}`);
-  lines.push(`Role: ${report.role ?? "unknown"}`);
+  lines.push(`Profile: ${report.profile.id} (${report.profile.kind})`);
   lines.push(`Availability: ${report.availability} (health: ${report.health})`);
   lines.push(`Tailscale Serve: ${report.tailscale.state}${report.tailscale.diagnostic ? ` - ${report.tailscale.diagnostic}` : ""}`);
   if (report.tailnetUrl) lines.push(`Tailnet URL: ${report.tailnetUrl}`);
@@ -370,50 +349,45 @@ function formatStatusText(report: PostboxServerStatusReport): string {
   return `${lines.join("\n")}\n`;
 }
 
-async function readStatusMetadataRecords(
-  env: NodeJS.ProcessEnv,
+async function readStatusMetadataRecord(
+  path: string,
+  profile: ServerProfileIdentity,
   diagnostics: string[],
   nowMs?: number
-): Promise<ActiveLocalMetadataRecord[]> {
-  const records: ActiveLocalMetadataRecord[] = [];
-  for (const role of ["dev", "production"] as const) {
-    const path = join(configBaseDir(env), ACTIVE_LOCAL_METADATA_DIRECTORY, ACTIVE_LOCAL_METADATA_FILENAMES[role]);
-    try {
-      const stat = await lstat(path);
-      if (stat.isSymbolicLink()) {
-        diagnostics.push(`${role}: unsafe metadata symlink`);
-        continue;
-      }
-      const parsed = parseActiveLocalMetadataRecord(await readFile(path, "utf8"), { expectedRole: role, source: path, nowMs });
-      if (parsed.ok) records.push(parsed.record);
-      else diagnostics.push(...parsed.diagnostics.map((diagnostic) => `${role}: ${diagnostic.code}`));
-    } catch (error) {
-      if (!isNodeError(error, "ENOENT")) diagnostics.push(`${role}: unable to read metadata`);
+): Promise<ServerProfileMetadataRecord | undefined> {
+  try {
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink()) {
+      diagnostics.push(`${profile.id}: unsafe metadata symlink`);
+      return undefined;
     }
+    const parsed = parseServerProfileMetadataRecord(await readFile(path, "utf8"), {
+      expectedProfile: profile,
+      source: path,
+      nowMs
+    });
+    if (parsed.ok) return parsed.record;
+    diagnostics.push(...parsed.diagnostics.map((diagnostic) => `${profile.id}: ${diagnostic.code}`));
+  } catch (error) {
+    if (!isNodeError(error, "ENOENT")) diagnostics.push(`${profile.id}: unable to read metadata`);
   }
-  return records;
+  return undefined;
 }
 
 // Autostarted servers inherit an arbitrary parent environment, so FCM must also be configurable by
 // dropping the service-account file into the config directory rather than only via flag/env.
-function defaultFcmServiceAccountPath(env: NodeJS.ProcessEnv): string | undefined {
-  const candidate = join(configBaseDir(env), "fcm-service-account.json");
+function defaultFcmServiceAccountPath(stateDir: string): string | undefined {
+  const candidate = join(stateDir, "fcm-service-account.json");
   return existsSync(candidate) ? candidate : undefined;
-}
-
-function configBaseDir(env: NodeJS.ProcessEnv): string {
-  if (env.PI_POSTBOX_CONFIG_DIR) return env.PI_POSTBOX_CONFIG_DIR;
-  if (env.PI_POSTBOX_CONFIG_PATH) return dirname(env.PI_POSTBOX_CONFIG_PATH);
-  return join(homedir(), ".pi-postbox");
 }
 
 async function probePostboxHealth(
   localUrl: string,
-  expectedLocalTarget: ActiveLocalTargetIdentity,
+  expectedInstance: ServerInstanceIdentity,
   options: Pick<CollectPostboxServerStatusOptions, "fetch" | "healthTimeoutMs"> = {}
 ): Promise<{ ok: true } | { ok: false; code: string }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.healthTimeoutMs ?? ACTIVE_LOCAL_STATUS_HEALTH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), options.healthTimeoutMs ?? PROFILE_STATUS_HEALTH_TIMEOUT_MS);
   const fetchImpl = options.fetch ?? globalThis.fetch;
   try {
     const response = await fetchImpl(new URL("healthz", localUrl), { signal: controller.signal });
@@ -427,12 +401,15 @@ async function probePostboxHealth(
     const parsed = HealthResponseSchema.safeParse(body);
     if (!parsed.success) return { ok: false, code: "health-invalid" };
 
-    const actual = parsed.data.localTarget;
+    const actual = parsed.data.instance;
     if (
       !actual ||
-      actual.role !== expectedLocalTarget.role ||
-      actual.instanceId !== expectedLocalTarget.instanceId ||
-      actual.url !== expectedLocalTarget.url
+      actual.profile.kind !== expectedInstance.profile.kind ||
+      actual.profile.id !== expectedInstance.profile.id ||
+      actual.instanceId !== expectedInstance.instanceId ||
+      actual.url !== expectedInstance.url ||
+      actual.protocolVersion !== expectedInstance.protocolVersion ||
+      actual.buildId !== expectedInstance.buildId
     ) {
       return { ok: false, code: "health-identity-mismatch" };
     }
@@ -449,11 +426,29 @@ function isNodeError(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
 }
 
+export async function createCliPostboxApp(
+  options: CliOptions,
+  onShutdownRequest?: () => void
+): Promise<FastifyInstance> {
+  return createPostboxApp({
+    logger: true,
+    uiDistDir: options.uiDistDir,
+    databasePath: options.databasePath,
+    profile: options.profile,
+    version: options.version,
+    buildId: options.buildId,
+    sessionHideOfflineAfterMs: options.sessionHideOfflineAfterMs,
+    sessionRetentionMs: options.sessionRetentionMs,
+    fcmServiceAccountPath: options.fcmServiceAccountPath,
+    onShutdownRequest
+  });
+}
+
 export async function main(argv = process.argv.slice(2), env = process.env): Promise<void> {
   const options = parseCliOptions(argv, env);
 
   if (options.command === "status") {
-    const report = await collectPostboxServerStatus(env);
+    const report = await collectPostboxServerStatus(env, { profile: options.profile, metadataPath: options.metadataPath });
     console.log(options.statusJson ? JSON.stringify(report, null, 2) : formatStatusText(report));
     return;
   }
@@ -469,18 +464,7 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
     }
   }
 
-  const app = await createPostboxApp({
-    logger: true,
-    uiDistDir: options.uiDistDir,
-    databasePath: options.databasePath,
-    askTimeoutMs: options.askTimeoutMs,
-    historyRetentionMaxAgeMs: options.historyRetentionMaxAgeMs,
-    historyRetentionMaxRecords: options.historyRetentionMaxRecords,
-    sessionHideOfflineAfterMs: options.sessionHideOfflineAfterMs,
-    sessionRetentionMs: options.sessionRetentionMs,
-    fcmServiceAccountPath: options.fcmServiceAccountPath,
-    onShutdownRequest: () => void requestShutdown()
-  });
+  const app = await createCliPostboxApp(options, () => void requestShutdown());
 
   process.once("SIGINT", () => void requestShutdown());
   process.once("SIGTERM", () => void requestShutdown());
@@ -488,16 +472,21 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
   const address = await listenWithPortFallback(app, {
     host: options.host,
     port: options.port,
-    activeLocalRole: options.activeLocalRole,
-    env,
+    profile: options.profile,
+    metadataPath: options.metadataPath,
+    buildId: options.buildId,
     warn: (message) => console.warn(message)
   });
   console.log(`pi-postbox-server listening on ${address}`);
+  console.log(`Profile: ${options.profile.id} (${options.profile.kind})`);
   const portNotice = describePostboxPortSelection(options.port, address);
   if (portNotice) console.warn(portNotice);
 
   if (options.tailscaleEnabled) {
-    const tailscale = await exposePostboxWithTailscale({ localUrl: `${address}/`, role: options.activeLocalRole });
+    const tailscale = await exposePostboxWithTailscale({
+      localUrl: `${address}/`,
+      profile: options.profile
+    });
     console.log(`Tailscale Serve: ${tailscale.state}${tailscale.diagnostic ? ` - ${tailscale.diagnostic}` : ""}`);
     if (tailscale.tailnetUrl) {
       console.log(`Tailnet URL: ${tailscale.tailnetUrl}`);

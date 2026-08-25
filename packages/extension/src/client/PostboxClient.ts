@@ -6,18 +6,24 @@ import {
   type AskOption,
   OTHER_OPTION_VALUE,
   type AskResult,
+  type AskReceipt,
+  type AskBatchReceipt,
+  AskBatchReceiptSchema,
+  type AskBatchQuestionDraft,
+  AskReceiptSchema,
+  AnswerReadResultSchema,
+  type AnswerReadResult,
   type ExtensionClientMessage,
   type ProposeAnswerPayload,
   type ProposeAnswerResult,
   type SemanticState,
-  type ActiveLocalRole,
+  type ServerProfileIdentity,
   type SessionRegisterPayload,
   type SessionShutdownReason
 } from "@pi-postbox/protocol";
 import type {
   QuestionChatEvent,
   QuestionChatAvailabilityError,
-  QuestionChatContextSource,
   QuestionChatSendPayload,
   QuestionChatSendResponse,
   QuestionChatSnapshot,
@@ -33,15 +39,17 @@ import {
 } from "../questionChatRuntime.js";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import type { ResolveActiveLocalTargetResult } from "../activeLocalTargetResolver.js";
+import type { ResolvedServerTarget, ResolveServerTargetResult } from "../serverTargetResolver.js";
 import {
   createUrlStatusSnapshot,
   enrichStatusSnapshotFromLocalServer,
   type PostboxConnectionState,
+  type PostboxServerIdentity,
   type PostboxStatusSnapshot,
   type PostboxStatusTailscaleInspector
 } from "../status.js";
 import type { PostboxAutostartStatusSnapshot } from "../autostart.js";
+import { MemoryAnswerNotificationInbox, type AnswerNotificationInbox } from "../answerNotificationInbox.js";
 
 interface WebSocketLike {
   readyState: number;
@@ -60,20 +68,24 @@ export interface PostboxClientOptions {
   reconnectMaxMs?: number;
   reconnect?: boolean;
   askUnavailableAfterMs?: number;
-  resolveTarget?: () => Promise<ResolveActiveLocalTargetResult>;
-  activeLocalPollingEnabled?: boolean;
-  activeLocalPollMs?: number;
+  resolveTarget?: () => Promise<ResolveServerTargetResult>;
+  profilePollingEnabled?: boolean;
+  profilePollMs?: number;
   targetAffinityTimeoutMs?: number;
   proposalTimeoutMs?: number;
+  answerReadTimeoutMs?: number;
   targetSource?: string;
-  targetRole?: ActiveLocalRole;
+  targetProfile?: ServerProfileIdentity;
+  targetIdentity?: PostboxServerIdentity;
   inspectTailscale?: PostboxStatusTailscaleInspector;
   WebSocketImpl?: WebSocketConstructor;
   onStatus?: (status: string) => void;
   onLocalFallbackStatus?: (status: LocalFallbackStatus | undefined) => void;
+  /** Transport is at-least-once. Consumer must apply the stable deliveryId idempotently. */
+  onAnswerAvailable?: (notification: { questionId: string; question: string; answerId: string }, deliveryId: string) => void;
+  answerNotificationInbox?: AnswerNotificationInbox;
   questionChats?: {
     activate(input: { requestId: string; ownerSessionId: string; source: QuestionChatSource }): Promise<QuestionChatSnapshot>;
-    activateContext(input: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }): Promise<QuestionChatSnapshot>;
     getSnapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatSnapshot>;
     send(requestId: string, ownerSessionId: string, command: QuestionChatSendPayload): Promise<QuestionChatSendResponse>;
     stop(requestId: string, ownerSessionId: string, command: QuestionChatStopPayload): Promise<QuestionChatStopResponse>;
@@ -103,13 +115,11 @@ export interface LocalAnswerInput {
   requestId?: string;
   selectedValues: string[];
   note?: string;
-  rationale?: string;
 }
 
 export interface LocalCancelInput {
   requestId?: string;
   note?: string;
-  rationale?: string;
 }
 
 interface LocalResolution {
@@ -131,6 +141,21 @@ interface PendingAsk {
   unavailableTimer?: NodeJS.Timeout;
   expiryTimer?: NodeJS.Timeout;
   targetAffinityTimer?: NodeJS.Timeout;
+  createCommandId: string;
+  signal?: AbortSignal;
+  abort?: () => void;
+}
+
+interface PendingCreateReceipt {
+  resolve(receipt: AskReceipt): void;
+  reject(error: Error): void;
+}
+
+interface PendingAnswerRead {
+  questionId: string;
+  resolve: (result: AnswerReadResult) => void;
+  reject: (error: Error) => void;
+  cleanup: () => void;
 }
 
 interface PendingProposal {
@@ -143,9 +168,10 @@ interface PendingProposal {
 
 const DEFAULT_UNAVAILABLE_AFTER_MS = 30_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
-const DEFAULT_ACTIVE_LOCAL_POLL_MS = 5_000;
+const DEFAULT_PROFILE_POLL_MS = 5_000;
 const DEFAULT_TARGET_AFFINITY_TIMEOUT_MS = 30_000;
 const DEFAULT_PROPOSAL_TIMEOUT_MS = 10_000;
+const DEFAULT_ANSWER_READ_TIMEOUT_MS = 10_000;
 
 export class PostboxClient {
   private socket: WebSocketLike | undefined;
@@ -158,21 +184,30 @@ export class PostboxClient {
   private nextReconnectMs: number;
   private readonly reconnect: boolean;
   private readonly askUnavailableAfterMs: number;
+  private readonly answerReadTimeoutMs: number;
   private readonly WebSocketImpl: WebSocketConstructor;
   private readonly pendingAsks = new Map<string, PendingAsk>();
+  private readonly asynchronousAskCreates = new Set<string>();
+  private readonly pendingCreateReceipts = new Map<string, PendingCreateReceipt>();
+  private readonly answerNotificationInbox: AnswerNotificationInbox;
+  private answerNotificationOperation: Promise<void> = Promise.resolve();
   private readonly localResolutions = new Map<string, LocalResolution>();
   private currentSemanticState: SemanticState;
   private currentServerUrl: string;
   private connectionState: PostboxConnectionState = "disconnected";
   private connectionDiagnostics: string[] = ["websocket:disconnected"];
   private currentTargetSource: string | undefined;
-  private currentTargetRole: ActiveLocalRole | undefined;
-  private activeLocalPollTimer: NodeJS.Timeout | undefined;
-  private deferredTargetUrl: string | undefined;
+  private currentTargetProfile: ServerProfileIdentity | undefined;
+  private currentTargetIdentity: PostboxServerIdentity | undefined;
+  private profilePollTimer: NodeJS.Timeout | undefined;
+  private deferredTarget: ResolvedServerTarget | undefined;
   private readonly suppressReconnectOnClose = new WeakSet<WebSocketLike>();
   private readonly questionChatSubscriptions = new Map<string, () => void>();
   private readonly pendingRecoveryOffers = new Map<string, QuestionChatRecoveryOffer>();
   private readonly pendingProposals = new Map<string, PendingProposal>();
+  private readonly pendingAnswerReads = new Map<string, PendingAnswerRead>();
+  private readonly pendingQueries = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  private readonly pendingPostboxWaits = new Map<string, string>();
   private readonly liveQuestionChats = new Map<string, string>();
   private readonly terminalQuestionChats = new Map<string, string>();
   private recoveryOffers: QuestionChatRecoveryOffer[] = [];
@@ -186,17 +221,20 @@ export class PostboxClient {
     this.nextReconnectMs = this.reconnectMs;
     this.reconnect = options.reconnect ?? true;
     this.askUnavailableAfterMs = options.askUnavailableAfterMs ?? DEFAULT_UNAVAILABLE_AFTER_MS;
+    this.answerReadTimeoutMs = options.answerReadTimeoutMs ?? DEFAULT_ANSWER_READ_TIMEOUT_MS;
     this.WebSocketImpl = options.WebSocketImpl ?? (WebSocket as unknown as WebSocketConstructor);
+    this.answerNotificationInbox = options.answerNotificationInbox ?? new MemoryAnswerNotificationInbox();
     this.currentSemanticState = options.registration.session.semanticState;
     this.currentServerUrl = options.serverUrl;
     this.currentTargetSource = options.targetSource;
-    this.currentTargetRole = options.targetRole;
+    this.currentTargetProfile = options.targetProfile;
+    this.currentTargetIdentity = options.targetIdentity;
   }
 
   start(): void {
     this.stopped = false;
     this.connect();
-    this.startActiveLocalPolling();
+    this.startProfilePolling();
   }
 
   stop(): void {
@@ -204,8 +242,9 @@ export class PostboxClient {
     this.connectionState = "disconnected";
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.activeLocalPollTimer) clearInterval(this.activeLocalPollTimer);
+    if (this.profilePollTimer) clearInterval(this.profilePollTimer);
     for (const [, pending] of this.pendingAsks) {
+      this.rejectCreateReceipt(pending.payload.requestId, new Error("Postbox client stopped before the Question was persisted."));
       pending.cleanup();
       pending.reject(new Error("Postbox client stopped"));
     }
@@ -221,6 +260,12 @@ export class PostboxClient {
     this.recoveryOfferIndex = 0;
     this.recoveryCompleteSent = false;
     this.failPendingProposals("Question Chat proposal stopped before the server responded.");
+    this.failPendingAnswerReads("Postbox stopped before the Answer was returned.");
+    for (const [waitRequestId, sessionId] of this.pendingPostboxWaits) {
+      this.send({ type: "postbox.wait.cancel", requestId: `wait_cancel_${randomUUID()}`, payload: { sessionId, waitRequestId } });
+    }
+    this.pendingPostboxWaits.clear();
+    this.failPendingQueries("Postbox stopped before the query was returned.");
     this.liveQuestionChats.clear();
     this.terminalQuestionChats.clear();
     this.socket?.close();
@@ -287,13 +332,14 @@ export class PostboxClient {
       return Promise.resolve(unavailableResult(payload.requestId, "Pi Postbox client is stopped."));
     }
     if (signal?.aborted) {
-      return Promise.reject(new Error("ask_postbox was aborted"));
+      return Promise.reject(new Error("write_question was aborted"));
     }
 
     return new Promise<AskResult>((resolve, reject) => {
       const cleanup = () => {
         this.pendingAsks.delete(payload.requestId);
-        signal?.removeEventListener("abort", abort);
+        this.asynchronousAskCreates.delete(payload.requestId);
+        if (pending.signal && pending.abort) pending.signal.removeEventListener("abort", pending.abort);
         if (pending.unavailableTimer) clearTimeout(pending.unavailableTimer);
         if (pending.expiryTimer) clearTimeout(pending.expiryTimer);
         if (pending.targetAffinityTimer) clearTimeout(pending.targetAffinityTimer);
@@ -301,13 +347,15 @@ export class PostboxClient {
         this.tryApplyDeferredTarget();
       };
       const complete = (result: AskResult) => {
+        this.rejectCreateReceipt(payload.requestId, new Error(`Question ended as ${result.status} before persistence acknowledgement.`));
         cleanup();
         resolve(result);
       };
       const abort = () => {
+        this.rejectCreateReceipt(payload.requestId, new Error("write_question was aborted before persistence acknowledgement"));
         this.cancelAskOnAbort(pending);
         cleanup();
-        reject(new Error("ask_postbox was aborted"));
+        reject(new Error("write_question was aborted"));
       };
 
       const pending: PendingAsk = {
@@ -319,7 +367,10 @@ export class PostboxClient {
         },
         cleanup,
         sentAtLeastOnce: false,
-        createdServerUrl: this.currentServerUrl
+        createdServerUrl: this.currentServerUrl,
+        createCommandId: `ask_create_${randomUUID()}`,
+        signal,
+        abort
       };
 
       this.pendingAsks.set(payload.requestId, pending);
@@ -329,6 +380,102 @@ export class PostboxClient {
       this.ensureConnection();
       this.publishLocalFallbackStatus();
       this.sendPendingAsk(pending);
+    });
+  }
+
+  createAsk(payload: AskCreatePayload, signal?: AbortSignal): Promise<AskReceipt> {
+    if (this.stopped) return Promise.reject(new Error("Pi Postbox client is stopped; the Question was not persisted."));
+    if (signal?.aborted) return Promise.reject(new Error("write_question was aborted before persistence acknowledgement"));
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question was not persisted."));
+    this.asynchronousAskCreates.add(payload.requestId);
+    const receipt = new Promise<AskReceipt>((resolve, reject) => this.pendingCreateReceipts.set(payload.requestId, { resolve, reject }));
+    const answer = this.ask(payload, signal);
+    // The answer continues to be tracked independently for notification and local compatibility.
+    void answer.catch(() => undefined);
+    return receipt;
+  }
+
+  createAskBatch(payload: { sessionId: string; questions: AskBatchQuestionDraft[] }, signal?: AbortSignal): Promise<AskBatchReceipt> {
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question batch was not persisted."));
+    if (signal?.aborted) return Promise.reject(Object.assign(new Error("write_question create_batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
+    const requestId = `ask_batch_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        if (!this.pendingQueries.delete(requestId)) return;
+        reject(Object.assign(new Error("write_question create_batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
+      };
+      this.pendingQueries.set(requestId, {
+        resolve: (value) => { signal?.removeEventListener("abort", abort); resolve(AskBatchReceiptSchema.parse(value)); },
+        reject: (error) => { signal?.removeEventListener("abort", abort); reject(error); }
+      });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (!this.send({ type: "ask.batch.create", requestId, payload })) {
+        this.pendingQueries.delete(requestId);
+        signal?.removeEventListener("abort", abort);
+        reject(new Error("Pi Postbox disconnected before the Question batch could be sent."));
+      }
+    });
+  }
+
+  getAnswer(questionId: string, signal?: AbortSignal): Promise<AnswerReadResult> {
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Answer cannot be read."));
+    if (signal?.aborted) return Promise.reject(Object.assign(new Error("get_answer was aborted before the Answer was read."), { name: "AbortError" }));
+    const commandId = `answer_get_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
+      const abort = () => {
+        if (!this.pendingAnswerReads.delete(commandId)) return;
+        pending.cleanup();
+        reject(Object.assign(new Error("get_answer was aborted before the Answer was read."), { name: "AbortError" }));
+      };
+      const pending: PendingAnswerRead = {
+        questionId,
+        resolve,
+        reject,
+        cleanup: () => {
+          if (timer) clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
+        }
+      };
+      this.pendingAnswerReads.set(commandId, pending);
+      signal?.addEventListener("abort", abort, { once: true });
+      timer = setTimeout(() => {
+        if (!this.pendingAnswerReads.delete(commandId)) return;
+        pending.cleanup();
+        reject(new Error("get_answer timed out; the Question may not exist or may belong to another Postbox session."));
+      }, this.answerReadTimeoutMs);
+      timer.unref?.();
+      if (!this.send({ type: "answer.get", requestId: commandId, payload: { questionId } })) {
+        this.pendingAnswerReads.delete(commandId);
+        pending.cleanup();
+        reject(new Error("Pi Postbox disconnected before get_answer could be sent."));
+      }
+    });
+  }
+
+  query(type: "question.list" | "questions.get" | "question.status.list" | "owner.status.get" | "question.update" | "question.history.get" | "question.answer.recover", payload: any): Promise<any> {
+    if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected."));
+    const requestId = `query_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      this.pendingQueries.set(requestId, { resolve, reject });
+      if (!this.send({ type, requestId, payload } as ExtensionClientMessage)) { this.pendingQueries.delete(requestId); reject(new Error("Query could not be sent.")); }
+    });
+  }
+
+  waitForPostbox(sessionId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const requestId = `wait_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        if (!this.pendingQueries.delete(requestId)) return;
+        this.pendingPostboxWaits.delete(requestId);
+        this.send({ type: "postbox.wait.cancel", requestId: `wait_cancel_${randomUUID()}`, payload: { sessionId, waitRequestId: requestId } });
+        reject(Object.assign(new Error("Postbox wait was aborted"), { name: "AbortError" }));
+      };
+      if (signal?.aborted) return abort();
+      this.pendingPostboxWaits.set(requestId, sessionId);
+      this.pendingQueries.set(requestId, { resolve: (value) => { this.pendingPostboxWaits.delete(requestId); signal?.removeEventListener("abort", abort); resolve(value as Record<string, unknown>); }, reject: (error) => { this.pendingPostboxWaits.delete(requestId); signal?.removeEventListener("abort", abort); reject(error); } });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (!this.send({ type: "postbox.wait", requestId, payload: { sessionId } })) { this.pendingPostboxWaits.delete(requestId); this.pendingQueries.delete(requestId); reject(new Error("Postbox wait could not be sent.")); }
     });
   }
 
@@ -346,17 +493,37 @@ export class PostboxClient {
   async getStatusSnapshot(
     autostart: PostboxAutostartStatusSnapshot = { enabled: true, startedByThisSession: false }
   ): Promise<PostboxStatusSnapshot> {
+    let openQuestionCount = this.pendingAsks.size;
+    const owner = this.options.registration.session.owner;
+    if (owner && this.isConnected()) {
+      try {
+        const [status] = await this.query("owner.status.get", { owners: [owner] }) as Array<{
+          activeQuestionCount?: unknown;
+        }>;
+        if (Number.isInteger(status?.activeQuestionCount) && Number(status.activeQuestionCount) >= 0) {
+          const awaitingPersistence = [...this.pendingCreateReceipts.keys()]
+            .filter((requestId) => this.pendingAsks.has(requestId))
+            .length;
+          openQuestionCount = Number(status.activeQuestionCount) + awaitingPersistence;
+        }
+      } catch {
+        // Pending client state remains a safe fallback while the durable status query is unavailable.
+      }
+    }
+
     const snapshot = createUrlStatusSnapshot({
       state: this.connectionState,
       activeUrl: this.currentServerUrl,
-      openQuestionCount: this.pendingAsks.size,
+      openQuestionCount,
       autostart,
-      diagnostics: this.connectionState === "connected" ? [] : this.connectionDiagnostics,
-      source: this.currentTargetSource
+      diagnostics: this.connectionDiagnostics,
+      source: this.currentTargetSource,
+      profile: this.currentTargetProfile,
+      server: this.currentTargetIdentity
     });
 
     return enrichStatusSnapshotFromLocalServer(snapshot, {
-      role: this.currentTargetRole,
+      profile: this.currentTargetProfile,
       inspectTailscale: this.options.inspectTailscale
     });
   }
@@ -366,15 +533,13 @@ export class PostboxClient {
     this.validateSelectedValues(pending.payload, input.selectedValues);
     const answer: AskAnswerPayload = {
       selectedValues: input.selectedValues,
-      note: input.note,
-      rationale: input.rationale
+      note: input.note
     };
     const result: AskResult = {
       status: "answered",
       requestId: pending.payload.requestId,
       selectedValues: answer.selectedValues,
       note: answer.note,
-      rationale: answer.rationale,
       resolvedAt: new Date().toISOString()
     };
     this.resolveLocally(pending, result, {
@@ -387,12 +552,11 @@ export class PostboxClient {
 
   cancelPendingAsk(input: LocalCancelInput = {}): AskResult {
     const pending = this.findPendingAsk(input.requestId);
-    const cancel: AskCancelPayload = { note: input.note, rationale: input.rationale };
+    const cancel: AskCancelPayload = { note: input.note };
     const result: AskResult = {
       status: "cancelled",
       requestId: pending.payload.requestId,
       note: cancel.note,
-      rationale: cancel.rationale,
       resolvedAt: new Date().toISOString()
     };
     this.resolveLocally(pending, result, {
@@ -443,16 +607,41 @@ export class PostboxClient {
           this.offerQuestionChatRecovery();
           return;
         }
+        if (parsed.data.type === "ask.created") {
+          const pending = [...this.pendingAsks.values()].find((candidate) => candidate.createCommandId === parsed.data.requestId);
+          if (pending && parsed.data.payload.questionId === pending.payload.requestId) {
+            this.resolveCreateReceipt(pending.payload.requestId, AskReceiptSchema.parse(parsed.data.payload));
+          }
+          return;
+        }
+        if (parsed.data.type === "answer.available") {
+          const notification = parsed.data;
+          this.answerNotificationOperation = this.answerNotificationOperation.then(
+            () => this.deliverAnswerNotification(notification.requestId, notification.payload)
+          );
+          return;
+        }
+        if (parsed.data.type === "answer.result") {
+          const pending = this.pendingAnswerReads.get(parsed.data.requestId);
+          const result = AnswerReadResultSchema.parse(parsed.data.payload);
+          const questionId = result.questionId;
+          if (!pending || pending.questionId !== questionId) return;
+          this.pendingAnswerReads.delete(parsed.data.requestId);
+          pending.cleanup();
+          pending.resolve(result);
+          return;
+        }
+        if (parsed.data.type === "query.result" || parsed.data.type === "question.list.result" || parsed.data.type === "postbox.wait.result" || parsed.data.type === "ask.batch.result") {
+          const pending = this.pendingQueries.get(parsed.data.requestId);
+          if (pending) { this.pendingQueries.delete(parsed.data.requestId); pending.resolve(parsed.data.payload); }
+          return;
+        }
         if (parsed.data.type === "chat.reconcile") {
           void this.reconcileQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
         }
         if (parsed.data.type === "chat.activate") {
           void this.activateQuestionChat(parsed.data.requestId, parsed.data.payload);
-          return;
-        }
-        if (parsed.data.type === "chat.activate-context") {
-          void this.activateContextQuestionChat(parsed.data.requestId, parsed.data.payload);
           return;
         }
         if (parsed.data.type === "chat.snapshot") {
@@ -483,10 +672,29 @@ export class PostboxClient {
         if (parsed.data.type === "error") {
           this.options.onStatus?.(`server-error:${parsed.data.error.code}`);
           if (parsed.data.requestId) {
-            this.pendingAsks.get(parsed.data.requestId)?.reject(new Error(parsed.data.error.message));
+            const error = new Error(parsed.data.error.message);
+            const create = [...this.pendingAsks.values()].find((candidate) => candidate.createCommandId === parsed.data.requestId);
+            if (create) this.rejectCreateReceipt(create.payload.requestId, error);
+            if (create) create.reject(error);
+            const read = this.pendingAnswerReads.get(parsed.data.requestId);
+            if (read) {
+              this.pendingAnswerReads.delete(parsed.data.requestId);
+              read.cleanup();
+              read.reject(error);
+            }
+            const query = this.pendingQueries.get(parsed.data.requestId);
+            if (query) { this.pendingQueries.delete(parsed.data.requestId); query.reject(error); }
+            this.pendingAsks.get(parsed.data.requestId)?.reject(error);
           }
         }
         if (parsed.data.type === "ask.resolved") {
+          this.resolveCreateReceipt(parsed.data.payload.requestId, {
+            questionId: parsed.data.payload.requestId,
+            revision: 1,
+            ownerRevision: 1,
+            status: "pending",
+            disposition: "idempotent"
+          });
           this.markQuestionChatTerminal(parsed.data.payload.requestId);
           this.questionChatSubscriptions.get(parsed.data.payload.requestId)?.();
           this.questionChatSubscriptions.delete(parsed.data.payload.requestId);
@@ -507,6 +715,8 @@ export class PostboxClient {
     socket.on("close", () => {
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       this.failPendingProposals("Postbox disconnected before the Question Chat proposal completed.");
+      this.failPendingAnswerReads("Postbox disconnected before the Answer was returned.");
+      this.failPendingQueries("Postbox disconnected before the query was returned.");
       this.connectionState = "disconnected";
       this.recordConnectionDiagnostic("websocket:disconnected");
       if (this.stopped) return;
@@ -524,14 +734,7 @@ export class PostboxClient {
     await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activate(input));
   }
 
-  private async activateContextQuestionChat(
-    commandId: string,
-    payload: { requestId: string; ownerSessionId: string; source: QuestionChatContextSource }
-  ): Promise<void> {
-    await this.handleQuestionChatActivation(commandId, payload, (input) => this.options.questionChats!.activateContext(input));
-  }
-
-  private async handleQuestionChatActivation<Source extends QuestionChatSource | QuestionChatContextSource>(
+  private async handleQuestionChatActivation<Source extends QuestionChatSource>(
     commandId: string,
     payload: { requestId: string; ownerSessionId: string; source: Source },
     activate: (input: { requestId: string; ownerSessionId: string; source: Source }) => Promise<QuestionChatSnapshot>
@@ -767,8 +970,13 @@ export class PostboxClient {
 
   private send(message: ExtensionClientMessage): boolean {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify(message));
-    return true;
+    try {
+      this.socket.send(JSON.stringify(message));
+      return true;
+    } catch (error) {
+      this.recordConnectionDiagnostic(`send-error:${messageFrom(error)}`);
+      return false;
+    }
   }
 
   private finishProposal(commandId: string, result: ProposeAnswerResult): void {
@@ -800,7 +1008,9 @@ export class PostboxClient {
 
   private sendPendingAsk(pending: PendingAsk): boolean {
     if (pending.originServerUrl && pending.originServerUrl !== this.currentServerUrl) return false;
-    const sent = this.send({ type: "ask.create", requestId: pending.payload.requestId, payload: pending.payload });
+    const sent = this.send({
+      type: "ask.create", requestId: pending.createCommandId, payload: pending.payload
+    });
     if (sent) {
       pending.sentAtLeastOnce = true;
       pending.originServerUrl ??= this.currentServerUrl;
@@ -809,7 +1019,64 @@ export class PostboxClient {
         pending.unavailableTimer = undefined;
       }
     }
+    if (!sent && this.asynchronousAskCreates.has(pending.payload.requestId)) {
+      const error = new Error("Pi Postbox could not send the Question for persistence.");
+      this.rejectCreateReceipt(pending.payload.requestId, error);
+      pending.reject(error);
+    }
     return sent;
+  }
+
+  private resolveCreateReceipt(requestId: string, receipt: AskReceipt): void {
+    const pending = this.pendingCreateReceipts.get(requestId);
+    if (!pending) return;
+    this.pendingCreateReceipts.delete(requestId);
+    this.detachAskAbortSignal(requestId);
+    pending.resolve(receipt);
+  }
+
+  private detachAskAbortSignal(requestId: string): void {
+    const pending = this.pendingAsks.get(requestId);
+    if (!pending?.signal || !pending.abort) return;
+    pending.signal.removeEventListener("abort", pending.abort);
+    pending.signal = undefined;
+    pending.abort = undefined;
+  }
+
+  private async deliverAnswerNotification(
+    commandId: string | undefined,
+    notification: { questionId: string; question: string; answerId: string }
+  ): Promise<void> {
+    try {
+      const state = await this.answerNotificationInbox.begin(notification.answerId);
+      if (state !== "delivered") {
+        this.options.onAnswerAvailable?.(notification, notification.answerId);
+        await this.answerNotificationInbox.markDelivered(notification.answerId);
+      }
+      if (commandId) this.send({ type: "answer.available.ack", requestId: commandId, payload: { answerId: notification.answerId } });
+    } catch (error) {
+      this.options.onStatus?.(`answer-notification-persist-error:${messageFrom(error)}`);
+    }
+  }
+
+  private rejectCreateReceipt(requestId: string, error: Error): void {
+    const pending = this.pendingCreateReceipts.get(requestId);
+    if (!pending) return;
+    this.pendingCreateReceipts.delete(requestId);
+    pending.reject(error);
+  }
+
+  private failPendingAnswerReads(message: string): void {
+    for (const [commandId, pending] of this.pendingAnswerReads) {
+      this.pendingAnswerReads.delete(commandId);
+      pending.cleanup();
+      pending.reject(new Error(message));
+    }
+  }
+
+  private failPendingQueries(message: string): void {
+    for (const pending of this.pendingQueries.values()) pending.reject(new Error(message));
+    this.pendingQueries.clear();
   }
 
   private startUnavailableTimerIfNeeded(pending: PendingAsk): void {
@@ -914,7 +1181,7 @@ export class PostboxClient {
       return;
     }
     const values = [...active.options.map((option) => option.value), OTHER_OPTION_VALUE].join(",");
-    const deferred = this.deferredTargetUrl ? ` Active-local switch to ${this.deferredTargetUrl} is deferred until pinned Postbox work is resolved.` : "";
+    const deferred = this.deferredTarget ? ` Active-local switch to ${this.deferredTarget.url} is deferred until pinned Postbox work is resolved.` : "";
     this.options.onLocalFallbackStatus({
       requestId: active.requestId,
       serverUrl: this.currentServerUrl,
@@ -930,42 +1197,50 @@ export class PostboxClient {
     this.connectionDiagnostics = [...new Set([...this.connectionDiagnostics, diagnostic])].slice(-5);
   }
 
+  private removeConnectionDiagnostics(prefix: string): void {
+    this.connectionDiagnostics = this.connectionDiagnostics.filter((diagnostic) => !diagnostic.startsWith(prefix));
+  }
+
   private scheduleReconnect(): void {
     if (this.stopped || !this.reconnect) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     const delay = this.nextReconnectMs;
     this.nextReconnectMs = Math.min(this.nextReconnectMs * 2, this.reconnectMaxMs);
+    const diagnostic = `reconnect-scheduled:delay=${delay}ms;target=${this.currentServerUrl}`;
+    this.recordConnectionDiagnostic(diagnostic);
+    this.options.onStatus?.(diagnostic);
     this.reconnectTimer = setTimeout(() => {
+      this.removeConnectionDiagnostics("reconnect-scheduled:");
       void this.reconnectToResolvedTarget();
     }, delay);
     this.reconnectTimer.unref?.();
   }
 
-  private activeLocalPollingEnabled(): boolean {
-    return !!this.options.resolveTarget && this.options.activeLocalPollingEnabled !== false;
+  private profilePollingEnabled(): boolean {
+    return !!this.options.resolveTarget && this.options.profilePollingEnabled !== false;
   }
 
-  private startActiveLocalPolling(): void {
-    if (!this.activeLocalPollingEnabled()) return;
-    if (this.activeLocalPollTimer) clearInterval(this.activeLocalPollTimer);
-    const intervalMs = this.options.activeLocalPollMs ?? DEFAULT_ACTIVE_LOCAL_POLL_MS;
-    this.activeLocalPollTimer = setInterval(() => {
-      void this.checkForActiveLocalTargetChange();
+  private startProfilePolling(): void {
+    if (!this.profilePollingEnabled()) return;
+    if (this.profilePollTimer) clearInterval(this.profilePollTimer);
+    const intervalMs = this.options.profilePollMs ?? DEFAULT_PROFILE_POLL_MS;
+    this.profilePollTimer = setInterval(() => {
+      void this.checkForProfileTargetChange();
     }, intervalMs);
-    this.activeLocalPollTimer.unref?.();
+    this.profilePollTimer.unref?.();
   }
 
   private async reconnectToResolvedTarget(): Promise<void> {
     if (this.stopped) return;
-    await this.checkForActiveLocalTargetChange({ connectWhenDisconnected: false });
+    await this.checkForProfileTargetChange({ connectWhenDisconnected: false });
     if (this.stopped) return;
     this.connect();
   }
 
-  private async checkForActiveLocalTargetChange(options: { connectWhenDisconnected?: boolean } = {}): Promise<void> {
-    if (this.stopped || !this.activeLocalPollingEnabled() || !this.options.resolveTarget) return;
+  private async checkForProfileTargetChange(options: { connectWhenDisconnected?: boolean } = {}): Promise<void> {
+    if (this.stopped || !this.profilePollingEnabled() || !this.options.resolveTarget) return;
 
-    let result: ResolveActiveLocalTargetResult;
+    let result: ResolveServerTargetResult;
     try {
       result = await this.options.resolveTarget();
     } catch (error) {
@@ -974,34 +1249,54 @@ export class PostboxClient {
     }
 
     if (this.stopped || result.status !== "selected") return;
-    const targetUrl = result.target.url;
-    if (targetUrl === this.currentServerUrl && !this.deferredTargetUrl) return;
-
-    if (this.hasPinnedWorkBlocking(targetUrl)) {
-      this.deferTargetSwitch(targetUrl);
+    const target = result.target;
+    const targetUrl = target.url;
+    if (targetUrl === this.currentServerUrl && !this.deferredTarget) {
+      this.applyTargetIdentity(target);
       return;
     }
 
-    this.deferredTargetUrl = undefined;
-    this.currentTargetSource = result.target.source;
-    this.currentTargetRole = result.target.role;
+    if (this.hasPinnedWorkBlocking(targetUrl)) {
+      this.deferTargetSwitch(target);
+      return;
+    }
+
+    this.deferredTarget = undefined;
+    this.removeConnectionDiagnostics("target-switch-deferred:");
+    this.applyTargetIdentity(target);
     if (targetUrl === this.currentServerUrl) return;
     this.retargetNow(targetUrl, options.connectWhenDisconnected ?? true);
   }
 
-  private deferTargetSwitch(targetUrl: string): void {
-    this.deferredTargetUrl = targetUrl;
-    this.options.onStatus?.(`target-switch-deferred:${targetUrl}`);
+  private deferTargetSwitch(target: ResolvedServerTarget): void {
+    this.deferredTarget = target;
+    const timeoutMs = this.options.targetAffinityTimeoutMs ?? DEFAULT_TARGET_AFFINITY_TIMEOUT_MS;
+    const diagnostic = `target-switch-deferred:${target.url}:pinned-origin-affinity<=${timeoutMs}ms`;
+    this.recordConnectionDiagnostic(diagnostic);
+    this.options.onStatus?.(diagnostic);
     this.startTargetAffinityTimersForPinnedWork();
     this.publishLocalFallbackStatus();
   }
 
   private tryApplyDeferredTarget(): void {
-    if (this.stopped || !this.deferredTargetUrl || this.hasPinnedWorkBlocking(this.deferredTargetUrl)) return;
-    const targetUrl = this.deferredTargetUrl;
-    this.deferredTargetUrl = undefined;
-    if (targetUrl !== this.currentServerUrl) this.retargetNow(targetUrl, true);
+    const target = this.deferredTarget;
+    if (this.stopped || !target || this.hasPinnedWorkBlocking(target.url)) return;
+    this.deferredTarget = undefined;
+    this.removeConnectionDiagnostics("target-switch-deferred:");
+    this.applyTargetIdentity(target);
+    if (target.url !== this.currentServerUrl) this.retargetNow(target.url, true);
     this.publishLocalFallbackStatus();
+  }
+
+  private applyTargetIdentity(target: ResolvedServerTarget): void {
+    this.currentTargetSource = target.source;
+    this.currentTargetProfile = target.profile;
+    this.currentTargetIdentity = {
+      version: target.version,
+      protocolVersion: target.protocolVersion,
+      instanceId: target.instanceId,
+      buildId: target.buildId
+    };
   }
 
   private retargetNow(targetUrl: string, connectWhenDisconnected: boolean): void {
@@ -1097,15 +1392,15 @@ export function toExtensionSocketUrl(serverUrl: string): string {
   return url.toString();
 }
 
-function unavailableResult(requestId: string, rationale: string): AskResult {
-  return { status: "unavailable", requestId, rationale, resolvedAt: new Date().toISOString() };
+function unavailableResult(requestId: string, note: string): AskResult {
+  return { status: "unavailable", requestId, note, resolvedAt: new Date().toISOString() };
 }
 
 function expiredResult(requestId: string): AskResult {
   return {
     status: "expired",
     requestId,
-    rationale: "Postbox request expired before an answer was submitted.",
+    note: "Postbox request expired before an answer was submitted.",
     resolvedAt: new Date().toISOString()
   };
 }

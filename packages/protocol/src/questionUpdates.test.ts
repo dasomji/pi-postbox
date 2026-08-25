@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import * as protocol from "./index.js";
+
+describe("Question update contract", () => {
+  it("exposes only strict revision, cancellation, supersession, and reparent actions", () => {
+    const schema = (protocol as Record<string, any>).UpdateQuestionPayloadSchema;
+    expect(schema).toBeDefined();
+    expect(schema.safeParse({ action: "revise", expectedRevision: 2, expectedOwnerRevision: 3, question: {
+      prompt: "Updated?", ambiguity: "Which updated path should be used?"
+    } }).success).toBe(true);
+    expect(schema.safeParse({ action: "revise", expectedRevision: 2, expectedOwnerRevision: 3, question: { prompt: "Updated?" } }).success).toBe(false);
+    expect(schema.safeParse({ action: "cancel", expectedRevision: 2, expectedOwnerRevision: 3, note: "No longer relevant" }).success).toBe(true);
+    expect(schema.safeParse({ action: "cancel", expectedRevision: 2, expectedOwnerRevision: 3, rationale: "No longer relevant" }).success).toBe(false);
+    expect(schema.safeParse({ action: "supersede", expectedRevision: 2, expectedOwnerRevision: 3, replacementQuestionId: "replacement" }).success).toBe(true);
+    expect(schema.safeParse({ action: "reparent", expectedRevision: 2, expectedOwnerRevision: 3, parentQuestionId: "new-parent" }).success).toBe(true);
+    expect(schema.safeParse({ action: "patch", expectedRevision: 2, status: "answered" }).success).toBe(false);
+    expect(schema.safeParse({ action: "cancel", expectedRevision: 2, extra: true }).success).toBe(false);
+    expect(schema.safeParse({ action: "cancel", expectedRevision: 2, expectedOwnerRevision: 3, question: { prompt: "Not valid for cancel" } }).success).toBe(false);
+    expect(schema.safeParse({ action: "supersede", expectedRevision: 2, expectedOwnerRevision: 3 }).success).toBe(false);
+    expect(schema.safeParse({ action: "takeover", expectedRevision: 2, expectedOwnerRevision: 3, expectedOwner: { harness: "pi", ownerId: "old" }, nativeCompleted: true }).success).toBe(false);
+    expect(schema.safeParse({ action: "revise", expectedRevision: 2, question: { prompt: "Missing owner concurrency guard" } }).success).toBe(false);
+    expect(schema.safeParse({ action: "revise", expectedOwnerRevision: 3, question: { prompt: "Missing content concurrency guard" } }).success).toBe(false);
+  });
+
+  it("describes history as explicit actor and timestamp facts without Answer content", () => {
+    const schema = (protocol as Record<string, any>).QuestionHistorySchema;
+    expect(schema).toBeDefined();
+    const result = schema.parse({ questionId: "question", revisions: [{
+      revision: 1, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T11:59:00.000Z",
+      question: { prompt: "Original?" }, options: [{ value: "yes", label: "Yes" }]
+    }], events: [
+      { type: "revision", revision: 2, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:00:00.000Z", changes: ["question"] },
+      { type: "parent_changed", revision: 3, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:01:00.000Z", parentQuestionId: "parent" },
+      { type: "superseded", revision: 4, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:02:00.000Z", replacementQuestionId: "replacement" },
+      { type: "owner_changed", revision: 4, ownerRevision: 2, actor: { harness: "pi", ownerId: "agent" }, at: "2026-08-13T12:03:00.000Z",
+        previousOwner: { harness: "pi", ownerId: "agent" }, owner: { harness: "pi", ownerId: "next" }, reason: "transfer" }
+    ] });
+    expect(JSON.stringify(result)).not.toMatch(/selectedValues|note|rationale/i);
+  });
+});

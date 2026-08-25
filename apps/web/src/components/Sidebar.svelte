@@ -4,6 +4,7 @@
   import NotificationSubscriptionControl from "./NotificationSubscriptionControl.svelte";
   import PwaInstallButton from "./PwaInstallButton.svelte";
   import SidebarProject from "./SidebarProject.svelte";
+  import ServerEnvironmentBadge from "./ServerEnvironmentBadge.svelte";
 
   let { onNavigate }: { onNavigate?: () => void } = $props();
 
@@ -53,6 +54,9 @@
 
   <footer class="space-y-2 border-t border-postbox-border px-2 py-2">
     <PwaInstallButton />
+    <div class="px-1">
+      <ServerEnvironmentBadge />
+    </div>
     <!-- Airmail envelope holding notification settings and the decision history shortcut. -->
     <div class="airmail-border rounded-sm shadow-postbox-section">
       <div class="px-3 py-2">

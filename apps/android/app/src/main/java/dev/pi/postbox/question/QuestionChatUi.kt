@@ -86,8 +86,6 @@ import androidx.compose.ui.unit.sp
 import dev.pi.postbox.questionchat.QuestionChatActivationUiState
 import dev.pi.postbox.questionchat.QuestionChatAvailabilityError
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
-import dev.pi.postbox.questionchat.QuestionChatContextFallbackAvailability
-import dev.pi.postbox.questionchat.QuestionChatForkKind
 import dev.pi.postbox.questionchat.QuestionChatMessage
 import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatRenderedAssistantMessage
@@ -189,7 +187,6 @@ internal fun QuestionChatPanel(
     onDraftChanged: (String) -> Unit,
     onSendDraft: () -> Unit,
     onSendStarter: (QuestionChatStarter) -> Unit,
-    onConfirmContextOnlyQuestionChat: () -> Unit,
     onStop: () -> Unit,
     onReviewSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -206,13 +203,6 @@ internal fun QuestionChatPanel(
     val uriHandler = LocalUriHandler.current
     val view = LocalView.current
     var pendingLink by remember(workflow.key) { mutableStateOf<String?>(null) }
-    var showContextOnlyConfirmation by remember(workflow.key) { mutableStateOf(false) }
-
-    LaunchedEffect(owner.activation) {
-        if (owner.activation !is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation) {
-            showContextOnlyConfirmation = false
-        }
-    }
     LaunchedEffect(owner.composerFocusToken) {
         if (owner.composerFocusToken > 0L) {
             focusRequester.requestFocus()
@@ -276,16 +266,6 @@ internal fun QuestionChatPanel(
                         onCopyCode = { clipboard.setText(AnnotatedString(it)) }
                     )
                 }
-                owner.activation is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> {
-                    val activation = owner.activation as QuestionChatActivationUiState.AwaitingContextFallbackConfirmation
-                    QuestionChatAvailabilityWorkspace(
-                        error = activation.error,
-                        contextOnlyConfirmationVisible = showContextOnlyConfirmation,
-                        onShowContextOnlyConfirmation = { showContextOnlyConfirmation = true },
-                        onDismissContextOnlyConfirmation = { showContextOnlyConfirmation = false },
-                        onConfirmContextOnlyQuestionChat = onConfirmContextOnlyQuestionChat
-                    )
-                }
                 owner.activation is QuestionChatActivationUiState.Unavailable -> {
                     QuestionChatUnavailableWorkspace(
                         error = (owner.activation as QuestionChatActivationUiState.Unavailable).error,
@@ -296,7 +276,6 @@ internal fun QuestionChatPanel(
                     QuestionChatActivationWorkspace(message = "Checking for an existing Chat…")
                 }
                 owner.activation == QuestionChatActivationUiState.ActivatingExact ||
-                    owner.activation == QuestionChatActivationUiState.ActivatingContextFallback ||
                     owner.activation == QuestionChatActivationUiState.Idle -> {
                     QuestionChatActivationWorkspace(message = "Starting Chat…")
                 }
@@ -396,23 +375,6 @@ private fun QuestionChatSessionWorkspace(
     }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (snapshot.forkKind == QuestionChatForkKind.CONTEXT_ONLY) {
-            Text(
-                text = "Context-only · degraded",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = PostalColors.warningForeground,
-                modifier = Modifier
-                    .background(PostalColors.warning.copy(alpha = 0.1f), RoundedCornerShape(999.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            )
-            Text(
-                text = "This context-only interviewer uses persisted handoff context, not an exact fork of the originating Pi session.",
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-                color = PostalColors.warningForeground
-            )
-        }
         QuestionChatConnectionStatus(connection = connection, onRetry = onRetry)
         LazyColumn(
             state = historyState,
@@ -618,73 +580,9 @@ private fun QuestionChatUnavailableWorkspace(
             fontSize = 14.sp,
             color = PostalColors.dangerForeground
         )
-        questionChatContextUnavailableMessage(error)?.let { message ->
-            Text(
-                text = message,
-                fontSize = 13.sp,
-                color = PostalColors.subtle,
-                lineHeight = 19.sp
-            )
-        }
         OutlinedButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) {
             Text("Retry")
         }
-    }
-}
-
-@Composable
-private fun QuestionChatAvailabilityWorkspace(
-    error: QuestionChatAvailabilityError,
-    contextOnlyConfirmationVisible: Boolean,
-    onShowContextOnlyConfirmation: () -> Unit,
-    onDismissContextOnlyConfirmation: () -> Unit,
-    onConfirmContextOnlyQuestionChat: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            text = error.message,
-            fontSize = 14.sp,
-            color = PostalColors.dangerForeground
-        )
-        OutlinedButton(onClick = onShowContextOnlyConfirmation, modifier = Modifier.heightIn(min = 48.dp)) {
-            Text("Start context-only interviewer")
-        }
-        if (contextOnlyConfirmationVisible) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Start context-only interviewer?",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = PostalColors.text
-                )
-                Text(
-                    text = "This starts a fresh private interviewer session from persisted handoff context. It is not an exact fork of the originating Pi Session.",
-                    fontSize = 14.sp,
-                    color = PostalColors.subtle,
-                    lineHeight = 20.sp
-                )
-                OutlinedButton(onClick = onConfirmContextOnlyQuestionChat, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Confirm context-only interviewer")
-                }
-                TextButton(onClick = onDismissContextOnlyConfirmation, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Cancel context-only interviewer")
-                }
-            }
-        }
-    }
-}
-
-private fun questionChatContextUnavailableMessage(error: QuestionChatAvailabilityError): String? {
-    val contextFallback = error.contextFallback as? QuestionChatContextFallbackAvailability.Unavailable ?: return null
-    return when (contextFallback.reason) {
-        "missing_codebase_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase context."
-        "missing_problem_context" -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted problem context."
-        else -> "The context-only interviewer is unavailable because this legacy Postbox Question has no persisted codebase or problem context."
     }
 }
 
@@ -697,9 +595,7 @@ private fun questionChatWorkspaceBorderColor(
     when (activation) {
         QuestionChatActivationUiState.Probing,
         QuestionChatActivationUiState.ActivatingExact,
-        QuestionChatActivationUiState.ActivatingContextFallback,
         QuestionChatActivationUiState.Idle,
-        is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation,
         is QuestionChatActivationUiState.Unavailable -> PostalColors.danger
     }
 }
@@ -715,9 +611,7 @@ private fun questionChatWorkspaceStatusDescription(
     null -> when (activation) {
         QuestionChatActivationUiState.Probing -> "Checking for an existing Chat"
         QuestionChatActivationUiState.ActivatingExact,
-        QuestionChatActivationUiState.ActivatingContextFallback,
         QuestionChatActivationUiState.Idle -> "Starting Chat"
-        is QuestionChatActivationUiState.AwaitingContextFallbackConfirmation -> "Chat exact activation unavailable"
         is QuestionChatActivationUiState.Unavailable -> "Chat unavailable"
     }
 }

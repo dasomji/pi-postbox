@@ -6,7 +6,8 @@ import {
   HealthResponseSchema,
   QuestionChatUnavailableResponseSchema,
   StateSnapshotSchema,
-  type ActiveLocalTargetIdentity
+  type ServerInstanceIdentity,
+  type ServerProfileIdentity
 } from "@pi-postbox/protocol";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 import { existsSync } from "node:fs";
@@ -35,16 +36,15 @@ export interface CreatePostboxAppOptions {
   startedAtMs?: number;
   now?: () => number;
   version?: string;
+  buildId?: string;
+  profile?: ServerProfileIdentity;
   uiDistDir?: string;
   databasePath?: string;
   staleAfterMs?: number;
   offlineAfterMs?: number;
   sessionHideOfflineAfterMs?: number;
   sessionRetentionMs?: number;
-  askTimeoutMs?: number;
   expirySweepMs?: number;
-  historyRetentionMaxAgeMs?: number;
-  historyRetentionMaxRecords?: number;
   bodyLimitBytes?: number;
   websocketMaxPayloadBytes?: number;
   compressionThresholdBytes?: number;
@@ -58,13 +58,13 @@ export interface CreatePostboxAppOptions {
   pushSender?: PushSender;
   fcmSender?: FcmSender;
   fcmServiceAccountPath?: string;
-  localTarget?: () => ActiveLocalTargetIdentity | undefined;
+  serverInstance?: () => ServerInstanceIdentity | undefined;
   // Supplied by the CLI so POST /admin/shutdown (loopback-only) can stop the process.
   onShutdownRequest?: () => void;
 }
 
-export interface ActiveLocalTargetAwareApp extends FastifyInstance {
-  setActiveLocalTarget?: (identity: ActiveLocalTargetIdentity | undefined) => void;
+export interface ServerInstanceAwareApp extends FastifyInstance {
+  setServerInstance?: (identity: ServerInstanceIdentity | undefined) => void;
 }
 
 const embeddedShell = `<!doctype html>
@@ -103,10 +103,11 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
 
   const startedAtMs = options.startedAtMs ?? Date.now();
   const now = options.now ?? (() => Date.now());
-  let mutableLocalTarget: ActiveLocalTargetIdentity | undefined;
-  const getLocalTarget = options.localTarget ?? (() => mutableLocalTarget);
-  (app as ActiveLocalTargetAwareApp).setActiveLocalTarget = (identity) => {
-    mutableLocalTarget = identity;
+  const profile = options.profile ?? { kind: "production", id: "production" };
+  let mutableServerInstance: ServerInstanceIdentity | undefined;
+  const getServerInstance = options.serverInstance ?? (() => mutableServerInstance);
+  (app as ServerInstanceAwareApp).setServerInstance = (identity) => {
+    mutableServerInstance = identity;
   };
   const db = openPostboxDatabase(options.databasePath ?? defaultDatabasePath());
   let sessionStore: SessionStore;
@@ -121,7 +122,9 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     db.close();
     throw error;
   }
-  const requestStore = new RequestStore(db, now, { askTimeoutMs: options.askTimeoutMs });
+  const requestStore = new RequestStore(db, now, {
+    recordTelemetry: (event) => app.log.info({ questionTelemetry: event }, "question telemetry")
+  });
   const questionChatRelay = new QuestionChatRelay({
     commandTimeoutMs: options.chatCommandTimeoutMs,
     commandRateLimitMax: options.chatCommandRateLimitMax,
@@ -158,15 +161,8 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
       questionChatRelay.cleanup(result.requestId, terminalRequest.sessionId, result.status);
     }
   });
-  const historyService = new HistoryService(db, requestStore, now, {
-    maxAgeMs: options.historyRetentionMaxAgeMs,
-    maxRecords: options.historyRetentionMaxRecords
-  });
+  const historyService = new HistoryService(db, requestStore, now);
   let broadcaster: StateBroadcaster;
-  const pruneHistory = () => {
-    requestStore.expireDue();
-    return historyService.prune();
-  };
   const expireDueAndBroadcast = () => {
     const expired = requestStore.expireDue();
     if (expired.length > 0) broadcaster.broadcast();
@@ -176,7 +172,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     requestStore.expireDue();
     // History pruning first: it deletes old terminal requests, which is what
     // frees their sessions for the retention purge below.
-    pruneHistory();
+    requestStore.expireDue();
     sessionStore.pruneOfflineSessions();
     return StateSnapshotSchema.parse({
       ...sessionStore.snapshot(),
@@ -224,7 +220,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   await registerStateRoutes(app, getSnapshot);
   await registerSseRoutes(app, broadcaster);
   await registerMetadataRoutes(app, sessionStore, broadcaster);
-  await registerHistoryRoutes(app, historyService, broadcaster, pruneHistory);
+  await registerHistoryRoutes(app, historyService, expireDueAndBroadcast);
   await registerPushRoutes(app, pushStore);
   await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast, {
     relay: questionChatRelay,
@@ -246,7 +242,9 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
       startedAtMs,
       nowMs: now(),
       version: options.version,
-      localTarget: getLocalTarget()
+      buildId: options.buildId,
+      profile,
+      instance: getServerInstance()
     });
 
     return HealthResponseSchema.parse(response);

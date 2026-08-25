@@ -10,7 +10,6 @@ import {
   type QuestionChatAvailabilityCode,
   type QuestionChatEvent,
   type QuestionChatMessage,
-  type QuestionChatContextSource,
   type QuestionChatSendPayload,
   type QuestionChatSendResponse,
   type QuestionChatSnapshot,
@@ -64,12 +63,6 @@ export interface QuestionChatActivation {
   source: QuestionChatSource;
 }
 
-export interface QuestionChatContextActivation {
-  requestId: string;
-  ownerSessionId: string;
-  source: QuestionChatContextSource;
-}
-
 interface SessionLifecycle {
   model?: { provider: string; id: string };
   isStreaming?: boolean;
@@ -100,12 +93,12 @@ export interface QuestionChatRuntime {
 export interface QuestionChatRecoveryOffer {
   requestId: string;
   ownerSessionId: string;
-  forkKind: "exact" | "context-only";
+  forkKind: "exact";
 }
 
 export interface QuestionChatReconciliationDecision {
   requestId: string;
-  forkKind: "exact" | "context-only";
+  forkKind: "exact";
   action: "recover" | "delete";
 }
 
@@ -179,7 +172,7 @@ export class PiQuestionChatRuntimeAdapter {
 
   async create(input: QuestionChatActivation): Promise<QuestionChatRuntime> {
     this.assertSourceFile(input.source.agentSessionPath);
-    return this.createPrivateRuntime(input.requestId, input.ownerSessionId, "exact", undefined, (runtimeDir) => {
+    return this.createPrivateRuntime(input.requestId, input.ownerSessionId, (runtimeDir) => {
       // Pi 0.80.10 may migrate an opened session in place. Open a private byte
       // snapshot so even older source sessions remain immutable.
       const sourceSnapshotPath = join(runtimeDir, "source-snapshot.jsonl");
@@ -203,20 +196,9 @@ export class PiQuestionChatRuntimeAdapter {
     });
   }
 
-  async createContext(input: QuestionChatContextActivation): Promise<QuestionChatRuntime> {
-    return this.createPrivateRuntime(input.requestId, input.ownerSessionId, "context-only", input.source, (runtimeDir) => ({
-      cwd: input.source.cwd,
-      sessionManager: SessionManager.create(input.source.cwd, runtimeDir),
-      systemPrompt: contextOnlySystemPrompt(input.source),
-      recordedModelId: input.source.model
-    }));
-  }
-
   private async createPrivateRuntime(
     requestId: string,
     ownerSessionId: string,
-    forkKind: QuestionChatSnapshot["forkKind"],
-    contextSource: QuestionChatContextSource | undefined,
     prepare: (runtimeDir: string) => {
       cwd: string;
       sessionManager: SessionManager;
@@ -249,8 +231,7 @@ export class PiQuestionChatRuntimeAdapter {
       const proposalTool = createProposeAnswerTool(requestId, this.proposeAnswer);
 
       const modelRuntime = await this.createModelRuntime();
-      // Both exact forks and context-only interviewers follow the same rule:
-      // prefer the recorded authenticated model, otherwise let Pi select its
+      // Prefer the recorded authenticated model, otherwise let Pi select its
       // configured default.
       const explicitModel = resolveRecordedModel(prepared.recordedModelId, modelRuntime);
       const result = await this.createSession({
@@ -286,7 +267,7 @@ export class PiQuestionChatRuntimeAdapter {
       const snapshot: QuestionChatSnapshot = {
         requestId,
         state: "ready",
-        forkKind,
+        forkKind: "exact",
         model: {
           id: selectedModelId,
           source: isOriginatingModel ? "originating" : "pi-default",
@@ -301,13 +282,12 @@ export class PiQuestionChatRuntimeAdapter {
         version: 1,
         requestId,
         ownerSessionId,
-        forkKind,
+        forkKind: "exact",
         cwd: prepared.cwd,
         privateSessionPath,
         chatBoundaryId: prepared.sessionManager.getLeafId(),
         sequence: 0,
-        model: snapshot.model,
-        ...(contextSource ? { contextSource } : {})
+        model: snapshot.model
       };
       this.recoveryStore.write(manifest);
       return new ManagedQuestionChatRuntime(
@@ -379,7 +359,7 @@ export class PiQuestionChatRuntimeAdapter {
         noPromptTemplates: true,
         noThemes: true,
         noContextFiles: true,
-        systemPrompt: manifest.contextSource ? contextOnlySystemPrompt(manifest.contextSource) : INTERVIEWER_SYSTEM_PROMPT,
+        systemPrompt: INTERVIEWER_SYSTEM_PROMPT,
         appendSystemPrompt: []
       });
       await resourceLoader.reload();
@@ -912,7 +892,7 @@ class ManagedQuestionChatRuntime implements QuestionChatRuntime {
 
 export class QuestionChatRuntimeRegistry {
   private readonly runtimes = new Map<string, {
-    kind: "exact" | "context-only";
+    kind: "exact";
     ownerSessionId: string;
     runtime: Promise<QuestionChatRuntime>;
   }>();
@@ -927,16 +907,12 @@ export class QuestionChatRuntimeRegistry {
   private readonly terminalTombstones = new Map<string, { ownerSessionId: string; expiresAt: number }>();
 
   constructor(
-    private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create" | "createContext"> &
+    private readonly adapter: Pick<PiQuestionChatRuntimeAdapter, "create"> &
       Partial<Pick<PiQuestionChatRuntimeAdapter, "listRecoveryOffers" | "recover" | "discard">>
   ) {}
 
   async activate(input: QuestionChatActivation): Promise<QuestionChatSnapshot> {
-    return this.activateKind(input.requestId, input.ownerSessionId, "exact", () => this.adapter.create(input));
-  }
-
-  async activateContext(input: QuestionChatContextActivation): Promise<QuestionChatSnapshot> {
-    return this.activateKind(input.requestId, input.ownerSessionId, "context-only", () => this.adapter.createContext(input));
+    return this.activateKind(input.requestId, input.ownerSessionId, () => this.adapter.create(input));
   }
 
   async getSnapshot(requestId: string, ownerSessionId: string): Promise<QuestionChatSnapshot> {
@@ -1078,7 +1054,6 @@ export class QuestionChatRuntimeRegistry {
   private async activateKind(
     requestId: string,
     ownerSessionId: string,
-    kind: "exact" | "context-only",
     create: () => Promise<QuestionChatRuntime>
   ): Promise<QuestionChatSnapshot> {
     this.pruneTerminalTombstones();
@@ -1093,12 +1068,9 @@ export class QuestionChatRuntimeRegistry {
     if (entry && entry.ownerSessionId !== ownerSessionId) {
       throw new QuestionChatRuntimeError("wrong_owner", "Question Chat belongs to a different Pi Session.");
     }
-    if (entry && entry.kind !== kind) {
-      throw new QuestionChatRuntimeError("runtime_busy", "A Question Chat with different ownership or fork kind is already running.");
-    }
     if (!entry) {
       const runtime = create();
-      entry = { kind, ownerSessionId, runtime };
+      entry = { kind: "exact", ownerSessionId, runtime };
       this.runtimes.set(requestId, entry);
       void runtime.catch(() => {
         if (this.runtimes.get(requestId) === entry) this.runtimes.delete(requestId);
@@ -1241,20 +1213,6 @@ function resolveRecordedModel(modelId: string | undefined, modelRuntime: ModelRu
   const id = modelId.slice(separator + 1);
   const model = modelRuntime.getModel(provider, id);
   return model && modelRuntime.hasConfiguredAuth(provider) ? model : undefined;
-}
-
-function contextOnlySystemPrompt(source: QuestionChatContextSource): string {
-  return `${INTERVIEWER_SYSTEM_PROMPT}
-
-This is a fresh private context-only interviewer session created from persisted handoff context. It is not the exact originating conversation. Treat the following bounded payload as authoritative user-provided context; do not invent prior dialogue, decisions, or implementation history.
-
-<postbox-question>
-${JSON.stringify({ mode: source.mode, question: source.question, options: source.options }, null, 2)}
-</postbox-question>
-
-<postbox-handoff-context>
-${JSON.stringify(source.context, null, 2)}
-</postbox-handoff-context>`;
 }
 
 function isRepositoryEvidenceTool(value: unknown): value is (typeof REPOSITORY_EVIDENCE_TOOL_NAMES)[number] {

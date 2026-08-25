@@ -62,6 +62,11 @@ function runMigrations(db: SqliteDatabase): void {
       agent_session_id TEXT,
       agent_session_path TEXT,
       leaf_id TEXT,
+      owner_harness TEXT,
+      owner_id TEXT,
+      repository_id TEXT,
+      worktree_id TEXT,
+      feature_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -70,21 +75,123 @@ function runMigrations(db: SqliteDatabase): void {
       request_id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES sessions(session_id),
       mode TEXT NOT NULL,
-      urgency TEXT NOT NULL DEFAULT 'normal',
       prompt TEXT NOT NULL,
       question_json TEXT,
       options_json TEXT NOT NULL,
       context_json TEXT,
       fork_reference_json TEXT,
+      parent_question_id TEXT,
       status TEXT NOT NULL,
       selected_values_json TEXT,
       note TEXT,
       rationale TEXT,
       created_at TEXT NOT NULL,
       expires_at TEXT,
+      expiry_provenance TEXT,
       resolved_at TEXT,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS owners (
+      harness TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      harness_session_id TEXT,
+      parent_owner_id TEXT,
+      root_owner_id TEXT,
+      depth INTEGER CHECK (depth IS NULL OR depth >= 0),
+      path TEXT,
+      task_label TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (harness, owner_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS questions (
+      question_id TEXT PRIMARY KEY,
+      creator_harness TEXT NOT NULL,
+      creator_owner_id TEXT NOT NULL,
+      owner_harness TEXT NOT NULL,
+      owner_owner_id TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      owner_revision INTEGER NOT NULL DEFAULT 1 CHECK (owner_revision >= 1),
+      legacy_request_id TEXT UNIQUE,
+      source_session_id TEXT REFERENCES sessions(session_id),
+      fork_reference_json TEXT,
+      expiry_provenance TEXT,
+      mode TEXT NOT NULL DEFAULT 'single',
+      question_json TEXT NOT NULL DEFAULT '{}',
+      options_json TEXT NOT NULL DEFAULT '[]',
+      context_json TEXT,
+      parent_question_id TEXT REFERENCES questions(question_id),
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at TEXT,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      repository_id TEXT,
+      worktree_id TEXT,
+      feature_id TEXT,
+      FOREIGN KEY (creator_harness, creator_owner_id) REFERENCES owners(harness, owner_id),
+      FOREIGN KEY (owner_harness, owner_owner_id) REFERENCES owners(harness, owner_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS repositories (
+      repository_id TEXT PRIMARY KEY, remote TEXT, machine_id TEXT, common_directory TEXT
+    );
+    CREATE TABLE IF NOT EXISTS worktrees (
+      worktree_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, canonical_path TEXT NOT NULL,
+      repository_id TEXT NOT NULL, active_feature_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS features (
+      feature_id TEXT PRIMARY KEY, name TEXT, created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS answers (
+      answer_id TEXT PRIMARY KEY,
+      question_id TEXT NOT NULL REFERENCES questions(question_id),
+      question_revision INTEGER NOT NULL CHECK (question_revision >= 1),
+      status TEXT NOT NULL DEFAULT 'answered',
+      selected_values_json TEXT NOT NULL DEFAULT '[]',
+      note TEXT,
+      rationale TEXT,
+      first_reader_harness TEXT,
+      first_reader_owner_id TEXT,
+      first_read_at TEXT,
+      owner_notification_delivered_at TEXT,
+      owner_notification_claim_token TEXT,
+      owner_notification_claimed_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS question_events (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      question_id TEXT NOT NULL REFERENCES questions(question_id),
+      type TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      actor_harness TEXT NOT NULL,
+      actor_owner_id TEXT NOT NULL,
+      facts_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS question_revisions (
+      question_id TEXT NOT NULL REFERENCES questions(question_id), revision INTEGER NOT NULL,
+      question_json TEXT NOT NULL, options_json TEXT NOT NULL, context_json TEXT,
+      actor_harness TEXT NOT NULL, actor_owner_id TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (question_id, revision)
+    );
+    CREATE TABLE IF NOT EXISTS migration_ledger (
+      migration_key TEXT PRIMARY KEY,
+      facts_json TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+
+    CREATE TRIGGER IF NOT EXISTS questions_creator_immutable
+      BEFORE UPDATE OF creator_harness, creator_owner_id ON questions
+      WHEN NEW.creator_harness IS NOT OLD.creator_harness
+        OR NEW.creator_owner_id IS NOT OLD.creator_owner_id
+      BEGIN
+        SELECT RAISE(ABORT, 'question creator is immutable');
+      END;
 
     CREATE INDEX IF NOT EXISTS idx_ask_requests_status_created
       ON ask_requests(status, created_at);
@@ -133,10 +240,179 @@ function runMigrations(db: SqliteDatabase): void {
   ensureColumn(db, "projects", "icon_size_bytes", "INTEGER");
 
   ensureColumn(db, "ask_requests", "question_json", "TEXT");
-  ensureColumn(db, "ask_requests", "urgency", "TEXT NOT NULL DEFAULT 'normal'");
   ensureColumn(db, "ask_requests", "context_json", "TEXT");
   ensureColumn(db, "ask_requests", "fork_reference_json", "TEXT");
+  ensureColumn(db, "ask_requests", "parent_question_id", "TEXT");
   ensureColumn(db, "ask_requests", "expires_at", "TEXT");
+  ensureColumn(db, "ask_requests", "expiry_provenance", "TEXT");
+  ensureColumn(db, "sessions", "owner_harness", "TEXT");
+  ensureColumn(db, "sessions", "owner_id", "TEXT");
+  ensureColumn(db, "sessions", "repository_id", "TEXT");
+  ensureColumn(db, "sessions", "worktree_id", "TEXT");
+  ensureColumn(db, "sessions", "feature_id", "TEXT");
+  ensureColumn(db, "questions", "owner_revision", "INTEGER NOT NULL DEFAULT 1 CHECK (owner_revision >= 1)");
+  ensureColumn(db, "questions", "legacy_request_id", "TEXT");
+  ensureColumn(db, "questions", "source_session_id", "TEXT REFERENCES sessions(session_id)");
+  ensureColumn(db, "questions", "fork_reference_json", "TEXT");
+  ensureColumn(db, "questions", "expiry_provenance", "TEXT");
+  ensureColumn(db, "questions", "mode", "TEXT NOT NULL DEFAULT 'single'");
+  ensureColumn(db, "questions", "question_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, "questions", "options_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "questions", "context_json", "TEXT");
+  ensureColumn(db, "questions", "parent_question_id", "TEXT REFERENCES questions(question_id)");
+  ensureColumn(db, "questions", "status", "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, "questions", "expires_at", "TEXT");
+  ensureColumn(db, "questions", "resolved_at", "TEXT");
+  ensureColumn(db, "questions", "replacement_question_id", "TEXT");
+  ensureColumn(db, "questions", "repository_id", "TEXT");
+  ensureColumn(db, "questions", "worktree_id", "TEXT");
+  ensureColumn(db, "questions", "feature_id", "TEXT");
+  ensureColumn(db, "answers", "status", "TEXT NOT NULL DEFAULT 'answered'");
+  ensureColumn(db, "answers", "selected_values_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "answers", "note", "TEXT");
+  ensureColumn(db, "answers", "rationale", "TEXT");
+  ensureColumn(db, "answers", "first_reader_harness", "TEXT");
+  ensureColumn(db, "answers", "first_reader_owner_id", "TEXT");
+  ensureColumn(db, "answers", "first_read_at", "TEXT");
+  ensureColumn(db, "answers", "owner_notification_delivered_at", "TEXT");
+  ensureColumn(db, "answers", "owner_notification_claim_token", "TEXT");
+  ensureColumn(db, "answers", "owner_notification_claimed_at", "TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_legacy_request ON questions(legacy_request_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_questions_parent ON questions(parent_question_id)");
+  db.exec(`INSERT OR IGNORE INTO question_revisions
+    (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+    SELECT question_id, revision, question_json, options_json, context_json, creator_harness, creator_owner_id, created_at
+    FROM questions`);
+  migrateLegacyDecisions(db);
+  migrateLegacyOptionFields(db);
+  removePersistedQuestionContext(db);
+}
+
+function migrateLegacyOptionFields(db: SqliteDatabase): void {
+  db.transaction(() => {
+    for (const table of ["ask_requests", "questions", "question_revisions"] as const) {
+      const rows = db.prepare(`SELECT rowid, options_json FROM ${table}
+        WHERE options_json LIKE '%"meaning"%' OR options_json LIKE '%"context"%'`)
+        .all() as Array<{ rowid: number; options_json: string }>;
+      const update = db.prepare(`UPDATE ${table} SET options_json = ? WHERE rowid = ?`);
+      for (const row of rows) {
+        let options: unknown;
+        try {
+          options = JSON.parse(row.options_json);
+        } catch {
+          continue;
+        }
+        if (!Array.isArray(options)) continue;
+        let changed = false;
+        const migrated = options.map((option: unknown) => {
+          if (typeof option !== "object" || option === null) return option;
+          const current = option as Record<string, unknown>;
+          if (!("meaning" in current) && !("context" in current)) return option;
+          const next = { ...current };
+          if (!("impact" in next) && typeof next.meaning === "string") next.impact = next.meaning;
+          delete next.meaning;
+          delete next.context;
+          changed = true;
+          return next;
+        });
+        if (changed) update.run(JSON.stringify(migrated), row.rowid);
+      }
+    }
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('rename-option-meaning-to-impact-v1', '{"legacyField":"meaning","replacement":"impact"}', datetime('now'))`).run();
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('remove-option-context-v1', '{"optionContext":"removed"}', datetime('now'))`).run();
+  })();
+}
+
+function removePersistedQuestionContext(db: SqliteDatabase): void {
+  db.transaction(() => {
+    db.prepare("UPDATE ask_requests SET context_json = NULL WHERE context_json IS NOT NULL").run();
+    db.prepare("UPDATE questions SET context_json = NULL WHERE context_json IS NOT NULL").run();
+    db.prepare("UPDATE question_revisions SET context_json = NULL WHERE context_json IS NOT NULL").run();
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('remove-question-context-v1', '{"storedContext":"removed"}', datetime('now'))`).run();
+  })();
+}
+
+function migrateLegacyDecisions(db: SqliteDatabase): void {
+  db.transaction(() => {
+    db.prepare(`INSERT OR IGNORE INTO owners (harness, owner_id, harness_session_id, created_at, updated_at)
+      SELECT 'legacy', session_id, session_id, MIN(created_at), MAX(updated_at) FROM ask_requests GROUP BY session_id`)
+      .run();
+    db.prepare(`INSERT OR IGNORE INTO questions (
+      question_id, legacy_request_id, source_session_id, fork_reference_json, creator_harness, creator_owner_id, owner_harness, owner_owner_id,
+      revision, mode, question_json, options_json, context_json, parent_question_id, status, expires_at, resolved_at,
+      created_at, updated_at)
+      SELECT request_id, request_id, session_id, fork_reference_json, 'legacy', session_id, 'legacy', session_id, 1, mode,
+        COALESCE(question_json, json_object('prompt', prompt)), options_json, context_json, parent_question_id,
+        status, CASE WHEN expiry_provenance = 'manufactured_default' THEN NULL ELSE expires_at END,
+        resolved_at, created_at, updated_at FROM ask_requests`)
+      .run();
+    // A released pre-marker ask_requests row cannot distinguish an explicitly
+    // chosen 12-hour expiry from the old writer's manufactured 12-hour default.
+    // Preserve that unknown value. Only the provenance marker introduced at
+    // the writer boundary is sufficient evidence to clear an automatic expiry.
+    db.prepare(`INSERT OR IGNORE INTO migration_ledger (migration_key, facts_json, applied_at)
+      VALUES ('owner-contract-v1-expiry', '{"unknownLegacyExpiry":"preserved","clearOnly":"manufactured_default"}', datetime('now'))`).run();
+
+    // Some deployments were interrupted after the deterministic Question row
+    // was inserted but before compatibility metadata was copied. Fill only
+    // absent fields and recognizable revision-1 placeholders. Never replace a
+    // newer owner edit or a non-placeholder authoritative value.
+    db.prepare(`UPDATE questions AS q SET
+      legacy_request_id = COALESCE(q.legacy_request_id, q.question_id),
+      source_session_id = COALESCE(q.source_session_id, (SELECT r.session_id FROM ask_requests r WHERE r.request_id=q.question_id)),
+      fork_reference_json = COALESCE(q.fork_reference_json, (SELECT r.fork_reference_json FROM ask_requests r WHERE r.request_id=q.question_id)),
+      expiry_provenance = COALESCE(q.expiry_provenance, (SELECT r.expiry_provenance FROM ask_requests r WHERE r.request_id=q.question_id)),
+      mode = CASE WHEN q.revision=1 AND q.question_json='{}' THEN (SELECT r.mode FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.mode END,
+      question_json = CASE WHEN q.revision=1 AND q.question_json='{}' THEN
+        (SELECT COALESCE(r.question_json, json_object('prompt', r.prompt)) FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.question_json END,
+      options_json = CASE WHEN q.revision=1 AND q.options_json='[]' THEN
+        (SELECT r.options_json FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.options_json END,
+      context_json = COALESCE(q.context_json, (SELECT r.context_json FROM ask_requests r WHERE r.request_id=q.question_id)),
+      parent_question_id = COALESCE(q.parent_question_id, (SELECT r.parent_question_id FROM ask_requests r WHERE r.request_id=q.question_id)),
+      status = CASE WHEN q.revision=1 AND q.question_json='{}' THEN
+        (SELECT r.status FROM ask_requests r WHERE r.request_id=q.question_id) ELSE q.status END,
+      expires_at = CASE
+        WHEN (SELECT r.expiry_provenance FROM ask_requests r WHERE r.request_id=q.question_id)='manufactured_default' THEN NULL
+        ELSE COALESCE(q.expires_at, (SELECT r.expires_at FROM ask_requests r WHERE r.request_id=q.question_id))
+      END,
+      resolved_at = COALESCE(q.resolved_at, (SELECT r.resolved_at FROM ask_requests r WHERE r.request_id=q.question_id))
+      WHERE q.creator_harness='legacy' AND q.revision=1
+        AND EXISTS (SELECT 1 FROM ask_requests r WHERE r.request_id=q.question_id)`).run();
+    db.prepare(`UPDATE question_revisions AS qr SET
+      question_json = CASE WHEN qr.question_json='{}' THEN (SELECT q.question_json FROM questions q WHERE q.question_id=qr.question_id) ELSE qr.question_json END,
+      options_json = CASE WHEN qr.options_json='[]' THEN (SELECT q.options_json FROM questions q WHERE q.question_id=qr.question_id) ELSE qr.options_json END,
+      context_json = COALESCE(qr.context_json, (SELECT q.context_json FROM questions q WHERE q.question_id=qr.question_id))
+      WHERE qr.revision=1 AND EXISTS (SELECT 1 FROM questions q JOIN ask_requests r ON r.request_id=q.question_id
+        WHERE q.question_id=qr.question_id AND q.creator_harness='legacy')`).run();
+    db.prepare(`INSERT OR IGNORE INTO question_revisions
+      (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
+      SELECT request_id, 1, COALESCE(question_json, json_object('prompt', prompt)), options_json, context_json,
+        'legacy', session_id, created_at FROM ask_requests`)
+      .run();
+    db.prepare(`INSERT OR IGNORE INTO answers (
+      answer_id, question_id, question_revision, status, selected_values_json, note, rationale,
+      first_reader_harness, first_reader_owner_id, first_read_at, owner_notification_delivered_at, created_at)
+      SELECT 'legacy-answer-' || request_id, request_id, 1, 'answered', selected_values_json, note, rationale,
+        'legacy', session_id, COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at)
+      FROM ask_requests r WHERE status = 'answered'
+        AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=r.request_id)`)
+      .run();
+    db.prepare(`INSERT OR IGNORE INTO answers (
+      answer_id, question_id, question_revision, status, selected_values_json, note, rationale,
+      first_reader_harness, first_reader_owner_id, first_read_at, owner_notification_delivered_at, created_at)
+      SELECT 'legacy-result-' || request_id, request_id, 1, status, '[]', note, rationale,
+        'legacy', session_id, COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at), COALESCE(resolved_at, updated_at)
+      FROM ask_requests WHERE status IN ('cancelled','expired')`).run();
+    db.prepare(`UPDATE answers SET
+      first_reader_harness = COALESCE(first_reader_harness, 'legacy'),
+      first_reader_owner_id = COALESCE(first_reader_owner_id, (SELECT creator_owner_id FROM questions WHERE questions.question_id=answers.question_id)),
+      first_read_at = COALESCE(first_read_at, created_at),
+      owner_notification_delivered_at = COALESCE(owner_notification_delivered_at, created_at)
+      WHERE question_id IN (SELECT request_id FROM ask_requests WHERE status='answered')`).run();
+  })();
 }
 
 function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {

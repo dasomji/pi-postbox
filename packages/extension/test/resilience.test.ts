@@ -1,4 +1,4 @@
-import type { AskCreatePayload, AskResult, ExtensionServerMessage, SessionRegisterPayload } from "@pi-postbox/protocol";
+import { PROTOCOL_VERSION, type AskCreatePayload, type AskResult, type ExtensionServerMessage, type SessionRegisterPayload } from "@pi-postbox/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PostboxClient } from "../src/client/PostboxClient.js";
 import { formatPostboxStatusSnapshot } from "../src/status.js";
@@ -13,12 +13,11 @@ const askPayload: AskCreatePayload = {
   requestId: "ask-replay",
   sessionId: "session-1",
   mode: "single",
-  question: { prompt: "Reconnect?" },
-  options: [{ value: "yes", label: "Yes" }],
-  context: {
-    codebaseContext: "Pi extension WebSocket client with reconnect support.",
-    problemContext: "Keep a pending decision stable across reconnects."
-  }
+  question: {
+    prompt: "Reconnect?",
+    ambiguity: "Whether a pending decision remains stable across reconnects."
+  },
+  options: [{ value: "yes", label: "Yes" }]
 };
 
 const LOCAL_POSTBOX_URL = "http://127.0.0.1:32187/";
@@ -88,14 +87,21 @@ function createClient(options: Partial<ConstructorParameters<typeof PostboxClien
 }
 
 function selectedTarget(url: string, role: "dev" | "production" = "dev", instanceId = `${role}-instance`) {
+  const profile = role === "dev"
+    ? { kind: "development" as const, id: "development:0123456789abcdef" as const }
+    : { kind: "production" as const, id: "production" as const };
   return {
     status: "selected" as const,
+    profile: {} as never,
     target: {
-      source: "active-local" as const,
+      source: "profile-metadata" as const,
       url,
-      role,
+      profile,
+      version: "0.1.3",
+      protocolVersion: PROTOCOL_VERSION,
       instanceId,
-      activeLocalPollingEnabled: true
+      buildId: "test-build",
+      profilePollingEnabled: true
     },
     diagnostics: []
   };
@@ -110,7 +116,422 @@ function socketUrl(serverUrl: string): string {
 }
 
 describe("PostboxClient pending ask resilience", () => {
-  it("status snapshot enriches a real connected local client with Tailnet URL, remote export, and Tailscale diagnostics", async () => {
+  it("restores the durable owner question count in a fresh client after reload", async () => {
+    FakeSocket.instances = [];
+    const owner = { harness: "pi", ownerId: "session-1" };
+    const client = createClient({
+      serverUrl: LOCAL_POSTBOX_URL,
+      registration: { ...registration, session: { ...registration.session, owner } },
+      targetProfile: { kind: "development", id: "development:0123456789abcdef" },
+      inspectTailscale: async () => ({ state: "unavailable" })
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const snapshotPromise = client.getStatusSnapshot();
+    const query = socket.sent.find((message) => (message as { type?: string }).type === "owner.status.get") as
+      | { requestId: string; payload: { owners: typeof owner[] } }
+      | undefined;
+    expect(query?.payload).toEqual({ owners: [owner] });
+    socket.serverMessage({
+      type: "query.result",
+      requestId: query!.requestId,
+      payload: [{ owner, activeQuestionCount: 1, unreadAnswerCount: 0 }]
+    });
+
+    await expect(snapshotPromise).resolves.toMatchObject({ openQuestionCount: 1 });
+    client.stop();
+  });
+
+  it("settles discovery queries on correlated error, disconnect, and stop", async () => {
+    FakeSocket.instances = [];
+    const client = createClient(); client.start();
+    const socket = FakeSocket.instances[0]; socket.open();
+    const invalid = client.query("question.list", { sessionId: "session-1", pageSize: 0 });
+    const invalidCommand = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({ type: "error", requestId: invalidCommand.requestId, error: { code: "invalid_message", message: "invalid page size" } });
+    await expect(invalid).rejects.toThrow("invalid page size");
+
+    const disconnected = client.query("question.list", { sessionId: "session-1" });
+    socket.close();
+    await expect(disconnected).rejects.toThrow("disconnected");
+
+    const restarted = createClient(); restarted.start(); const second = FakeSocket.instances.at(-1)!; second.open();
+    const stopped = restarted.query("question.list", { sessionId: "session-1" });
+    restarted.stop();
+    await expect(stopped).rejects.toThrow("stopped");
+  });
+
+  it("bounds get_answer when the server never returns a correlated result", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ answerReadTimeoutMs: 1_000 });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-owned-by-another-session");
+    const rejected = expect(answer).rejects.toThrow(
+      "get_answer timed out; the Question may not exist or may belong to another Postbox session"
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await rejected;
+    client.stop();
+  });
+
+  it("returns a correlated get_answer ownership error without waiting for the timeout", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ answerReadTimeoutMs: 1_000 });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-owned-by-another-session");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "error",
+      requestId: command.requestId,
+      error: { code: "wrong_owner", message: "Reader does not own this Question" }
+    });
+
+    await expect(answer).rejects.toThrow("Reader does not own this Question");
+    await vi.advanceTimersByTimeAsync(1_000);
+    client.stop();
+  });
+
+  it("correlates and returns a compact pending get_answer result", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-pending");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "answer.result",
+      requestId: command.requestId,
+      payload: { type: "pending", status: "pending", questionId: "question-pending" }
+    });
+
+    await expect(answer).resolves.toEqual({
+      type: "pending",
+      status: "pending",
+      questionId: "question-pending"
+    });
+    client.stop();
+  });
+
+  it("correlates and returns only the compact normal Answer fields", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-answered");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "answer.result",
+      requestId: command.requestId,
+      payload: {
+        questionId: "question-answered",
+        answerId: "answer-1",
+        answer: ["yes"],
+        note: "Proceed"
+      }
+    });
+
+    await expect(answer).resolves.toEqual({
+      questionId: "question-answered",
+      answerId: "answer-1",
+      answer: ["yes"],
+      note: "Proceed"
+    });
+    client.stop();
+  });
+
+  it("correlates and returns a compact lifecycle get_answer result", async () => {
+    FakeSocket.instances = [];
+    const client = createClient();
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const answer = client.getAnswer("question-cancelled");
+    const command = socket.sent.at(-1) as { requestId: string };
+    socket.serverMessage({
+      type: "answer.result",
+      requestId: command.requestId,
+      payload: {
+        type: "lifecycle",
+        status: "cancelled",
+        questionId: "question-cancelled",
+        note: "No longer needed",
+        resolvedAt: "2026-08-17T10:00:00.000Z"
+      }
+    });
+
+    await expect(answer).resolves.toEqual({
+      type: "lifecycle",
+      status: "cancelled",
+      questionId: "question-cancelled",
+      note: "No longer needed",
+      resolvedAt: "2026-08-17T10:00:00.000Z"
+    });
+    client.stop();
+  });
+
+  it("aborts a pending get_answer without leaving it for the response timeout", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ answerReadTimeoutMs: 1_000 });
+    client.start();
+    FakeSocket.instances[0]!.open();
+    const controller = new AbortController();
+
+    const answer = client.getAnswer("question-1", controller.signal);
+    controller.abort();
+
+    await expect(answer).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    client.stop();
+  });
+  it("stops treating the tool signal as Question ownership after persistence acknowledgement", async () => {
+    FakeSocket.instances = [];
+    const client = createClient({ registration: { ...registration, session: { ...registration.session, semanticState: "working" } } });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+    const controller = new AbortController();
+
+    const receipt = client.createAsk({ ...askPayload, requestId: "ask-survives-tool-abort" }, controller.signal);
+    const command = socket.sent.find((value) =>
+      (value as { type?: string; payload?: { requestId?: string } }).type === "ask.create"
+      && (value as { payload?: { requestId?: string } }).payload?.requestId === "ask-survives-tool-abort"
+    ) as { requestId: string };
+    socket.serverMessage({
+      type: "ask.created",
+      requestId: command.requestId,
+      payload: {
+        requestId: "ask-survives-tool-abort",
+        questionId: "ask-survives-tool-abort",
+        revision: 1,
+        ownerRevision: 1,
+        status: "pending",
+        disposition: "created"
+      }
+    });
+    await expect(receipt).resolves.toMatchObject({ questionId: "ask-survives-tool-abort", status: "pending" });
+
+    controller.abort();
+    await Promise.resolve();
+
+    expect(socket.sent).not.toContainEqual(expect.objectContaining({
+      type: "ask.cancel",
+      payload: expect.objectContaining({ requestId: "ask-survives-tool-abort" })
+    }));
+    expect(client.listPendingAsks()).toEqual([
+      expect.objectContaining({ requestId: "ask-survives-tool-abort", sentAtLeastOnce: true })
+    ]);
+    client.stop();
+  });
+
+  it("settles create receipts only from persistence evidence and survives lost ack through terminal replay", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({ registration: { ...registration, session: { ...registration.session, semanticState: "working" } } });
+    client.start();
+    const first = FakeSocket.instances[0];
+    first.open();
+    const receipt = client.createAsk({ ...askPayload, requestId: "ask-receipt" });
+    let settled = false;
+    void receipt.finally(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    first.close();
+    await vi.advanceTimersByTimeAsync(100);
+    const second = FakeSocket.instances[1];
+    second.open();
+    const replay = second.sent.find((value) => (value as { type?: string }).type === "ask.create") as { requestId: string };
+    second.serverMessage({ type: "ask.resolved", requestId: replay.requestId, payload: {
+      status: "answered", requestId: "ask-receipt", selectedValues: ["yes"], resolvedAt: "2026-06-03T00:00:01.000Z"
+    } });
+    await expect(receipt).resolves.toEqual({
+      questionId: "ask-receipt",
+      revision: 1,
+      ownerRevision: 1,
+      status: "pending",
+      disposition: "idempotent"
+    });
+    client.stop();
+  });
+
+  it("rejects create receipts on abort, stop, and correlated server rejection", async () => {
+    FakeSocket.instances = [];
+    const client = createClient({ registration: { ...registration, session: { ...registration.session, semanticState: "working" } } });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    await expect(client.createAsk({ ...askPayload, requestId: "create-pre-abort" }, alreadyAborted.signal)).rejects.toThrow("aborted");
+    const aborter = new AbortController();
+    const aborted = client.createAsk({ ...askPayload, requestId: "create-abort" }, aborter.signal);
+    aborter.abort();
+    await expect(aborted).rejects.toThrow("aborted");
+
+    const rejected = client.createAsk({ ...askPayload, requestId: "create-rejected" });
+    const command = socket.sent.find((value) => (value as { payload?: { requestId?: string } }).payload?.requestId === "create-rejected") as { requestId: string };
+    socket.serverMessage({ type: "error", requestId: command.requestId, error: { code: "ask_create_failed", message: "rejected" } });
+    await expect(rejected).rejects.toThrow("rejected");
+
+    const stopped = client.createAsk({ ...askPayload, requestId: "create-stop" });
+    client.stop();
+    await expect(stopped).rejects.toThrow("stopped");
+  });
+
+  it("correlates cancellation of an owner-wide wait and ignores a late result", async () => {
+    FakeSocket.instances = [];
+    const client = createClient(); client.start();
+    const socket = FakeSocket.instances[0]!; socket.open();
+    const controller = new AbortController();
+    const waiting = client.waitForPostbox("session-1", controller.signal);
+    const command = socket.sent.find((value) => (value as any).type === "postbox.wait") as any;
+    controller.abort();
+    await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+    expect(socket.sent).toContainEqual({ type: "postbox.wait.cancel", requestId: expect.any(String), payload: { sessionId: "session-1", waitRequestId: command.requestId } });
+    socket.serverMessage({ type: "postbox.wait.result", requestId: command.requestId, payload: { type: "answer" } });
+    client.stop();
+  });
+
+  it("cancels the correlated server wait before stopping", async () => {
+    FakeSocket.instances = [];
+    const client = createClient(); client.start();
+    const socket = FakeSocket.instances[0]!; socket.open();
+    const waiting = client.waitForPostbox("session-1");
+    const command = socket.sent.find((value) => (value as any).type === "postbox.wait") as any;
+    client.stop();
+    await expect(waiting).rejects.toThrow("stopped");
+    expect(socket.sent).toContainEqual({ type: "postbox.wait.cancel", requestId: expect.any(String), payload: { sessionId: "session-1", waitRequestId: command.requestId } });
+  });
+
+  it("delivers each lightweight answer notification once and acknowledges replays", async () => {
+    FakeSocket.instances = [];
+    const notifications: unknown[] = [];
+    const client = createClient({ onAnswerAvailable: (value) => notifications.push(value) });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const message = { type: "answer.available" as const, requestId: "notification-1", payload: {
+      questionId: "question-1", question: "Ship?", answerId: "answer-1"
+    } };
+    socket.serverMessage(message);
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    expect(notifications).toEqual([message.payload]);
+    expect(socket.sent.filter((value) => (value as { type?: string }).type === "answer.available.ack")).toHaveLength(2);
+    client.stop();
+  });
+
+  it("acks without re-emitting after a client crash before the server receives the first ack", async () => {
+    FakeSocket.instances = [];
+    const durable = new Set<string>();
+    const inbox = {
+      begin: async (answerId: string) => durable.has(answerId) ? "delivered" as const : "new" as const,
+      markDelivered: async (answerId: string) => { durable.add(answerId); }
+    };
+    const firstNotifications: unknown[] = [];
+    const first = createClient({ answerNotificationInbox: inbox, onAnswerAvailable: (value) => firstNotifications.push(value) });
+    first.start();
+    const firstSocket = FakeSocket.instances[0];
+    firstSocket.open();
+    const replay = { type: "answer.available" as const, requestId: "delivery-answer-crash", payload: {
+      questionId: "question-crash", question: "Recover?", answerId: "answer-crash"
+    } };
+    firstSocket.serverMessage(replay);
+    await vi.waitFor(() => expect(firstNotifications).toHaveLength(1));
+    // Simulate the process dying after durable inbox write and UI delivery while
+    // the server never receives the ack recorded by this fake transport.
+    first.stop();
+
+    const restartedNotifications: unknown[] = [];
+    const restarted = createClient({ answerNotificationInbox: inbox, onAnswerAvailable: (value) => restartedNotifications.push(value) });
+    restarted.start();
+    const restartedSocket = FakeSocket.instances[1];
+    restartedSocket.open();
+    restartedSocket.serverMessage(replay);
+    await vi.waitFor(() => expect(restartedSocket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true));
+    expect(restartedNotifications).toEqual([]);
+    restarted.stop();
+  });
+
+  it("replays pending delivery after crash-before-callback and after a throwing callback", async () => {
+    FakeSocket.instances = [];
+    const states = new Map<string, "pending" | "delivered">();
+    const inbox = {
+      begin: async (id: string) => states.get(id) ?? (states.set(id, "pending"), "new" as const),
+      markDelivered: async (id: string) => { states.set(id, "delivered"); }
+    };
+    // Simulate a prior process that persisted receipt then crashed before callback.
+    states.set("answer-pending", "pending");
+    let calls = 0;
+    const client = createClient({ answerNotificationInbox: inbox, onAnswerAvailable: () => {
+      calls += 1;
+      if (calls === 1) throw new Error("UI unavailable");
+    } });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const message = { type: "answer.available" as const, requestId: "pending-command", payload: {
+      questionId: "question-pending", question: "Retry?", answerId: "answer-pending"
+    } };
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    expect(states.get("answer-pending")).toBe("pending");
+    expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(false);
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(states.get("answer-pending")).toBe("delivered"));
+    expect(calls).toBe(2);
+    expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true);
+    client.stop();
+  });
+
+  it("keeps owner-visible delivery exactly once across crash-after-callback-before-markDelivered", async () => {
+    FakeSocket.instances = [];
+    let state: "pending" | "delivered" | undefined;
+    let failCommit = true;
+    const inbox = {
+      begin: async () => state ?? (state = "pending", "new" as const),
+      markDelivered: async () => {
+        if (failCommit) { failCommit = false; throw new Error("simulated crash before delivered commit"); }
+        state = "delivered";
+      }
+    };
+    const ownerVisible = new Set<string>();
+    const client = createClient({
+      answerNotificationInbox: inbox,
+      onAnswerAvailable: (_notification, deliveryId) => { ownerVisible.add(deliveryId); }
+    });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    const message = { type: "answer.available" as const, requestId: "crash-seam", payload: {
+      questionId: "question-seam", question: "Exactly once?", answerId: "answer-seam"
+    } };
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(ownerVisible.size).toBe(1));
+    expect(state).toBe("pending");
+    socket.serverMessage(message);
+    await vi.waitFor(() => expect(state).toBe("delivered"));
+    expect(ownerVisible).toEqual(new Set(["answer-seam"]));
+    expect(socket.sent.some((value) => (value as { type?: string }).type === "answer.available.ack")).toBe(true);
+    client.stop();
+  });
+  it("status snapshot enriches a development client with its Tailnet URL, remote export, and Tailscale diagnostics", async () => {
     FakeSocket.instances = [];
     const inspectTailscale = vi.fn(async () => ({
       state: "served",
@@ -121,7 +542,13 @@ describe("PostboxClient pending ask resilience", () => {
     const client = createClient({
       serverUrl: LOCAL_POSTBOX_URL,
       targetSource: "active-local",
-      targetRole: "production",
+      targetProfile: { kind: "development", id: "development:0123456789abcdef" },
+      targetIdentity: {
+        version: "0.1.3",
+        protocolVersion: PROTOCOL_VERSION,
+        instanceId: "dev-instance",
+        buildId: "0.1.3+sha256.0123456789abcdef"
+      },
       inspectTailscale
     });
     client.start();
@@ -129,7 +556,10 @@ describe("PostboxClient pending ask resilience", () => {
 
     const snapshot = await client.getStatusSnapshot({ enabled: true, startedByThisSession: true });
 
-    expect(inspectTailscale).toHaveBeenCalledWith({ localUrl: LOCAL_POSTBOX_URL, role: "production" });
+    expect(inspectTailscale).toHaveBeenCalledWith({
+      localUrl: LOCAL_POSTBOX_URL,
+      profile: { kind: "development", id: "development:0123456789abcdef" }
+    });
     expect(snapshot).toMatchObject({
       connection: {
         state: "connected",
@@ -138,6 +568,12 @@ describe("PostboxClient pending ask resilience", () => {
         tailnetUrl: TAILNET_POSTBOX_URL
       },
       remoteConfig: `export PI_POSTBOX_URL=${TAILNET_POSTBOX_URL}`,
+      server: {
+        version: "0.1.3",
+        protocolVersion: PROTOCOL_VERSION,
+        instanceId: "dev-instance",
+        buildId: "0.1.3+sha256.0123456789abcdef"
+      },
       autostart: { enabled: true, startedByThisSession: true },
       tailscale: {
         state: "served",
@@ -146,6 +582,26 @@ describe("PostboxClient pending ask resilience", () => {
       }
     });
     expect(snapshot.diagnostics).toContain("tailscale:served:Tailscale Serve points at this Postbox instance.");
+    expect(formatPostboxStatusSnapshot(snapshot)).toContain("Build: 0.1.3+sha256.0123456789abcdef");
+    client.stop();
+  });
+
+  it("records when and where a disconnected client will retry", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const client = createClient({
+      serverUrl: LOCAL_POSTBOX_URL,
+      reconnectMs: 125,
+      inspectTailscale: async () => ({ state: "unavailable" })
+    });
+    client.start();
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    socket.close();
+
+    expect((await client.getStatusSnapshot()).diagnostics).toContain(
+      `reconnect-scheduled:delay=125ms;target=${LOCAL_POSTBOX_URL}`
+    );
     client.stop();
   });
 
@@ -298,7 +754,7 @@ describe("PostboxClient pending ask resilience", () => {
     const client = createClient({
       serverUrl: productionUrl,
       resolveTarget,
-      activeLocalPollMs: 50
+      profilePollMs: 50
     } as never);
     client.start();
     const productionSocket = FakeSocket.instances[0];
@@ -317,6 +773,43 @@ describe("PostboxClient pending ask resilience", () => {
     expect(devRegisters).toHaveLength(1);
     expect(devRegisters[0]).toMatchObject({
       payload: { session: { sessionId: "session-1", semanticState: "blocked" } }
+    });
+    client.stop();
+  });
+
+  it("refreshes the connected server identity when the process restarts at the same URL", async () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    const url = "http://127.0.0.1:32187/";
+    let currentTarget = selectedTarget(url, "production", "old-instance");
+    const resolveTarget = vi.fn(async () => currentTarget);
+    const client = createClient({
+      serverUrl: url,
+      targetIdentity: {
+        version: "0.1.3",
+        protocolVersion: PROTOCOL_VERSION,
+        instanceId: "old-instance",
+        buildId: "old-build"
+      },
+      resolveTarget,
+      reconnectMs: 100,
+      inspectTailscale: async () => ({ state: "unavailable" })
+    } as never);
+    client.start();
+    const firstSocket = FakeSocket.instances[0]!;
+    firstSocket.open();
+
+    currentTarget = {
+      ...selectedTarget(url, "production", "new-instance"),
+      target: { ...selectedTarget(url, "production", "new-instance").target, buildId: "new-build" }
+    };
+    firstSocket.close();
+    await vi.advanceTimersByTimeAsync(100);
+    FakeSocket.instances[1]!.open();
+
+    await expect(client.getStatusSnapshot()).resolves.toMatchObject({
+      connection: { state: "connected", activeUrl: url },
+      server: { instanceId: "new-instance", buildId: "new-build" }
     });
     client.stop();
   });
@@ -350,8 +843,8 @@ describe("PostboxClient pending ask resilience", () => {
     const client = createClient({
       serverUrl: remoteUrl,
       resolveTarget,
-      activeLocalPollMs: 25,
-      activeLocalPollingEnabled: false
+      profilePollMs: 25,
+      profilePollingEnabled: false
     } as never);
     client.start();
     const remoteSocket = FakeSocket.instances[0];
@@ -377,7 +870,7 @@ describe("PostboxClient pending ask resilience", () => {
     await expect(askPromise).resolves.toMatchObject({
       status: "unavailable",
       requestId: "ask-unavailable",
-      rationale: expect.stringContaining("unavailable")
+      note: expect.stringContaining("unavailable")
     });
     client.stop();
   });

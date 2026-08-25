@@ -55,8 +55,6 @@ export function createSemanticStateController(
     idleTimer = undefined;
   };
 
-  const blockedCount = () => askPostboxWaits + localAskUserToolCalls.size;
-
   const publish = (nextState: SemanticState) => {
     currentState = nextState;
     getClient()?.updateSemanticState(nextState);
@@ -64,7 +62,11 @@ export function createSemanticStateController(
 
   const recompute = () => {
     clearIdleTimer();
-    if (blockedCount() > 0) {
+    if (askPostboxWaits > 0) {
+      publish("waiting_for_postbox");
+      return;
+    }
+    if (localAskUserToolCalls.size > 0) {
       publish("blocked");
       return;
     }
@@ -84,7 +86,11 @@ export function createSemanticStateController(
     scheduleIdle() {
       agentActive = false;
       clearIdleTimer();
-      if (blockedCount() > 0) {
+      if (askPostboxWaits > 0) {
+        publish("waiting_for_postbox");
+        return;
+      }
+      if (localAskUserToolCalls.size > 0) {
         publish("blocked");
         return;
       }
@@ -111,7 +117,7 @@ export function createSemanticStateController(
       clearIdleTimer();
       askPostboxWaits += 1;
       emitHerdrBlocked(pi, true, label);
-      publish("blocked");
+      publish("waiting_for_postbox");
 
       let released = false;
       return () => {

@@ -35,7 +35,7 @@ async function connectAndRegister(app: FastifyInstance): Promise<WebSocket> {
       payload: {
         machine: { machineId: "machine-1", hostname: "workstation" },
         project: { projectId: "project-1", name: "pi-postbox", cwd: "/repo" },
-        session: { sessionId: "session-1", cwd: "/repo", semanticState: "blocked" }
+        session: { sessionId: "session-1", cwd: "/repo", semanticState: "blocked", owner: { harness: "pi", ownerId: "11111111-1111-4111-8111-111111111111" } }
       }
     } satisfies ExtensionClientMessage)
   );
@@ -57,12 +57,9 @@ function askCreate(requestId: string): ExtensionClientMessage {
       requestId,
       sessionId: "session-1",
       mode: "single",
-      question: { prompt: "Resolve locally?" },
+      question: { prompt: "Resolve locally?", ambiguity: "Test ambiguity." },
       options: [{ value: "yes", label: "Yes" }],
-      context: {
-        codebaseContext: "Fastify server and Pi extension local fallback commands.",
-        problemContext: "Resolve a pending decision from the originating terminal."
-      }
+
     }
   };
 }

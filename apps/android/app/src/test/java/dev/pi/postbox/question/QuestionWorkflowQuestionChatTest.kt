@@ -304,7 +304,6 @@ private class FakeWorkflowQuestionChatHttpClient(
     private val snapshot: QuestionChatSnapshot = readyChatSnapshot()
 ) : QuestionChatHttpClient {
     override suspend fun activateExact(requestId: String): QuestionChatActivationResult = exactActivation
-    override suspend fun activateContext(requestId: String): QuestionChatActivationResult = exactActivation
     override suspend fun probeSnapshot(requestId: String): QuestionChatProbeResult = probeResult
     override suspend fun fetchSnapshot(requestId: String): QuestionChatSnapshotResult = QuestionChatSnapshotResult.Ready(snapshot)
     override suspend fun sendMessage(requestId: String, clientCommandId: String, message: String): QuestionChatCommandResult<QuestionChatSendResponse> =

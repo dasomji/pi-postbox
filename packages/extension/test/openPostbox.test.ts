@@ -1,15 +1,16 @@
 import {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
+  PROTOCOL_VERSION,
+  SERVER_PROFILE_METADATA_VERSION,
   createHealthResponse,
-  type ActiveLocalRole,
-  type ActiveLocalTargetIdentity
 } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveServerProfile } from "../src/serverProfile.js";
+
+type TestLocalTarget = { role: "dev" | "production"; instanceId: string; url: string };
 
 const childProcessMock = vi.hoisted(() => ({
   openFailureUrl: undefined as string | undefined,
@@ -374,7 +375,7 @@ describe("/postbox browser command", () => {
       await startConnectedSession(harness, env);
 
       expect(harness.commands.has("postbox")).toBe(true);
-      expect([...harness.tools.keys()]).toEqual(expect.arrayContaining(["ask_postbox", "postbox_status"]));
+      expect([...harness.tools.keys()]).toEqual(expect.arrayContaining(["write_question", "get_answer", "postbox_status"]));
       expect([...harness.tools.keys()]).not.toEqual(expect.arrayContaining(["open_postbox"]));
       expect([...harness.tools.keys()].some((name) => /open.*postbox|postbox.*open|browser|dashboard/i.test(name))).toBe(false);
 
@@ -488,17 +489,39 @@ async function withProcessEnv<T>(env: NodeJS.ProcessEnv, fn: () => Promise<T>): 
   }
 }
 
-async function writeMetadata(env: NodeJS.ProcessEnv, record: { role: ActiveLocalRole; instanceId: string; url: string; updatedAt: string }): Promise<void> {
-  const activeLocalDir = join(dirname(env.PI_POSTBOX_CONFIG_PATH!), ACTIVE_LOCAL_METADATA_DIRECTORY);
-  await mkdir(activeLocalDir, { recursive: true });
+async function writeMetadata(env: NodeJS.ProcessEnv, record: TestLocalTarget & { updatedAt: string }): Promise<void> {
+  const profile = resolveServerProfile({ env });
+  await mkdir(dirname(profile.metadataPath), { recursive: true });
   await writeFile(
-    join(activeLocalDir, ACTIVE_LOCAL_METADATA_FILENAMES[record.role]),
-    `${JSON.stringify({ version: 1, ...record }, null, 2)}\n`
+    profile.metadataPath,
+    `${JSON.stringify({
+      version: SERVER_PROFILE_METADATA_VERSION,
+      profile: { kind: profile.kind, id: profile.id },
+      instanceId: record.instanceId,
+      url: record.url,
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build",
+      updatedAt: record.updatedAt
+    }, null, 2)}\n`
   );
 }
 
-function healthResponse(localTarget: ActiveLocalTargetIdentity) {
-  return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget });
+function healthResponse(localTarget: TestLocalTarget) {
+  const profile = resolveServerProfile();
+  const identity = { kind: profile.kind, id: profile.id } as const;
+  return createHealthResponse({
+    startedAtMs: NOW_MS - 1_000,
+    nowMs: NOW_MS,
+    profile: identity,
+    buildId: "test-build",
+    instance: {
+      profile: identity,
+      instanceId: localTarget.instanceId,
+      url: localTarget.url,
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build"
+    }
+  });
 }
 
 function healthFetch(responses: Record<string, unknown | Error>) {

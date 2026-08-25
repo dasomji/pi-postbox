@@ -339,7 +339,6 @@ private fun ConnectedQuestionWorkflow(
         onEditServerUrl = onEditServerUrl,
         onRefresh = workflowViewModel::refreshQuestions,
         onStartQuestionChat = workflowViewModel::startQuestionChat,
-        onConfirmContextOnlyQuestionChat = workflowViewModel::confirmContextOnlyQuestionChat,
         onRetryQuestionChat = workflowViewModel::retryQuestionChat,
         onSelectQuestionChatTab = workflowViewModel::selectQuestionChatTab,
         onQuestionChatDraftChanged = workflowViewModel::updateQuestionChatDraft,

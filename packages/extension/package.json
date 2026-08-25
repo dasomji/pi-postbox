@@ -1,7 +1,7 @@
 {
   "name": "@pi-postbox/extension",
-  "version": "0.1.0",
-  "description": "Pi extension that registers sessions with Pi Postbox and exposes ask_postbox.",
+  "version": "0.2.2",
+  "description": "Pi extension that registers sessions with Pi Postbox and exposes write_question.",
   "type": "module",
   "main": "src/index.ts",
   "types": "dist/index.d.ts",
@@ -15,7 +15,7 @@
     "pi",
     "extension",
     "postbox",
-    "ask_postbox"
+    "write_question"
   ],
   "license": "MIT",
   "repository": {
@@ -32,11 +32,13 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.10",
-    "@pi-postbox/protocol": "0.1.0",
+    "@pi-postbox/protocol": "0.2.2",
     "typebox": "^1.1.38",
     "ws": "^8.21.0"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   }
 }

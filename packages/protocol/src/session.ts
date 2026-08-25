@@ -1,8 +1,18 @@
 import { z } from "zod";
 import { AskRequestSnapshotSchema } from "./ask.js";
+import { HarnessLineageSchema, OwnerIdentitySchema } from "./ownerIdentity.js";
+import { FeatureActionSchema, FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
 
-export const SemanticStateSchema = z.enum(["working", "blocked", "idle", "unknown"]);
+export const SemanticStateSchema = z.enum(["working", "blocked", "waiting_for_postbox", "idle", "unknown"]);
 export const PresenceStateSchema = z.enum(["live", "stale", "offline"]);
+export const PostboxOwnerListScopeSchema = z.enum(["feature", "worktree", "repository"]);
+export const PostboxOwnerSummarySchema = z.object({
+  owner: OwnerIdentitySchema,
+  presence: PresenceStateSchema,
+  activeQuestionCount: z.number().int().nonnegative(),
+  unreadAnswerCount: z.number().int().nonnegative()
+}).strict();
+export const PostboxOwnerSummaryListSchema = z.array(PostboxOwnerSummarySchema).max(100);
 
 export const MachineRegistrationSchema = z.object({
   machineId: z.string().min(1),
@@ -32,7 +42,9 @@ export const ProjectRegistrationSchema = z.object({
   headSha: z.string().min(1).optional(),
   isDirty: z.boolean().optional(),
   worktreePath: z.string().min(1).optional(),
-  icon: ProjectIconSchema.optional()
+  icon: ProjectIconSchema.optional(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional()
 });
 
 export const SessionRegistrationSchema = z.object({
@@ -44,7 +56,12 @@ export const SessionRegistrationSchema = z.object({
   semanticState: SemanticStateSchema.default("unknown"),
   agentSessionId: z.string().min(1).optional(),
   agentSessionPath: z.string().min(1).optional(),
-  leafId: z.string().min(1).optional()
+  leafId: z.string().min(1).optional(),
+  owner: OwnerIdentitySchema.optional(),
+  lineage: HarnessLineageSchema.optional(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional(),
+  feature: z.union([FeatureIdentitySchema, FeatureActionSchema]).optional()
 });
 
 export const SessionRegisterPayloadSchema = z.object({
@@ -100,7 +117,10 @@ export const SessionSnapshotSchema = z.object({
   lastHeartbeatAt: z.string().datetime().optional(),
   connectedAt: z.string().datetime().optional(),
   disconnectedAt: z.string().datetime().optional(),
-  updatedAt: z.string().datetime()
+  updatedAt: z.string().datetime(),
+  repository: RepositoryIdentitySchema.optional(),
+  worktree: WorktreeIdentitySchema.optional(),
+  feature: FeatureIdentitySchema.optional()
 });
 
 export const StateSnapshotSchema = z.object({
@@ -111,6 +131,9 @@ export const StateSnapshotSchema = z.object({
 
 export type SemanticState = z.infer<typeof SemanticStateSchema>;
 export type PresenceState = z.infer<typeof PresenceStateSchema>;
+export type PostboxOwnerListScope = z.infer<typeof PostboxOwnerListScopeSchema>;
+export type PostboxOwnerSummary = z.infer<typeof PostboxOwnerSummarySchema>;
+export type PostboxOwnerSummaryList = z.infer<typeof PostboxOwnerSummaryListSchema>;
 export type ProjectIcon = z.infer<typeof ProjectIconSchema>;
 export type MachineRegistration = z.infer<typeof MachineRegistrationSchema>;
 export type ProjectRegistration = z.infer<typeof ProjectRegistrationSchema>;

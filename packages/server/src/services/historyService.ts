@@ -1,4 +1,4 @@
-import { HistoryRecordSchema, ProjectIconSchema, type HistoryRecord, type HistoryRetention } from "@pi-postbox/protocol";
+import { HistoryRecordSchema, ProjectIconSchema, type HistoryRecord } from "@pi-postbox/protocol";
 import type { SqliteDatabase } from "../db/database.js";
 import { RequestStore } from "./requestStore.js";
 
@@ -29,34 +29,20 @@ interface HistoryRow {
   icon_size_bytes: number | null;
 }
 
-export interface HistoryServiceOptions extends HistoryRetention {}
-
 const TERMINAL_STATUSES = "'answered','cancelled','expired'";
 
 export class HistoryService {
-  private readonly retention: HistoryRetention;
-
   constructor(
     private readonly db: SqliteDatabase,
     private readonly requestStore: RequestStore,
-    private readonly now: () => number,
-    options: HistoryServiceOptions = {}
-  ) {
-    this.retention = {
-      maxAgeMs: options.maxAgeMs,
-      maxRecords: options.maxRecords
-    };
-  }
-
-  retentionConfig(): HistoryRetention {
-    return { ...this.retention };
-  }
+    private readonly now: () => number
+  ) {}
 
   list(): HistoryRecord[] {
     const rows = this.db
       .prepare(
         `SELECT
-          ask_requests.request_id,
+          questions.question_id AS request_id,
           sessions.session_id,
           sessions.title AS session_title,
           sessions.cwd AS session_cwd,
@@ -80,54 +66,16 @@ export class HistoryService {
           projects.icon_data_url,
           projects.icon_media_type,
           projects.icon_size_bytes
-        FROM ask_requests
-        JOIN sessions ON sessions.session_id = ask_requests.session_id
+        FROM questions
+        JOIN sessions ON sessions.session_id = questions.source_session_id
         JOIN machines ON machines.machine_id = sessions.machine_id
         JOIN projects ON projects.project_id = sessions.project_id
-        WHERE ask_requests.status IN (${TERMINAL_STATUSES})
-        ORDER BY ask_requests.resolved_at DESC, ask_requests.created_at DESC`
+        WHERE questions.status IN (${TERMINAL_STATUSES})
+        ORDER BY questions.resolved_at DESC, questions.created_at DESC`
       )
       .all() as HistoryRow[];
 
     return rows.map((row) => this.toRecord(row));
-  }
-
-  prune(): number {
-    let pruned = 0;
-    const transaction = this.db.transaction(() => {
-      pruned += this.pruneByAge();
-      pruned += this.pruneByCount();
-    });
-    transaction();
-    return pruned;
-  }
-
-  private pruneByAge(): number {
-    if (this.retention.maxAgeMs === undefined) return 0;
-    const cutoffIso = new Date(this.now() - this.retention.maxAgeMs).toISOString();
-    return this.db
-      .prepare(`DELETE FROM ask_requests WHERE status IN (${TERMINAL_STATUSES}) AND resolved_at IS NOT NULL AND resolved_at < ?`)
-      .run(cutoffIso).changes;
-  }
-
-  private pruneByCount(): number {
-    if (this.retention.maxRecords === undefined) return 0;
-    const rows = this.db
-      .prepare(
-        `SELECT request_id
-         FROM ask_requests
-         WHERE status IN (${TERMINAL_STATUSES})
-         ORDER BY resolved_at DESC, created_at DESC
-         LIMIT -1 OFFSET ?`
-      )
-      .all(this.retention.maxRecords) as Array<{ request_id: string }>;
-
-    if (rows.length === 0) return 0;
-
-    const statement = this.db.prepare("DELETE FROM ask_requests WHERE request_id = ? AND status IN ('answered','cancelled','expired')");
-    let changes = 0;
-    for (const row of rows) changes += statement.run(row.request_id).changes;
-    return changes;
   }
 
   private toRecord(row: HistoryRow): HistoryRecord {

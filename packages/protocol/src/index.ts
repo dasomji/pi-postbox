@@ -1,69 +1,72 @@
 export {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
-  ACTIVE_LOCAL_METADATA_VERSION,
-  ActiveLocalInstanceIdSchema,
-  ActiveLocalMetadataRecordSchema,
-  ActiveLocalRoleSchema,
-  ActiveLocalTargetIdentitySchema,
-  normalizeActiveLocalMetadataUrl,
-  parseActiveLocalMetadataRecord,
-  selectActiveLocalTarget
-} from "./activeLocal.js";
-export type {
-  ActiveLocalDiagnostic,
-  ActiveLocalMetadataRecord,
-  ActiveLocalRole,
-  ActiveLocalTargetIdentity,
-  NormalizeActiveLocalMetadataUrlResult,
-  ParseActiveLocalMetadataRecordOptions,
-  ParseActiveLocalMetadataRecordResult,
-  SelectActiveLocalTargetOptions,
-  SelectActiveLocalTargetResult
-} from "./activeLocal.js";
+  ServerInstanceIdSchema,
+  normalizeLoopbackUrl
+} from "./loopback.js";
+export type { NormalizeLoopbackUrlResult } from "./loopback.js";
 export {
+  ASK_STATUSES,
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
-  AskCreateHandoffContextSchema,
   AskCreateOptionSchema,
   AskCreatePayloadSchema,
+  AskQuestionDraftSchema,
+  AskBatchQuestionDraftSchema,
+  AskPostboxInputSchema,
+  AskBatchReceiptSchema,
+  AskAnswerEventSchema,
   AskModeSchema,
   AskOptionSchema,
   AskQuestionSchema,
   AskRequestSnapshotSchema,
+  AskReceiptSchema,
+  AnswerReadResultSchema,
+  PendingAnswerReadResultSchema,
   AskResultSchema,
   AskStatusSchema,
-  AskUrgencySchema,
-  compareAskUrgency,
+  UpdateQuestionPayloadSchema,
+  QuestionContentRevisionSchema,
+  QuestionEventHistorySchema,
+  QuestionHistorySchema,
+  QuestionNonContentEventSchema,
+  QuestionResolutionSchema,
+  QuestionRevisionSnapshotSchema,
   ForkReferenceSchema,
-  HandoffContextSchema,
   OTHER_OPTION_VALUE,
   ProposeAnswerErrorCodeSchema,
   ProposedAnswerOptionSchema,
   ProposeAnswerPayloadSchema,
-  ProposeAnswerResultSchema,
-  RichContextItemSchema
+  ProposeAnswerResultSchema
 } from "./ask.js";
 export type {
   AskAnswerPayload,
   AskCancelPayload,
-  AskCreateHandoffContext,
   AskCreateOption,
   AskCreatePayload,
+  AskQuestionDraft,
+  AskBatchQuestionDraft,
+  AskPostboxInput,
+  AskBatchReceipt,
   AskMode,
   AskOption,
   AskQuestion,
   AskRequestSnapshot,
+  AskReceipt,
+  AnswerReadResult,
+  PendingAnswerReadResult,
   AskResult,
   AskStatus,
-  AskUrgency,
+  UpdateQuestionPayload,
+  QuestionContentRevision,
+  QuestionEventHistory,
+  QuestionHistory,
+  QuestionNonContentEvent,
+  QuestionResolution,
+  QuestionRevisionSnapshot,
   ForkReference,
-  HandoffContext,
   ProposeAnswerErrorCode,
   ProposedAnswerOption,
   ProposeAnswerPayload,
-  ProposeAnswerResult,
-  RichContextItem
+  ProposeAnswerResult
 } from "./ask.js";
 export {
   createHealthResponse,
@@ -72,6 +75,41 @@ export {
   SERVICE_NAME
 } from "./health.js";
 export type { CreateHealthResponseOptions, HealthResponse } from "./health.js";
+export {
+  POSTBOX_CURSOR_MAX_LENGTH,
+  POSTBOX_EXPLICIT_ID_MAX,
+  POSTBOX_OWNER_PAGE_DEFAULT,
+  POSTBOX_OWNER_PAGE_MAX,
+  QUESTION_DISCOVERY_PAGE_DEFAULT,
+  QUESTION_DISCOVERY_PAGE_MAX,
+  QUESTION_HISTORY_PAGE_DEFAULT,
+  QUESTION_HISTORY_PAGE_MAX,
+  QUESTION_STATUS_PAGE_DEFAULT,
+  QUESTION_STATUS_PAGE_MAX
+} from "./limits.js";
+export {
+  SERVER_PROFILE_METADATA_VERSION,
+  ServerInstanceIdentitySchema,
+  ServerProfileIdentitySchema,
+  ServerProfileMetadataRecordSchema,
+  parseServerProfileMetadataRecord
+} from "./serverProfile.js";
+export type {
+  ParseServerProfileMetadataRecordResult,
+  ServerInstanceIdentity,
+  ServerProfileIdentity,
+  ServerProfileMetadataDiagnostic,
+  ServerProfileMetadataRecord
+} from "./serverProfile.js";
+export { FeatureActionSchema, FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
+export type { FeatureAction, FeatureIdentity, RepositoryIdentity, WorktreeIdentity } from "./grouping.js";
+export {
+  HarnessLineageSchema,
+  HarnessSchema,
+  OwnerIdentitySchema,
+  ownerIdentityKey
+} from "./ownerIdentity.js";
+export type { Harness, HarnessLineage, OwnerIdentity } from "./ownerIdentity.js";
 export {
   QUESTION_CHAT_ASSISTANT_TEXT_MAX,
   QUESTION_CHAT_COMMAND_ID_MAX,
@@ -86,9 +124,6 @@ export {
   QuestionChatActivationResponseSchema,
   QuestionChatAvailabilityCodeSchema,
   QuestionChatAvailabilityErrorSchema,
-  QuestionChatContextActivationPayloadSchema,
-  QuestionChatContextFallbackAvailabilitySchema,
-  QuestionChatContextSourceSchema,
   QuestionChatEventSchema,
   QuestionChatMessageSchema,
   QuestionChatModelSchema,
@@ -115,9 +150,6 @@ export type {
   QuestionChatActivationResponse,
   QuestionChatAvailabilityCode,
   QuestionChatAvailabilityError,
-  QuestionChatContextActivationPayload,
-  QuestionChatContextFallbackAvailability,
-  QuestionChatContextSource,
   QuestionChatEvent,
   QuestionChatMessage,
   QuestionChatModel,
@@ -141,13 +173,11 @@ export type {
   QuestionChatUnavailableResponse
 } from "./chat.js";
 export {
-  HistoryPruneResponseSchema,
   HistoryRecordSchema,
   HistoryResponseSchema,
-  HistoryRetentionSchema,
   HistorySessionMetadataSchema
 } from "./history.js";
-export type { HistoryPruneResponse, HistoryRecord, HistoryResponse, HistoryRetention, HistorySessionMetadata } from "./history.js";
+export type { HistoryRecord, HistoryResponse, HistorySessionMetadata } from "./history.js";
 export {
   FcmTokenDeletePayloadSchema,
   FcmTokenPayloadSchema,
@@ -167,6 +197,9 @@ export type {
 export {
   HeartbeatPayloadSchema,
   MachineRegistrationSchema,
+  PostboxOwnerListScopeSchema,
+  PostboxOwnerSummaryListSchema,
+  PostboxOwnerSummarySchema,
   PresenceStateSchema,
   ProjectIconSchema,
   ProjectRegistrationSchema,
@@ -182,6 +215,9 @@ export {
 export type {
   HeartbeatPayload,
   MachineRegistration,
+  PostboxOwnerListScope,
+  PostboxOwnerSummary,
+  PostboxOwnerSummaryList,
   PresenceState,
   ProjectIcon,
   ProjectRegistration,
@@ -196,3 +232,5 @@ export type {
 } from "./session.js";
 export { ExtensionClientMessageSchema, ExtensionServerMessageSchema } from "./ws.js";
 export type { ExtensionClientMessage, ExtensionServerMessage } from "./ws.js";
+export { QuestionTelemetryEventSchema } from "./questionTelemetry.js";
+export type { QuestionTelemetryEvent } from "./questionTelemetry.js";

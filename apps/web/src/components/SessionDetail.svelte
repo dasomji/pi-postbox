@@ -30,7 +30,7 @@
     </div>
     <div class="flex shrink-0 flex-col items-end gap-2">
       <StatusBadge tone={semanticTone(session.semanticState)}>
-        {session.semanticState === "blocked" ? "waiting" : session.semanticState}
+        {session.semanticState === "blocked" ? "waiting" : session.semanticState === "waiting_for_postbox" ? "waiting for Postbox" : session.semanticState}
       </StatusBadge>
       <StatusBadge tone={presenceTone(session.presence)}>{session.presence}</StatusBadge>
     </div>
@@ -62,7 +62,7 @@
     <MetadataRow label="Repo" value={session.repoName ?? "unknown"} />
     <MetadataRow label="Branch" value={session.branch ?? "unknown"} />
     <MetadataRow label="Head" value={abbreviatedHead(session)} />
-    <MetadataRow label="State" value={session.semanticState === "blocked" ? "blocked / waiting" : session.semanticState} />
+    <MetadataRow label="State" value={session.semanticState === "blocked" ? "blocked / waiting" : session.semanticState === "waiting_for_postbox" ? "waiting for Postbox" : session.semanticState} />
     <MetadataRow label="CWD" value={session.cwd} />
     <MetadataRow label="Git root" value={session.gitRoot ?? "not reported"} />
     <MetadataRow label="Worktree" value={session.worktreePath ?? "not reported"} />

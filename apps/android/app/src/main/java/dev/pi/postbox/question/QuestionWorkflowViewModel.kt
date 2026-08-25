@@ -12,7 +12,6 @@ import dev.pi.postbox.protocol.AskMode
 import dev.pi.postbox.protocol.AskOptionProvenance
 import dev.pi.postbox.protocol.AskRequestSnapshot
 import dev.pi.postbox.protocol.AskStatus
-import dev.pi.postbox.protocol.AskUrgency
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.protocol.PostboxProtocolClient
 import dev.pi.postbox.protocol.PostboxRequestAlreadyResolvedException
@@ -150,14 +149,6 @@ class QuestionWorkflowViewModel(
         if (questionChatActivationRequested || ownerState.activation == QuestionChatActivationUiState.ActivatingExact) return
         questionChatActivationRequested = true
         questionChatOwner.dispatch(QuestionChatIntent.ActivateExact)
-        promoteActivatedQuestionChatIfReady()
-    }
-
-    fun confirmContextOnlyQuestionChat() {
-        questionChatShell.selectTab(QuestionChatWorkspaceTab.CHAT)
-        updateQuestionChatState()
-        questionChatActivationRequested = true
-        questionChatOwner.dispatch(QuestionChatIntent.ActivateContextFallback)
         promoteActivatedQuestionChatIfReady()
     }
 
@@ -970,12 +961,6 @@ enum class QuestionMode {
     MULTI
 }
 
-enum class QuestionUrgency {
-    HIGH,
-    NORMAL,
-    LOW
-}
-
 data class QuestionSessionUiState(
     val sessionId: String,
     val title: String?,
@@ -994,8 +979,7 @@ data class QuestionListItemUiState(
     val prompt: String,
     val mode: QuestionMode,
     val createdAt: String,
-    val expiresAt: String?,
-    val urgency: QuestionUrgency = QuestionUrgency.NORMAL
+    val expiresAt: String?
 )
 
 data class QuestionDetailUiState(
@@ -1003,13 +987,9 @@ data class QuestionDetailUiState(
     val sessionId: String,
     val mode: QuestionMode,
     val prompt: String,
-    val questionContext: String?,
-    val relevance: String?,
-    val decisionImpact: String?,
+    val ambiguity: String?,
     val options: List<QuestionOptionUiState>,
-    val handoffContext: dev.pi.postbox.protocol.HandoffContext?,
     val forkReference: dev.pi.postbox.protocol.ForkReference?,
-    val urgency: QuestionUrgency = QuestionUrgency.NORMAL,
     val selectedValues: List<String> = emptyList(),
     val note: String = "",
     val canSubmit: Boolean = false,
@@ -1024,8 +1004,7 @@ data class QuestionOptionUiState(
     val value: String,
     val label: String,
     val description: String?,
-    val meaning: String? = null,
-    val context: String? = null,
+    val impact: String? = null,
     val provenance: QuestionOptionProvenance? = null
 )
 
@@ -1055,7 +1034,6 @@ private fun AskRequestSnapshot.toListItem(): QuestionListItemUiState = QuestionL
     sessionId = sessionId,
     prompt = question.prompt,
     mode = mode.toQuestionMode(),
-    urgency = urgency.toQuestionUrgency(),
     createdAt = createdAt,
     expiresAt = expiresAt
 )
@@ -1082,22 +1060,17 @@ private fun AskRequestSnapshot.toUiQuestion(
         requestId = requestId,
         sessionId = sessionId,
         mode = mode.toQuestionMode(),
-        urgency = urgency.toQuestionUrgency(),
         prompt = question.prompt,
-        questionContext = question.context,
-        relevance = question.relevance,
-        decisionImpact = question.decisionImpact,
+        ambiguity = question.ambiguity,
         options = options.map { option ->
             QuestionOptionUiState(
                 value = option.value,
                 label = option.label,
                 description = option.description,
-                meaning = option.meaning,
-                context = option.context,
+                impact = option.impact,
                 provenance = option.provenance?.toQuestionOptionProvenance()
             )
         },
-        handoffContext = context,
         forkReference = forkReference,
         selectedValues = sanitizedDraft.selectedValues,
         note = sanitizedDraft.note,
@@ -1146,12 +1119,6 @@ private fun QuestionDetailUiState.withSubmitState(): QuestionDetailUiState {
 private fun AskMode.toQuestionMode(): QuestionMode = when (this) {
     AskMode.SINGLE -> QuestionMode.SINGLE
     AskMode.MULTI -> QuestionMode.MULTI
-}
-
-private fun AskUrgency.toQuestionUrgency(): QuestionUrgency = when (this) {
-    AskUrgency.HIGH -> QuestionUrgency.HIGH
-    AskUrgency.NORMAL -> QuestionUrgency.NORMAL
-    AskUrgency.LOW -> QuestionUrgency.LOW
 }
 
 private fun AskOptionProvenance.toQuestionOptionProvenance(): QuestionOptionProvenance = when (this) {

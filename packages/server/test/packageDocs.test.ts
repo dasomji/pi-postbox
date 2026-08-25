@@ -95,6 +95,13 @@ describe("release packaging and operator docs", () => {
       expect.arrayContaining(["pi-package"])
     );
     expect(root.publishConfig, "the scoped package must publish publicly").toMatchObject({ access: "public" });
+    expect(root.license, "the public package must declare its license").toEqual(expect.any(String));
+    expect(root.repository).toEqual({
+      type: "git",
+      url: "git+https://github.com/dasomji/pi-postbox.git"
+    });
+    expect(root.homepage).toBe("https://github.com/dasomji/pi-postbox#readme");
+    expect(root.bugs).toEqual({ url: "https://github.com/dasomji/pi-postbox/issues" });
 
     const pi = root.pi as { extensions?: unknown[] } | undefined;
     expect(pi?.extensions?.map(packagePath)).toEqual(["packages/extension/src/index.ts"]);
@@ -111,19 +118,24 @@ describe("release packaging and operator docs", () => {
   it("packs the combined runtime without local Pi/cache/secret files", async () => {
     const paths = await readDryRunPackPaths();
     const requiredRuntimeFiles = [
+      "LICENSE",
       "README.md",
       "package.json",
       "packages/extension/package.json",
       "packages/extension/src/index.ts",
+      "packages/extension/src/serverProfile.ts",
+      "packages/extension/src/serverTargetResolver.ts",
       "packages/extension/src/questionChatRuntime.ts",
       "packages/extension/src/repositoryEvidenceTools.ts",
       "packages/extension/src/proposeAnswerTool.ts",
       "packages/protocol/package.json",
       "packages/protocol/dist/index.js",
+      "packages/protocol/dist/serverProfile.js",
       "packages/protocol/dist/chat.js",
       "packages/protocol/dist/ws.js",
       "packages/server/package.json",
       "packages/server/dist/cli.js",
+      "packages/server/dist/profileTarget.js",
       "packages/server/dist/routes/requestRoutes.js",
       "packages/server/dist/services/questionChatRelay.js",
       "packages/server/dist/public/index.html",
@@ -141,9 +153,11 @@ describe("release packaging and operator docs", () => {
         path.startsWith(".pi/") ||
         path.startsWith("node_modules/") ||
         path.startsWith("tmp/") ||
+        /(?:^|\/)(?:activeLocal|activeLocalTarget)(?:\.|$)/.test(path) ||
         path === ".env" ||
         path.endsWith("/.env") ||
-        path.endsWith("/.DS_Store")
+        path.endsWith("/.DS_Store") ||
+        /(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path)
     );
 
     expect(missingRequiredFiles).toEqual([]);
@@ -272,7 +286,7 @@ describe("release packaging and operator docs", () => {
       "Teach me",
       "freeform",
       "exact fork",
-      "context-only",
+      "no reconstructed",
       "Suggested in Chat",
       "Retry",
       "Stop",
@@ -301,7 +315,6 @@ describe("release packaging and operator docs", () => {
 
     expectConcepts(protocol, [
       "POST /api/requests/:requestId/chat",
-      "POST /api/requests/:requestId/chat/context",
       "GET /api/requests/:requestId/chat",
       "POST /api/requests/:requestId/chat/messages",
       "POST /api/requests/:requestId/chat/stop",
@@ -309,7 +322,6 @@ describe("release packaging and operator docs", () => {
       "clientCommandId",
       "requestId",
       "chat.activate",
-      "chat.activate-context",
       "chat.ready",
       "chat.snapshot",
       "chat.send",
@@ -332,16 +344,30 @@ describe("release packaging and operator docs", () => {
       "request_not_pending",
       "extension_offline",
       "command_timeout",
-      "codebaseContext",
-      "problemContext",
+      "source_path_missing",
+      "source_leaf_missing",
+      "forkKind: \"exact\"",
+      "non-blank ambiguity",
       "provenance: \"chat\""
     ]);
+    expect(protocol).not.toContain("POST /api/requests/:requestId/chat/context");
+    expect(protocol).not.toContain("chat.activate-context");
+    expect(protocol).not.toContain("codebaseContext");
+    expect(protocol).not.toContain("problemContext");
     expect.soft(protocol, "the SSE contract should distinguish the initial snapshot from incremental Chat events").toMatch(
       /(initial|normalized) snapshot[\s\S]{0,500}chat\/events[\s\S]{0,300}(event|incremental)/i
     );
     expect.soft(protocol, "relay results and errors must document request-id correlation").toMatch(
       /requestId[\s\S]{0,500}(correlat|matching)[\s\S]{0,500}(result|accepted|error)/i
     );
+  });
+
+  it("supersedes the replacement ADR to preserve unresolved Questions and unread Answers", async () => {
+    const adr = await readText(join("docs", "adr", "0001-pi-session-replacement-lifecycle.md"));
+    expect(adr).toMatch(/\/new[\s\S]*\/resume[\s\S]*\/fork[\s\S]*(preserve|retain)[\s\S]*(unresolved|pending) Questions/i);
+    expect(adr).toMatch(/quit[\s\S]*disconnect[\s\S]*(process (?:exit|death)|crash)[\s\S]*(unread Answers|Answers)/i);
+    expect(adr).toMatch(/heartbeat[\s\S]*(lease|stale)[\s\S]*offline/i);
+    expect(adr).not.toMatch(/cancels its unresolved Postbox Questions/i);
   });
 
   it("documents the combined package install shape without stale split-package guidance", async () => {
@@ -462,7 +488,7 @@ describe("release packaging and operator docs", () => {
     );
   });
 
-  it("documents active-local routing, role configuration, and local diagnostics for operators", async () => {
+  it("documents profile-scoped routing, configuration, and local diagnostics for operators", async () => {
     const docs = await Promise.all([
       readText("README.md"),
       readText(join("docs", "configuration.md")),
@@ -471,20 +497,19 @@ describe("release packaging and operator docs", () => {
 
     expectConcepts(docs, [
       "32187",
-      "--active-local-role",
-      "PI_POSTBOX_ACTIVE_LOCAL_ROLE",
-      "active-local/dev.json",
-      "active-local/production.json",
+      "--profile",
+      "PI_POSTBOX_PROFILE",
+      "development:<checkout-id>",
+      "active-local/server.json",
       "PI_POSTBOX_CONFIG_DIR",
       "PI_POSTBOX_CONFIG_PATH",
       "~/.pi-postbox",
-      "dev over production",
-      "production fallback",
+      "never orders or falls back across profiles",
       "stale",
       "unhealthy",
       "unsafe",
       "health mismatch",
-      "no broad discovery",
+      "no machine-global candidate ordering",
       "port scanning"
     ]);
     expect(docs, "operator docs should not still describe 3000 as the preferred/default Postbox port").not.toMatch(
@@ -516,7 +541,7 @@ describe("release packaging and operator docs", () => {
     );
   });
 
-  it("documents explicit remote authority plus live retargeting and origin affinity", async () => {
+  it("documents explicit remote authority plus profile-scoped retargeting and origin affinity", async () => {
     const docs = await Promise.all([
       readText("README.md"),
       readText(join("docs", "configuration.md")),
@@ -530,30 +555,30 @@ describe("release packaging and operator docs", () => {
       "Tailscale",
       "hosted",
       "authoritative",
-      "not local recovery candidates",
-      "live retargeting",
+      "explicit override",
+      "reconnect only within their resolved profile",
       "sent asks",
       "local fallback",
-      "pin their origin",
+      "pin their origin endpoint",
       "bounded",
       "deferred switching"
     ]);
   });
 
-  it("documents optional health local target identity and exact metadata matching", async () => {
+  it("documents authoritative health profile identity and exact metadata matching", async () => {
     const protocol = await readText(join("docs", "protocol.md"));
 
-    expectConcepts(protocol, ["/healthz", "localTarget", "optional", "active-local", "exact", "identity"]);
+    expectConcepts(protocol, ["/healthz", "profile", "instance", "buildId", "active-local/server.json", "exact", "identity"]);
   });
 
-  it("keeps the release smoke isolated from operator config and compatible with active-local health", async () => {
+  it("keeps the release smoke isolated from operator config and compatible with profile health", async () => {
     const smoke = await readText(join("scripts", "smoke-postbox.mjs"));
 
-    expect(smoke, "smoke must force active-local/config/machine-id writes into its temp directory").toContain("PI_POSTBOX_CONFIG_DIR");
+    expect(smoke, "smoke must force profile/config/machine-id writes into its temp directory").toContain("PI_POSTBOX_CONFIG_DIR");
     expect(smoke, "smoke should set PI_POSTBOX_CONFIG_DIR to its mkdtemp directory").toMatch(/PI_POSTBOX_CONFIG_DIR[\s\S]{0,120}tmp/);
     expect(smoke, "smoke must not mutate real operator Tailscale Serve state").toContain("--no-tailscale");
     expect(smoke, "smoke child environment must force Tailscale off").toMatch(/PI_POSTBOX_TAILSCALE[\s\S]{0,40}["']off["']/);
-    expectConcepts(smoke, ["localTarget", "instanceId", "role", "url"]);
+    expectConcepts(smoke, ["profile", "instanceId", "buildId", "url"]);
   });
 
   it("makes the release smoke exercise packaged Question Chat UI and privacy invariants", async () => {

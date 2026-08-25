@@ -35,7 +35,8 @@ function registrationMessage(sessionId = "session-1"): ExtensionClientMessage {
         title: "Session cleanup",
         cwd: "/repo/pi-postbox",
         branch: "feature/session-cleanup",
-        semanticState: "working"
+        semanticState: "working",
+        owner: { harness: "pi", ownerId: `11111111-1111-4111-8111-${sessionId.padEnd(12, "0").slice(0, 12)}` }
       }
     }
   };
@@ -80,15 +81,12 @@ async function createAsk(socket: WebSocket, requestId: string, sessionId = "sess
         requestId,
         sessionId,
         mode: "single",
-        question: { prompt: "Keep this session visible?" },
+        question: { prompt: "Keep this session visible?", ambiguity: "Test ambiguity." },
         options: [
           { value: "yes", label: "Yes" },
           { value: "no", label: "No" }
         ],
-        context: {
-          codebaseContext: "Fastify server with retained session and request records.",
-          problemContext: "Keep sessions referenced by pending or historical decisions."
-        }
+
       }
     } satisfies ExtensionClientMessage)
   );
@@ -113,6 +111,32 @@ async function fetchSnapshot(app: FastifyInstance) {
 }
 
 describe("session cleanup", () => {
+  it("marks ordinary replacement shutdown offline without cancelling durable Questions", async () => {
+    const app = await createPostboxApp({ databasePath: ":memory:", expirySweepMs: 0 });
+    apps.push(app);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = await connectAndRegister(app);
+    await createAsk(socket, "ask-preserved");
+
+    const released = new Promise<unknown>((resolve, reject) => {
+      const onMessage = (raw: WebSocket.RawData) => {
+        const message = JSON.parse(raw.toString());
+        if (message.requestId === "shutdown-new") { socket.off("message", onMessage); resolve(message); }
+      };
+      socket.on("message", onMessage); socket.once("error", reject);
+    });
+    socket.send(JSON.stringify({ type: "session.shutdown", requestId: "shutdown-new", payload: {
+      sessionId: "session-1", reason: "new"
+    } } satisfies ExtensionClientMessage));
+    await expect(released).resolves.toMatchObject({ type: "ack", requestId: "shutdown-new" });
+
+    const history = (await app.inject({ method: "GET", url: "/api/history" })).json();
+    expect(history.history).toEqual([]);
+    const state = await fetchSnapshot(app);
+    expect(state.requests).toContainEqual(expect.objectContaining({ requestId: "ask-preserved", status: "pending" }));
+    expect(state.sessions[0]).toMatchObject({ presence: "offline" });
+  });
+
   it.each([
     { staleAfterMs: 5_000, expectedPresence: "live" as const },
     { staleAfterMs: 500, expectedPresence: "stale" as const }
@@ -231,7 +255,7 @@ describe("session cleanup", () => {
     const answer = await app.inject({
       method: "POST",
       url: "/api/requests/ask-history/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answer.statusCode).toBe(200);
     await disconnect(app, socket);
@@ -246,12 +270,11 @@ describe("session cleanup", () => {
     });
   });
 
-  it("purges a session once history pruning has dropped its resolved questions", async () => {
+  it("retains a session referenced by uncapped resolved history", async () => {
     let nowMs = START_MS;
     const app = await createPostboxApp({
       databasePath: ":memory:",
-      now: () => nowMs,
-      historyRetentionMaxAgeMs: 40 * DAY_MS
+      now: () => nowMs
     });
     apps.push(app);
     await app.listen({ host: "127.0.0.1", port: 0 });
@@ -261,25 +284,25 @@ describe("session cleanup", () => {
     const answer = await app.inject({
       method: "POST",
       url: "/api/requests/ask-pruned/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answer.statusCode).toBe(200);
     await disconnect(app, socket);
 
-    // Within history retention the session row must survive the purge.
+    // Resolved decisions retain their session provenance without an age cap.
     nowMs += 35 * DAY_MS;
     await fetchSnapshot(app);
     expect((await app.inject({ method: "GET", url: "/api/history" })).json().history).toHaveLength(1);
 
-    // After history retention lapses, the request is pruned and the session follows.
+    // Advancing time does not prune the decision or its referenced session.
     nowMs += 10 * DAY_MS;
     await fetchSnapshot(app);
-    expect((await app.inject({ method: "GET", url: "/api/history" })).json().history).toHaveLength(0);
+    expect((await app.inject({ method: "GET", url: "/api/history" })).json().history).toHaveLength(1);
     const rename = await app.inject({
       method: "POST",
       url: "/api/projects/project-1/rename",
       payload: { displayName: "Renamed" }
     });
-    expect(rename.statusCode).toBe(404);
+    expect(rename.statusCode).toBe(200);
   });
 });

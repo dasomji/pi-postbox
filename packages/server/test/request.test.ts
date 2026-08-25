@@ -30,7 +30,7 @@ function registrationMessage(): ExtensionClientMessage {
     payload: {
       machine: { machineId: "machine-1", hostname: "workstation" },
       project: { projectId: "project-1", name: "pi-postbox", cwd: "/repo", branch: "main" },
-      session: { sessionId: "session-1", title: "Answer loop", cwd: "/repo", branch: "main", semanticState: "working" }
+      session: { sessionId: "session-1", title: "Answer loop", cwd: "/repo", branch: "main", semanticState: "working", owner: { harness: "pi", ownerId: "11111111-1111-4111-8111-111111111111" } }
     }
   };
 }
@@ -59,16 +59,9 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
-function interviewerContext() {
-  return {
-    codebaseContext: "Fastify server with shared protocol schemas.",
-    problemContext: "Exercise the remote decision request lifecycle."
-  };
-}
-
 describe("ask_postbox request loop", () => {
-  it("persists urgency across restart and lists pending requests by urgency then age", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pi-postbox-urgency-db-"));
+  it("lists pending requests oldest first across restart without priority metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-postbox-order-db-"));
     const databasePath = join(dir, "postbox.sqlite");
 
     try {
@@ -78,10 +71,8 @@ describe("ask_postbox request loop", () => {
       const socket = await connectAndRegister(app);
 
       const asks = [
-        { requestId: "normal-old", urgency: "normal", now: 1_000 },
-        { requestId: "high-old", urgency: "high", now: 2_000 },
-        { requestId: "high-new", urgency: "high", now: 3_000 },
-        { requestId: "low-new", urgency: "low", now: 4_000 }
+        { requestId: "oldest", now: 1_000 }, { requestId: "older", now: 2_000 },
+        { requestId: "newer", now: 3_000 }, { requestId: "newest", now: 4_000 }
       ] as const;
 
       for (const ask of asks) {
@@ -95,10 +86,8 @@ describe("ask_postbox request loop", () => {
               requestId: ask.requestId,
               sessionId: "session-1",
               mode: "single",
-              urgency: ask.urgency,
-              question: { prompt: `Resolve ${ask.requestId}?` },
-              options: [{ value: "yes", label: "Yes" }],
-              context: interviewerContext()
+              question: { prompt: `Resolve ${ask.requestId}?`, ambiguity: "Test ambiguity." },
+              options: [{ value: "yes", label: "Yes" }]
             }
           } satisfies ExtensionClientMessage)
         );
@@ -114,44 +103,39 @@ describe("ask_postbox request loop", () => {
       const pending = (await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json().requests;
 
       expect(pending.map((request: { requestId: string }) => request.requestId)).toEqual([
-        "high-old",
-        "high-new",
-        "normal-old",
-        "low-new"
+        "oldest", "older", "newer", "newest"
       ]);
-      expect(pending.map((request: { urgency: string }) => request.urgency)).toEqual(["high", "high", "normal", "low"]);
+      expect(pending.every((request: object) => !("urgency" in request))).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it("rejects direct extension-protocol ask creation without complete interviewer context", async () => {
+  it("accepts direct extension-protocol ask creation without top-level handoff context", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 750 });
     apps.push(app);
     const socket = await connectAndRegister(app);
 
-    const rejected = nextMessage(socket);
-    socket.send(
-      JSON.stringify({
-        type: "ask.create",
-        requestId: "wire-missing-context",
-        payload: {
-          requestId: "ask-missing-context",
-          sessionId: "session-1",
-          mode: "single",
-          question: { prompt: "Which path?" },
-          options: [{ value: "ship", label: "Ship" }],
-          context: { codebaseContext: "Fastify server.", problemContext: "  " }
-        }
-      })
-    );
+    const created = nextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "ask.create",
+      requestId: "wire-without-context",
+      payload: {
+        requestId: "ask-without-context",
+        sessionId: "session-1",
+        mode: "single",
+        question: { prompt: "Which path?", ambiguity: "Test ambiguity." },
+        options: [{ value: "ship", label: "Ship" }]
+      }
+    }));
 
-    await expect(rejected).resolves.toMatchObject({
-      type: "error",
-      requestId: "wire-missing-context",
-      error: { code: "invalid_message" }
+    await expect(created).resolves.toMatchObject({
+      type: "ask.created",
+      requestId: "wire-without-context",
+      payload: { requestId: "ask-without-context", status: "pending" }
     });
-    expect((await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json()).toEqual({ requests: [] });
+    expect((await app.inject({ method: "GET", url: "/api/requests?status=pending" })).json().requests)
+      .toEqual([expect.objectContaining({ requestId: "ask-without-context" })]);
   });
 
   it("rejects creator-spoofed Chat provenance before state or history serialization", async () => {
@@ -167,9 +151,8 @@ describe("ask_postbox request loop", () => {
         requestId: "ask-spoofed-provenance",
         sessionId: "session-1",
         mode: "single",
-        question: { prompt: "Which path?" },
-        options: [{ value: "ship", label: "Ship", provenance: "chat" }],
-        context: interviewerContext()
+        question: { prompt: "Which path?", ambiguity: "Test ambiguity." },
+        options: [{ value: "ship", label: "Ship", provenance: "chat" }]
       }
     }));
 
@@ -196,12 +179,11 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-1",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Which server framework should v1 use?" },
+          question: { prompt: "Which server framework should v1 use?", ambiguity: "Test ambiguity." },
           options: [
             { value: "fastify", label: "Fastify" },
             { value: "hono", label: "Hono" }
-          ],
-          context: interviewerContext()
+          ]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -216,16 +198,22 @@ describe("ask_postbox request loop", () => {
           sessionId: "session-1",
           status: "pending",
           mode: "single",
-          question: { prompt: "Which server framework should v1 use?" }
+          question: { prompt: "Which server framework should v1 use?", ambiguity: "Test ambiguity." }
         }
       ]
     });
 
-    const resolvedMessage = nextMessage(socket);
+    const removedRationale = await app.inject({
+      method: "POST",
+      url: "/api/requests/ask-1/answer",
+      payload: { expectedRevision: 1, selectedValues: ["fastify"], rationale: "Removed field" }
+    });
+    expect(removedRationale.statusCode).toBe(400);
+
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-1/answer",
-      payload: { selectedValues: ["fastify"], note: "Use the boring daemon choice", rationale: "Strong lifecycle" }
+      payload: { expectedRevision: 1, selectedValues: ["fastify"], note: "Use the boring daemon choice" }
     });
 
     expect(answerResponse.statusCode).toBe(200);
@@ -234,12 +222,7 @@ describe("ask_postbox request loop", () => {
       status: "answered",
       requestId: "ask-1",
       selectedValues: ["fastify"],
-      note: "Use the boring daemon choice",
-      rationale: "Strong lifecycle"
-    });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", requestId: "ask-1", selectedValues: ["fastify"] }
+      note: "Use the boring daemon choice"
     });
   });
 
@@ -257,19 +240,17 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-other",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Which path should we take?" },
-          options: [{ value: "ship", label: "Ship it" }],
-          context: interviewerContext()
+          question: { prompt: "Which path should we take?", ambiguity: "Test ambiguity." },
+          options: [{ value: "ship", label: "Ship it" }]
         }
       } satisfies ExtensionClientMessage)
     );
     await expect(created).resolves.toMatchObject({ type: "ask.created", payload: { requestId: "ask-other", status: "pending" } });
 
-    const resolvedMessage = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-other/answer",
-      payload: { selectedValues: [OTHER_OPTION_VALUE], note: "Wait for design review first." }
+      payload: { expectedRevision: 1, selectedValues: [OTHER_OPTION_VALUE], note: "Wait for design review first." }
     });
 
     expect(answerResponse.statusCode).toBe(200);
@@ -278,10 +259,6 @@ describe("ask_postbox request loop", () => {
       requestId: "ask-other",
       selectedValues: [OTHER_OPTION_VALUE],
       note: "Wait for design review first."
-    });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", requestId: "ask-other", selectedValues: [OTHER_OPTION_VALUE] }
     });
   });
 
@@ -298,13 +275,12 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-multi",
           sessionId: "session-1",
           mode: "multi",
-          question: { prompt: "Which metadata should be shown?" },
+          question: { prompt: "Which metadata should be shown?", ambiguity: "Test ambiguity." },
           options: [
             { value: "branch", label: "Branch" },
             { value: "machine", label: "Machine" },
             { value: "cwd", label: "CWD" }
-          ],
-          context: interviewerContext()
+          ]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -314,17 +290,12 @@ describe("ask_postbox request loop", () => {
     expect(snapshot.requests).toHaveLength(1);
     expect(snapshot.requests[0]).toMatchObject({ requestId: "ask-multi", mode: "multi", status: "pending" });
 
-    const resolvedMessage = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-multi/answer",
-      payload: { selectedValues: ["branch", "machine"] }
+      payload: { expectedRevision: 1, selectedValues: ["branch", "machine"] }
     });
     expect(answerResponse.statusCode).toBe(200);
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", selectedValues: ["branch", "machine"] }
-    });
   });
 
   it("cancels a pending ask and returns a structured cancellation to the waiting caller", async () => {
@@ -340,15 +311,13 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-cancel",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Continue?" },
-          options: [{ value: "yes", label: "Yes" }],
-          context: interviewerContext()
+          question: { prompt: "Continue?", ambiguity: "Test ambiguity." },
+          options: [{ value: "yes", label: "Yes" }]
         }
       } satisfies ExtensionClientMessage)
     );
     await created;
 
-    const resolvedMessage = nextMessage(socket);
     const cancelResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-cancel/cancel",
@@ -357,13 +326,9 @@ describe("ask_postbox request loop", () => {
 
     expect(cancelResponse.statusCode).toBe(200);
     expect(cancelResponse.json().result).toMatchObject({ status: "cancelled", requestId: "ask-cancel", note: "Not now" });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "cancelled", requestId: "ask-cancel", note: "Not now" }
-    });
   });
 
-  it("cancels all pending asks for a session when the originating Pi session is replaced", async () => {
+  it("preserves all pending asks while marking a replaced Pi session offline", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 3_500 });
     apps.push(app);
     const socket = await connectAndRegister(app);
@@ -377,16 +342,15 @@ describe("ask_postbox request loop", () => {
             requestId,
             sessionId: "session-1",
             mode: "single",
-            question: { prompt: `Resolve ${requestId}?` },
-            options: [{ value: "yes", label: "Yes" }],
-            context: interviewerContext()
+            question: { prompt: `Resolve ${requestId}?`, ambiguity: "Test ambiguity." },
+            options: [{ value: "yes", label: "Yes" }]
           }
         } satisfies ExtensionClientMessage)
       );
       await expect(created).resolves.toMatchObject({ type: "ask.created", payload: { requestId, status: "pending" } });
     }
 
-    const firstResolved = nextMessage(socket);
+    const shutdownAck = nextMessage(socket);
     socket.send(
       JSON.stringify({
         type: "session.shutdown",
@@ -395,26 +359,17 @@ describe("ask_postbox request loop", () => {
       } satisfies ExtensionClientMessage)
     );
 
-    await expect(firstResolved).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: {
-        status: "cancelled",
-        requestId: "ask-old-1",
-        note: "Originating Pi session shut down.",
-        rationale: "Originating Pi session was replaced by /new."
-      }
-    });
+    await expect(shutdownAck).resolves.toMatchObject({ type: "ack", requestId: "shutdown-new" });
 
     const snapshot = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
     expect(snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", presence: "offline" });
-    expect(snapshot.requests).toEqual([]);
+    expect(snapshot.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requestId: "ask-old-1", status: "pending" }),
+      expect.objectContaining({ requestId: "ask-old-2", status: "pending" })
+    ]));
 
     const history = HistoryResponseSchema.parse((await app.inject({ method: "GET", url: "/api/history" })).json());
-    expect(history.history).toHaveLength(2);
-    expect(history.history.map((record) => record.request)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ requestId: "ask-old-1", status: "cancelled", result: expect.objectContaining({ status: "cancelled" }) }),
-      expect.objectContaining({ requestId: "ask-old-2", status: "cancelled", result: expect.objectContaining({ status: "cancelled" }) })
-    ]));
+    expect(history.history).toHaveLength(0);
   });
 
   it("treats reload shutdown reason as a reconnect path that does not cancel pending asks", async () => {
@@ -430,9 +385,8 @@ describe("ask_postbox request loop", () => {
           requestId: "ask-survives-reload",
           sessionId: "session-1",
           mode: "single",
-          question: { prompt: "Survive reload?" },
-          options: [{ value: "yes", label: "Yes" }],
-          context: interviewerContext()
+          question: { prompt: "Survive reload?", ambiguity: "Test ambiguity." },
+          options: [{ value: "yes", label: "Yes" }]
         }
       } satisfies ExtensionClientMessage)
     );
@@ -449,11 +403,11 @@ describe("ask_postbox request loop", () => {
     await expect(ack).resolves.toMatchObject({ type: "ack", payload: { type: "session.shutdown" } });
 
     const snapshot = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", presence: "live" });
+    expect(snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", presence: "offline" });
     expect(snapshot.requests).toEqual([expect.objectContaining({ requestId: "ask-survives-reload", status: "pending" })]);
   });
 
-  it("persists rich handoff context, option meaning, and fork references in public request snapshots", async () => {
+  it("persists option impact and fork references in public request snapshots", async () => {
     const app = await createPostboxApp({ databasePath: ":memory:", now: () => 4_000 });
     apps.push(app);
     const socket = await connectAndRegister(app);
@@ -468,24 +422,16 @@ describe("ask_postbox request loop", () => {
           mode: "single",
           question: {
             prompt: "Which storage boundary should v1 use?",
-            context: "Postbox needs pending asks and resolved decisions to survive restarts.",
-            relevance: "This controls the server persistence shape.",
-            decisionImpact: "It affects migration design and future history queries."
+            ambiguity: "Which storage boundary best balances durability and deployment simplicity?"
           },
           options: [
             {
               value: "sqlite",
               label: "SQLite",
               description: "Use local SQLite.",
-              meaning: "Durable local database with minimal deployment overhead.",
-              context: "Matches the personal Tailscale service boundary."
+              impact: "Durable local database with minimal deployment overhead."
             }
           ],
-          context: {
-            codebaseContext: "Fastify server with better-sqlite3 and shared protocol schemas.",
-            problemContext: "Need an interviewer handoff without streaming full chats.",
-            additionalInfo: [{ kind: "diagram", title: "Decision flow", content: "Pi -> Postbox -> Browser -> Pi" }]
-          },
           forkReference: {
             agentSessionId: "agent-session-1",
             agentSessionPath: "/tmp/session.jsonl",
@@ -503,34 +449,26 @@ describe("ask_postbox request loop", () => {
     expect(pendingResponse.json().requests[0]).toMatchObject({
       requestId: "ask-rich",
       question: {
-        context: "Postbox needs pending asks and resolved decisions to survive restarts.",
-        relevance: "This controls the server persistence shape.",
-        decisionImpact: "It affects migration design and future history queries."
+        ambiguity: "Which storage boundary best balances durability and deployment simplicity?"
       },
-      options: [{ value: "sqlite", meaning: "Durable local database with minimal deployment overhead." }],
-      context: { codebaseContext: "Fastify server with better-sqlite3 and shared protocol schemas." },
+      options: [{ value: "sqlite", impact: "Durable local database with minimal deployment overhead." }],
       forkReference: { agentSessionPath: "/tmp/session.jsonl", leafId: "leaf-1" }
     });
 
     const stateSnapshot = StateSnapshotSchema.parse((await app.inject({ method: "GET", url: "/api/state" })).json());
-    expect(stateSnapshot.requests[0]?.options[0]?.context).toContain("Tailscale");
-    expect(stateSnapshot.requests[0]?.context?.additionalInfo?.[0]).toMatchObject({ kind: "diagram", title: "Decision flow" });
+    expect(stateSnapshot.requests[0]?.options[0]?.impact).toContain("deployment overhead");
+    expect(stateSnapshot.requests[0]).not.toHaveProperty("context");
 
-    const resolvedMessage = nextMessage(socket);
     const answerResponse = await app.inject({
       method: "POST",
       url: "/api/requests/ask-rich/answer",
-      payload: { selectedValues: ["sqlite"], rationale: "Simple durable v1 storage." }
+      payload: { expectedRevision: 1, selectedValues: ["sqlite"], note: "Simple durable v1 storage." }
     });
     expect(answerResponse.statusCode).toBe(200);
     expect(answerResponse.json().request).toMatchObject({
       status: "answered",
-      context: { problemContext: "Need an interviewer handoff without streaming full chats." },
+
       forkReference: { agentSessionId: "agent-session-1" }
-    });
-    await expect(resolvedMessage).resolves.toMatchObject({
-      type: "ask.resolved",
-      payload: { status: "answered", requestId: "ask-rich", selectedValues: ["sqlite"] }
     });
   });
 });

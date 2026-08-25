@@ -22,7 +22,6 @@ enum class QuestionChatAvailabilityCode {
     WRONG_OWNER,
     COMMAND_TIMEOUT,
     RUNTIME_FAILURE,
-    CONTEXT_FALLBACK_UNAVAILABLE,
     CHAT_NOT_STARTED,
     INVALID_COMMAND,
     DUPLICATE_COMMAND,
@@ -40,7 +39,6 @@ enum class QuestionChatAvailabilityCode {
             "wrong_owner" -> WRONG_OWNER
             "command_timeout" -> COMMAND_TIMEOUT
             "runtime_failure" -> RUNTIME_FAILURE
-            "context_fallback_unavailable" -> CONTEXT_FALLBACK_UNAVAILABLE
             "chat_not_started" -> CHAT_NOT_STARTED
             "invalid_command" -> INVALID_COMMAND
             "duplicate_command" -> DUPLICATE_COMMAND
@@ -52,26 +50,18 @@ enum class QuestionChatAvailabilityCode {
     }
 }
 
-sealed interface QuestionChatContextFallbackAvailability {
-    data object Available : QuestionChatContextFallbackAvailability
-    data class Unavailable(val reason: String) : QuestionChatContextFallbackAvailability
-}
-
 data class QuestionChatAvailabilityError(
     val code: QuestionChatAvailabilityCode,
     val message: String,
-    val retryAfterMs: Long? = null,
-    val contextFallback: QuestionChatContextFallbackAvailability? = null
+    val retryAfterMs: Long? = null
 )
 
 enum class QuestionChatForkKind {
-    EXACT,
-    CONTEXT_ONLY;
+    EXACT;
 
     companion object {
         fun fromWire(value: String): QuestionChatForkKind = when (value) {
             "exact" -> EXACT
-            "context-only" -> CONTEXT_ONLY
             else -> throw QuestionChatTransportException("Unknown Question Chat fork kind: $value")
         }
     }

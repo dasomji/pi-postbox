@@ -57,7 +57,6 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
-                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -93,7 +92,6 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
-                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -135,7 +133,6 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
-                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -182,7 +179,6 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
-                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()
@@ -206,7 +202,6 @@ class QuestionChatUiTest {
                     onDraftChanged = {},
                     onSendDraft = {},
                     onSendStarter = {},
-                    onConfirmContextOnlyQuestionChat = {},
                     onStop = {},
                     onReviewSuggestion = {},
                     modifier = Modifier.fillMaxSize()

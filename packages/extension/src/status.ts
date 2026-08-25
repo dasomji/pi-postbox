@@ -1,8 +1,8 @@
-import type { ActiveLocalDiagnostic, ActiveLocalRole } from "@pi-postbox/protocol";
+import type { ServerProfileIdentity, ServerProfileMetadataDiagnostic } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import type { ResolveActiveLocalTargetResult } from "./activeLocalTargetResolver.js";
-import { resolveActiveLocalTarget } from "./activeLocalTargetResolver.js";
+import type { ResolveServerTargetResult } from "./serverTargetResolver.js";
+import { resolveServerTarget } from "./serverTargetResolver.js";
 import { getPostboxAutostartStatus, type PostboxAutostartStatusSnapshot } from "./autostart.js";
 
 export type PostboxConnectionState = "connected" | "disconnected" | "unavailable";
@@ -14,10 +14,20 @@ export interface PostboxConnectionStatus {
   tailnetUrl?: string;
 }
 
+export interface PostboxServerIdentity {
+  version: string;
+  protocolVersion: string;
+  buildId: string;
+  instanceId?: string;
+}
+
 export interface PostboxStatusSnapshot {
   connection: PostboxConnectionStatus;
+  profile?: ServerProfileIdentity;
+  server?: PostboxServerIdentity;
   remoteConfig?: string;
   openQuestionCount: number;
+  openQuestionCountScope: "current_owner";
   autostart: PostboxAutostartStatusSnapshot;
   diagnostics: string[];
   tailscale?: {
@@ -30,7 +40,7 @@ export interface PostboxStatusSnapshot {
 
 export interface PostboxStatusTailscaleOptions {
   localUrl: string;
-  role?: ActiveLocalRole;
+  profile?: ServerProfileIdentity;
 }
 
 export interface PostboxStatusTailscaleSnapshot {
@@ -51,8 +61,8 @@ export interface PostboxStatusClient {
 export interface CollectPostboxStatusOptions {
   client?: PostboxStatusClient;
   env?: NodeJS.ProcessEnv;
-  unavailableRationale?: string;
-  resolveTarget?: (options: { env: NodeJS.ProcessEnv }) => Promise<ResolveActiveLocalTargetResult>;
+  unavailableNote?: string;
+  resolveTarget?: (options: { env: NodeJS.ProcessEnv }) => Promise<ResolveServerTargetResult>;
 }
 
 export async function collectPostboxStatusSnapshot(options: CollectPostboxStatusOptions = {}): Promise<PostboxStatusSnapshot> {
@@ -73,11 +83,11 @@ export async function collectPostboxStatusSnapshot(options: CollectPostboxStatus
     });
   }
 
-  const resolveTarget = options.resolveTarget ?? ((input: { env: NodeJS.ProcessEnv }) => resolveActiveLocalTarget(input));
+  const resolveTarget = options.resolveTarget ?? ((input: { env: NodeJS.ProcessEnv }) => resolveServerTarget(input));
   const result = await resolveTarget({ env });
   const diagnostics = [
-    ...(options.unavailableRationale ? [options.unavailableRationale] : []),
-    ...result.diagnostics.map(formatActiveLocalDiagnostic)
+    ...(options.unavailableNote ? [options.unavailableNote] : []),
+    ...result.diagnostics.map(formatProfileDiagnostic)
   ].filter(Boolean);
 
   if (result.status === "selected") {
@@ -87,13 +97,21 @@ export async function collectPostboxStatusSnapshot(options: CollectPostboxStatus
       openQuestionCount: 0,
       autostart,
       diagnostics,
-      source: result.target.source
+      source: result.target.source,
+      profile: result.target.profile,
+      server: {
+        version: result.target.version,
+        protocolVersion: result.target.protocolVersion,
+        buildId: result.target.buildId,
+        instanceId: result.target.instanceId
+      }
     });
   }
 
   return {
     connection: { state: "unavailable" },
     openQuestionCount: 0,
+    openQuestionCountScope: "current_owner",
     autostart,
     diagnostics: diagnostics.length > 0 ? diagnostics : ["Pi Postbox is unavailable."],
     tailscale: {
@@ -110,6 +128,8 @@ export function createUrlStatusSnapshot(options: {
   autostart: PostboxAutostartStatusSnapshot;
   diagnostics?: string[];
   source?: string;
+  profile?: ServerProfileIdentity;
+  server?: PostboxServerIdentity;
 }): PostboxStatusSnapshot {
   const classified = classifyStatusUrl(options.activeUrl, options.source);
   return {
@@ -119,8 +139,11 @@ export function createUrlStatusSnapshot(options: {
       localUrl: classified.localUrl,
       tailnetUrl: classified.tailnetUrl
     },
+    profile: options.profile,
+    server: options.server,
     remoteConfig: classified.tailnetUrl ? `export PI_POSTBOX_URL=${classified.tailnetUrl}` : undefined,
     openQuestionCount: options.openQuestionCount,
+    openQuestionCountScope: "current_owner",
     autostart: options.autostart,
     diagnostics: options.diagnostics ?? []
   };
@@ -128,13 +151,13 @@ export function createUrlStatusSnapshot(options: {
 
 export async function enrichStatusSnapshotFromLocalServer(
   snapshot: PostboxStatusSnapshot,
-  options: { role?: ActiveLocalRole; inspectTailscale?: PostboxStatusTailscaleInspector } = {}
+  options: { profile?: ServerProfileIdentity; inspectTailscale?: PostboxStatusTailscaleInspector } = {}
 ): Promise<PostboxStatusSnapshot> {
   const localUrl = snapshot.connection.localUrl;
   if (!localUrl) return snapshot;
 
   const inspectTailscale = options.inspectTailscale ?? inspectPostboxTailscaleStatus;
-  const tailscale = await inspectTailscale({ localUrl, role: options.role });
+  const tailscale = await inspectTailscale({ localUrl, profile: options.profile });
   const tailnetUrl = snapshot.connection.tailnetUrl ?? tailscale.tailnetUrl;
   const diagnostics = [...snapshot.diagnostics];
   if (tailscale.diagnostic) diagnostics.push(`tailscale:${tailscale.state}:${tailscale.diagnostic}`);
@@ -162,11 +185,18 @@ export function formatPostboxStatusSnapshot(snapshot: PostboxStatusSnapshot): st
   if (snapshot.connection.activeUrl) lines.push(`Active URL: ${snapshot.connection.activeUrl}`);
   if (snapshot.connection.localUrl) lines.push(`Local URL: ${snapshot.connection.localUrl}`);
   if (snapshot.connection.tailnetUrl) lines.push(`Tailnet URL: ${snapshot.connection.tailnetUrl}`);
+  if (snapshot.profile) lines.push(`Profile: ${snapshot.profile.id} (${snapshot.profile.kind})`);
+  if (snapshot.server) {
+    lines.push(`Server version: ${snapshot.server.version}`);
+    lines.push(`Protocol: ${snapshot.server.protocolVersion}`);
+    if (snapshot.server.instanceId) lines.push(`Instance: ${snapshot.server.instanceId}`);
+    lines.push(`Build: ${snapshot.server.buildId}`);
+  }
   if (snapshot.remoteConfig) {
     lines.push("Remote config:");
     lines.push(snapshot.remoteConfig);
   }
-  lines.push(`Open questions: ${snapshot.openQuestionCount}`);
+  lines.push(`Current owner open questions: ${snapshot.openQuestionCount}`);
   lines.push(`Autostart: ${snapshot.autostart.enabled ? "enabled" : "disabled"}${snapshot.autostart.startedByThisSession ? " (started by this session)" : ""}`);
   if (snapshot.tailscale) {
     lines.push(`Tailscale: ${snapshot.tailscale.state}${snapshot.tailscale.diagnostic ? ` - ${snapshot.tailscale.diagnostic}` : ""}`);
@@ -186,6 +216,7 @@ function normalizeStatusSnapshot(
     ...snapshot,
     connection: { ...snapshot.connection },
     openQuestionCount: Number.isInteger(snapshot.openQuestionCount) ? snapshot.openQuestionCount : safePendingCount(client),
+    openQuestionCountScope: "current_owner",
     autostart: snapshot.autostart ?? autostart,
     remoteConfig: snapshot.remoteConfig ?? (tailnetUrl ? `export PI_POSTBOX_URL=${tailnetUrl}` : undefined),
     diagnostics: Array.isArray(snapshot.diagnostics) ? snapshot.diagnostics : []
@@ -202,7 +233,7 @@ function safePendingCount(client: PostboxStatusClient): number {
 
 function classifyStatusUrl(url: string | undefined, source?: string): { localUrl?: string; tailnetUrl?: string } {
   if (!url) return {};
-  if (source === "active-local" || source === "configured-loopback" || isLoopbackUrl(url)) return { localUrl: url };
+  if (source === "profile-metadata" || source === "profile-config" || isLoopbackUrl(url)) return { localUrl: url };
   return { tailnetUrl: url };
 }
 
@@ -258,8 +289,8 @@ function isLoopbackUrl(input: string): boolean {
   }
 }
 
-function formatActiveLocalDiagnostic(diagnostic: ActiveLocalDiagnostic): string {
-  const parts = [diagnostic.source, diagnostic.role, diagnostic.code, diagnostic.field].filter(Boolean);
+function formatProfileDiagnostic(diagnostic: ServerProfileMetadataDiagnostic): string {
+  const parts = [diagnostic.source, diagnostic.code, diagnostic.field].filter(Boolean);
   return parts.join(":");
 }
 

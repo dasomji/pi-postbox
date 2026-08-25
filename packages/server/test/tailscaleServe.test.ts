@@ -40,7 +40,7 @@ describe("Tailscale Serve integration", () => {
 
     const result = await exposePostboxWithTailscale({
       localUrl: "http://127.0.0.1:4567/",
-      role: "production",
+      profile: { kind: "production", id: "production" },
       exec
     });
 
@@ -77,7 +77,7 @@ describe("Tailscale Serve integration", () => {
 
     const result = await exposePostboxWithTailscale({
       localUrl: "http://127.0.0.1:4567/",
-      role: "production",
+      profile: { kind: "production", id: "production" },
       exec
     });
 
@@ -102,7 +102,7 @@ describe("Tailscale Serve integration", () => {
 
     const result = await exposePostboxWithTailscale({
       localUrl: "http://127.0.0.1:4567/",
-      role: "production",
+      profile: { kind: "production", id: "production" },
       exec
     });
 
@@ -126,7 +126,7 @@ describe("Tailscale Serve integration", () => {
     });
 
     await expect(
-      exposePostboxWithTailscale({ localUrl: "http://127.0.0.1:4567/", role: "production", exec })
+      exposePostboxWithTailscale({ localUrl: "http://127.0.0.1:4567/", profile: { kind: "production", id: "production" }, exec })
     ).resolves.toMatchObject({ state: "unavailable", diagnostic: expect.stringMatching(expectedDiagnostic) });
   });
 
@@ -142,7 +142,7 @@ describe("Tailscale Serve integration", () => {
 
     const result = await exposePostboxWithTailscale({
       localUrl: "http://127.0.0.1:4567/",
-      role: "production",
+      profile: { kind: "production", id: "production" },
       exec
     });
 
@@ -165,7 +165,7 @@ describe("Tailscale Serve integration", () => {
 
     const result = await exposePostboxWithTailscale({
       localUrl: "http://127.0.0.1:4567/",
-      role: "production",
+      profile: { kind: "production", id: "production" },
       exec
     });
 
@@ -188,7 +188,7 @@ describe("Tailscale Serve integration", () => {
 
     const result = await exposePostboxWithTailscale({
       localUrl: "http://127.0.0.1:4567/",
-      role: "production",
+      profile: { kind: "production", id: "production" },
       exec
     });
 
@@ -216,7 +216,7 @@ describe("Tailscale Serve integration", () => {
     });
 
     await expect(
-      inspectPostboxTailscaleStatus({ localUrl: "http://127.0.0.1:4567/", role: "production", exec })
+      inspectPostboxTailscaleStatus({ localUrl: "http://127.0.0.1:4567/", profile: { kind: "production", id: "production" }, exec })
     ).resolves.toMatchObject({ state: "served", tailnetUrl: "https://100.64.0.10:4567" });
   });
 });

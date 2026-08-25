@@ -1,4 +1,4 @@
-import { createHealthResponse } from "@pi-postbox/protocol";
+import { PROTOCOL_VERSION, createHealthResponse } from "@pi-postbox/protocol";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -166,7 +166,7 @@ describe("Postbox status surfaces", () => {
     expect(message).toContain(LOCAL_URL);
     expect(message).toContain(TAILNET_URL);
     expect(message).toContain(REMOTE_EXPORT);
-    expect(message).toMatch(/open (questions|asks):\s*1/i);
+    expect(message).toContain("Current owner open questions: 1");
     expect(message).toMatch(/autostart:\s*enabled/i);
     expect(message).toMatch(/started by this session/i);
     expectNoSecretContent(message);
@@ -194,6 +194,7 @@ describe("Postbox status surfaces", () => {
         },
         remoteConfig: REMOTE_EXPORT,
         openQuestionCount: 1,
+        openQuestionCountScope: "current_owner",
         autostart: {
           enabled: true,
           startedByThisSession: true
@@ -250,7 +251,7 @@ describe("Postbox status surfaces", () => {
 
     expect(message).toMatch(/connected/i);
     expect(message).toContain(LOCAL_URL);
-    expect(message).toMatch(/open (questions|asks):\s*0/i);
+    expect(message).toContain("Current owner open questions: 0");
     expect(message).toMatch(/tail(net|scale).*unavailable|Tailscale Serve is not configured/i);
     expect(message).not.toContain("export PI_POSTBOX_URL=undefined");
     expect(message).not.toMatch(/^No pending Postbox asks\.?$/);
@@ -268,10 +269,13 @@ async function startConnectedHarness(env: NodeJS.ProcessEnv): Promise<ReturnType
           createHealthResponse({
             startedAtMs: NOW_MS - 1_000,
             nowMs: NOW_MS,
-            localTarget: {
-              role: "dev",
+            profile: { kind: "production", id: "production" },
+            instance: {
+              profile: { kind: "production", id: "production" },
               instanceId: "11111111-1111-4111-8111-111111111111",
-              url: LOCAL_URL
+              url: LOCAL_URL,
+              protocolVersion: PROTOCOL_VERSION,
+              buildId: PROTOCOL_VERSION
             }
           })
         ),

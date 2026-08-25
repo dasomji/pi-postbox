@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { hostname } from "node:os";
 import type { ProjectIcon, ProjectRegistration } from "@pi-postbox/protocol";
 
 const MAX_ICON_BYTES = 64 * 1024;
@@ -132,6 +133,12 @@ export function collectProjectMetadata(cwd: string): ProjectRegistration {
   const displayName = asString(config.displayName) ?? asString(config.name);
   const description = asString(config.description);
   const icon = collectIcon(worktreePath, config);
+  const canonicalWorktree = worktreePath ? realpathSync(worktreePath) : realpathSync(cwd);
+  const machineId = `machine_${createHash("sha256").update(hostname()).digest("hex").slice(0, 16)}`;
+  const remote = git(cwd, ["remote", "get-url", "origin"]);
+  const normalizedRemote = remote ? normalizeGitRemote(remote) : undefined;
+  const commonDirectory = resolveGitPath(cwd, git(cwd, ["rev-parse", "--git-common-dir"]));
+  const canonicalCommonDirectory = commonDirectory ? realpathSync(commonDirectory) : undefined;
 
   return {
     projectId: hashId("project", root),
@@ -146,5 +153,21 @@ export function collectProjectMetadata(cwd: string): ProjectRegistration {
     isDirty: status ? status.length > 0 : undefined,
     worktreePath,
     icon
+    ,repository: normalizedRemote
+      ? { repositoryId: hashId("repository", normalizedRemote.toLowerCase()), remote: normalizedRemote }
+      : { repositoryId: hashId("repository_machine", `${machineId}:${canonicalCommonDirectory ?? canonicalWorktree}`), machineId, commonDirectory: canonicalCommonDirectory ?? canonicalWorktree }
+    ,worktree: { worktreeId: hashId("worktree_machine", `${machineId}:${canonicalWorktree}`), machineId, path: canonicalWorktree }
   };
+}
+
+function normalizeGitRemote(remote: string): string {
+  const trimmed = remote.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  const scp = trimmed.match(/^[^@]+@([^:]+):(.+)$/);
+  if (scp) return `${scp[1]}/${scp[2]}`;
+  try {
+    const url = new URL(trimmed);
+    return `${url.hostname}${url.pathname}`.replace(/\/+$/, "").replace(/\.git$/i, "");
+  } catch {
+    return trimmed;
+  }
 }

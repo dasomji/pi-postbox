@@ -3,7 +3,7 @@
 Pi Postbox has two independently configured processes:
 
 1. `pi-postbox-server`, the standalone local HTTP service.
-2. The Pi extension, which connects outbound to the server and exposes `ask_postbox`.
+2. The Pi extension, which connects outbound to the server and exposes `write_question`.
 
 ## Server CLI
 
@@ -30,15 +30,13 @@ Supported flags and environment variables:
 | --- | --- | --- | --- |
 | `--host` | `PI_POSTBOX_HOST` | `127.0.0.1` | HTTP listen host. Keep local by default and expose with Tailscale/lizardtail. |
 | `--port` | `PI_POSTBOX_PORT` | canonical `32187` | Preferred HTTP listen port. If it is already in use, the CLI falls back to another local port and warns that the actual local/Tailnet URL is non-canonical. |
-| `--active-local-role` | `PI_POSTBOX_ACTIVE_LOCAL_ROLE` | `production` | Role written to active-local metadata. Ordinary server launches are `production`; `npm run dev` starts the backend with the `dev` role. |
+| `--profile` | `PI_POSTBOX_PROFILE` | `production` | Server profile identity: `production` or `development:<checkout-id>`. `npm run dev` derives the development identity automatically. |
+| `--profile-state-dir` | `PI_POSTBOX_PROFILE_STATE_DIR` | profile-specific | State root containing config-adjacent metadata, SQLite, locks, credentials, and the autostart `server.log`. Production uses `~/.pi-postbox`; development uses `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>`. |
 | `--no-tailscale` | `PI_POSTBOX_TAILSCALE=off` | automatic Tailnet-private Serve enabled | Disable Tailscale Serve mutation for this run while keeping local startup. |
 | `--ui-dist-dir` | `PI_POSTBOX_UI_DIST_DIR` | packaged `dist/public` beside the server CLI | Built Vite UI assets served by the server. Override this for source-checkout development if needed. |
-| `--database` | `PI_POSTBOX_DATABASE` | `~/.pi-postbox/postbox.sqlite` | SQLite database path. Parent directories are created automatically. |
-| `--ask-timeout-ms` | `PI_POSTBOX_ASK_TIMEOUT_MS` | 12 hours | Default expiry for pending asks. |
-| `--history-retention-max-age-ms` | `PI_POSTBOX_HISTORY_RETENTION_MAX_AGE_MS` | unset | Optional terminal-history max age. Pending asks are never pruned. |
-| `--history-retention-max-records` | `PI_POSTBOX_HISTORY_RETENTION_MAX_RECORDS` | unset | Optional maximum number of terminal history records to keep. |
+| `--database` | `PI_POSTBOX_DATABASE` | `<profile-state-dir>/postbox.sqlite` | SQLite database path. Parent directories are created automatically. |
 | `--session-hide-offline-after-ms` | `PI_POSTBOX_SESSION_HIDE_OFFLINE_AFTER_MS` | 24 hours | Offline sessions older than this are omitted from state snapshots. A session with a pending question stays visible regardless. |
-| `--session-retention-ms` | `PI_POSTBOX_SESSION_RETENTION_MS` | 30 days | Offline sessions older than this are deleted, unless ask requests (pending or history) still reference them. Machines and projects left without sessions are swept too. |
+| `--session-retention-ms` | `PI_POSTBOX_SESSION_RETENTION_MS` | 30 days | Offline sessions older than this are deleted unless durable Questions reference them. Question, revision, Answer, and read records are never pruned by this setting. |
 | `--fcm-service-account` | `PI_POSTBOX_FCM_SERVICE_ACCOUNT` | `~/.pi-postbox/fcm-service-account.json` when that file exists, else unset | Path to a Firebase service-account JSON file. When set, new pending questions are also pushed to Android devices registered via `POST /api/push/fcm-tokens`. See [Android push notifications (FCM)](#android-push-notifications-fcm). |
 
 ## Automatic Tailnet-private Tailscale Serve
@@ -59,11 +57,13 @@ If status reports a conflict, inspect with `tailscale serve status` and choose t
 
 The extension reads the server URL from `PI_POSTBOX_URL` first, then from the JSON config file.
 
-Default config file path:
+The config path follows the package-selected profile. Installed npm/git packages use:
 
 ```text
 ~/.pi-postbox/config.json
 ```
+
+A trusted local checkout uses `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>/config.json` (normally `~/.local/state/pi-postbox/dev/<checkout-id>/config.json`).
 
 Override the config path with either:
 
@@ -82,21 +82,21 @@ The extension creates and persists a generated machine id in this same config fi
 
 Server payload limits are finite even though rich interviewer context is allowed: HTTP bodies and extension WebSocket messages are capped, rich text fields/options have generous schema limits, and project icons are limited to small image data URLs uploaded by the extension.
 
-## Active-local routing
+## Package provenance and profile routing
 
-Active-local routing is local-only self-healing for stale or missing loopback config. There is no broad discovery and no port scanning: the extension reads only fixed metadata files under the Postbox config base, then verifies the selected candidate with `/healthz`.
+The loaded Pi package is the environment boundary. A trusted Pi Session whose cwd is inside this checkout loads the project-local package from `.pi/settings.json` and resolves `development:<checkout-id>`. An installed npm or git package resolves `production`, including git packages living in Pi's git cache. Arbitrary Git checkout detection is not used.
 
-Config base convention: `PI_POSTBOX_CONFIG_DIR`, else the dirname of `PI_POSTBOX_CONFIG_PATH`, else `~/.pi-postbox`. Active-local role files live at `<base>/active-local/dev.json` and `<base>/active-local/production.json`; these path conventions are commonly referenced as `active-local/dev.json` and `active-local/production.json`.
+Each profile reads only `<profile-state-dir>/active-local/server.json`, then verifies the exact profile, instance, URL, protocol, and build identity through `/healthz`. There is no machine-global candidate ordering, cross-profile fallback, or port scanning. Legacy `active-local/dev.json` metadata is ignored.
 
-Selection uses the effective env-over-config URL first. A configured `PI_POSTBOX_URL` or `serverUrl` such as a Tailscale or hosted URL is a preferred Postbox server: the extension health-checks it first, and when healthy it is authoritative for that registration. If the preferred server is unreachable or unavailable, the extension may fall back to fresh, healthy active-local metadata or package-local autostart. Remote URLs themselves are not local recovery candidates; active-local metadata and package-local autostart are the recovery candidates. A missing URL or loopback URL may also recover through fresh, healthy active-local metadata. The extension prefers dev over production while the `dev` target is fresh and healthy, uses production fallback when dev is stale or unhealthy, and may use a configured-loopback fallback only after health verification.
+`PI_POSTBOX_URL` remains an intentional operator override and is health/compatibility checked first. A `serverUrl` in a profile's own config is also preferred. A checkout does not read production's global config, so a global loopback `serverUrl` cannot accidentally attach local development to production. `PI_POSTBOX_CONFIG_PATH` and `PI_POSTBOX_CONFIG_DIR` are explicit overrides and should be used only when intentional.
 
-After a Pi Session registers with a fallback/autostarted server, that session is sticky: it remains attached to the fallback until `/reload` or restart instead of migrating mid-session if the preferred server later comes back.
+After a Pi Session registers with a fallback/autostarted server, that session is sticky to the selected profile and endpoint: it does not migrate mid-session if a different preferred server later comes back. If the server process restarts at the same URL, reconnect accepts the replacement process and refreshes the exact instance/build identity shown by status.
 
-Package-local autostart is enabled by default for mutating Postbox actions that need a server (`ask_postbox` and the user-only `/postbox` dashboard command). Set `PI_POSTBOX_AUTOSTART=off` to opt out. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to control how long the extension waits for the started server; the default wait is 10 seconds (`10000` ms).
+Package-local autostart is enabled by default for mutating Postbox actions that need a server (`write_question` and the user-only `/postbox` dashboard command). Set `PI_POSTBOX_AUTOSTART=off` to opt out. Set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to control how long the extension waits for the started server; the default wait is 10 seconds (`10000` ms).
 
-Operational diagnostics are sanitized categories such as `missing`/no active local server, `stale`, `unhealthy`, `unsafe` or malformed metadata, symlink/oversized metadata, `health mismatch`, explicit remote selection, configured-loopback fallback, and `deferred switching` while pinned work drains.
+Operational diagnostics are sanitized categories such as `missing`, `stale`, `unhealthy`, `unsafe` or malformed metadata, symlink/oversized metadata, health mismatch (`health-identity-mismatch`), `incompatible-protocol`, explicit override selection, and deferred switching while pinned work drains.
 
-Running local sessions support live retargeting when active-local selection changes. Active-local sent asks and local fallback answer/cancel resolutions pin their origin target until they resolve, flush, expire, or hit a bounded target-affinity release deadline; until then a target switch may be deferred.
+Running sessions may reconnect only within their resolved profile. Sent asks and local fallback answer/cancel resolutions pin their origin endpoint until they resolve, flush, expire, or hit a bounded target-affinity release deadline; another profile is never a retarget candidate.
 
 ## Project display override
 
@@ -112,19 +112,23 @@ Repos can include a `.pi-postbox.json` file to improve display metadata:
 
 The icon path is resolved by the extension on the Pi machine, converted into a small data URL/hash, and uploaded during registration. The server never assumes it can read files from the Pi machine filesystem.
 
+## Agent notification and explicit waiting
+
+The `write_question` create actions return after durable persistence and include a reusable current Question handle. The owning Pi Session receives a lightweight notification when an Answer becomes available, so agents should continue independent work and must not poll `get_answer`, `list_question_status`, or `list_questions`. When the decision is the sole remaining blocker, call `wait_for_postbox` once to enter explicit idle/blocked mode; after it wakes, call `get_answer` for the relevant Question. Cancelling that ephemeral wait leaves durable Questions and Answers intact.
+
 ## Local fallback commands and browser command
 
-While `ask_postbox` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
+While a Question created through `write_question` is pending, the extension shows compact command hints. Operators can answer locally without opening an automatic prompt:
 
 ```text
 /postbox-status
-/postbox-answer [requestId] value[,value2] [--note text] [--rationale text]
-/postbox-cancel [requestId] [--note text] [--rationale text]
+/postbox-answer [requestId] value[,value2] [--note text]
+/postbox-cancel [requestId] [--note text]
 ```
 
 `/postbox-status` reports connectivity, active/local URL, Tailnet URL/export line when available, open-question count, autostart state, and diagnostics. It is privacy-preserving: status includes counts only and never pending question contents, option labels, answers, notes, or history. The read-only `postbox_status` tool returns equivalent structured fields for agents.
 
-Use `/postbox` to open the active dashboard in the user's browser. `/postbox` may use the same recovery/autostart path as `ask_postbox` when disconnected, but it remains a user-only manual browser-opening command; no LLM tool or agent side effect can open the browser.
+Use `/postbox` to open the active dashboard in the user's browser. `/postbox` may use the same recovery/autostart path as `write_question` when disconnected, but it remains a user-only manual browser-opening command; no LLM tool or agent side effect can open the browser.
 
 ## Android push notifications (FCM)
 
@@ -140,12 +144,11 @@ The Android app registers its device token via `POST /api/push/fcm-tokens` after
 
 Useful endpoints for wrappers and manual checks:
 
-- `GET /healthz` — server health, service name, version, uptime, and protocol version.
+- `GET /healthz` — server health, authoritative profile/instance identity, build id, uptime, and protocol version.
 - `GET /api/state` — current sessions and ask request state snapshot.
 - `GET /api/state/events` — SSE stream of validated state snapshots.
 - `GET /api/requests?status=pending` — request list, optionally filtered by status.
 - `GET /api/history` — terminal decision history.
-- `POST /api/history/prune` — apply configured terminal-history retention.
 
 ## Manual configuration check
 

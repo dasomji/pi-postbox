@@ -64,7 +64,7 @@ function registrationMessage(): ExtensionClientMessage {
     payload: {
       machine: { machineId: "machine-1", hostname: "workstation" },
       project: { projectId: "project-1", name: "pi-postbox", cwd: "/repo", branch: "main" },
-      session: { sessionId: "session-1", title: "Answer loop", cwd: "/repo", branch: "main", semanticState: "working" }
+      session: { sessionId: "session-1", title: "Answer loop", cwd: "/repo", branch: "main", semanticState: "working", owner: { harness: "pi", ownerId: "11111111-1111-4111-8111-111111111111" } }
     }
   };
 }
@@ -77,15 +77,12 @@ function askCreateMessage(requestId: string, prompt: string): ExtensionClientMes
       requestId,
       sessionId: "session-1",
       mode: "single",
-      question: { prompt },
+      question: { prompt, ambiguity: "Test ambiguity." },
       options: [
         { value: "yes", label: "Yes" },
         { value: "no", label: "No" }
       ],
-      context: {
-        codebaseContext: "Fastify server with browser push notification delivery.",
-        problemContext: "Notify the user about a pending remote decision."
-      }
+
     }
   };
 }
@@ -333,7 +330,7 @@ describe("new pending ask push notifications", () => {
     const answered = await app.inject({
       method: "POST",
       url: "/api/requests/ask-resolve-1/answer",
-      payload: { selectedValues: ["yes"] }
+      payload: { expectedRevision: 1, selectedValues: ["yes"] }
     });
     expect(answered.statusCode).toBe(200);
 

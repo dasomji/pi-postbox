@@ -8,7 +8,6 @@ import dev.pi.postbox.protocol.AskCancelPayload
 import dev.pi.postbox.protocol.AskOption
 import dev.pi.postbox.protocol.AskOptionProvenance
 import dev.pi.postbox.protocol.AskStatus
-import dev.pi.postbox.protocol.AskUrgency
 import dev.pi.postbox.protocol.HealthResponse
 import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.protocol.PostboxProtocolClient
@@ -580,30 +579,24 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
-    fun pendingQuestionsAndInitialSelectionPrioritizeUrgencyThenAgeDeterministically() = runTest {
+    fun pendingQuestionsAndInitialSelectionUseAgeThenIdDeterministically() = runTest {
         val requests = listOf(
             singlePendingQuestion(requestId = "low", prompt = "Low priority").copy(
-                urgency = AskUrgency.LOW,
                 createdAt = "2026-06-25T11:00:00.000Z"
             ),
             singlePendingQuestion(requestId = "high-new", prompt = "New high priority").copy(
-                urgency = AskUrgency.HIGH,
                 createdAt = "2026-06-25T11:30:00.000Z"
             ),
             singlePendingQuestion(requestId = "high-offset-old", prompt = "Offset high priority").copy(
-                urgency = AskUrgency.HIGH,
                 createdAt = "2026-06-25T12:00:00+02:00"
             ),
             singlePendingQuestion(requestId = "normal", prompt = "Normal priority").copy(
-                urgency = AskUrgency.NORMAL,
                 createdAt = "2026-06-25T10:00:00.000Z"
             ),
             singlePendingQuestion(requestId = "high-old", prompt = "Old high priority").copy(
-                urgency = AskUrgency.HIGH,
                 createdAt = "2026-06-25T11:00:00.000Z"
             ),
             singlePendingQuestion(requestId = "high-old-b", prompt = "Tied high priority").copy(
-                urgency = AskUrgency.HIGH,
                 createdAt = "2026-06-25T11:00:00.000Z"
             )
         )
@@ -611,12 +604,10 @@ class QuestionWorkflowViewModelTest {
         val viewModel = startedViewModel(RecordingPostboxProtocolClient(questionWorkflowState(requests)))
 
         assertEquals(
-            listOf("high-offset-old", "high-old", "high-old-b", "high-new", "normal", "low"),
+            listOf("high-offset-old", "normal", "high-old", "high-old-b", "low", "high-new"),
             viewModel.state.pendingQuestions.map { it.requestId }
         )
-        assertEquals(QuestionUrgency.HIGH, viewModel.state.pendingQuestions.first().urgency)
         assertEquals("high-offset-old", viewModel.state.visibleQuestion?.requestId)
-        assertEquals(QuestionUrgency.HIGH, viewModel.state.visibleQuestion?.urgency)
     }
 
     @Test
@@ -833,8 +824,7 @@ class QuestionWorkflowViewModelTest {
             value = "tailnet",
             label = "Use Tailnet HTTPS",
             description = "Use the verified endpoint.",
-            meaning = "Keep traffic inside the tailnet.",
-            context = "The server has already passed its health check."
+            impact = "Keep traffic inside the tailnet."
         )
         val initial = singlePendingQuestion().copy(options = listOf(richOption))
         val viewModel = startedViewModel(
@@ -858,8 +848,7 @@ class QuestionWorkflowViewModelTest {
         val updated = viewModel.state.visibleQuestion ?: error("Expected updated question")
         assertEquals(listOf("tailnet"), updated.selectedValues)
         assertEquals("Use the verified endpoint.", updated.options.first().description)
-        assertEquals("Keep traffic inside the tailnet.", updated.options.first().meaning)
-        assertEquals("The server has already passed its health check.", updated.options.first().context)
+        assertEquals("Keep traffic inside the tailnet.", updated.options.first().impact)
         assertEquals(QuestionOptionProvenance.CHAT, updated.options.last().provenance)
 
         stream.emit(
@@ -1111,19 +1100,15 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
-    fun longQuestionAndContextRemainAvailableInVisibleQuestionState() = runTest {
+    fun longQuestionAndAmbiguityRemainAvailableInVisibleQuestionState() = runTest {
         val longPrompt = "Should the native UI preserve every part of a long prompt? ".repeat(80)
-        val longQuestionContext = "Question context line with setup and constraints.\n".repeat(120)
-        val longProblemContext = "Problem context from the handoff should remain inspectable.\n".repeat(100)
-        val longRichContext = "terminal output that explains the decision\n".repeat(160)
+        val longAmbiguity = "Question ambiguity with competing constraints.\n".repeat(120)
         val client = RecordingPostboxProtocolClient(
             questionWorkflowState(
                 requests = listOf(
-                    longContextQuestion(
+                    longQuestion(
                         longPrompt = longPrompt,
-                        longQuestionContext = longQuestionContext,
-                        longProblemContext = longProblemContext,
-                        longRichContext = longRichContext
+                        longAmbiguity = longAmbiguity
                     )
                 )
             )
@@ -1134,9 +1119,7 @@ class QuestionWorkflowViewModelTest {
         val visibleQuestion = viewModel.state.visibleQuestion ?: error("Expected long question to remain visible")
 
         assertEquals(longPrompt, visibleQuestion.prompt)
-        assertEquals(longQuestionContext, visibleQuestion.questionContext)
-        assertEquals(longProblemContext, visibleQuestion.handoffContext?.problemContext)
-        assertEquals(longRichContext, visibleQuestion.handoffContext?.additionalInfo?.single()?.content)
+        assertEquals(longAmbiguity, visibleQuestion.ambiguity)
         assertTrue("Action state should still be exposed while long content scrolls", visibleQuestion.availableActions.contains(QuestionAction.SUBMIT))
         assertTrue(visibleQuestion.availableActions.contains(QuestionAction.CANCEL))
     }

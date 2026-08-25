@@ -214,7 +214,6 @@ describe("extension Question Chat commands", () => {
     };
     const questionChats = {
       activate: vi.fn(async () => snapshot),
-      activateContext: vi.fn(),
       getSnapshot: vi.fn(async () => snapshot),
       send: vi.fn(() => new Promise<{ status: "accepted"; clientCommandId: string; mode: "turn" }>((resolve) => {
         finishSend = resolve;
@@ -306,7 +305,6 @@ describe("extension Question Chat commands", () => {
       activate: vi.fn(() => new Promise<any>((resolve) => {
         finishActivation = resolve;
       })),
-      activateContext: vi.fn(),
       getSnapshot: vi.fn(),
       send: vi.fn(),
       stop: vi.fn(),
@@ -363,15 +361,13 @@ describe("extension Question Chat commands", () => {
     };
     const questionChats = {
       activate: vi.fn(),
-      activateContext: vi.fn(),
       getSnapshot: vi.fn(),
       send: vi.fn(),
       stop: vi.fn(),
       subscribe: vi.fn(() => vi.fn()),
       cleanup: vi.fn(),
       listRecoveryOffers: vi.fn(() => [
-        { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "exact" as const },
-        { requestId: "ask-stale", ownerSessionId: "old-session", forkKind: "context-only" as const }
+        { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "exact" as const }
       ]),
       reconcile: vi.fn(async (_owner: string, decisions: Array<{ requestId: string; action: string }>) =>
         decisions.map((decision) => decision.action === "recover"
@@ -407,17 +403,7 @@ describe("extension Question Chat commands", () => {
       requestId: offers[0]!.requestId,
       payload: { requestId: "ask-recover", forkKind: "exact", action: "recover", reason: "pending" }
     });
-    await vi.waitFor(() => expect(socket.sent.filter((message: any) => message.type === "chat.recover.offer")).toHaveLength(2));
-    offers = socket.sent.filter((message: any) => message.type === "chat.recover.offer") as any[];
-    expect(offers[1]).toMatchObject({
-      payload: { requestId: "ask-stale", ownerSessionId: "old-session", forkKind: "context-only" }
-    });
-    socket.serverMessage({
-      type: "chat.reconcile",
-      requestId: offers[1]!.requestId,
-      payload: { requestId: "ask-stale", forkKind: "context-only", action: "delete", reason: "wrong_owner" }
-    });
-    await vi.waitFor(() => expect(questionChats.reconcile).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(questionChats.reconcile).toHaveBeenCalledOnce());
     expect(questionChats.reconcile).toHaveBeenCalledWith("session-chat", [
       { requestId: "ask-recover", forkKind: "exact", action: "recover" }
     ]);
@@ -436,13 +422,6 @@ describe("extension Question Chat commands", () => {
         requestId,
         state: "ready" as const,
         forkKind: "exact" as const,
-        model: { id: "test/source", source: "originating" as const },
-        messages: [] as []
-      })),
-      activateContext: vi.fn(async ({ requestId }: { requestId: string }) => ({
-        requestId,
-        state: "ready" as const,
-        forkKind: "context-only" as const,
         model: { id: "test/source", source: "originating" as const },
         messages: [] as []
       })),
@@ -489,37 +468,6 @@ describe("extension Question Chat commands", () => {
         agentSessionPath: "/source-at-question.jsonl",
         leafId: "leaf-at-question"
       }
-    });
-
-    socket.serverMessage({
-      type: "chat.activate-context",
-      requestId: "command-context-1",
-      payload: {
-        requestId: "ask-context",
-        ownerSessionId: "session-chat",
-        source: {
-          cwd: "/repo",
-          model: "anthropic/claude-sonnet-4",
-          mode: "single",
-          question: { prompt: "Which design?" },
-          options: [{ value: "a", label: "A" }],
-          context: { codebaseContext: "The extension client.", problemContext: "Explain the choice." }
-        }
-      }
-    });
-    await vi.waitFor(() => expect(questionChats.activateContext).toHaveBeenCalledWith({
-      requestId: "ask-context",
-      ownerSessionId: "session-chat",
-      source: expect.objectContaining({
-        cwd: "/repo",
-        model: "anthropic/claude-sonnet-4",
-        question: { prompt: "Which design?" }
-      })
-    }));
-    expect(socket.sent).toContainEqual({
-      type: "chat.ready",
-      requestId: "command-context-1",
-      payload: expect.objectContaining({ requestId: "ask-context", forkKind: "context-only" })
     });
 
     socket.serverMessage({
@@ -598,7 +546,6 @@ describe("extension Question Chat commands", () => {
   it("rejects a command routed to a different Postbox Session", async () => {
     const questionChats = {
       activate: vi.fn(),
-      activateContext: vi.fn(),
       getSnapshot: vi.fn(),
       send: vi.fn(),
       stop: vi.fn(),
@@ -661,9 +608,11 @@ describe("extension Question Chat commands", () => {
       requestId: "ask-reconnect-source",
       sessionId: "session-chat",
       mode: "single",
-      question: { prompt: "Which source?" },
-      options: [{ value: "a", label: "A" }],
-      context: { codebaseContext: "Pi extension client.", problemContext: "Preserve the exact question leaf." }
+      question: {
+        prompt: "Which source?",
+        ambiguity: "Whether replay preserves the exact Question source leaf."
+      },
+      options: [{ value: "a", label: "A" }]
     };
     const pending = client.ask(ask);
     void pending.catch(() => undefined);

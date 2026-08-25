@@ -1,15 +1,17 @@
 import {
-  ACTIVE_LOCAL_METADATA_DIRECTORY,
-  ACTIVE_LOCAL_METADATA_FILENAMES,
-  createHealthResponse,
-  type ActiveLocalRole,
-  type ActiveLocalTargetIdentity
+  PROTOCOL_VERSION,
+  SERVER_PROFILE_METADATA_VERSION,
+  createHealthResponse
 } from "@pi-postbox/protocol";
 import { createServer, type Server } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveServerProfile } from "../src/serverProfile.js";
+
+type TestLocalRole = "dev" | "production";
+type TestLocalTarget = { role: TestLocalRole; instanceId: string; url: string };
 
 const postboxClientMock = vi.hoisted(() => ({
   options: [] as Array<{
@@ -21,7 +23,9 @@ const postboxClientMock = vi.hoisted(() => ({
     onLocalFallbackStatus?: (status: { requestId: string; serverUrl: string; message: string } | undefined) => void;
   }>,
   started: 0,
-  stopped: 0
+  stopped: 0,
+  pendingAskCount: 0,
+  tailnetUrl: "https://coolify.tailnet.ts.net:3500" as string | undefined
 }));
 const questionChatMock = vi.hoisted(() => ({
   cleanupAll: vi.fn<(ownerSessionId?: string) => Promise<void>>(async () => undefined),
@@ -61,13 +65,18 @@ vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
       }
 
       listPendingAsks() {
-        return [];
+        return Array.from({ length: postboxClientMock.pendingAskCount }, (_, index) => ({ requestId: `ask-${index}` }));
       }
 
       getStatusSnapshot() {
         return {
-          connection: { state: "connected", activeUrl: "http://127.0.0.1:3500/", localUrl: "http://127.0.0.1:3500/", tailnetUrl: "https://coolify.tailnet.ts.net:3500" },
-          openQuestionCount: 1,
+          connection: {
+            state: "connected",
+            activeUrl: "http://127.0.0.1:3500/",
+            localUrl: "http://127.0.0.1:3500/",
+            tailnetUrl: postboxClientMock.tailnetUrl
+          },
+          openQuestionCount: postboxClientMock.pendingAskCount,
           autostart: { enabled: true, startedByThisSession: false },
           diagnostics: []
         };
@@ -90,7 +99,7 @@ vi.mock("../src/questionChatRuntime.js", async (importOriginal) => {
 
 import { toExtensionSocketUrl } from "../src/client/PostboxClient.js";
 import { getMachineIdentity } from "../src/machineIdentity.js";
-import postboxExtension, { startRegistration } from "../src/index.js";
+import postboxExtension, { collectRegistrationPayload, startRegistration } from "../src/index.js";
 import { collectSessionMetadata } from "../src/sessionMetadata.js";
 
 const dirs: string[] = [];
@@ -106,6 +115,8 @@ afterEach(async () => {
   postboxClientMock.options.length = 0;
   postboxClientMock.started = 0;
   postboxClientMock.stopped = 0;
+  postboxClientMock.pendingAskCount = 0;
+  postboxClientMock.tailnetUrl = "https://coolify.tailnet.ts.net:3500";
   questionChatMock.cleanupAll.mockReset();
   questionChatMock.cleanupAll.mockResolvedValue(undefined);
   questionChatMock.suspendAll.mockReset();
@@ -121,6 +132,78 @@ async function tempConfigEnv(extra: NodeJS.ProcessEnv = {}): Promise<NodeJS.Proc
 }
 
 describe("Pi Postbox extension registration", () => {
+  it("exposes lifecycle filters and compact-by-default Question, history, and owner discovery views", () => {
+    const tools = new Map<string, {
+      description: string;
+      promptSnippet?: string;
+      promptGuidelines?: string[];
+      parameters: { properties: Record<string, any> };
+    }>();
+
+    postboxExtension({
+      on: () => undefined,
+      registerTool(definition: unknown) {
+        const tool = definition as {
+          name: string;
+          description: string;
+          promptSnippet?: string;
+          promptGuidelines?: string[];
+          parameters: { properties: Record<string, any> };
+        };
+        tools.set(tool.name, tool);
+      },
+      registerCommand: () => undefined
+    });
+
+    const expectedStatusSchema = {
+      type: "string",
+      enum: ["pending", "answered", "cancelled", "expired", "superseded"],
+      description: "Question lifecycle status. Use 'pending' for open or unanswered questions."
+    };
+    expect(tools.get("list_questions")?.parameters.properties.status).toEqual(expectedStatusSchema);
+    expect(tools.get("list_question_status")?.parameters.properties.status).toEqual(expectedStatusSchema);
+    expect(tools.get("get_questions")?.parameters.properties.view).toEqual({
+      type: "string",
+      enum: ["control", "full"],
+      description: "Defaults to compact control records; use 'full' for complete Question content."
+    });
+    expect(tools.get("get_questions")?.description).toMatch(/compact.*default/i);
+    expect(tools.get("get_questions")?.parameters.properties.questionIds).toMatchObject({ maxItems: 20 });
+    expect(tools.get("get_postbox_owner_status")?.parameters.properties.owners).toMatchObject({ maxItems: 20 });
+    expect(tools.get("get_question_history")?.parameters.properties.view).toEqual({
+      type: "string",
+      enum: ["events", "full"],
+      description: "Defaults to compact event-oriented history; use 'full' for immutable revision snapshots."
+    });
+    expect(tools.get("get_question_history")?.description).toMatch(/event.*default/i);
+    expect(tools.get("get_question_history")?.parameters.properties.pageSize).toMatchObject({
+      type: "integer", minimum: 1, maximum: 50
+    });
+    expect(tools.get("recover_question_answer")?.parameters.properties.view).toEqual({
+      type: "string",
+      enum: ["compact", "full"],
+      description: "Defaults to compact recovery output; use 'full' for the complete Question, Answer, and read metadata."
+    });
+    expect(tools.get("recover_question_answer")?.description).toMatch(/compact.*default/i);
+    expect(tools.get("list_postbox_owners")?.parameters.properties.scope).toEqual({
+      type: "string",
+      enum: ["feature", "worktree", "repository"],
+      description: "Defaults to the caller's current feature; broader scopes remain within its worktree or repository."
+    });
+    expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("global");
+    expect(tools.get("list_postbox_owners")?.parameters.properties).not.toHaveProperty("featureId");
+    expect(tools.get("list_postbox_owners")?.parameters.properties.includeInactive).toMatchObject({ type: "boolean" });
+    expect(tools.get("list_postbox_owners")?.parameters.properties.pageSize).toMatchObject({
+      type: "integer", minimum: 1, maximum: 100
+    });
+    expect(tools.get("get_answer")?.description).toMatch(/pending/i);
+    expect(tools.get("write_question")?.promptSnippet).toBeUndefined();
+    expect(tools.get("wait_for_postbox")?.promptSnippet).toBeUndefined();
+    expect(tools.get("write_question")?.promptGuidelines?.join(" ")).toMatch(/do not poll.*get_answer.*list_question_status.*list_questions/i);
+    expect(tools.get("write_question")?.promptGuidelines?.join(" ")).toMatch(/only blocker.*wait_for_postbox.*once/i);
+    expect(tools.get("wait_for_postbox")?.promptGuidelines?.join(" ")).toMatch(/only blocker.*idle.*notification|only blocker.*idle.*wakes/i);
+  });
+
   it("does not complete terminal session shutdown before Question Chat abort cleanup", async () => {
     let finishAbort!: () => void;
     questionChatMock.cleanupAll.mockImplementationOnce(
@@ -195,6 +278,33 @@ describe("Pi Postbox extension registration", () => {
     expect(replacement.sessionId).not.toBe(first.sessionId);
   });
 
+  it("supplies Pi's actual session UUID as owner identity from the harness adapter", async () => {
+    const env = await tempConfigEnv();
+    const payload = await collectRegistrationPayload(
+      { getSessionName: () => "Harness-owned identity" },
+      { cwd: process.cwd(), sessionManager: {
+        getSessionId: () => "12345678-1234-4123-8123-123456789abc",
+        getSessionFile: () => "/tmp/2026-08-13_12345678-1234-4123-8123-123456789abc.jsonl",
+        getLeafId: () => "leaf-1"
+      } },
+      env
+    );
+
+    expect(payload.session.owner).toEqual({ harness: "pi", ownerId: "12345678-1234-4123-8123-123456789abc" });
+    expect(payload.session.agentSessionId).toBe("12345678-1234-4123-8123-123456789abc");
+  });
+
+  it("does not manufacture authoritative owner identity from a Pi session file", () => {
+    const session = collectSessionMetadata(
+      { getSessionName: () => "Legacy compatible identity" },
+      { cwd: "/repo", sessionManager: { getSessionFile: () => "/tmp/session-without-native-id.jsonl" } }
+    );
+
+    expect(session.sessionId).toMatch(/^session_/);
+    expect(session.owner).toBeUndefined();
+    expect(session.agentSessionId).toBeUndefined();
+  });
+
   it("preserves a generated session identity across reload but rotates it on replacement", async () => {
     const server = await startHealthServer({ role: "dev", instanceId: DEV_INSTANCE_ID });
     vi.stubEnv("PI_POSTBOX_URL", server.url);
@@ -232,7 +342,7 @@ describe("Pi Postbox extension registration", () => {
     expect(postboxClientMock.options.at(-1)!.registration!.session.sessionId).not.toBe(originalOwner);
   });
 
-  it("shows the active Postbox URL in the footer while an ask is waiting", async () => {
+  it("shows the Tailnet URL and session question count in the footer without a waiting widget", async () => {
     const env = await tempConfigEnv({ PI_POSTBOX_URL: "https://postbox.example/" });
     const statuses: Array<{ key: string; value: string }> = [];
     const widgets: string[][] = [];
@@ -272,18 +382,77 @@ describe("Pi Postbox extension registration", () => {
       }
     );
 
+    postboxClientMock.pendingAskCount = 1;
     postboxClientMock.options.at(-1)?.onLocalFallbackStatus?.({
       requestId: "ask-footer-url",
       serverUrl: "http://127.0.0.1:3500/",
       message: "Postbox waiting ask-footer-url. Open http://127.0.0.1:3500/ to answer."
     });
 
-    await vi.waitFor(() => expect(statuses).toContainEqual({ key: "postbox-ask", value: "Postbox https://coolify.tailnet.ts.net:3500" }));
-    expect(statuses).not.toContainEqual({ key: "postbox-ask", value: "Waiting ask-footer-url" });
-    expect(widgets.at(-1)?.[0]).toContain("Open https://coolify.tailnet.ts.net:3500");
+    await vi.waitFor(() => expect(statuses).toContainEqual({
+      key: "postbox",
+      value: "Postbox https://coolify.tailnet.ts.net:3500 · 1 open question"
+    }));
+    expect(widgets.at(-1)).toEqual([]);
+
+    postboxClientMock.pendingAskCount = 0;
+    postboxClientMock.options.at(-1)?.onLocalFallbackStatus?.(undefined);
+    await vi.waitFor(() => expect(statuses).toContainEqual({
+      key: "postbox",
+      value: "Postbox https://coolify.tailnet.ts.net:3500 · 0 open questions"
+    }));
 
     const shutdownCtx = { cwd: process.cwd(), ui: { setStatus: () => undefined, notify: () => undefined, setWidget: () => undefined } };
     for (const handler of handlers.get("session_shutdown") ?? []) handler({}, shutdownCtx);
+  });
+
+  it("falls back to the local URL in the footer when Tailscale is unavailable", async () => {
+    postboxClientMock.tailnetUrl = undefined;
+    const env = await tempConfigEnv({ PI_POSTBOX_URL: "https://postbox.example/" });
+    const statuses: Array<{ key: string; value: string }> = [];
+    const api = {
+      getSessionName: () => "Footer local URL test",
+      on: () => undefined,
+      registerTool: () => undefined,
+      registerCommand: () => undefined
+    };
+
+    await startRegistration(
+      api,
+      {
+        cwd: process.cwd(),
+        ui: {
+          setStatus: (key, value) => statuses.push({ key, value }),
+          notify: () => undefined,
+          setWidget: () => undefined
+        },
+        sessionManager: { getSessionFile: () => "/tmp/session.jsonl", getLeafId: () => "leaf-1" }
+      },
+      env,
+      undefined,
+      "footer-local-url",
+      {
+        resolveOptions: {
+          fetch: healthFetch({
+            "https://postbox.example/healthz": createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS })
+          }).fetch,
+          nowMs: NOW_MS,
+          ttlMs: TTL_MS
+        }
+      }
+    );
+
+    postboxClientMock.pendingAskCount = 2;
+    postboxClientMock.options.at(-1)?.onLocalFallbackStatus?.({
+      requestId: "ask-footer-local-url",
+      serverUrl: "http://127.0.0.1:3500/",
+      message: "Postbox waiting ask-footer-local-url. Open http://127.0.0.1:3500/ to answer."
+    });
+
+    await vi.waitFor(() => expect(statuses).toContainEqual({
+      key: "postbox",
+      value: "Postbox http://127.0.0.1:3500/ · 2 open questions"
+    }));
   });
 
   it("does not block or throw Pi startup when the server is unavailable", async () => {
@@ -491,7 +660,55 @@ describe("Pi Postbox extension registration", () => {
     expect(options?.resolveTarget).toEqual(expect.any(Function));
     await expect(options?.resolveTarget?.()).resolves.toMatchObject({
       status: "selected",
-      target: { url: server.url, activeLocalPollingEnabled: true, source: "active-local" }
+      target: { url: server.url, profilePollingEnabled: true, source: "profile-metadata" }
+    });
+  });
+
+  it("accepts a restarted process at the same session-sticky endpoint so identity can refresh", async () => {
+    const url = "http://127.0.0.1:3500/";
+    const restartedInstanceId = "22222222-2222-4222-8222-222222222222";
+    const env = await tempConfigEnv();
+    let currentInstanceId = DEV_INSTANCE_ID;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.redirect).toBe("manual");
+      const inputUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      expect(inputUrl).toBe(`${url}healthz`);
+      return new Response(JSON.stringify(healthResponse({ role: "dev", instanceId: currentInstanceId, url })), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    await writeMetadata(env, {
+      role: "dev",
+      instanceId: DEV_INSTANCE_ID,
+      url,
+      updatedAt: new Date(NOW_MS).toISOString()
+    });
+
+    await startRegistration(
+      { getSessionName: () => "Same endpoint process restart", on: () => undefined },
+      {
+        cwd: process.cwd(),
+        ui: { setStatus: () => undefined, notify: () => undefined },
+        sessionManager: { getSessionFile: () => "/tmp/session.jsonl", getLeafId: () => "leaf-1" }
+      },
+      env,
+      undefined,
+      "same-endpoint-restart",
+      { resolveOptions: { fetch, nowMs: NOW_MS, ttlMs: TTL_MS } }
+    );
+
+    currentInstanceId = restartedInstanceId;
+    await writeMetadata(env, {
+      role: "dev",
+      instanceId: restartedInstanceId,
+      url,
+      updatedAt: new Date(NOW_MS).toISOString()
+    });
+
+    await expect(postboxClientMock.options.at(-1)?.resolveTarget?.()).resolves.toMatchObject({
+      status: "selected",
+      target: { url, instanceId: restartedInstanceId }
     });
   });
 
@@ -525,7 +742,7 @@ describe("Pi Postbox extension registration", () => {
     );
 
     const options = postboxClientMock.options.at(-1);
-    expect(options).toMatchObject({ serverUrl: originalUrl, activeLocalPollingEnabled: true });
+    expect(options).toMatchObject({ serverUrl: originalUrl, profilePollingEnabled: true });
     expect(options?.resolveTarget).toEqual(expect.any(Function));
 
     await writeMetadata(env, {
@@ -582,7 +799,7 @@ describe("Pi Postbox extension registration", () => {
 
     await expect(options?.resolveTarget?.()).resolves.toMatchObject({
       status: "selected",
-      target: { source: "active-local", url: localUrl, activeLocalPollingEnabled: true }
+      target: { source: "profile-metadata", url: localUrl, profilePollingEnabled: true }
     });
     expect(health.fetch).not.toHaveBeenCalledWith(new URL("https://postbox.tailnet.example:32187/healthz"), expect.any(Object));
     expect(health.fetch).toHaveBeenCalledWith(new URL("http://127.0.0.1:3500/healthz"), expect.any(Object));
@@ -614,18 +831,35 @@ describe("Pi Postbox extension registration", () => {
 
 async function writeMetadata(
   env: NodeJS.ProcessEnv,
-  record: { role: ActiveLocalRole; instanceId: string; url: string; updatedAt: string }
+  record: { role: TestLocalRole; instanceId: string; url: string; updatedAt: string }
 ): Promise<void> {
-  const activeLocalDir = join(dirname(env.PI_POSTBOX_CONFIG_PATH!), ACTIVE_LOCAL_METADATA_DIRECTORY);
-  await mkdir(activeLocalDir, { recursive: true });
+  const profile = resolveServerProfile({ env });
+  await mkdir(dirname(profile.metadataPath), { recursive: true });
   await writeFile(
-    join(activeLocalDir, ACTIVE_LOCAL_METADATA_FILENAMES[record.role]),
-    `${JSON.stringify({ version: 1, ...record }, null, 2)}\n`
+    profile.metadataPath,
+    `${JSON.stringify({
+      version: SERVER_PROFILE_METADATA_VERSION,
+      profile: { kind: profile.kind, id: profile.id },
+      instanceId: record.instanceId,
+      url: record.url,
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: "test-build",
+      updatedAt: record.updatedAt
+    }, null, 2)}\n`
   );
 }
 
-function healthResponse(localTarget: ActiveLocalTargetIdentity) {
-  return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget });
+function healthResponse(localTarget: TestLocalTarget) {
+  const profile = resolveServerProfile();
+  const profileIdentity = { kind: profile.kind, id: profile.id } as const;
+  const instance = {
+    profile: profileIdentity,
+    instanceId: localTarget.instanceId,
+    url: localTarget.url,
+    protocolVersion: PROTOCOL_VERSION,
+    buildId: "test-build"
+  };
+  return createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, profile: profileIdentity, buildId: "test-build", instance });
 }
 
 function healthFetch(responses: Record<string, unknown | Error>) {
@@ -647,7 +881,7 @@ function healthFetch(responses: Record<string, unknown | Error>) {
   return { fetch };
 }
 
-async function startHealthServer(localTarget: Omit<ActiveLocalTargetIdentity, "url">): Promise<{ url: string }> {
+async function startHealthServer(localTarget: Omit<TestLocalTarget, "url">): Promise<{ url: string }> {
   const server = createServer((request, response) => {
     if (request.url !== "/healthz") {
       response.writeHead(404);
@@ -666,7 +900,7 @@ async function startHealthServer(localTarget: Omit<ActiveLocalTargetIdentity, "u
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify(
-        createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS, localTarget: { ...localTarget, url } })
+        healthResponse({ ...localTarget, url })
       )
     );
   });

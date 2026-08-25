@@ -34,7 +34,7 @@ pi-postbox-server
 
 This is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs Pi resources and bundled package-local autostart support but does not add `pi-postbox-server` to `PATH`.
 
-The server binds to `127.0.0.1`, treats port `32187` as the canonical default, stores data in `~/.pi-postbox/postbox.sqlite`, and prints the actual listening URL. If the preferred port is already in use, it chooses another local port and prints an explicit warning that the local/Tailnet bookmark URL is non-canonical; free `32187` or set `--port` / `PI_POSTBOX_PORT` to a stable available port if you need a bookmarkable URL. Ordinary launches publish the `production` active-local role unless `--active-local-role` or `PI_POSTBOX_ACTIVE_LOCAL_ROLE` says otherwise.
+The installed server uses the `production` profile: it binds to `127.0.0.1`, treats port `32187` as the canonical default, stores data in `~/.pi-postbox/postbox.sqlite`, and publishes `~/.pi-postbox/active-local/server.json`. If the preferred port is already in use, it chooses another local port and prints the actual URL.
 
 After binding, startup tries automatic Tailnet-private Tailscale Serve for the actual bound port. It inspects `tailscale serve status --json` first and only mutates when the matching HTTPS port is free or already points at the same Postbox target. Disable this with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`.
 
@@ -46,20 +46,22 @@ For active development of the web UI or server, use the dev orchestrator instead
 npm run dev
 ```
 
-`npm run dev` (`scripts/dev.mjs`) runs the full stack: the backend `pi-postbox-server` on the **canonical** port (`PI_POSTBOX_PORT`, else `32187` — the same endpoint the extension targets, so live Pi sessions talk to the dev server) plus the Vite dev server (preferred port `5173`, with HMR; if busy, an available UI port is selected and passed to Vite). Vite proxies `/api` and `/healthz` to the backend, so the dashboard has live data while you edit source. Both share the same `~/.pi-postbox/postbox.sqlite`, so dev shows the same sessions, pending questions, and history as production. The dev launcher marks the backend as `--active-local-role dev`; active-local clients prefer dev over production while fresh/healthy and use production fallback when dev goes stale or unhealthy. Dev Tailscale Serve exposes the actual Vite UI port, not the backend API port; disable with `PI_POSTBOX_TAILSCALE=off`.
+`npm run dev` derives a stable `development:<checkout-id>` profile from the canonical checkout root, builds the current protocol/backend, and starts that checkout's backend plus Vite/HMR on available non-conflicting ports. It prints the profile identity, state directory, API URL, and dashboard URL. Vite proxies `/api` and `/healthz` to that backend.
 
-If a production `pi-postbox-server` already holds the canonical port, the orchestrator offers to stop it: interactively when run from a terminal, or via `--force` / `POSTBOX_DEV_FORCE=1` when run non-interactively (e.g. by an agent). It stops the old server through the loopback-only `POST /admin/shutdown` endpoint, falling back to signalling the listener PID. A non-pi-postbox process on the port is never touched.
+Development state lives under `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>` (normally `~/.local/state/pi-postbox/dev/<checkout-id>`), including its SQLite database, `active-local/server.json`, and `dev-ports.json`. The launcher atomically records the API and Vite ports and reuses them on the next restart when available, preserving endpoint affinity for unresolved Questions. If a remembered port is occupied, it selects and records a safe replacement; if an explicitly requested `PI_POSTBOX_PORT` or `POSTBOX_DEV_WEB_PORT` is occupied, it exits and leaves the existing listener untouched. API and web ports must differ.
+
+The development profile never reads, migrates, stops, replaces, or retargets production. Its optional non-clobbering Tailscale Serve mapping uses the separate development API port, so it does not replace the production mapping. Separate clones/worktrees receive distinct identities and can run together.
 
 ## Tailnet-private Tailscale Serve status
 
-Use the status command to inspect active-local metadata, `/healthz`, and Tailscale Serve state without starting another server:
+Use the status command to inspect one profile's metadata, `/healthz`, and Tailscale Serve state without combining unrelated candidates:
 
 ```bash
 pi-postbox-server status
 pi-postbox-server status --json
 ```
 
-Human status includes the local URL, role, Tailnet URL when available, conflict/unavailable diagnostics, remediation, and a copy-paste line for remote Pi machines:
+Human status includes the profile identity, local URL, Tailnet URL when available, conflict/unavailable diagnostics, remediation, and a copy-paste line for remote Pi machines. Use `--profile development:<id> --profile-state-dir <path>` to inspect a development profile explicitly.
 
 ```bash
 export PI_POSTBOX_URL="https://your-postbox.tailnet.example:32187"
@@ -85,17 +87,19 @@ or write the extension config:
 }
 ```
 
-Tailscale and hosted URLs are preferred Postbox servers. The extension checks the preferred server first; when it is healthy, it is authoritative for that registration and active-local polling is unnecessary. If the preferred server is unreachable or unavailable, the extension may use local fallback through fresh active-local metadata or package-local autostart. Remote URLs themselves are not local recovery candidates. Once a Pi Session registers with a local fallback/autostarted server, the session stays attached to that server until `/reload` or restart instead of switching mid-session.
+`PI_POSTBOX_URL` is an explicit override. Otherwise, the extension reads only the selected profile's config and `active-local/server.json`, and package-local autostart starts that same profile. Health negotiation validates protocol, profile, instance, URL, and build identity before connecting. A session never treats another profile as failover.
 
 ## Install the Pi package
 
-For source-checkout development:
+For source-checkout development, keep the installed npm source globally and let this repository's `.pi/settings.json` shadow it after project trust:
 
 ```bash
 npm install
-npm run build
-pi install /absolute/path/to/pi-postbox
+pi list --approve     # includes project package `..`
+pi list --no-approve  # includes only installed npm package
 ```
+
+Run `/trust` and restart Pi if the checkout is not trusted. Inside the checkout, the local package resolves the matching development profile; outside it, the npm/git package resolves production.
 
 The workspace root advertises the extension through its `pi.extensions` metadata. Published package installs use the single public package:
 
@@ -103,7 +107,7 @@ The workspace root advertises the extension through its `pi.extensions` metadata
 pi install npm:@wienerberliner/pi-postbox
 ```
 
-`pi install npm:@wienerberliner/pi-postbox` installs the Pi resources/extension resources plus bundled package-local autostart support. The extension connects in the background and does not block Pi startup if the preferred server is down; `ask_postbox` and `/postbox` can autostart the bundled server when needed.
+`pi install npm:@wienerberliner/pi-postbox` installs the Pi resources/extension resources plus bundled package-local autostart support. The extension connects in the background and does not block Pi startup if the preferred server is down; `write_question` and `/postbox` can autostart the bundled server when needed.
 
 Autostart is enabled by default. Set `PI_POSTBOX_AUTOSTART=off` to opt out, or set `PI_POSTBOX_AUTOSTART_TIMEOUT_MS` to change the wait for a started server; the default timeout is 10 seconds (`10000` ms).
 
@@ -145,7 +149,7 @@ npm run build
 npm run smoke
 ```
 
-The credential-free smoke starts `node packages/server/dist/cli.js` with a temporary SQLite database and temporary `PI_POSTBOX_CONFIG_DIR`. It fetches the exact hashed JavaScript/CSS referenced by the served HTML plus the manifest, service worker, and icons; connects a fake extension/runtime over WebSocket; and verifies `/healthz`, state and Chat SSE, registration, authoritative handoff context, explicit activation without an automatic model prompt, streaming/tool output, Stop/resume, restart recovery, an authoritative proposal, generated-value selection, terminal cleanup, state/history correctness, and non-persistence of private Chat text and repository evidence.
+The credential-free smoke starts `node packages/server/dist/cli.js` with a temporary SQLite database and temporary `PI_POSTBOX_CONFIG_DIR`. It fetches the exact hashed JavaScript/CSS referenced by the served HTML plus the manifest, service worker, and icons; connects a fake extension/runtime over WebSocket; and verifies `/healthz`, state and Chat SSE, registration, exact-fork activation without an automatic model prompt, streaming/tool output, Stop/resume, restart recovery, an authoritative proposal, generated-value selection, legacy handoff-context removal, terminal cleanup, state/history correctness, and non-persistence of private Chat text and repository evidence.
 
 ## Manual test checklist
 
@@ -153,8 +157,8 @@ The credential-free smoke starts `node packages/server/dist/cli.js` with a tempo
 2. Open the UI from a laptop/phone over the Tailnet URL when Tailscale Serve is available.
 3. Start Pi with `PI_POSTBOX_URL` set to the same URL.
 4. Confirm the session card appears with machine/project/branch metadata.
-5. Ask a test question with `ask_postbox` and answer it from the browser.
-6. Confirm the Pi tool result includes only the final selected values/note/rationale.
+5. Create a test Question with `write_question({ action: "create", ... })` and answer it from the browser.
+6. Confirm `get_answer` returns only `questionId`, `answerId`, the selected option values in `answer`, and optional `note`.
 7. Confirm the decision appears in recent history.
 8. Test `/postbox-status` and `/postbox-answer` from the terminal as a fallback.
 9. Test the read-only `postbox_status` tool and confirm it reports status/open-question count without pending question contents.

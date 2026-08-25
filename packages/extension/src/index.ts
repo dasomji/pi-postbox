@@ -1,22 +1,40 @@
 import { randomUUID } from "node:crypto";
-import type { SessionRegisterPayload } from "@pi-postbox/protocol";
-import { PostboxClient, type LocalFallbackStatus } from "./client/PostboxClient.js";
+import {
+  ASK_STATUSES,
+  AnswerReadResultSchema,
+  POSTBOX_EXPLICIT_ID_MAX,
+  POSTBOX_OWNER_PAGE_MAX,
+  QUESTION_DISCOVERY_PAGE_MAX,
+  QUESTION_HISTORY_PAGE_MAX,
+  QUESTION_STATUS_PAGE_MAX,
+  type SessionRegisterPayload
+} from "@pi-postbox/protocol";
+import { PostboxClient } from "./client/PostboxClient.js";
 import { registerPostboxFallbackCommands } from "./commands/localFallback.js";
 import { registerOpenPostboxCommand } from "./commands/openPostbox.js";
 import { ensurePostboxServerAutostarted, getPostboxAutostartFailureDiagnostic, postboxAutostartTimeoutMs } from "./autostart.js";
 import {
-  resolveActiveLocalTarget,
-  type ResolveActiveLocalTargetOptions,
-  type ResolveActiveLocalTargetResult,
-  type ResolvedActiveLocalTarget
-} from "./activeLocalTargetResolver.js";
+  resolveServerTarget,
+  type ResolveServerTargetOptions,
+  type ResolveServerTargetResult,
+  type ResolvedServerTarget
+} from "./serverTargetResolver.js";
 import { createSemanticStateController, installSemanticStateHandlers, type SemanticStateController } from "./lifecycle.js";
 import { getMachineIdentity } from "./machineIdentity.js";
 import { collectProjectMetadata } from "./projectMetadata.js";
 import { collectSessionMetadata } from "./sessionMetadata.js";
-import { askPostboxParameters, executeAskPostbox, formatAskResult, type AskPostboxInput } from "./tools/askPostbox.js";
+import { executeAskPostbox } from "./tools/askPostbox.js";
+import {
+  normalizeWriteQuestionResult,
+  toAskPostboxInput,
+  toQuestionUpdateRequest,
+  writeQuestionParameters,
+  type WriteQuestionInput
+} from "./tools/writeQuestion.js";
 import { collectPostboxStatusSnapshot, formatPostboxStatusSnapshot } from "./status.js";
 import { PiQuestionChatRuntimeAdapter, QuestionChatRuntimeRegistry } from "./questionChatRuntime.js";
+import { FileAnswerNotificationInbox } from "./answerNotificationInbox.js";
+import { resolveServerProfile, type ResolvedServerProfile } from "./serverProfile.js";
 
 interface PiLikeApi {
   on(event: string, handler: (event: unknown, ctx: PiLikeContext) => unknown): void;
@@ -27,15 +45,54 @@ interface PiLikeApi {
 }
 
 interface PiLikeContext {
+  hasUI?: boolean;
   cwd?: string;
   ui?: {
+    confirm?: (title: string, message: string) => Promise<boolean>;
     notify?: (message: string, level?: string) => void;
     setStatus?: (key: string, value: string) => void;
     setWidget?: (key: string, value: string[]) => void;
   };
   sessionManager?: {
+    getSessionId?: () => string;
     getSessionFile?: () => string | undefined;
     getLeafId?: () => string | undefined;
+  };
+}
+
+export function createWaitForPostboxTool(wait: (signal?: AbortSignal) => Promise<Record<string, unknown>>) {
+  return {
+    name: "wait_for_postbox", label: "Wait for Postbox", annotations: { readOnlyHint: false },
+    description: "Cancellably idle until the first actionable event across every Question owned by this agent.",
+    promptGuidelines: [
+      "Use wait_for_postbox only when a human Postbox decision is the only blocker and no independent work remains. Call it once, remain idle until it wakes from a notification or actionable lifecycle event, then use get_answer for the relevant Question. Never use repeated status or Answer reads as a polling substitute."
+    ],
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute(_id: string, _params: Record<string, never>, signal?: AbortSignal) {
+      const result = await wait(signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    }
+  };
+}
+
+export function createPostboxNavigationGuard(options: {
+  owner: { harness: string; ownerId: string };
+  query: (type: "owner.status.get", payload: { owners: Array<{ harness: string; ownerId: string }> }) => Promise<Array<{ activeQuestionCount?: number; unreadAnswerCount?: number }>>;
+  confirm: (title: string, message: string) => Promise<boolean>;
+}) {
+  return async () => {
+    try {
+      const [status] = await options.query("owner.status.get", { owners: [options.owner] });
+      const active = status?.activeQuestionCount ?? 0;
+      const unread = status?.unreadAnswerCount ?? 0;
+      if (active === 0 && unread === 0) return;
+      const confirmed = await options.confirm("Leave Postbox work unresolved?",
+        `${active} active Question(s) and ${unread} unread Answer(s) will remain assigned to this owner. Continue?`);
+      if (!confirmed) return { cancel: true };
+    } catch {
+      // Navigation must fail open: Postbox can warn, but cannot trap the user.
+      return;
+    }
   };
 }
 
@@ -48,14 +105,14 @@ interface SessionUiScope {
 }
 
 export interface StartRegistrationOptions {
-  resolveOptions?: Omit<ResolveActiveLocalTargetOptions, "env">;
+  resolveOptions?: Omit<ResolveServerTargetOptions, "env">;
   supervisor?: {
     initialDelayMs?: number;
     maxDelayMs?: number;
   };
 }
 
-interface ActiveLocalSupervisor {
+interface ProfileSupervisor {
   stop(): void;
 }
 
@@ -80,9 +137,9 @@ let client: PostboxClient | undefined;
 let currentRegistration: SessionRegisterPayload | undefined;
 let semanticStateController: SemanticStateController | undefined;
 let activeUiScope: SessionUiScope | undefined;
-let activeLocalSupervisor: ActiveLocalSupervisor | undefined;
+let profileSupervisor: ProfileSupervisor | undefined;
 let activeSessionRegistrationContext: ActiveSessionRegistrationContext | undefined;
-let unavailableRationale = "Pi Postbox is not connected.";
+let unavailableNote = "Pi Postbox is not connected.";
 const registrationWaiters = new Set<() => void>();
 const questionChats = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter({
   proposeAnswer: (requestId, proposal, signal) => client
@@ -104,7 +161,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
   pi.registerTool?.({
     name: "postbox_status",
     label: "Postbox Status",
-    description: "Return privacy-preserving Pi Postbox connectivity, operator, and open-question count status.",
+    description: "Return privacy-preserving Pi Postbox connectivity, operator, and current-owner open-question count status.",
     annotations: { readOnlyHint: true },
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
@@ -114,50 +171,199 @@ export default function postboxExtension(pi: PiLikeApi): void {
   });
 
   pi.registerTool?.({
-    name: "ask_postbox",
-    label: "Ask Postbox",
-    description: "Send a structured decision question to Pi Postbox and wait for the remote answer.",
-    promptSnippet: "Ask the user for a remote decision through Pi Postbox.",
+    name: "write_question",
+    label: "Write Question",
+    description: "Create, revise, cancel, supersede, reparent, transfer, or take over Postbox Questions through one compact write interface.",
+    annotations: { readOnlyHint: false },
     promptGuidelines: [
-      "Use ask_postbox when you need a human decision and can provide concise options. Include non-blank context.codebaseContext and context.problemContext so a future interviewer can explain the decision. The tool blocks until the Postbox Question is answered or cancelled."
+      "Use write_question action create or create_batch when you need a human decision. State the ambiguity and concise options. Creation returns after durable persistence with questionId, revision, and ownerRevision; it does not wait for an Answer. Continue independent work and do not poll get_answer, list_question_status, or list_questions. If the Answer is the only blocker, call wait_for_postbox once, remain idle until it wakes, then call get_answer. Existing-Question actions require the latest revision and ownerRevision; reuse the handle returned by the preceding write, and fetch full current state only after a conflict or external change."
     ],
-    parameters: askPostboxParameters,
-    async execute(_toolCallId: string, params: AskPostboxInput, signal?: AbortSignal) {
-      if (!client || !currentRegistration) {
-        await ensureRegistrationForMutatingCaller(process.env, signal);
-      }
+    parameters: writeQuestionParameters,
+    async execute(_toolCallId: string, params: WriteQuestionInput, signal?: AbortSignal) {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env, signal);
 
       if (!client || !currentRegistration) {
-        const result = {
+        if (params.action !== "create" && params.action !== "create_batch") throw new Error(unavailableNote);
+        const unavailable = {
           status: "unavailable" as const,
           requestId: params.requestId ?? "unavailable",
-          rationale: unavailableRationale,
+          note: unavailableNote,
           resolvedAt: new Date().toISOString()
         };
-        return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
+        const result = normalizeWriteQuestionResult(params.action, unavailable);
+        return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
       }
 
-      const liveContext = activeSessionRegistrationContext?.ctx;
-      const liveSessionPath = liveContext?.sessionManager?.getSessionFile?.();
-      const liveLeafId = liveContext?.sessionManager?.getLeafId?.();
-      if (liveSessionPath && liveLeafId) {
-        const source = { cwd: liveContext?.cwd ?? currentRegistration.session.cwd, agentSessionPath: liveSessionPath, leafId: liveLeafId };
-        const sourceAwareClient = client as PostboxClient & { updateQuestionSource?: (value: typeof source) => boolean };
-        sourceAwareClient.updateQuestionSource?.(source);
-        currentRegistration = {
-          ...currentRegistration,
-          session: { ...currentRegistration.session, ...source }
-        };
+      let rawResult: Record<string, unknown>;
+      if (params.action === "create" || params.action === "create_batch") {
+        const liveContext = activeSessionRegistrationContext?.ctx;
+        const liveSessionPath = liveContext?.sessionManager?.getSessionFile?.();
+        const liveLeafId = liveContext?.sessionManager?.getLeafId?.();
+        if (liveSessionPath && liveLeafId) {
+          const source = { cwd: liveContext?.cwd ?? currentRegistration.session.cwd, agentSessionPath: liveSessionPath, leafId: liveLeafId };
+          const sourceAwareClient = client as PostboxClient & { updateQuestionSource?: (value: typeof source) => boolean };
+          sourceAwareClient.updateQuestionSource?.(source);
+          currentRegistration = { ...currentRegistration, session: { ...currentRegistration.session, ...source } };
+        }
+        rawResult = await executeAskPostbox(
+          toAskPostboxInput(params),
+          client,
+          currentRegistration.session.sessionId,
+          signal,
+          semanticStateController
+        ) as unknown as Record<string, unknown>;
+      } else {
+        const request = toQuestionUpdateRequest(params);
+        rawResult = await client.query("question.update", {
+          sessionId: currentRegistration.session.sessionId,
+          ...request
+        }) as Record<string, unknown>;
       }
 
-      const result = await executeAskPostbox(params, client, currentRegistration.session.sessionId, signal, semanticStateController);
-      return { content: [{ type: "text", text: formatAskResult(result) }], details: result };
+      const result = normalizeWriteQuestionResult(params.action, rawResult);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     }
   });
 
+  pi.registerTool?.({
+    name: "get_answer",
+    label: "Get Postbox Answer",
+    description: "Read the latest Answer for an owned Postbox Question, or receive a compact pending result while unresolved; the registered Pi session supplies reader identity.",
+    annotations: { readOnlyHint: false },
+    parameters: { type: "object", additionalProperties: false, required: ["questionId"], properties: {
+      questionId: { type: "string", minLength: 1, description: "Question ID returned by write_question." }
+    } },
+    async execute(_toolCallId: string, params: { questionId: string }, signal?: AbortSignal) {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
+      if (!client) throw new Error(unavailableNote);
+      const result = AnswerReadResultSchema.parse(await client.getAnswer(params.questionId, signal));
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    }
+  });
+
+  const registerQueryTool = (name: string, description: string, parameters: any, type: any, payload: (params: any) => any = (value) => value) => pi.registerTool?.({
+    name, label: name, description, annotations: { readOnlyHint: name !== "recover_question_answer" }, parameters,
+    async execute(_id: string, params: any) {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env);
+      if (!client || !currentRegistration) throw new Error(unavailableNote);
+      const result = await client.query(type, payload(params));
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    }
+  });
+  const ownerIdentityParameters = {
+    type: "object", additionalProperties: false, required: ["harness", "ownerId"],
+    properties: {
+      harness: { type: "string", minLength: 1, description: "Agent harness that owns the Question." },
+      ownerId: { type: "string", minLength: 1, description: "Harness-neutral owner identifier." }
+    }
+  };
+  const filters = {
+    owner: { ...ownerIdentityParameters, description: "Exact owner identity; normally omit and use scope." },
+    status: {
+      type: "string",
+      enum: [...ASK_STATUSES],
+      description: "Question lifecycle status. Use 'pending' for open or unanswered questions."
+    }
+  };
+  const discoveryScope = {
+    type: "string",
+    enum: ["owner", "feature", "worktree", "repository", "global"],
+    description: "Discovery breadth. Defaults to the current owner; broader values deliberately include other owners."
+  };
+  registerQueryTool("list_questions", "List compact pending Question IDs and text. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden across a feature, worktree, repository, or all Postbox Questions.",
+    { type: "object", additionalProperties: false, properties: {
+      ...filters,
+      scope: discoveryScope,
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous list response." },
+      pageSize: { type: "integer", minimum: 1, maximum: QUESTION_DISCOVERY_PAGE_MAX,
+        description: "Maximum number of Questions to return on this page." }
+    } }, "question.list",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  registerQueryTool("get_questions", "Get compact latest Question controls for explicit IDs by default; request the full view for complete current Question and resolution evidence.",
+    { type: "object", additionalProperties: false, required: ["questionIds"], properties: {
+      questionIds: {
+        type: "array", minItems: 1, maxItems: POSTBOX_EXPLICIT_ID_MAX, description: "Question IDs to retrieve.",
+        items: { type: "string", description: "One Question ID returned by Postbox." }
+      },
+      view: {
+        type: "string",
+        enum: ["control", "full"],
+        description: "Defaults to compact control records; use 'full' for complete Question content."
+      }
+    } }, "questions.get");
+  registerQueryTool("list_question_status", "List one page of compact actionable Question and unread Answer status as { statuses, nextCursor? }. Defaults to Questions owned by the current Pi session; set scope explicitly to broaden.",
+    { type: "object", additionalProperties: false, properties: {
+      ...filters,
+      scope: discoveryScope,
+      readState: { type: "string", enum: ["read", "unread"], description: "Human Answer read state; composes conjunctively with status." },
+      includeTerminal: { type: "boolean", description: "With no status/readState filter, include every lifecycle state instead of only actionable pending and unread items." },
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous status page." },
+      pageSize: { type: "integer", minimum: 1, maximum: QUESTION_STATUS_PAGE_MAX,
+        description: "Maximum number of status records to return on this page." }
+    } }, "question.status.list",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  registerQueryTool("list_postbox_owners", "List one { owners, nextCursor? } page of present or actionable owners in the caller's feature, with coarse presence and scoped queue counts.",
+    { type: "object", additionalProperties: false, properties: {
+      scope: {
+        type: "string",
+        enum: ["feature", "worktree", "repository"],
+        description: "Defaults to the caller's current feature; broader scopes remain within its worktree or repository."
+      },
+      includeInactive: { type: "boolean", description: "Include offline historical owners with no active Questions or unread Answers." },
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous owner page." },
+      pageSize: { type: "integer", minimum: 1, maximum: POSTBOX_OWNER_PAGE_MAX,
+        description: "Maximum number of owners to return on this page." }
+    } }, "owner.list",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  registerQueryTool("get_postbox_owner_status", "Get compact presence and queue counts for exact harness-neutral owners.",
+    { type: "object", additionalProperties: false, required: ["owners"], properties: {
+      owners: { type: "array", minItems: 1, maxItems: POSTBOX_EXPLICIT_ID_MAX, description: "Exact owner identities to inspect.", items: {
+        ...ownerIdentityParameters,
+        description: "One exact harness-neutral owner identity."
+      } }
+    } }, "owner.status.get");
+  registerQueryTool("get_question_history", "Retrieve one bounded history page with optional nextCursor; compact events are default and full immutable snapshots are explicit.",
+    { type: "object", additionalProperties: false, required: ["questionId"], properties: {
+      questionId: { type: "string", description: "Question ID whose history should be retrieved." },
+      view: {
+        type: "string",
+        enum: ["events", "full"],
+        description: "Defaults to compact event-oriented history; use 'full' for immutable revision snapshots."
+      },
+      cursor: { type: "string", description: "Opaque pagination cursor returned by a previous history page." },
+      pageSize: { type: "integer", minimum: 1, maximum: QUESTION_HISTORY_PAGE_MAX,
+        description: "Maximum combined revision and event records to return on this page." }
+    } }, "question.history.get");
+  registerQueryTool("recover_question_answer", "Read a discovered offline owner's Answer without taking ownership; returns compact output by default.",
+    { type: "object", additionalProperties: false, required: ["questionId"], properties: {
+      questionId: { type: "string", description: "Question ID whose Answer should be recovered." },
+      view: {
+        type: "string",
+        enum: ["compact", "full"],
+        description: "Defaults to compact recovery output; use 'full' for the complete Question, Answer, and read metadata."
+      }
+    } }, "question.answer.recover",
+    (params: any) => ({ sessionId: currentRegistration!.session.sessionId, ...params }));
+  pi.registerTool?.(createWaitForPostboxTool(async (signal) => {
+      if (!client || !currentRegistration) await ensureRegistrationForMutatingCaller(process.env, signal);
+      if (!client || !currentRegistration) throw new Error(unavailableNote);
+      // Expose explicit Postbox waiting independently to Herdr and other parent status systems.
+      const release = semanticStateController?.beginAskPostboxWait("waiting_for_postbox");
+      try { return await client.waitForPostbox(currentRegistration.session.sessionId, signal); }
+      finally { release?.(); }
+  }));
+
+  const confirmUnresolvedPostboxWork = async (ctx: PiLikeContext) => {
+    if (!client || !currentRegistration?.session.owner || !ctx.hasUI || !ctx.ui?.confirm) return;
+    return createPostboxNavigationGuard({ owner: currentRegistration.session.owner,
+      query: (type, payload) => client!.query(type, payload), confirm: ctx.ui.confirm })();
+  };
+  pi.on("session_before_switch", (_event, ctx) => confirmUnresolvedPostboxWork(ctx));
+  pi.on("session_before_fork", (_event, ctx) => confirmUnresolvedPostboxWork(ctx));
+
   pi.on("session_start", (_event, ctx) => {
     activeUiScope?.deactivate();
-    stopActiveLocalSupervisor();
+    stopProfileSupervisor();
     activeUiScope = createSessionUiScope(ctx);
     const fallbackSessionIdentity = consumeReloadFallbackIdentity() ?? randomUUID();
     const options: StartRegistrationOptions = {};
@@ -177,7 +383,7 @@ export default function postboxExtension(pi: PiLikeApi): void {
     ).sessionId;
     const chatCleanup = reason === "reload" ? questionChats.suspendAll() : questionChats.cleanupAll(ownerSessionId);
     activeUiScope?.deactivate();
-    stopActiveLocalSupervisor();
+    stopProfileSupervisor();
     activeUiScope = undefined;
     activeSessionRegistrationContext = undefined;
     client?.stop();
@@ -205,7 +411,7 @@ function preserveFallbackIdentityForReload(reason: unknown, identity: string | u
 }
 
 async function collectExtensionPostboxStatusSnapshot(env: NodeJS.ProcessEnv) {
-  return collectPostboxStatusSnapshot({ client, env, unavailableRationale });
+  return collectPostboxStatusSnapshot({ client, env, unavailableNote });
 }
 
 export async function startRegistration(
@@ -216,17 +422,21 @@ export async function startRegistration(
   fallbackSessionIdentity?: string,
   options: StartRegistrationOptions = {}
 ): Promise<void> {
-  stopActiveLocalSupervisor();
-  const targetResult = await resolveActiveLocalTarget({ ...options.resolveOptions, env });
+  stopProfileSupervisor();
+  const targetResult = await resolveServerTarget({
+    ...options.resolveOptions,
+    cwd: options.resolveOptions?.cwd ?? ctx.cwd,
+    env
+  });
   if (!uiScope.isActive()) return;
   if (targetResult.status === "unavailable") {
-    unavailableRationale = formatUnavailableRationale(targetResult);
+    unavailableNote = formatUnavailableNote(targetResult);
     uiScope.setStatus("postbox", "Postbox unavailable");
-    startNoClientActiveLocalSupervisor(pi, ctx, env, uiScope, fallbackSessionIdentity, options);
+    startNoClientProfileSupervisor(pi, ctx, env, uiScope, fallbackSessionIdentity, options);
     return;
   }
 
-  await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.target, options);
+  await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.profile, targetResult.target, options);
 }
 
 async function registerResolvedTarget(
@@ -235,34 +445,54 @@ async function registerResolvedTarget(
   env: NodeJS.ProcessEnv,
   uiScope: SessionUiScope,
   fallbackSessionIdentity: string | undefined,
-  target: ResolvedActiveLocalTarget,
+  profile: ResolvedServerProfile,
+  target: ResolvedServerTarget,
   options: StartRegistrationOptions
 ): Promise<void> {
-  unavailableRationale = "Pi Postbox is not connected.";
+  unavailableNote = "Pi Postbox is not connected.";
 
   try {
-    const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity);
+    const registration = await collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity, profile);
     if (!uiScope.isActive()) return;
     currentRegistration = registration;
     client?.stop();
-    client = new PostboxClient({
+    let footerRenderVersion = 0;
+    let postboxClient!: PostboxClient;
+    const renderFooter = () => {
+      const renderVersion = ++footerRenderVersion;
+      void renderPostboxFooter(uiScope, postboxClient, target.url, () => renderVersion === footerRenderVersion);
+    };
+    postboxClient = new PostboxClient({
       serverUrl: target.url,
       targetSource: target.source,
-      targetRole: target.role,
+      targetProfile: target.profile,
+      targetIdentity: {
+        version: target.version,
+        protocolVersion: target.protocolVersion,
+        instanceId: target.instanceId,
+        buildId: target.buildId
+      },
       registration,
-      ...(target.activeLocalPollingEnabled
+      ...(target.profilePollingEnabled
         ? {
-            resolveTarget: createSessionStickyActiveLocalResolver(env, options, target),
-            activeLocalPollingEnabled: true
+            resolveTarget: createSessionStickyProfileResolver(env, ctx.cwd, options, target),
+            profilePollingEnabled: true
           }
         : {}),
-      onStatus: (status) => uiScope.setStatus("postbox", `Postbox ${status}`),
-      onLocalFallbackStatus: (status) => {
-        void renderLocalFallbackStatus(uiScope, status);
+      onStatus: renderFooter,
+      onLocalFallbackStatus: renderFooter,
+      onAnswerAvailable: (notification, deliveryId) => {
+        // Stable widget identity makes at-least-once transport replay owner-visible exactly once.
+        uiScope.setWidget(`postbox-answer-${deliveryId}`, [
+          `Postbox answer ready for “${notification.question}” (${notification.questionId}). Use get_answer.`
+        ]);
       },
+      answerNotificationInbox: new FileAnswerNotificationInbox(env, undefined, profile),
       questionChats
     });
-    client.start();
+    client = postboxClient;
+    postboxClient.start();
+    renderFooter();
     notifyRegistrationWaiters();
   } catch (error) {
     if (!uiScope.isActive()) return;
@@ -272,7 +502,7 @@ async function registerResolvedTarget(
   }
 }
 
-function startNoClientActiveLocalSupervisor(
+function startNoClientProfileSupervisor(
   pi: PiLikeApi,
   ctx: PiLikeContext,
   env: NodeJS.ProcessEnv,
@@ -280,7 +510,7 @@ function startNoClientActiveLocalSupervisor(
   fallbackSessionIdentity: string | undefined,
   options: StartRegistrationOptions
 ): void {
-  if (activeLocalSupervisor || client) return;
+  if (profileSupervisor || client) return;
 
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -291,8 +521,8 @@ function startNoClientActiveLocalSupervisor(
     stopped = true;
     if (timer) clearTimeout(timer);
     timer = undefined;
-    if (activeLocalSupervisor?.stop === stop) {
-      activeLocalSupervisor = undefined;
+    if (profileSupervisor?.stop === stop) {
+      profileSupervisor = undefined;
     }
   };
 
@@ -309,8 +539,9 @@ function startNoClientActiveLocalSupervisor(
       return;
     }
 
-    const targetResult = await resolveActiveLocalTarget({
+    const targetResult = await resolveServerTarget({
       ...options.resolveOptions,
+      cwd: options.resolveOptions?.cwd ?? ctx.cwd,
       ttlMs: options.resolveOptions?.ttlMs ?? AUTOSTART_RECOVERY_METADATA_TTL_MS,
       env
     });
@@ -320,7 +551,7 @@ function startNoClientActiveLocalSupervisor(
     }
 
     if (targetResult.status === "unavailable") {
-      unavailableRationale = formatUnavailableRationale(targetResult);
+      unavailableNote = formatUnavailableNote(targetResult);
       uiScope.setStatus("postbox", "Postbox unavailable");
       const delayMs = nextDelayMs;
       nextDelayMs = Math.min(nextDelayMs * 2, maxDelayMs);
@@ -329,96 +560,129 @@ function startNoClientActiveLocalSupervisor(
     }
 
     stop();
-    await registerResolvedTarget(pi, ctx, env, uiScope, fallbackSessionIdentity, targetResult.target, options);
+    await registerResolvedTarget(
+      pi,
+      ctx,
+      env,
+      uiScope,
+      fallbackSessionIdentity,
+      targetResult.profile,
+      targetResult.target,
+      options
+    );
   };
 
-  activeLocalSupervisor = { stop };
+  profileSupervisor = { stop };
   schedule(nextDelayMs);
 }
 
-function stopActiveLocalSupervisor(): void {
-  activeLocalSupervisor?.stop();
-  activeLocalSupervisor = undefined;
+function stopProfileSupervisor(): void {
+  profileSupervisor?.stop();
+  profileSupervisor = undefined;
 }
 
-function createSessionStickyActiveLocalResolver(
+function createSessionStickyProfileResolver(
   env: NodeJS.ProcessEnv,
+  cwd: string | undefined,
   options: StartRegistrationOptions,
-  originalTarget: ResolvedActiveLocalTarget
-): () => Promise<ResolveActiveLocalTargetResult> {
+  originalTarget: ResolvedServerTarget
+): () => Promise<ResolveServerTargetResult> {
   return async () => {
-    const result = await resolveActiveLocalTarget({ ...options.resolveOptions, env, skipConfiguredRemote: true });
+    const result = await resolveServerTarget({
+      ...options.resolveOptions,
+      cwd: options.resolveOptions?.cwd ?? cwd,
+      env,
+      skipConfiguredUrl: true
+    });
     if (result.status !== "selected") return result;
     if (isSameSessionStickyLocalTarget(originalTarget, result.target)) return result;
 
     return {
       status: "unavailable",
+      profile: result.profile,
       diagnostics: [
         ...result.diagnostics,
         {
           code: "session-sticky-target-mismatch",
-          source: result.target.source,
-          role: result.target.role
+          source: result.target.source
         }
       ]
     };
   };
 }
 
-function isSameSessionStickyLocalTarget(original: ResolvedActiveLocalTarget, next: ResolvedActiveLocalTarget): boolean {
+function isSameSessionStickyLocalTarget(original: ResolvedServerTarget, next: ResolvedServerTarget): boolean {
   if (next.source !== original.source || next.url !== original.url) return false;
-  if (original.source === "active-local") {
-    return next.role === original.role && next.instanceId === original.instanceId;
+  if (original.source === "profile-metadata") {
+    // Pin the session to its profile and endpoint, not to one server process. A clean
+    // restart at the same URL must refresh the connected instance/build identity.
+    return next.profile.kind === original.profile.kind
+      && next.profile.id === original.profile.id;
   }
   return true;
 }
 
-async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promise<boolean> {
-  const context = activeSessionRegistrationContext;
-  if (!context || !context.uiScope.isActive()) return false;
+interface MutatingRegistrationRetryResult {
+  targetWasAvailable: boolean;
+  autostartAllowed: boolean;
+}
 
-  const targetResult = await resolveActiveLocalTarget({ ...context.options.resolveOptions, env });
-  if (!context.uiScope.isActive()) return false;
-  if (client && (await isCurrentClientConnected())) return true;
+async function retryRegistrationForMutatingCaller(env: NodeJS.ProcessEnv): Promise<MutatingRegistrationRetryResult> {
+  const context = activeSessionRegistrationContext;
+  if (!context || !context.uiScope.isActive()) return { targetWasAvailable: false, autostartAllowed: true };
+
+  const targetResult = await resolveServerTarget({
+    ...context.options.resolveOptions,
+    cwd: context.options.resolveOptions?.cwd ?? context.ctx.cwd,
+    env
+  });
+  if (!context.uiScope.isActive()) return { targetWasAvailable: false, autostartAllowed: true };
+  if (client && (await isCurrentClientConnected())) return { targetWasAvailable: true, autostartAllowed: true };
   if (client) {
-    if (clientHasPendingAsks(client)) return true;
+    if (clientHasPendingAsks(client)) return { targetWasAvailable: true, autostartAllowed: true };
     client.stop();
     client = undefined;
     currentRegistration = undefined;
   }
 
   if (targetResult.status === "unavailable") {
-    unavailableRationale = formatUnavailableRationale(targetResult);
+    unavailableNote = formatUnavailableNote(targetResult);
     context.uiScope.setStatus("postbox", "Postbox unavailable");
-    return false;
+    return {
+      targetWasAvailable: false,
+      autostartAllowed: targetResult.recovery !== "restart-required"
+    };
   }
 
-  stopActiveLocalSupervisor();
+  stopProfileSupervisor();
   await registerResolvedTarget(
     context.pi,
     context.ctx,
     env,
     context.uiScope,
     context.fallbackSessionIdentity,
+    targetResult.profile,
     targetResult.target,
     context.options
   );
-  return true;
+  return { targetWasAvailable: true, autostartAllowed: true };
 }
 
 async function ensureRegistrationForMutatingCaller(env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
-  const targetWasAvailable = await retryRegistrationForMutatingCaller(env);
+  const retryResult = await retryRegistrationForMutatingCaller(env);
   if (client && currentRegistration && (await isCurrentClientConnected())) return;
-  if (targetWasAvailable && client && currentRegistration) return;
+  if (retryResult.targetWasAvailable && client && currentRegistration) return;
+  if (!retryResult.autostartAllowed) return;
 
   let asyncAutostartFailure: string | undefined;
   const autostartResult = ensurePostboxServerAutostarted(env, {
+    profile: resolveServerProfile({ env, cwd: activeSessionRegistrationContext?.ctx.cwd }),
     onFailure: (diagnostic) => {
       asyncAutostartFailure = diagnostic;
     }
   });
   if (autostartResult.status === "disabled" || autostartResult.status === "failed") {
-    unavailableRationale = `${unavailableRationale} ${autostartResult.diagnostic}`;
+    unavailableNote = `${unavailableNote} ${autostartResult.diagnostic}`;
     return;
   }
 
@@ -451,7 +715,7 @@ function waitForRegistration(
   signal?: AbortSignal
 ): Promise<void> {
   if (client && currentRegistration) return Promise.resolve();
-  if (signal?.aborted) return Promise.reject(new Error("ask_postbox was aborted"));
+  if (signal?.aborted) return Promise.reject(new Error("write_question was aborted"));
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -466,7 +730,7 @@ function waitForRegistration(
       if (pollTimer) clearInterval(pollTimer);
       registrationWaiters.delete(onRegistered);
       signal?.removeEventListener("abort", onAbort);
-      if (kind === "reject") reject(error ?? new Error("ask_postbox was aborted"));
+      if (kind === "reject") reject(error ?? new Error("write_question was aborted"));
       else resolve();
     };
 
@@ -482,7 +746,7 @@ function waitForRegistration(
     };
 
     const onRegistered = () => settle("resolve");
-    const onAbort = () => settle("reject", new Error("ask_postbox was aborted"));
+    const onAbort = () => settle("reject", new Error("write_question was aborted"));
 
     registrationWaiters.add(onRegistered);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -492,9 +756,9 @@ function waitForRegistration(
     pollTimer.unref?.();
     timeout = setTimeout(() => {
       const failureDiagnostic = getAsyncAutostartFailure() ?? getPostboxAutostartFailureDiagnostic(env);
-      unavailableRationale = failureDiagnostic
-        ? `Pi Postbox autostart failed before healthy active-local metadata was available. ${failureDiagnostic}`
-        : `Pi Postbox autostart timed out after ${timeoutMs}ms waiting for healthy active-local metadata. ${autostartDiagnostic}`;
+      unavailableNote = failureDiagnostic
+        ? `Pi Postbox autostart failed before healthy profile metadata was available. ${failureDiagnostic}`
+        : `Pi Postbox autostart timed out after ${timeoutMs}ms waiting for healthy profile metadata. ${autostartDiagnostic}`;
       settle("resolve");
     }, timeoutMs);
     timeout.unref?.();
@@ -510,19 +774,23 @@ export async function collectRegistrationPayload(
   pi: PiLikeApi,
   ctx: PiLikeContext,
   env: NodeJS.ProcessEnv = process.env,
-  fallbackSessionIdentity?: string
+  fallbackSessionIdentity?: string,
+  profile: ResolvedServerProfile = resolveServerProfile({ env, cwd: ctx.cwd })
 ): Promise<SessionRegisterPayload> {
   const cwd = ctx.cwd ?? process.cwd();
   const project = collectProjectMetadata(cwd);
   const session = collectSessionMetadata(pi, ctx, project.branch, project.worktreePath, fallbackSessionIdentity);
-  const machine = await getMachineIdentity(env);
+  const machine = await getMachineIdentity(env, profile);
   return { machine, project, session };
 }
 
-function formatUnavailableRationale(result: Extract<ResolveActiveLocalTargetResult, { status: "unavailable" }>): string {
+function formatUnavailableNote(result: Extract<ResolveServerTargetResult, { status: "unavailable" }>): string {
+  if (result.recovery === "restart-required") {
+    return "A full Pi restart is required because /reload retained an incompatible shared Postbox protocol dependency. Package-local autostart was suppressed to avoid competing for the exact live profile server.";
+  }
   const codes = [...new Set(result.diagnostics.map((diagnostic) => diagnostic.code))];
   if (codes.length === 0) return "Pi Postbox is not connected.";
-  return `Pi Postbox is unavailable after active-local target resolution (${codes.join(", ")}).`;
+  return `Pi Postbox is unavailable after profile target resolution (${codes.join(", ")}).`;
 }
 
 function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
@@ -531,7 +799,7 @@ function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
     isActive: () => active,
     deactivate: () => {
       active = false;
-      stopActiveLocalSupervisor();
+      stopProfileSupervisor();
     },
     notify(message, level) {
       if (!active) return;
@@ -548,25 +816,28 @@ function createSessionUiScope(ctx: PiLikeContext): SessionUiScope {
   };
 }
 
-async function renderLocalFallbackStatus(uiScope: SessionUiScope, status: LocalFallbackStatus | undefined): Promise<void> {
-  if (!status) {
-    uiScope.setStatus("postbox-ask", "");
-    uiScope.setWidget("postbox-ask", []);
-    return;
-  }
-
-  const displayUrl = await resolveAskDisplayUrl(status);
-  const message = status.message.replace(`Open ${status.serverUrl} to answer.`, `Open ${displayUrl} to answer.`);
-  uiScope.setStatus("postbox-ask", `Postbox ${displayUrl}`);
-  uiScope.setWidget("postbox-ask", [message]);
-  uiScope.notify(message, "info");
-}
-
-async function resolveAskDisplayUrl(status: LocalFallbackStatus): Promise<string> {
+async function renderPostboxFooter(
+  uiScope: SessionUiScope,
+  postboxClient: PostboxClient,
+  fallbackUrl: string,
+  isLatest: () => boolean
+): Promise<void> {
+  let displayUrl = fallbackUrl;
+  let openQuestionCount = postboxClient.listPendingAsks().length;
   try {
-    const snapshot = await client?.getStatusSnapshot?.();
-    return snapshot?.connection.tailnetUrl ?? status.serverUrl;
+    const snapshot = await postboxClient.getStatusSnapshot();
+    displayUrl = snapshot.connection.tailnetUrl
+      ?? snapshot.connection.localUrl
+      ?? snapshot.connection.activeUrl
+      ?? fallbackUrl;
+    openQuestionCount = snapshot.openQuestionCount;
   } catch {
-    return status.serverUrl;
+    // The known target and pending asks still make a useful footer if diagnostics fail.
   }
+  if (!isLatest()) return;
+
+  const questionLabel = openQuestionCount === 1 ? "question" : "questions";
+  uiScope.setStatus("postbox", `Postbox ${displayUrl} · ${openQuestionCount} open ${questionLabel}`);
+  uiScope.setStatus("postbox-ask", "");
+  uiScope.setWidget("postbox-ask", []);
 }

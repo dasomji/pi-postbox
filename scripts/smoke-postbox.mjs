@@ -7,6 +7,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import WebSocket from "ws";
+import Database from "better-sqlite3";
+import { executeAskPostbox } from "../packages/extension/dist/tools/askPostbox.js";
+import { createWaitForPostboxTool } from "../packages/extension/dist/index.js";
+import { PostboxClient } from "../packages/extension/dist/client/PostboxClient.js";
+import { AdapterRunnableSlotLimiter, ownerFromNativeIdentity } from "../packages/extension/dist/adapterContract.js";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const cliPath = join(root, "packages/server/dist/cli.js");
@@ -34,8 +39,13 @@ async function waitForHealth(baseUrl, timeoutMs = 10_000) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`${baseUrl}/healthz`);
-      if (response.ok) return response.json();
-      lastError = new Error(`health returned ${response.status}`);
+      if (response.ok) {
+        const health = await response.json();
+        if (health.instance && typeof health.instance === "object") return health;
+        lastError = new Error("health server instance identity is not ready");
+      } else {
+        lastError = new Error(`health returned ${response.status}`);
+      }
     } catch (error) {
       lastError = error;
     }
@@ -49,13 +59,14 @@ function normalizedUrl(url) {
 }
 
 function assertCompatibleLocalTarget(health, expectedBaseUrl) {
-  const { localTarget } = health;
-  if (localTarget === undefined) return;
-
-  assert(localTarget && typeof localTarget === "object", "health localTarget must be an object when present");
-  assert(localTarget.role === "production", `health localTarget role mismatch: ${localTarget.role}`);
-  assert(typeof localTarget.instanceId === "string" && localTarget.instanceId.length > 0, "health localTarget instanceId missing");
-  assert(localTarget.url === normalizedUrl(expectedBaseUrl), `health localTarget url mismatch: ${localTarget.url}`);
+  const { profile, instance } = health;
+  assert(profile?.kind === "production" && profile?.id === "production", "health production profile identity mismatch");
+  assert(instance && typeof instance === "object", "health server instance identity missing");
+  assert(instance.profile?.id === "production", `health instance profile mismatch: ${instance.profile?.id}`);
+  assert(typeof instance.instanceId === "string" && instance.instanceId.length > 0, "health instanceId missing");
+  assert(instance.url === normalizedUrl(expectedBaseUrl), `health instance URL mismatch: ${instance.url}`);
+  assert(instance.protocolVersion === health.protocolVersion, "health instance protocol mismatch");
+  assert(instance.buildId === health.buildId, "health instance build mismatch");
 }
 
 function nextMessage(socket, timeoutMs = 3_000) {
@@ -236,6 +247,34 @@ class SseClient {
   }
 }
 
+function seedLegacyMigrationFixture(databasePath, sessionId) {
+  const db = new Database(databasePath);
+  try {
+    const columns = db.prepare("PRAGMA table_info(ask_requests)").all();
+    if (!columns.some(({ name }) => name === "urgency")) db.exec("ALTER TABLE ask_requests ADD COLUMN urgency TEXT");
+    const insert = db.prepare(`INSERT OR IGNORE INTO ask_requests
+      (request_id,session_id,mode,prompt,question_json,options_json,context_json,status,selected_values_json,note,rationale,
+       created_at,expires_at,resolved_at,updated_at,urgency)
+      VALUES (@id,@sessionId,'single',@prompt,@questionJson,'[{"value":"yes","label":"Yes"}]',@contextJson,
+       @status,@selectedValues,@note,@rationale,@createdAt,@expiresAt,@resolvedAt,@updatedAt,@urgency)`);
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const terminalAt = "2026-01-01T00:01:00.000Z";
+    const fixtures = [
+      { id: "legacy-pending", status: "pending", prompt: "Pending legacy Question?" },
+      { id: "legacy-answered", status: "answered", prompt: "Answered legacy Question?", selectedValues: '["yes"]' },
+      { id: "legacy-cancelled", status: "cancelled", prompt: "Cancelled legacy Question?", note: "cancelled" },
+      { id: "legacy-expired", status: "expired", prompt: "Expired legacy Question?", rationale: "expired" },
+      { id: "legacy-rich-context", status: "answered", prompt: "Rich legacy Question?", selectedValues: '["yes"]',
+        questionJson: '{"prompt":"Rich legacy Question?","context":"legacy detail"}',
+        contextJson: '{"codebaseContext":"legacy code","problemContext":"legacy problem"}' },
+      { id: "legacy-urgency", status: "answered", prompt: "Historical priority Question?", selectedValues: '["yes"]', urgency: "high" }
+    ];
+    for (const fixture of fixtures) insert.run({ sessionId, questionJson: null, contextJson: null, selectedValues: null,
+      note: null, rationale: null, expiresAt: null, urgency: null, ...fixture,
+      createdAt, resolvedAt: fixture.status === "pending" ? null : terminalAt, updatedAt: fixture.status === "pending" ? createdAt : terminalAt });
+  } finally { db.close(); }
+}
+
 async function main() {
   assert(existsSync(cliPath), `Built CLI missing at ${cliPath}. Run npm run build first.`);
   assert(existsSync(join(serverPublicDir, "index.html")), `Packaged UI missing at ${serverPublicDir}. Run npm run build first.`);
@@ -248,9 +287,10 @@ async function main() {
     cliPath,
     "--host", "127.0.0.1",
     "--port", String(port),
+    "--profile", "production",
+    "--profile-state-dir", tmp,
     "--database", databasePath,
     "--ask-timeout-ms", "600000",
-    "--history-retention-max-records", "100",
     "--no-tailscale"
   ];
   const serverOptions = {
@@ -259,7 +299,6 @@ async function main() {
       ...process.env,
       PI_POSTBOX_CONFIG_DIR: tmp,
       PI_POSTBOX_CONFIG_PATH: join(tmp, "config.json"),
-      PI_POSTBOX_ACTIVE_LOCAL_ROLE: "production",
       PI_POSTBOX_TAILSCALE: "off"
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -280,6 +319,8 @@ async function main() {
   let server = launchServer();
 
   let socket;
+  let claudeSocket;
+  let codexSocket;
   let sse;
   let chatSse;
   try {
@@ -364,6 +405,7 @@ async function main() {
           cwd: root,
           branch: "smoke",
           semanticState: "working",
+          owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" },
           agentSessionPath: join(tmp, "fake-source.jsonl"),
           leafId: "smoke-source-leaf"
         }
@@ -382,18 +424,18 @@ async function main() {
         mode: "single",
         question: {
           prompt: "Is the release smoke path healthy?",
-          relevance: "The release smoke should verify the operator path.",
-          decisionImpact: "A failure here blocks manual testing."
+          ambiguity: "Whether every packaged asynchronous workflow seam is healthy."
         },
         options: [
-          { value: "yes", label: "Yes", meaning: "The server, SSE, answer, and history path work." },
+          { value: "yes", label: "Yes", impact: "The server, SSE, answer, and history path work." },
           { value: "no", label: "No" }
         ],
-        context: {
-          codebaseContext: "Packaged Pi Postbox extension, server, protocol, and web assets.",
-          problemContext: "Smoke verifies one remote handoff without full chat transcripts."
-        },
-        forkReference: { cwd: root, model: "smoke/fake-model" }
+        forkReference: {
+          agentSessionPath: join(tmp, "fake-source.jsonl"),
+          leafId: "smoke-source-leaf",
+          cwd: root,
+          model: "smoke/fake-model"
+        }
       }
     }));
     assert((await created).type === "ask.created", "Ask was not created");
@@ -401,57 +443,29 @@ async function main() {
 
     const activationResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat`, { method: "POST" });
     const activationCommand = await nextMessage(socket);
-    assert(activationCommand.type === "chat.activate", "Fake extension did not receive Chat activation");
-    socket.send(JSON.stringify({
-      type: "chat.error",
+    assert(activationCommand.type === "chat.activate", "Fake extension did not receive exact Chat activation");
+    assert(
+      activationCommand.payload.source.agentSessionPath === join(tmp, "fake-source.jsonl") &&
+        activationCommand.payload.source.leafId === "smoke-source-leaf",
+      "Exact Chat activation did not preserve source transcript coordinates"
+    );
+    const exactReadyMessage = {
+      type: "chat.ready",
       requestId: activationCommand.requestId,
       payload: {
         requestId,
-        error: { code: "source_path_missing", message: "The packaged smoke source is intentionally unavailable." }
-      }
-    }));
-    const exactUnavailable = await activationResponse;
-    const exactUnavailableBody = await exactUnavailable.json();
-    assert(
-      exactUnavailable.status === 409 &&
-        exactUnavailableBody.error?.code === "source_path_missing" &&
-        exactUnavailableBody.error?.contextFallback?.status === "available",
-      "Exact Chat failure did not disclose eligible context-only fallback"
-    );
-
-    const contextActivationResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/context`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ confirmed: true })
-    });
-    const contextActivationCommand = await nextMessage(socket);
-    assert(contextActivationCommand.type === "chat.activate-context", "Fake extension did not receive explicit context-only activation");
-    assert(
-      contextActivationCommand.payload.source.question.prompt === "Is the release smoke path healthy?" &&
-        contextActivationCommand.payload.source.context.codebaseContext.includes("Packaged Pi Postbox") &&
-        contextActivationCommand.payload.source.context.problemContext.includes("Smoke verifies") &&
-        contextActivationCommand.payload.source.model === "smoke/fake-model" &&
-        !("agentSessionPath" in contextActivationCommand.payload.source) &&
-        !("leafId" in contextActivationCommand.payload.source),
-      "Context-only activation did not carry only authoritative bounded handoff context"
-    );
-    const contextReadyMessage = {
-      type: "chat.ready",
-      requestId: contextActivationCommand.requestId,
-      payload: {
-        requestId,
         state: "ready",
-        forkKind: "context-only",
+        forkKind: "exact",
         model: { id: "smoke/fake-model", source: "originating" },
         sequence: 0,
         messages: []
       }
     };
     const noAutoTurnBarrierId = `smoke-no-auto-turn-${randomUUID()}`;
-    const contextActivationResult = await expectNoMessage(
+    const activationResult = await expectNoMessage(
       socket,
-      () => socket.send(JSON.stringify(contextReadyMessage)),
-      contextActivationResponse,
+      () => socket.send(JSON.stringify(exactReadyMessage)),
+      activationResponse,
       () => socket.send(JSON.stringify({
           type: "heartbeat",
           requestId: noAutoTurnBarrierId,
@@ -459,7 +473,7 @@ async function main() {
         })),
       (message) => message.type === "ack" && message.requestId === noAutoTurnBarrierId
     );
-    assert(contextActivationResult.status === 200, "Context-only Question Chat did not activate explicitly");
+    assert(activationResult.status === 200, "Exact Question Chat did not activate");
 
     chatSse = new SseClient(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat/events`);
     await chatSse.open();
@@ -472,7 +486,7 @@ async function main() {
       payload: {
         requestId,
         state: "ready",
-        forkKind: "context-only",
+        forkKind: "exact",
         model: { id: "smoke/fake-model", source: "originating" },
         sequence: 0,
         messages: []
@@ -587,6 +601,9 @@ async function main() {
     await stopServer(server);
     socket.close();
     socket = undefined;
+    // The migrated records deliberately use legacy-owner provenance rather
+    // than borrowing the live Pi owner registered above.
+    seedLegacyMigrationFixture(databasePath, sessionId);
     server = launchServer();
     await waitForHealth(baseUrl);
 
@@ -598,7 +615,7 @@ async function main() {
       payload: {
         machine: { machineId: "smoke-machine", hostname: "smoke-host", displayName: "Smoke Host" },
         project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
-        session: { sessionId, cwd: root, semanticState: "working" }
+        session: { sessionId, cwd: root, semanticState: "working", owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" } }
       }
     }));
     assert((await restartRegistered).type === "registered", "Fake extension did not re-register after server restart");
@@ -611,12 +628,11 @@ async function main() {
         requestId,
         sessionId,
         mode: "single",
-        question: { prompt: "Is the release smoke path healthy?" },
-        options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }],
-        context: {
-          codebaseContext: "Packaged Pi Postbox extension, server, protocol, and web assets.",
-          problemContext: "Smoke verifies one remote handoff without full chat transcripts."
-        }
+        question: {
+          prompt: "Is the release smoke path healthy?",
+          ambiguity: "Whether every packaged asynchronous workflow seam is healthy."
+        },
+        options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }]
       }
     }));
     assert((await replayCreated).type === "ask.created", "Pending ask did not replay after server restart");
@@ -625,14 +641,14 @@ async function main() {
     socket.send(JSON.stringify({
       type: "chat.recover.offer",
       requestId: "smoke-recovery-offer",
-      payload: { requestId, ownerSessionId: sessionId, forkKind: "context-only" }
+      payload: { requestId, ownerSessionId: sessionId, forkKind: "exact" }
     }));
     const decision = await recoveryDecision;
     assert(decision.type === "chat.reconcile" && decision.payload.action === "recover", "Server did not authorize pending Chat recovery");
     const recoveredSnapshot = {
       requestId,
       state: "ready",
-      forkKind: "context-only",
+      forkKind: "exact",
       model: { id: "smoke/fake-model", source: "originating" },
       sequence: 9,
       messages: [{ id: privateAssistantMessageId, role: "assistant", text: privateAssistantText, status: "stopped" }],
@@ -642,7 +658,7 @@ async function main() {
     socket.send(JSON.stringify({
       type: "chat.reconciled",
       requestId: "smoke-recovery-offer",
-      payload: { requestId, forkKind: "context-only", result: { status: "recovered", snapshot: recoveredSnapshot } }
+      payload: { requestId, forkKind: "exact", result: { status: "recovered", snapshot: recoveredSnapshot } }
     }));
     assert((await recoveryAccepted).type === "ack", "Server did not accept recovered Chat snapshot");
     socket.send(JSON.stringify({
@@ -678,7 +694,7 @@ async function main() {
         proposal: {
           label: "Stage release first",
           description: "Verify the release with a limited cohort.",
-          meaning: "Use a reversible rollout before full release."
+          impact: "Use a reversible rollout before full release."
         }
       }
     }));
@@ -714,17 +730,15 @@ async function main() {
     const continued = await continueResponse;
     assert(continued.status === 200 && (await continued.json()).mode === "turn", "Stopped Chat did not resume with an ordinary turn");
 
-    const terminalMessagesPromise = nextMessages(socket, 2);
+    const terminalMessagesPromise = nextMessages(socket, 1);
     const answerResponse = await fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/answer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ selectedValues: [proposedValue], note: "Smoke answered", rationale: "All release path checks passed." })
+      body: JSON.stringify({ expectedRevision: 2, selectedValues: [proposedValue], note: "All release path checks passed." })
     });
     assert(answerResponse.status === 200, `Answer returned ${answerResponse.status}`);
     const terminalMessages = await terminalMessagesPromise;
     assert(terminalMessages.some((message) => message.type === "chat.cleanup" && message.payload.requestId === requestId), "Extension did not receive terminal Chat cleanup");
-    const resolvedMessage = terminalMessages.find((message) => message.type === "ask.resolved");
-    assert(resolvedMessage?.type === "ask.resolved" && resolvedMessage.payload.status === "answered", "Extension did not receive answered result");
     await sse.nextStateMatching((snapshot) => !snapshot.requests.some((request) => request.requestId === requestId));
 
     const state = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
@@ -747,11 +761,270 @@ async function main() {
       assert(!historyJson.includes(privateMarker), `History persisted private Chat marker ${privateMarker}`);
     }
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, private evidence relay, Question Chat turn/steer/stop/server-restart recovery/resume, proposed option append, cleanup, answer, pending-only state, and history verified.");
+    const migrationState = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
+    const migratedPending = migrationState.requests.find((request) => request.requestId === "legacy-pending");
+    assert(migratedPending?.status === "pending" && migratedPending.owner?.harness === "legacy",
+      "Migrated pending Question did not retain offline legacy-owner provenance");
+    const migratedIds = new Set(history.history.map((record) => record.request.requestId));
+    for (const id of ["legacy-answered", "legacy-cancelled", "legacy-expired", "legacy-rich-context", "legacy-urgency"]) {
+      assert(migratedIds.has(id), `Migrated History omitted ${id}`);
+    }
+    const migratedById = new Map(history.history.map((record) => [record.request.requestId, record.request]));
+    assert(migratedById.get("legacy-answered")?.result?.status === "answered" &&
+      migratedById.get("legacy-answered")?.result?.selectedValues?.[0] === "yes", "Migrated answered result was incomplete");
+    assert(migratedById.get("legacy-cancelled")?.result?.status === "cancelled", "Migrated cancelled result was incomplete");
+    assert(migratedById.get("legacy-expired")?.result?.status === "expired", "Migrated expired result was incomplete");
+    assert(!("context" in migratedById.get("legacy-rich-context")),
+      "Migrated top-level handoff context was not stripped");
+    assert([...migratedById.values()].every((request) => request.owner?.harness === "legacy" || !request.requestId.startsWith("legacy-")),
+      "Legacy migration heuristically borrowed a live harness owner");
+    assert(!JSON.stringify({ migrationState, history }).includes('"urgency"'), "Historical urgency leaked into owner contracts");
+    const migrationDb = new Database(databasePath, { readonly: true });
+    const migratedAnswer = migrationDb.prepare(`SELECT first_read_at, owner_notification_delivered_at FROM answers
+      WHERE question_id='legacy-answered'`).get();
+    migrationDb.close();
+    assert(migratedAnswer.first_read_at && migratedAnswer.owner_notification_delivered_at,
+      "Migrated terminal Answer was not retained as read and notification-suppressed");
+
+    const registerHarness = async (target, harness, ownerId, suffix) => {
+      const registration = nextMessage(target);
+      target.send(JSON.stringify({ type: "session.register", requestId: `register-${suffix}`, payload: {
+        machine: { machineId: "smoke-machine", hostname: "smoke-host" },
+        project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
+        session: { sessionId: `smoke-${suffix}`, cwd: root, semanticState: "working", owner: { harness, ownerId } }
+      } }));
+      assert((await registration).type === "registered", `${harness} fake adapter did not register`);
+      return `smoke-${suffix}`;
+    };
+    claudeSocket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    codexSocket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    const claudeSessionId = await registerHarness(claudeSocket, "claude-code", "claude-smoke-owner", "claude");
+    const codexSessionId = await registerHarness(codexSocket, "codex", "codex-smoke-owner", "codex");
+
+    const sendCreate = async (target, id, ownerSessionId, parentQuestionId) => {
+      const response = nextMessage(target);
+      target.send(JSON.stringify({ type: "ask.create", requestId: `wire-${id}`, payload: {
+        requestId: id, sessionId: ownerSessionId, mode: "single",
+        question: { prompt: `${id}?`, ambiguity: "Which acceptance path should be exercised?" },
+        options: [{ value: "yes", label: "Yes" }],
+        ...(parentQuestionId ? { parentQuestionId } : {})
+      } }));
+      const message = await response;
+      assert(message.type === "ask.created", `${id} was not created asynchronously`);
+    };
+
+    // Drive the published ask_postbox batch tool through the production client
+    // and its correlated batch WebSocket command.
+    const parentId = `smoke-parent-${randomUUID()}`;
+    const childId = `smoke-child-${randomUUID()}`;
+    const batchSessionId = `batch-session-${randomUUID()}`;
+    let batchConnected;
+    const batchReady = new Promise((resolvePromise) => { batchConnected = resolvePromise; });
+    const batchClient = new PostboxClient({ serverUrl: baseUrl, reconnect: false, onStatus: (status) => {
+      if (status === "connected") batchConnected();
+    }, registration: {
+      machine: { machineId: "smoke-machine", hostname: "smoke-host" },
+      project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
+      session: { sessionId: batchSessionId, cwd: root, semanticState: "idle",
+        owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" } }
+    } });
+    batchClient.start();
+    await batchReady;
+    const batchReceipt = await executeAskPostbox({
+      mode: "batch",
+      questions: [
+        {
+          localRef: "parent",
+          requestId: parentId,
+          question: `${parentId}?`,
+          ambiguity: "Which parent acceptance decision should be exercised?",
+          options: [{ value: "yes", label: "Yes" }]
+        },
+        {
+          localRef: "child",
+          requestId: childId,
+          parentLocalRef: "parent",
+          question: `${childId}?`,
+          ambiguity: "Which child acceptance decision should be exercised?",
+          options: [{ value: "yes", label: "Yes" }]
+        }
+      ]
+    }, batchClient, batchSessionId);
+    assert(batchReceipt.status === "created" && batchReceipt.items.length === 2 &&
+      batchReceipt.items[1].localRef === "child" && batchReceipt.items[1].questionId === childId,
+      "Published ask_postbox batch receipt did not preserve localRef ordering");
+    batchClient.stop();
+    const simultaneous = await sse.nextStateMatching((snapshot) =>
+      snapshot.requests.some((request) => request.requestId === parentId) &&
+      snapshot.requests.some((request) => request.requestId === childId));
+    assert(simultaneous.requests.find((request) => request.requestId === childId)?.parentQuestionId === parentId,
+      "Ordered batch child did not retain its parent reference");
+
+    const idleAck = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "heartbeat", requestId: "owner-idle-for-ping", payload: { sessionId, semanticState: "idle" } }));
+    assert((await idleAck).type === "ack", "Owner did not become idle for deferred Answer delivery");
+    const pingPromise = nextMessage(socket);
+    const parentAnswer = await fetch(`${baseUrl}/api/requests/${parentId}/answer`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(parentAnswer.status === 200, "Browser could not answer ordered parent Question");
+    const ping = await pingPromise;
+    const answerPings = [ping].filter((message) => message.type === "answer.available");
+    const pingCount = answerPings.length;
+    assert(pingCount === 1, "Owner did not receive exactly one lightweight Answer ping");
+    socket.send(JSON.stringify({ type: "answer.available.ack", requestId: "parent-ping-ack", payload: { answerId: ping.payload.answerId } }));
+    const explicitAnswer = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "answer.get", requestId: "explicit-get-answer", payload: { questionId: parentId } }));
+    const explicitAnswerMessage = await explicitAnswer;
+    assert(explicitAnswerMessage.type === "answer.result", `Explicit get_answer did not return the full Answer (${JSON.stringify(explicitAnswerMessage)})`);
+    const duplicateWindow = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "heartbeat", requestId: "ping-dedupe-heartbeat", payload: { sessionId, semanticState: "idle" } }));
+    assert((await duplicateWindow).type === "ack", "A second visible notification appeared during the heartbeat dedupe window");
+    socket.close();
+    await new Promise((resolvePromise) => socket.once("close", resolvePromise));
+    socket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    // Re-register the original durable session identity, not a replacement.
+    const reconnect = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "session.register", requestId: "ping-dedupe-reconnect", payload: {
+      machine: { machineId: "smoke-machine", hostname: "smoke-host" }, project: { projectId: "smoke-project", name: "pi-postbox", cwd: root },
+      session: { sessionId, cwd: root, semanticState: "idle", owner: { harness: "pi", ownerId: "99999999-9999-4999-8999-999999999999" } }
+    } }));
+    assert((await reconnect).type === "registered", "Pi owner did not reconnect for notification dedupe proof");
+    const reconnectDuplicateWindow = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "heartbeat", requestId: "ping-dedupe-after-reconnect", payload: { sessionId, semanticState: "idle" } }));
+    assert((await reconnectDuplicateWindow).type === "ack", "Acknowledged Answer replayed a visible notification after reconnect/restart");
+
+    const waitResult = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "postbox.wait", requestId: "wait.start", payload: { sessionId } }));
+    const childAnswer = await fetch(`${baseUrl}/api/requests/${childId}/answer`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(childAnswer.status === 200, "Browser could not wake explicit wait");
+    const waited = await waitResult;
+    assert(waited.type === "postbox.wait.result" && waited.payload.type === "answer", "wait.result did not wake with the full Answer");
+
+    const raceId = `smoke-race-${randomUUID()}`;
+    await sendCreate(codexSocket, raceId, codexSessionId);
+    const racePayload = { expectedRevision: 1, selectedValues: ["yes"] };
+    const [firstBrowser, secondBrowser] = await Promise.all([
+      fetch(`${baseUrl}/api/requests/${raceId}/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(racePayload) }),
+      fetch(`${baseUrl}/api/requests/${raceId}/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(racePayload) })
+    ]);
+    const firstAnswerWins = [firstBrowser.status, secondBrowser.status].sort().join(",");
+    assert(firstAnswerWins === "200,409", `First-answer-wins race returned ${firstAnswerWins}`);
+    const revisionId = `smoke-revision-${randomUUID()}`;
+    await sendCreate(codexSocket, revisionId, codexSessionId);
+    const revisionState = sse.nextStateMatching((snapshot) => snapshot.requests.some((request) => request.requestId === revisionId && request.revision === 2));
+    const revised = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.update", requestId: "authoritative-browser-update", payload: {
+      sessionId: codexSessionId, questionId: revisionId,
+      update: {
+        action: "revise",
+        expectedRevision: 1,
+        expectedOwnerRevision: 1,
+        question: {
+          prompt: "Authoritative browser revision?",
+          ambiguity: "Whether stale browser answers are rejected after a Question revision."
+        }
+      }
+    } }));
+    assert((await revised).type === "query.result", "Authoritative revision was rejected");
+    await revisionState;
+    const stale = await fetch(`${baseUrl}/api/requests/${revisionId}/answer`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    const staleBody = await stale.json();
+    assert(stale.status >= 400 && (staleBody.error?.code === "stale_revision" || staleBody.error === "stale_revision" || staleBody.code === "stale_revision"),
+      `stale_revision was not invalidated (${JSON.stringify(staleBody)})`);
+
+    const takeoverId = `smoke-takeover-${randomUUID()}`;
+    await sendCreate(claudeSocket, takeoverId, claudeSessionId);
+    const onlineTakeover = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.update", requestId: "online-takeover-rejected", payload: {
+      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1, expectedOwnerRevision: 1,
+        expectedOwner: { harness: "claude-code", ownerId: "claude-smoke-owner" } }
+    } }));
+    assert((await onlineTakeover).type === "error", "owner_not_offline takeover was accepted while Claude Code was live");
+    claudeSocket.close();
+    await new Promise((resolvePromise) => claudeSocket.once("close", resolvePromise));
+    claudeSocket = undefined;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const presence = nextMessage(codexSocket);
+      codexSocket.send(JSON.stringify({ type: "owner.status.get", requestId: `claude-offline-${attempt}`,
+        payload: { owners: [{ harness: "claude-code", ownerId: "claude-smoke-owner" }] } }));
+      const status = await presence;
+      if (status.type === "query.result" && Array.isArray(status.payload) && status.payload[0]?.presence === "offline") break;
+      if (attempt === 19) throw new Error("Claude Code owner did not become offline before takeover");
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    const takeover = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.update", requestId: "offline-takeover", payload: {
+      sessionId: codexSessionId, questionId: takeoverId, update: { action: "takeover", expectedRevision: 1, expectedOwnerRevision: 1,
+        expectedOwner: { harness: "claude-code", ownerId: "claude-smoke-owner" } }
+    } }));
+    assert((await takeover).type === "query.result", "Codex could not take over the offline Claude Code owner");
+    const questionHistory = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "question.history.get", requestId: "takeover-history", payload: { questionId: takeoverId } }));
+    assert((await questionHistory).type === "query.result", "question.history.get did not retain takeover audit History");
+
+    claudeSocket = await connectSocket(`ws://127.0.0.1:${port}/api/extension/ws`);
+    await registerHarness(claudeSocket, "claude-code", "claude-smoke-owner", "claude");
+    const raceRead = nextMessage(codexSocket);
+    codexSocket.send(JSON.stringify({ type: "answer.get", requestId: "race-read-before-capacity", payload: { questionId: raceId } }));
+    assert((await raceRead).type === "answer.result", "Codex race Answer was not explicitly consumed before capacity test");
+    const capacityPi = `capacity-pi-${randomUUID()}`;
+    const capacityClaude = `capacity-claude-${randomUUID()}`;
+    const capacityCodex = `capacity-codex-${randomUUID()}`;
+    await sendCreate(socket, capacityPi, sessionId);
+    await sendCreate(claudeSocket, capacityClaude, claudeSessionId);
+    await sendCreate(codexSocket, capacityCodex, codexSessionId);
+
+    // Invoke the production wait_for_postbox tool under the fake adapter's
+    // actual runnable-slot limiter for Pi, Claude Code, and Codex.
+    const limiter = new AdapterRunnableSlotLimiter(2);
+    const runHarnessWait = (harness, target, harnessSessionId, signal) => {
+      const waitRequestId = `capacity-wait-${harness}`;
+      const tool = createWaitForPostboxTool((toolSignal) => new Promise((resolvePromise, reject) => {
+        const response = nextMessage(target, 10_000);
+        target.send(JSON.stringify({ type: "postbox.wait", requestId: waitRequestId, payload: { sessionId: harnessSessionId } }));
+        const onAbort = () => {
+          target.send(JSON.stringify({ type: "postbox.wait.cancel", requestId: `cancel-${harness}`,
+            payload: { sessionId: harnessSessionId, waitRequestId } }));
+          reject(Object.assign(new Error("cancelled"), { name: "AbortError" }));
+        };
+        toolSignal?.addEventListener("abort", onAbort, { once: true });
+        void response.then((message) => resolvePromise(message.payload), reject);
+      }));
+      return limiter.run(() => tool.execute(`wait-${harness}`, {}, signal));
+    };
+    assert(ownerFromNativeIdentity({ harness: "pi", sessionUuid: "pi-native-session" }).ownerId === "pi-native-session" &&
+      ownerFromNativeIdentity({ harness: "claude-code", agentId: "claude-native-agent", sessionId: "broader-run" }).ownerId === "claude-native-agent" &&
+      ownerFromNativeIdentity({ harness: "codex", threadId: "codex-native-thread", sessionId: "broader-run" }).ownerId === "codex-native-thread",
+    "Harness adapter identity mapping did not preserve native authority identifiers");
+    const piController = new AbortController();
+    const claudeController = new AbortController();
+    const piWait = runHarnessWait("pi", socket, sessionId, piController.signal);
+    const claudeWait = runHarnessWait("claude-code", claudeSocket, claudeSessionId, claudeController.signal);
+    let capacityBlocked = false;
+    try { runHarnessWait("codex", codexSocket, codexSessionId, new AbortController().signal); }
+    catch (error) { capacityBlocked = error instanceof Error && error.message === "runnable capacity exhausted"; }
+    assert(capacityBlocked, "Third harness did not retain configured wait_for_postbox capacity");
+    const wakePi = await fetch(`${baseUrl}/api/requests/${capacityPi}/answer`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(wakePi.status === 200 && (await piWait).details.type === "answer", "wakeFreesSlot did not wake Pi and release capacity");
+    const codexController = new AbortController();
+    const codexWait = runHarnessWait("codex", codexSocket, codexSessionId, codexController.signal);
+    claudeController.abort();
+    await claudeWait.catch((error) => assert(error.name === "AbortError", "cancelFreesSlot returned the wrong error"));
+    const wakeCodex = await fetch(`${baseUrl}/api/requests/${capacityCodex}/answer`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
+    assert(wakeCodex.status === 200 && (await codexWait).details.type === "answer" && limiter.occupiedSlots === 0,
+      "Codex wait did not wake or release retained capacity");
+
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, restart, and History verified.");
   } finally {
     chatSse?.close();
     sse?.close();
     socket?.close();
+    claudeSocket?.close();
+    codexSocket?.close();
     await stopServer(server);
     if (server.exitCode && server.exitCode !== 0 && server.exitCode !== null) {
       console.error(stderr);
