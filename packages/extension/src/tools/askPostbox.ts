@@ -8,7 +8,7 @@ import {
   type AskBatchReceipt,
   type AskResult,
   type ForkReference
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import type { PostboxClient } from "../client/PostboxClient.js";
 
 export interface AskPostboxInput {

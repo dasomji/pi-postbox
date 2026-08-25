@@ -6,7 +6,7 @@ import {
   type ServerInstanceIdentity,
   type ServerProfileIdentity,
   type ServerProfileMetadataDiagnostic
-} from "@pi-postbox/protocol";
+} from "./protocol.js";
 import { lstat, readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { readExtensionConfig } from "./config.js";
@@ -171,7 +171,7 @@ async function verifyHealth(
   options: Pick<ResolveServerTargetOptions, "fetch" | "healthTimeoutMs">,
   expectedInstance?: ServerInstanceIdentity
 ): Promise<
-  | { ok: true; health: import("@pi-postbox/protocol").HealthResponse }
+  | { ok: true; health: import("./protocol.js").HealthResponse }
   | { ok: false; code: string; recovery?: "restart-required" }
 > {
   const controller = new AbortController();

@@ -10,7 +10,7 @@ import {
   QuestionChatStopPayloadSchema,
   QuestionChatUnavailableResponseSchema,
   type QuestionChatAvailabilityError
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import type { FastifyInstance } from "fastify";
 import type { StateBroadcaster } from "../services/broadcaster.js";
 import type { QuestionChatRelay } from "../services/questionChatRelay.js";

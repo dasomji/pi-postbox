@@ -3,7 +3,7 @@ import {
   POSTBOX_OWNER_PAGE_DEFAULT,
   POSTBOX_OWNER_PAGE_MAX,
   ProjectIconSchema
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import type {
   FeatureIdentity,
   PostboxOwnerListScope,
@@ -14,9 +14,9 @@ import type {
   SessionSnapshot,
   SessionUpdatePayload,
   StateSnapshot
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import { randomUUID } from "node:crypto";
-import type { QuestionChatSource } from "@pi-postbox/protocol";
+import type { QuestionChatSource } from "../protocol.js";
 import type { SqliteDatabase } from "../db/database.js";
 import { decodePaginationCursor, encodePaginationCursor } from "./paginationCursor.js";
 

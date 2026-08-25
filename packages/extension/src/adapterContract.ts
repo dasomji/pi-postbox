@@ -1,4 +1,4 @@
-import type { OwnerIdentity } from "@pi-postbox/protocol";
+import type { OwnerIdentity } from "./protocol.js";
 
 export type NativeHarnessIdentity =
   | { harness: "pi"; sessionUuid: string }

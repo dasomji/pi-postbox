@@ -25,6 +25,7 @@ const postboxClientMock = vi.hoisted(() => ({
   started: 0,
   stopped: 0,
   pendingAskCount: 0,
+  snapshotOpenQuestionCount: undefined as number | undefined,
   tailnetUrl: "https://coolify.tailnet.ts.net:3500" as string | undefined
 }));
 const questionChatMock = vi.hoisted(() => ({
@@ -76,7 +77,7 @@ vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
             localUrl: "http://127.0.0.1:3500/",
             tailnetUrl: postboxClientMock.tailnetUrl
           },
-          openQuestionCount: postboxClientMock.pendingAskCount,
+          openQuestionCount: postboxClientMock.snapshotOpenQuestionCount ?? postboxClientMock.pendingAskCount,
           autostart: { enabled: true, startedByThisSession: false },
           diagnostics: []
         };
@@ -116,6 +117,7 @@ afterEach(async () => {
   postboxClientMock.started = 0;
   postboxClientMock.stopped = 0;
   postboxClientMock.pendingAskCount = 0;
+  postboxClientMock.snapshotOpenQuestionCount = undefined;
   postboxClientMock.tailnetUrl = "https://coolify.tailnet.ts.net:3500";
   questionChatMock.cleanupAll.mockReset();
   questionChatMock.cleanupAll.mockResolvedValue(undefined);
@@ -404,6 +406,55 @@ describe("Pi Postbox extension registration", () => {
 
     const shutdownCtx = { cwd: process.cwd(), ui: { setStatus: () => undefined, notify: () => undefined, setWidget: () => undefined } };
     for (const handler of handlers.get("session_shutdown") ?? []) handler({}, shutdownCtx);
+  });
+
+  it("does not show zero in the footer while a locally tracked Question is still open", async () => {
+    const env = await tempConfigEnv({ PI_POSTBOX_URL: "https://postbox.example/" });
+    const statuses: Array<{ key: string; value: string }> = [];
+    const api = {
+      getSessionName: () => "Footer open count test",
+      on: () => undefined,
+      registerTool: () => undefined,
+      registerCommand: () => undefined
+    };
+
+    await startRegistration(
+      api,
+      {
+        cwd: process.cwd(),
+        ui: {
+          setStatus: (key, value) => statuses.push({ key, value }),
+          notify: () => undefined,
+          setWidget: () => undefined
+        },
+        sessionManager: { getSessionFile: () => "/tmp/session.jsonl", getLeafId: () => "leaf-1" }
+      },
+      env,
+      undefined,
+      "footer-open-count",
+      {
+        resolveOptions: {
+          fetch: healthFetch({
+            "https://postbox.example/healthz": createHealthResponse({ startedAtMs: NOW_MS - 1_000, nowMs: NOW_MS })
+          }).fetch,
+          nowMs: NOW_MS,
+          ttlMs: TTL_MS
+        }
+      }
+    );
+
+    postboxClientMock.pendingAskCount = 1;
+    postboxClientMock.snapshotOpenQuestionCount = 0;
+    postboxClientMock.options.at(-1)?.onLocalFallbackStatus?.({
+      requestId: "ask-footer-open-count",
+      serverUrl: "http://127.0.0.1:3500/",
+      message: "Postbox waiting ask-footer-open-count. Open http://127.0.0.1:3500/ to answer."
+    });
+
+    await vi.waitFor(() => expect(statuses.filter((status) => status.key === "postbox").at(-1)).toEqual({
+      key: "postbox",
+      value: "Postbox https://coolify.tailnet.ts.net:3500 · 1 open question"
+    }));
   });
 
   it("falls back to the local URL in the footer when Tailscale is unavailable", async () => {

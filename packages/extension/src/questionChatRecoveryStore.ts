@@ -1,4 +1,4 @@
-import type { QuestionChatModel } from "@pi-postbox/protocol";
+import type { QuestionChatModel } from "./protocol.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,

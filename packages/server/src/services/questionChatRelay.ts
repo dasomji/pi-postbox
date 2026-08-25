@@ -16,7 +16,7 @@ import {
   type QuestionChatSource,
   type QuestionChatStopPayload,
   type QuestionChatStopResponse
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
 

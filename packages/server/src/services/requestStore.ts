@@ -31,7 +31,7 @@ import {
   type ProposeAnswerPayload,
   type ProposedAnswerOption,
   type QuestionTelemetryEvent
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "../db/database.js";

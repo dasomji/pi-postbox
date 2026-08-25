@@ -1,4 +1,4 @@
-import type { ServerProfileIdentity } from "@pi-postbox/protocol";
+import type { ServerProfileIdentity } from "./protocol.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 

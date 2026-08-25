@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
-import type { ProjectIcon, ProjectRegistration } from "@pi-postbox/protocol";
+import type { ProjectIcon, ProjectRegistration } from "./protocol.js";
 
 const MAX_ICON_BYTES = 64 * 1024;
 const ALLOWED_ICON_MEDIA_TYPES = ["image/svg+xml", "image/png", "image/jpeg", "image/gif", "image/webp"] as const;

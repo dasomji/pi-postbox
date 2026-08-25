@@ -1,4 +1,4 @@
-import type { AskRequestSnapshot, AskResult, PushSubscriptionPayload, SessionSnapshot } from "@pi-postbox/protocol";
+import type { AskRequestSnapshot, AskResult, PushSubscriptionPayload, SessionSnapshot } from "../protocol.js";
 import type { RequestOptions as WebPushRequestOptions } from "web-push";
 import webPush from "web-push";
 import { isUnregisteredFcmError, type FcmSender } from "./fcmSender.js";

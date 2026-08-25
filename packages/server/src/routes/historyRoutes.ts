@@ -1,4 +1,4 @@
-import { HistoryResponseSchema } from "@pi-postbox/protocol";
+import { HistoryResponseSchema } from "../protocol.js";
 import type { FastifyInstance } from "fastify";
 import { HistoryService } from "../services/historyService.js";
 

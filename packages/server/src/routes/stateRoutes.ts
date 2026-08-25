@@ -1,4 +1,4 @@
-import type { StateSnapshot } from "@pi-postbox/protocol";
+import type { StateSnapshot } from "../protocol.js";
 import type { FastifyInstance } from "fastify";
 
 export async function registerStateRoutes(app: FastifyInstance, getSnapshot: () => StateSnapshot): Promise<void> {

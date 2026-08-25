@@ -4,7 +4,7 @@ import {
   type ProposeAnswerPayload,
   type ProposeAnswerResult,
   type ExtensionServerMessage
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";

@@ -4,7 +4,7 @@ import {
   PushConfigResponseSchema,
   PushSubscriptionDeletePayloadSchema,
   PushSubscriptionPayloadSchema
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import type { FastifyInstance } from "fastify";
 import type { PushStore } from "../services/pushStore.js";
 

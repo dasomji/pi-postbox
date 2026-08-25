@@ -6,7 +6,7 @@ import {
   type AskResult,
   type OwnerIdentity,
   type UpdateQuestionPayload
-} from "@pi-postbox/protocol";
+} from "../protocol.js";
 import type { AskPostboxBatchInput, AskPostboxInput } from "./askPostbox.js";
 
 export const WRITE_QUESTION_ACTIONS = [
