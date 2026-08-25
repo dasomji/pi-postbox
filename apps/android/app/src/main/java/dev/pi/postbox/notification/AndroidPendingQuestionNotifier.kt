@@ -60,6 +60,7 @@ class AndroidPendingQuestionNotifier(
                     .setContentText(PRIVATE_NOTIFICATION_TEXT)
                     .setStyle(Notification.BigTextStyle().bigText(PRIVATE_NOTIFICATION_TEXT))
                     .setContentIntent(notification.toPendingIntent())
+                    .setGroup(PENDING_QUESTIONS_GROUP_KEY)
                     .setAutoCancel(true)
                     .setShowWhen(true)
                     .build()
@@ -109,7 +110,7 @@ class AndroidPendingQuestionNotifier(
         }
     }
 
-    /** Cancel app-owned notifications whose questions are no longer in the pending snapshot. */
+    /** Reconcile per-Question notifications and the launcher badge against the full pending queue. */
     fun reconcilePendingRequests(pendingRequestIds: Set<String>) {
         val pendingNotificationIds = pendingRequestIds.mapTo(hashSetOf()) { it.hashCode() }
         try {
@@ -125,6 +126,39 @@ class AndroidPendingQuestionNotifier(
         } catch (_: SecurityException) {
             // Notification access can change while the app is running; reconciliation is best-effort.
         }
+        reconcilePendingSummary(pendingRequestIds.size)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun reconcilePendingSummary(pendingCount: Int) {
+        if (pendingCount == 0) {
+            notificationManager.cancel(PENDING_SUMMARY_NOTIFICATION_ID)
+            return
+        }
+        if (!permissionController.currentState().toAvailability().canPostNotifications) return
+
+        ensureSummaryChannel()
+        val label = if (pendingCount == 1) "1 Postbox question waiting" else "$pendingCount Postbox questions waiting"
+        try {
+            notificationManager.notify(
+                PENDING_SUMMARY_NOTIFICATION_ID,
+                Notification.Builder(context, PENDING_SUMMARY_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_postbox_notification)
+                    .setContentTitle(label)
+                    .setContentText(PRIVATE_NOTIFICATION_TEXT)
+                    .setStyle(Notification.BigTextStyle().bigText(PRIVATE_NOTIFICATION_TEXT))
+                    .setContentIntent(pendingSummaryIntent())
+                    .setGroup(PENDING_QUESTIONS_GROUP_KEY)
+                    .setGroupSummary(true)
+                    .setNumber(pendingCount)
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+                    .setShowWhen(false)
+                    .build()
+            )
+        } catch (_: SecurityException) {
+            // Permission can be revoked between the preflight check and posting.
+        }
     }
 
     private fun ensureChannel() {
@@ -138,7 +172,37 @@ class AndroidPendingQuestionNotifier(
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = CHANNEL_DESCRIPTION
+                setShowBadge(true)
             }
+        )
+    }
+
+    private fun ensureSummaryChannel() {
+        val existing = notificationManager.getNotificationChannel(PENDING_SUMMARY_CHANNEL_ID)
+        if (existing != null) return
+
+        notificationManager.createNotificationChannel(
+            NotificationChannel(
+                PENDING_SUMMARY_CHANNEL_ID,
+                PENDING_SUMMARY_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = PENDING_SUMMARY_CHANNEL_DESCRIPTION
+                setShowBadge(true)
+            }
+        )
+    }
+
+    private fun pendingSummaryIntent(): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        return PendingIntent.getActivity(
+            context,
+            PENDING_SUMMARY_NOTIFICATION_ID,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
 
@@ -163,11 +227,16 @@ class AndroidPendingQuestionNotifier(
     companion object {
         const val CHANNEL_ID: String = "pending-postbox-questions"
         const val CHANNEL_NAME: String = "Postbox questions"
-        const val CHANNEL_DESCRIPTION: String = "Local notifications for newly observed pending Postbox questions while the app is active."
+        const val CHANNEL_DESCRIPTION: String = "Notifications for newly observed pending Postbox questions."
+        const val PENDING_SUMMARY_CHANNEL_ID: String = "pending-postbox-question-count"
+        const val PENDING_SUMMARY_CHANNEL_NAME: String = "Postbox question count"
+        const val PENDING_SUMMARY_CHANNEL_DESCRIPTION: String = "Quiet pending-question total used for the launcher badge."
         const val PRIVATE_NOTIFICATION_TEXT: String = "Open Postbox to review and answer."
         const val EXTRA_REQUEST_ID: String = "dev.pi.postbox.extra.REQUEST_ID"
         const val ACTION_OPEN_PROTOCOL_MISMATCH: String = "dev.pi.postbox.OPEN_PROTOCOL_MISMATCH"
         const val PROTOCOL_MISMATCH_NOTIFICATION_ID: Int = 0x50524f54
+        const val PENDING_SUMMARY_NOTIFICATION_ID: Int = 0x50424f58
+        const val PENDING_QUESTIONS_GROUP_KEY: String = "dev.pi.postbox.PENDING_QUESTIONS"
     }
 }
 
@@ -177,6 +246,7 @@ internal fun shouldCancelDuringPendingReconciliation(
     pendingNotificationIds: Set<Int>
 ): Boolean = channelId == AndroidPendingQuestionNotifier.CHANNEL_ID &&
     notificationId != AndroidPendingQuestionNotifier.PROTOCOL_MISMATCH_NOTIFICATION_ID &&
+    notificationId != AndroidPendingQuestionNotifier.PENDING_SUMMARY_NOTIFICATION_ID &&
     notificationId !in pendingNotificationIds
 
 fun Intent.postboxNotificationRequestId(): String? {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPostboxApp } from "../src/app.js";
-import { listenWithPortFallback } from "../src/cli.js";
+import { listenOnConfiguredPort } from "../src/cli.js";
 
 const apps: FastifyInstance[] = [];
 const sockets: WebSocket[] = [];
@@ -25,7 +25,7 @@ describe("concurrent isolated server profiles", () => {
     const development = await startProfile(
       root,
       { kind: "development", id: "development:0123456789abcdef" },
-      production.port
+      0
     );
 
     expect(development.port).not.toBe(production.port);
@@ -49,7 +49,7 @@ describe("concurrent isolated server profiles", () => {
   it("runs two checkout/worktree development profiles without collisions", async () => {
     const root = await temporaryRoot();
     const first = await startProfile(root, { kind: "development", id: "development:0123456789abcdef" }, 0);
-    const second = await startProfile(root, { kind: "development", id: "development:fedcba9876543210" }, first.port);
+    const second = await startProfile(root, { kind: "development", id: "development:fedcba9876543210" }, 0);
 
     expect(second.port).not.toBe(first.port);
     expect(second.databasePath).not.toBe(first.databasePath);
@@ -59,15 +59,15 @@ describe("concurrent isolated server profiles", () => {
   });
 });
 
-async function startProfile(root: string, profile: ServerProfileIdentity, preferredPort: number) {
+async function startProfile(root: string, profile: ServerProfileIdentity, configuredPort: number) {
   const stateDir = join(root, profile.id.replace(":", "-"));
   const databasePath = join(stateDir, "postbox.sqlite");
   const metadataPath = join(stateDir, "active-local", "server.json");
   const app = await createPostboxApp({ databasePath, profile, buildId: `build-${profile.id}`, expirySweepMs: 0 });
   apps.push(app);
-  const address = await listenWithPortFallback(app, {
+  const address = await listenOnConfiguredPort(app, {
     host: "127.0.0.1",
-    port: preferredPort,
+    port: configuredPort,
     profile,
     metadataPath,
     buildId: `build-${profile.id}`,

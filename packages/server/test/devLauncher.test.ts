@@ -26,18 +26,19 @@ describe("scripts/dev.mjs", () => {
     expect(backend?.args).not.toContain("--no-tailscale");
     expect(backend?.args).not.toContain("--active-local-role");
     expect(backend?.args).not.toContain("--build-id");
+    expect(valueAfter(backend?.args ?? [], "--port")).toBe("45795");
     expect(backend?.args).not.toContain("32187");
     expect(invocations.some((entry) => entry.command === "tailscale")).toBe(false);
 
     const web = invocations.find((entry) => entry.command === "npm" && entry.args.includes("@pi-postbox/web"));
-    expect(web?.postboxDevApiPort).toMatch(/^\d+$/);
+    expect(web?.postboxDevApiPort).toBe("45795");
     expect(web?.piPostboxProfile).toBe(profileId);
     expect(stderr).toContain(`Profile: ${profileId}`);
     expect(stderr).toContain("Dashboard: http://127.0.0.1:");
     expect(stderr).toContain("Tailscale exposure is enabled");
   });
 
-  it("reuses checkout-scoped API and web ports across restarts", async () => {
+  it("keeps the canonical API port and reuses the checkout-scoped web port across restarts", async () => {
     const first = await runDevLauncher();
     const second = await runDevLauncher({}, true, first.root);
     const backends = second.invocations.filter((entry) => entry.command === "fake-server");
@@ -116,6 +117,7 @@ if (command === "npm" && args.includes("@pi-postbox/web")) {
       XDG_STATE_HOME: stateHome,
       PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
       POSTBOX_DEV_SERVER_EXECUTABLE: join(binDir, "fake-server"),
+      ...(overrides.PI_POSTBOX_PORT === undefined ? { POSTBOX_DEV_TEST_SKIP_PORT_CHECK: "1" } : {}),
       DEV_LAUNCHER_INVOCATIONS: invocationsPath,
       DEV_LAUNCHER_BASELINE_SERVER_COUNT: String(baselineServerCount)
     },

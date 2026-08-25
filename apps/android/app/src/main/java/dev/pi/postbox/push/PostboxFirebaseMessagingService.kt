@@ -4,6 +4,7 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dev.pi.postbox.notification.AndroidPendingQuestionNotifier
 import dev.pi.postbox.onboarding.SharedPreferencesVerifiedServerUrlStore
+import dev.pi.postbox.protocol.AskStatus
 
 /**
  * Receives server-sent FCM data messages for new pending Postbox questions and posts them through
@@ -12,23 +13,31 @@ import dev.pi.postbox.onboarding.SharedPreferencesVerifiedServerUrlStore
  */
 class PostboxFirebaseMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
+        val notifier = AndroidPendingQuestionNotifier(applicationContext)
         val decision = decodePostboxPushData(message.data)
         if (decision is PostboxPushDecision.IncompatibleProtocol) {
             ProtocolMismatchEvidenceStore(applicationContext).save(decision.mismatch)
-            AndroidPendingQuestionNotifier(applicationContext).postProtocolMismatch(decision.mismatch)
+            notifier.postProtocolMismatch(decision.mismatch)
             return
         }
         if (decision is PostboxPushDecision.Ignored) return
 
-        // Fetch the fresh state now, in the push execution window, so an app open in the next
-        // couple of minutes renders the current queue immediately instead of stale data.
+        // Fetch the fresh state now, in the push execution window, so both the cached queue and
+        // launcher badge represent every pending Question even while the activity is closed.
         SharedPreferencesVerifiedServerUrlStore(applicationContext).loadVerifiedServerUrl()?.let { baseUrl ->
-            PostboxStatePrefetch.prefetch(baseUrl)
+            PostboxStatePrefetch.prefetch(baseUrl) { url, snapshot ->
+                PrefetchedStateSnapshotCache.store(url, snapshot)
+                notifier.reconcilePendingRequests(
+                    snapshot.requests
+                        .filter { request -> request.status == AskStatus.PENDING }
+                        .mapTo(hashSetOf()) { request -> request.requestId }
+                )
+            }
         }
 
         when (decision) {
-            is PostboxPushDecision.Resolved -> AndroidPendingQuestionNotifier(applicationContext).cancel(decision.requestId)
-            is PostboxPushDecision.Created -> AndroidPendingQuestionNotifier(applicationContext).post(decision.notification)
+            is PostboxPushDecision.Resolved -> notifier.cancel(decision.requestId)
+            is PostboxPushDecision.Created -> notifier.post(decision.notification)
             is PostboxPushDecision.IncompatibleProtocol,
             PostboxPushDecision.Ignored -> Unit
         }

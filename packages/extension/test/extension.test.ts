@@ -21,6 +21,7 @@ const postboxClientMock = vi.hoisted(() => ({
     activeLocalPollMs?: number;
     activeLocalPollingEnabled?: boolean;
     onLocalFallbackStatus?: (status: { requestId: string; serverUrl: string; message: string } | undefined) => void;
+    onOwnerQuestionStateChanged?: () => void;
     onAnswerAvailable?: (
       notification: { questionId: string; question: string; answerId: string },
       deliveryId: string
@@ -55,6 +56,7 @@ vi.mock("../src/client/PostboxClient.js", async (importOriginal) => {
         activeLocalPollMs?: number;
         activeLocalPollingEnabled?: boolean;
         onLocalFallbackStatus?: (status: { requestId: string; serverUrl: string; message: string } | undefined) => void;
+        onOwnerQuestionStateChanged?: () => void;
         onAnswerAvailable?: (
           notification: { questionId: string; question: string; answerId: string },
           deliveryId: string

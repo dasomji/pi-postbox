@@ -506,6 +506,7 @@ async function registerResolvedTarget(
         : {}),
       onStatus: renderFooter,
       onLocalFallbackStatus: renderFooter,
+      onOwnerQuestionStateChanged: renderFooter,
       onAnswerAvailable: (notification, deliveryId) => {
         // Stable widget identity makes at-least-once transport replay owner-visible exactly once.
         uiScope.setWidget(answerNotificationWidgetKey(deliveryId), [

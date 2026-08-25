@@ -189,6 +189,136 @@ describe("PostboxClient pending ask resilience", () => {
     client.stop();
   });
 
+  it("publishes an owner Question state change after a batch is durably created", async () => {
+    FakeSocket.instances = [];
+    const ownerQuestionStateChanges: string[] = [];
+    const client = createClient({
+      onOwnerQuestionStateChanged: () => ownerQuestionStateChanges.push("changed")
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const batch = client.createAskBatch({
+      sessionId: "session-1",
+      questions: [{
+        localRef: "root",
+        requestId: "question-root",
+        mode: "single",
+        question: { prompt: "Choose?", ambiguity: "Which option should be used?" },
+        options: [{ value: "yes", label: "Yes" }]
+      }]
+    });
+    const command = socket.sent.find((message) =>
+      (message as { type?: string }).type === "ask.batch.create"
+    ) as { requestId: string };
+
+    socket.serverMessage({
+      type: "ask.batch.result",
+      requestId: command.requestId,
+      payload: {
+        status: "created",
+        items: [{
+          localRef: "root",
+          status: "created",
+          questionId: "question-root",
+          revision: 1,
+          ownerRevision: 1,
+          questionStatus: "pending",
+          disposition: "created"
+        }]
+      }
+    });
+
+    await expect(batch).resolves.toMatchObject({ status: "created" });
+    expect(ownerQuestionStateChanges).toEqual(["changed"]);
+    client.stop();
+  });
+
+  it("publishes an owner Question state change when an Answer becomes available", async () => {
+    FakeSocket.instances = [];
+    const ownerQuestionStateChanges: string[] = [];
+    const client = createClient({
+      onOwnerQuestionStateChanged: () => ownerQuestionStateChanges.push("changed")
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    socket.serverMessage({
+      type: "answer.available",
+      requestId: "delivery-answer-state-change",
+      payload: {
+        questionId: "question-root",
+        question: "Choose?",
+        answerId: "answer-root"
+      }
+    });
+
+    await vi.waitFor(() => expect(socket.sent.some((message) =>
+      (message as { type?: string }).type === "answer.available.ack"
+    )).toBe(true));
+    expect(ownerQuestionStateChanges).toEqual(["changed"]);
+    client.stop();
+  });
+
+  it("publishes an owner Question state change after a lifecycle update succeeds", async () => {
+    FakeSocket.instances = [];
+    const ownerQuestionStateChanges: string[] = [];
+    const client = createClient({
+      onOwnerQuestionStateChanged: () => ownerQuestionStateChanges.push("changed")
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const update = client.query("question.update", {
+      action: "cancel",
+      sessionId: "session-1",
+      questionId: "question-root",
+      expectedRevision: 1,
+      expectedOwnerRevision: 1
+    });
+    const command = socket.sent.find((message) =>
+      (message as { type?: string }).type === "question.update"
+    ) as { requestId: string };
+    socket.serverMessage({
+      type: "query.result",
+      requestId: command.requestId,
+      payload: { questionId: "question-root", status: "cancelled" }
+    });
+
+    await expect(update).resolves.toMatchObject({ status: "cancelled" });
+    expect(ownerQuestionStateChanges).toEqual(["changed"]);
+    client.stop();
+  });
+
+  it("publishes an owner Question state change when a tracked Question resolves", async () => {
+    FakeSocket.instances = [];
+    const ownerQuestionStateChanges: string[] = [];
+    const client = createClient({
+      onOwnerQuestionStateChanged: () => ownerQuestionStateChanges.push("changed")
+    });
+    client.start();
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+
+    const question = client.ask({ ...askPayload, requestId: "question-resolved-state-change" });
+    socket.serverMessage({
+      type: "ask.resolved",
+      requestId: "question-resolved-state-change",
+      payload: {
+        status: "cancelled",
+        requestId: "question-resolved-state-change",
+        resolvedAt: "2026-06-03T00:00:01.000Z"
+      }
+    });
+
+    await expect(question).resolves.toMatchObject({ status: "cancelled" });
+    expect(ownerQuestionStateChanges).toEqual(["changed"]);
+    client.stop();
+  });
+
   it("settles discovery queries on correlated error, disconnect, and stop", async () => {
     FakeSocket.instances = [];
     const client = createClient(); client.start();

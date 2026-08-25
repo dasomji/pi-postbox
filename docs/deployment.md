@@ -34,9 +34,9 @@ pi-postbox-server
 
 This is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs Pi resources and bundled package-local autostart support but does not add `pi-postbox-server` to `PATH`.
 
-The installed server uses the `production` profile: it binds to `127.0.0.1`, treats port `32187` as the canonical default, stores data in `~/.pi-postbox/postbox.sqlite`, and publishes `~/.pi-postbox/active-local/server.json`. If the preferred port is already in use, it chooses another local port and prints the actual URL.
+The installed server uses the `production` profile: it binds to `127.0.0.1`, uses fixed canonical port `32187`, stores data in `~/.pi-postbox/postbox.sqlite`, and publishes `~/.pi-postbox/active-local/server.json`. If the configured port is already in use, startup fails instead of changing the local and Tailnet URLs. Use `--port` / `PI_POSTBOX_PORT` only to configure a deliberate stable alternative.
 
-After binding, startup tries automatic Tailnet-private Tailscale Serve for the actual bound port. It inspects `tailscale serve status --json` first and only mutates when the matching HTTPS port is free or already points at the same Postbox target. Disable this with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`.
+After binding, startup tries automatic Tailnet-private Tailscale Serve for the configured bound port. It inspects `tailscale serve status --json` first and only mutates when the matching HTTPS port is free or already points at the same Postbox target. Disable this with `--no-tailscale` or `PI_POSTBOX_TAILSCALE=off`.
 
 ## Run in development (live HMR)
 
@@ -46,11 +46,11 @@ For active development of the web UI or server, use the dev orchestrator instead
 npm run dev
 ```
 
-`npm run dev` derives a stable `development:<checkout-id>` profile from the canonical checkout root, builds the current protocol/backend, and starts that checkout's backend plus Vite/HMR on available non-conflicting ports. It prints the profile identity, state directory, API URL, and dashboard URL. Vite proxies `/api` and `/healthz` to that backend.
+`npm run dev` derives a stable `development:<checkout-id>` profile from the canonical checkout root, builds the current protocol/backend, and starts that checkout's backend on the fixed development API port `45795` plus Vite/HMR on a separate available port. Set `PI_POSTBOX_PORT` only when a different explicit development API port is required. The launcher prints the profile identity, state directory, API URL, and dashboard URL. Vite proxies `/api` and `/healthz` to that backend.
 
-Development state lives under `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>` (normally `~/.local/state/pi-postbox/dev/<checkout-id>`), including its SQLite database, `active-local/server.json`, and `dev-ports.json`. The launcher atomically records the API and Vite ports and reuses them on the next restart when available, preserving endpoint affinity for unresolved Questions. If a remembered port is occupied, it selects and records a safe replacement; if an explicitly requested `PI_POSTBOX_PORT` or `POSTBOX_DEV_WEB_PORT` is occupied, it exits and leaves the existing listener untouched. API and web ports must differ.
+Development state lives under `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>` (normally `~/.local/state/pi-postbox/dev/<checkout-id>`), including its SQLite database, `active-local/server.json`, and `dev-ports.json`. The launcher atomically records the selected API and Vite ports, but only the Vite port is reused as a preference on the next restart. If the canonical or explicitly requested API port is occupied, startup exits instead of changing the API URL. If the remembered Vite port is occupied, the launcher selects and records a safe replacement; an occupied explicit `POSTBOX_DEV_WEB_PORT` instead causes startup to exit. API and web ports must differ.
 
-The development profile never reads, migrates, stops, replaces, or retargets production. Its optional non-clobbering Tailscale Serve mapping uses the separate development API port, so it does not replace the production mapping. Separate clones/worktrees receive distinct identities and can run together.
+The development profile never reads, migrates, stops, replaces, or retargets production. Its optional non-clobbering Tailscale Serve mapping uses the separate development API port, so it does not replace the production mapping. Separate clones/worktrees receive distinct identities, but the canonical API port is intentionally shared; use distinct explicit `PI_POSTBOX_PORT` values to run multiple development checkouts concurrently.
 
 ## Tailnet-private Tailscale Serve status
 

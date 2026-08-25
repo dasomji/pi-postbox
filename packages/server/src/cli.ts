@@ -146,10 +146,6 @@ function defaultProfileStateDir(profile: ServerProfileIdentity, env: NodeJS.Proc
   return join(stateHome, "pi-postbox", "dev", profile.id.slice("development:".length));
 }
 
-function isAddressInUseError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EADDRINUSE";
-}
-
 function portFromListenAddress(listenAddress: string): number | undefined {
   try {
     const port = Number(new URL(listenAddress).port);
@@ -163,12 +159,16 @@ export function describePostboxPortSelection(requestedPort: number, listenAddres
   const actualPort = portFromListenAddress(listenAddress);
   if (!actualPort) return undefined;
 
+  if (requestedPort === 0) {
+    return `Postbox selected ephemeral port ${actualPort}; set --port/PI_POSTBOX_PORT to a stable port when you need a bookmarkable URL.`;
+  }
+
   if (actualPort !== requestedPort) {
-    return `Preferred Postbox port ${requestedPort} is in use; using fallback port ${actualPort}. This changes the local and Tailnet bookmark URLs. Free port ${requestedPort}, or set --port/PI_POSTBOX_PORT to a stable available port, to keep Postbox on a canonical URL.`;
+    return `Postbox unexpectedly bound port ${actualPort} instead of configured port ${requestedPort}.`;
   }
 
   if (actualPort !== DEFAULT_POSTBOX_PORT) {
-    return `Postbox is using non-default port ${actualPort}; the canonical default is ${DEFAULT_POSTBOX_PORT}. Bookmark the printed URL for this configuration.`;
+    return `Postbox is using configured non-default port ${actualPort}; the canonical production default is ${DEFAULT_POSTBOX_PORT}.`;
   }
 
   return undefined;
@@ -184,7 +184,7 @@ function profilePublicationUrl(listenAddress: string, requestedHost: string): st
   return `${url.protocol}//${host}:${url.port}`;
 }
 
-export interface ListenWithPortFallbackOptions {
+export interface ListenOnConfiguredPortOptions {
   host: string;
   port: number;
   profile: ServerProfileIdentity;
@@ -195,7 +195,7 @@ export interface ListenWithPortFallbackOptions {
   heartbeatIntervalMs?: number;
 }
 
-export async function listenWithPortFallback(app: FastifyInstance, options: ListenWithPortFallbackOptions): Promise<string> {
+export async function listenOnConfiguredPort(app: FastifyInstance, options: ListenOnConfiguredPortOptions): Promise<string> {
   let owner: ProfileTargetOwner | undefined;
   let heartbeatTimer: NodeJS.Timeout | undefined;
 
@@ -204,13 +204,7 @@ export async function listenWithPortFallback(app: FastifyInstance, options: List
     if (owner) await cleanupProfileTarget(owner);
   });
 
-  let address: string;
-  try {
-    address = await app.listen({ host: options.host, port: options.port });
-  } catch (error) {
-    if (!isAddressInUseError(error)) throw error;
-    address = await app.listen({ host: options.host, port: 0 });
-  }
+  const address = await app.listen({ host: options.host, port: options.port });
 
   {
     const candidateOwner: ProfileTargetOwner = {
@@ -469,7 +463,7 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
   process.once("SIGINT", () => void requestShutdown());
   process.once("SIGTERM", () => void requestShutdown());
 
-  const address = await listenWithPortFallback(app, {
+  const address = await listenOnConfiguredPort(app, {
     host: options.host,
     port: options.port,
     profile: options.profile,

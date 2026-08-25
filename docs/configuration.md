@@ -22,14 +22,14 @@ pi-postbox-server
 
 This global install is separate from `pi install npm:@wienerberliner/pi-postbox`, which installs the Pi resources and bundled package-local autostart support but does not put `pi-postbox-server` on your shell `PATH`.
 
-The CLI prints the actual listening URL. Port `32187` is the canonical default; if it is already in use, the server chooses another local port and prints an explicit warning that the local/Tailnet bookmark URL is non-canonical. Free `32187`, or set `--port` / `PI_POSTBOX_PORT` to a stable available port, when you need a bookmarkable URL.
+The CLI prints the listening URL. Port `32187` is the fixed canonical production default; if it is already in use, startup fails instead of changing the local/Tailnet URL. Free `32187`, or deliberately configure one stable alternative with `--port` / `PI_POSTBOX_PORT`.
 
 Supported flags and environment variables:
 
 | Flag | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `--host` | `PI_POSTBOX_HOST` | `127.0.0.1` | HTTP listen host. Keep local by default and expose with Tailscale/lizardtail. |
-| `--port` | `PI_POSTBOX_PORT` | canonical `32187` | Preferred HTTP listen port. If it is already in use, the CLI falls back to another local port and warns that the actual local/Tailnet URL is non-canonical. |
+| `--port` | `PI_POSTBOX_PORT` | fixed canonical `32187` | HTTP listen port. If it is already in use, startup fails instead of changing the local/Tailnet URL. |
 | `--profile` | `PI_POSTBOX_PROFILE` | `production` | Server profile identity: `production` or `development:<checkout-id>`. `npm run dev` derives the development identity automatically. |
 | `--profile-state-dir` | `PI_POSTBOX_PROFILE_STATE_DIR` | profile-specific | State root containing config-adjacent metadata, SQLite, locks, credentials, and the autostart `server.log`. Production uses `~/.pi-postbox`; development uses `$XDG_STATE_HOME/pi-postbox/dev/<checkout-id>`. |
 | `--no-tailscale` | `PI_POSTBOX_TAILSCALE=off` | automatic Tailnet-private Serve enabled | Disable Tailscale Serve mutation for this run while keeping local startup. |
@@ -162,6 +162,6 @@ Useful endpoints for wrappers and manual checks:
 ```bash
 npm run build
 PI_POSTBOX_DATABASE=/tmp/pi-postbox.sqlite node packages/server/dist/cli.js
-# Use the listening URL printed by the CLI; the port may differ from 32187 if it was busy.
+# The default URL is fixed; startup fails if 32187 is already busy.
 curl <printed-url>/healthz
 ```

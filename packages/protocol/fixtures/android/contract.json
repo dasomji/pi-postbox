@@ -1,8 +1,8 @@
 {
   "protocolVersion": "0.1.9",
   "fingerprint": "ad5e1496494a3a09bdc06fc33a078468b1d8d721600bfff55b1ca733080d7c07",
-  "androidVersionName": "0.4.2",
-  "androidVersionCode": 6,
+  "androidVersionName": "0.4.3",
+  "androidVersionCode": 7,
   "wireValues": {
     "semanticStates": [
       "working",
@@ -104,8 +104,8 @@
     "health": {
       "ok": true,
       "service": "pi-postbox",
-      "version": "0.2.9",
-      "buildId": "0.2.9+contract",
+      "version": "0.2.10",
+      "buildId": "0.2.10+contract",
       "protocolVersion": "0.1.9",
       "profile": {
         "kind": "production",
