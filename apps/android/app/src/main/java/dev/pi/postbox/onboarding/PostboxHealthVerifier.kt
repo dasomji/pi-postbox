@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -50,14 +51,17 @@ class OkHttpPostboxHealthVerifier(
                 val health = try {
                     compatibilityGate.decodeHttpResponse(
                         rawMessage = body,
+                        statusCode = response.code,
                         responseProtocolVersion = response.header("X-Postbox-Protocol-Version"),
                         source = ProtocolMessageSource.HEALTH
                     ) {
-                        json.decodeFromString<PostboxHealthResponse>(it)
+                        json.decodeFromJsonElement<PostboxHealthResponse>(it)
                     }
                 } catch (exception: PostboxProtocolMismatchException) {
                     return HealthVerificationResult.IncompatibleProtocol(exception.mismatch)
                 } catch (_: SerializationException) {
+                    return HealthVerificationResult.Rejected(HealthRejectionReason.MALFORMED_HEALTH_RESPONSE)
+                } catch (_: dev.pi.postbox.protocol.PostboxProtocolHttpException) {
                     return HealthVerificationResult.Rejected(HealthRejectionReason.MALFORMED_HEALTH_RESPONSE)
                 }
 

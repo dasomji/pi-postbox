@@ -43,12 +43,24 @@ class OkHttpFcmTokenRegistrar(
             .build()
 
         client.newCall(request).execute().use { response ->
-            compatibilityGate.requireCompatible(
-                response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
-                ProtocolMessageSource.FCM
-            )
+            val responseBody = response.body?.string().orEmpty()
+            if (responseBody.isBlank()) {
+                compatibilityGate.requireCompatibleHttpResponse(
+                    statusCode = response.code,
+                    rawMessage = responseBody,
+                    responseProtocolVersion = response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                    source = ProtocolMessageSource.FCM
+                )
+            } else {
+                compatibilityGate.decodeHttpResponse(
+                    rawMessage = responseBody,
+                    statusCode = response.code,
+                    responseProtocolVersion = response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                    source = ProtocolMessageSource.FCM
+                ) { Unit }
+            }
             if (!response.isSuccessful) {
-                throw PostboxProtocolHttpException(response.code, response.body?.string().orEmpty())
+                throw PostboxProtocolHttpException(response.code, responseBody)
             }
         }
     }

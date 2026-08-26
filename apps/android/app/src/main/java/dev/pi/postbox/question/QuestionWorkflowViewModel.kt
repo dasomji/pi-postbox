@@ -17,6 +17,7 @@ import dev.pi.postbox.protocol.PostboxProtocolClient
 import dev.pi.postbox.protocol.PostboxProtocolMismatchException
 import dev.pi.postbox.protocol.ProtocolMismatch
 import dev.pi.postbox.protocol.PostboxRequestAlreadyResolvedException
+import dev.pi.postbox.protocol.PostboxStaleRevisionException
 import dev.pi.postbox.protocol.PostboxStateStream
 import dev.pi.postbox.protocol.PostboxStateStreamStatus
 import dev.pi.postbox.protocol.SessionSnapshot
@@ -131,7 +132,15 @@ class QuestionWorkflowViewModel(
         notificationOpenRequestId = requestId
         showQueue()
         state = state.copy(isSyncing = true)
-        if (hasAuthoritativeSnapshot) {
+        if (!hasAuthoritativeSnapshot && knownRequest != null) {
+            latestSnapshot?.let { snapshot ->
+                applySnapshot(
+                    snapshot = snapshot,
+                    previousVisible = state.visibleQuestion,
+                    forceVisibleRequestId = requestId
+                )
+            }
+        } else if (hasAuthoritativeSnapshot) {
             coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
                 refreshState(previousVisible = null)
             }
@@ -410,6 +419,14 @@ class QuestionWorkflowViewModel(
                 )
             } catch (exception: PostboxProtocolMismatchException) {
                 hardBlockForMismatch(exception.mismatch)
+            } catch (_: PostboxStaleRevisionException) {
+                refreshState(
+                    previousVisible = visible.copy(
+                        isSubmitting = false,
+                        submissionError = "This question was updated. Review the latest revision and submit again."
+                    ),
+                    forceVisibleRequestId = visible.requestId
+                )
             } catch (exception: PostboxRequestAlreadyResolvedException) {
                 refreshState(
                     previousVisible = visible,

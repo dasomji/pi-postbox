@@ -4,6 +4,7 @@ import android.util.Log
 import dev.pi.postbox.protocol.OkHttpPostboxProtocolClient
 import dev.pi.postbox.protocol.PostboxProtocolClient
 import dev.pi.postbox.protocol.StateSnapshot
+import dev.pi.postbox.protocol.AskStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,13 +20,14 @@ object PrefetchedStateSnapshotCache {
 
     private data class Entry(val baseUrl: String, val snapshot: StateSnapshot, val fetchedAtMillis: Long)
 
-    @Volatile
     private var entry: Entry? = null
 
+    @Synchronized
     fun store(baseUrl: String, snapshot: StateSnapshot, nowMillis: Long = System.currentTimeMillis()) {
         entry = Entry(baseUrl = baseUrl, snapshot = snapshot, fetchedAtMillis = nowMillis)
     }
 
+    @Synchronized
     fun freshSnapshotFor(
         baseUrl: String,
         maxAgeMillis: Long = DEFAULT_MAX_AGE_MILLIS,
@@ -37,6 +39,25 @@ object PrefetchedStateSnapshotCache {
         return current.snapshot
     }
 
+    @Synchronized
+    fun resolvePendingQuestion(
+        baseUrl: String,
+        requestId: String,
+        maxAgeMillis: Long = DEFAULT_MAX_AGE_MILLIS,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Set<String>? {
+        val current = entry ?: return null
+        if (current.baseUrl != baseUrl || nowMillis - current.fetchedAtMillis > maxAgeMillis) return null
+        val updatedSnapshot = current.snapshot.copy(
+            requests = current.snapshot.requests.filterNot { it.requestId == requestId }
+        )
+        entry = current.copy(snapshot = updatedSnapshot)
+        return updatedSnapshot.requests
+            .filter { it.status == AskStatus.PENDING }
+            .mapTo(linkedSetOf()) { it.requestId }
+    }
+
+    @Synchronized
     fun clear() {
         entry = null
     }

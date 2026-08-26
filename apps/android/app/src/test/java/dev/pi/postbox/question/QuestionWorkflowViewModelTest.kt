@@ -13,6 +13,7 @@ import dev.pi.postbox.protocol.OTHER_OPTION_VALUE
 import dev.pi.postbox.protocol.PostboxProtocolClient
 import dev.pi.postbox.protocol.PresenceState
 import dev.pi.postbox.protocol.PostboxRequestAlreadyResolvedException
+import dev.pi.postbox.protocol.PostboxStaleRevisionException
 import dev.pi.postbox.protocol.PostboxStateStream
 import dev.pi.postbox.protocol.PostboxStateStreamStatus
 import dev.pi.postbox.protocol.ProtocolMessageSource
@@ -1093,6 +1094,28 @@ class QuestionWorkflowViewModelTest {
     }
 
     @Test
+    fun staleRevisionAnswerRefreshesQuestionAndReenablesSubmissionAtNewRevision() = runTest {
+        val client = RecordingPostboxProtocolClient(questionWorkflowState())
+        client.afterAnswer = {
+            client.currentState = questionWorkflowState(
+                requests = listOf(singlePendingQuestion(requestId = "ask-single").copy(revision = 2))
+            )
+        }
+        client.staleAnswerError = PostboxStaleRevisionException("ask-single", "Question revision is stale")
+        val viewModel = startedViewModel(client)
+
+        viewModel.selectQuestion("ask-single")
+        viewModel.toggleOption("loopback")
+        viewModel.submitAnswer()
+        advanceUntilIdle()
+
+        assertEquals(1, client.fetchStateCalls)
+        assertEquals(2, viewModel.state.visibleQuestion?.revision)
+        assertTrue(viewModel.state.visibleQuestion?.canSubmit == true)
+        assertTrue(viewModel.state.visibleQuestion?.submissionError?.contains("updated", ignoreCase = true) == true)
+    }
+
+    @Test
     fun alreadyResolvedCancelConflictRefreshesStateAndShowsTerminalMessageWithoutClearingQuestion() = runTest {
         val client = RecordingPostboxProtocolClient(questionWorkflowState())
         client.cancelError = PostboxRequestAlreadyResolvedException(
@@ -1332,6 +1355,31 @@ class QuestionWorkflowViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf("ask-single", "ask-multi"), viewModel.state.pendingQuestions.map { it.requestId })
+    }
+
+    @Test
+    fun offlineNotificationTapOpensQuestionFromPrefetchedSnapshot() = runTest {
+        val stream = FakePostboxStateStream()
+        val viewModel = QuestionWorkflowViewModel(
+            baseUrl = VERIFIED_BASE_URL,
+            protocolClient = RecordingPostboxProtocolClient(questionWorkflowState(requests = emptyList())),
+            stateStream = stream,
+            coroutineScope = backgroundScope,
+            prefetchedSnapshotProvider = {
+                questionWorkflowState(
+                    requests = listOf(
+                        singlePendingQuestion(requestId = "ask-first"),
+                        singlePendingQuestion(requestId = "ask-offline", prompt = "Cached offline question")
+                    )
+                )
+            }
+        )
+
+        viewModel.start()
+        viewModel.openQuestionFromNotification("ask-offline")
+
+        assertEquals("ask-offline", viewModel.state.visibleQuestion?.requestId)
+        assertEquals("Cached offline question", viewModel.state.visibleQuestion?.prompt)
     }
 
     @Test
@@ -1621,6 +1669,7 @@ private class RecordingPostboxProtocolClient(
     var afterAnswer: (() -> Unit)? = null
     var afterCancel: (() -> Unit)? = null
     var answerError: PostboxRequestAlreadyResolvedException? = null
+    var staleAnswerError: PostboxStaleRevisionException? = null
     var cancelError: PostboxRequestAlreadyResolvedException? = null
     var cancelFailure: IOException? = null
 
@@ -1636,6 +1685,7 @@ private class RecordingPostboxProtocolClient(
         answers += RecordedAnswer(requestId, payload.selectedValues, payload.note, payload.expectedRevision)
         beforeAnswerCompletes?.invoke()
         afterAnswer?.invoke()
+        staleAnswerError?.let { throw it }
         answerError?.let { throw it }
     }
 

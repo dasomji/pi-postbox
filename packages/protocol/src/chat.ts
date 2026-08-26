@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PROTOCOL_VERSION } from "./health.js";
 
 const REQUEST_ID_MAX = 200;
 const PATH_MAX = 4_000;
@@ -178,6 +179,7 @@ export const QuestionChatEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export const QuestionChatTransportEventSchema = z.object({
+  protocolVersion: z.literal(PROTOCOL_VERSION).optional(),
   requestId: z.string().min(1).max(REQUEST_ID_MAX),
   type: z.literal("transport"),
   state: z.enum(["online", "offline"])

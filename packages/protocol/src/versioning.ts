@@ -4,18 +4,15 @@ import { PROTOCOL_VERSION } from "./health.js";
 import { AskRequestSnapshotSchema, AskResultSchema } from "./ask.js";
 import {
   QuestionChatActivationResponseSchema,
+  QuestionChatEventSchema,
   QuestionChatSendHttpResponseSchema,
   QuestionChatSnapshotHttpResponseSchema,
   QuestionChatStopHttpResponseSchema,
-  QuestionChatStreamEventSchema
+  QuestionChatTransportEventSchema
 } from "./chat.js";
 
 export const POSTBOX_PROTOCOL_VERSION_HEADER = "X-Postbox-Protocol-Version";
 export const POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER = "X-Postbox-Client-Protocol-Version";
-
-export const ReportedProtocolVersionSchema = z.object({
-  protocolVersion: z.string().min(1).max(64)
-}).passthrough();
 
 export const ProtocolMessageMetadataSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION)
@@ -51,7 +48,14 @@ export const VersionedQuestionChatActivationResponseSchema = versionedEnvelope(Q
 export const VersionedQuestionChatSnapshotHttpResponseSchema = versionedEnvelope(QuestionChatSnapshotHttpResponseSchema);
 export const VersionedQuestionChatSendHttpResponseSchema = versionedEnvelope(QuestionChatSendHttpResponseSchema);
 export const VersionedQuestionChatStopHttpResponseSchema = versionedEnvelope(QuestionChatStopHttpResponseSchema);
-export const VersionedQuestionChatStreamEventSchema = versionedEnvelope(QuestionChatStreamEventSchema);
+const versionedQuestionChatEventOptions = QuestionChatEventSchema.options.map((schema) =>
+  schema.extend({ protocolVersion: z.literal(PROTOCOL_VERSION) })
+) as unknown as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]];
+
+export const VersionedQuestionChatStreamEventSchema = z.union([
+  ...versionedQuestionChatEventOptions,
+  QuestionChatTransportEventSchema.extend({ protocolVersion: z.literal(PROTOCOL_VERSION) })
+]);
 
 export const IncompatibleProtocolResponseSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),

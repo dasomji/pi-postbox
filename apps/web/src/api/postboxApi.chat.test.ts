@@ -79,4 +79,34 @@ describe("Question Chat snapshot discovery", () => {
     source.onerror?.();
     expect(events).toEqual([{ requestId: "question-offline", type: "transport", state: "offline" }]);
   });
+
+  it("delivers protocol-stamped transport events from the server", async () => {
+    let source!: { onmessage: ((event: MessageEvent) => void) | null };
+    class FakeEventSource {
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor() { source = this; }
+      close(): void {}
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const events: unknown[] = [];
+    connectQuestionChatEvents("question-online", (event) => events.push(event));
+
+    source.onmessage?.({
+      data: JSON.stringify({
+        protocolVersion: (await import("@pi-postbox/protocol")).PROTOCOL_VERSION,
+        requestId: "question-online",
+        type: "transport",
+        state: "online"
+      })
+    } as MessageEvent);
+
+    expect(events).toEqual([{
+      protocolVersion: (await import("@pi-postbox/protocol")).PROTOCOL_VERSION,
+      requestId: "question-online",
+      type: "transport",
+      state: "online"
+    }]);
+  });
 });

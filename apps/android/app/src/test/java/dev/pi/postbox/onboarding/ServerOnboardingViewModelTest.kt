@@ -150,19 +150,39 @@ class ServerOnboardingViewModelTest {
     }
 
     @Test
-    fun savedVerifiedUrlIsRecheckedBeforeEnteringTheApp() {
+    fun savedVerifiedUrlEntersTheAppWhenBackgroundHealthCheckIsUnreachable() {
         val store = InMemoryVerifiedServerUrlStore(initial = "https://postbox.tailnet.example:32187/")
         val verifier = RecordingHealthVerifier(HealthVerificationResult.Unreachable("should not be called on load"))
 
         val viewModel = ServerOnboardingViewModel(verifier, store)
         viewModel.loadSavedServerUrl()
 
-        assertTrue(viewModel.state is ServerOnboardingState.Unreachable)
+        assertTrue(viewModel.state is ServerOnboardingState.Ready)
         assertEquals(
             "https://postbox.tailnet.example:32187/",
-            (viewModel.state as ServerOnboardingState.Unreachable).baseUrl
+            (viewModel.state as ServerOnboardingState.Ready).baseUrl
         )
         assertEquals(listOf("https://postbox.tailnet.example:32187/"), verifier.requestedBaseUrls)
+    }
+
+    @Test
+    fun savedVerifiedUrlStillHardBlocksOnIncompatibleProtocol() {
+        val savedUrl = "https://postbox.tailnet.example:32187/"
+        val mismatch = dev.pi.postbox.protocol.ProtocolMismatch(
+            supportedVersion = GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION,
+            receivedVersion = "0.0.1",
+            source = dev.pi.postbox.protocol.ProtocolMessageSource.HEALTH,
+            observedAt = java.time.Instant.parse("2026-08-25T12:00:00Z"),
+            reason = dev.pi.postbox.protocol.ProtocolMismatchReason.DIFFERENT_VERSION
+        )
+        val store = InMemoryVerifiedServerUrlStore(initial = savedUrl)
+        val verifier = RecordingHealthVerifier(HealthVerificationResult.IncompatibleProtocol(mismatch))
+
+        val viewModel = ServerOnboardingViewModel(verifier, store)
+        viewModel.loadSavedServerUrl()
+
+        assertTrue(viewModel.state is ServerOnboardingState.IncompatibleProtocol)
+        assertEquals(mismatch, (viewModel.state as ServerOnboardingState.IncompatibleProtocol).mismatch)
     }
 
     @Test

@@ -4,6 +4,11 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  discriminatorValues,
+  listProtocolSourceModules,
+  readServerPackageVersion
+} from "./android-contract-inputs.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const check = process.argv.includes("--check");
@@ -24,7 +29,6 @@ const {
   QuestionChatToolStateSchema,
   QuestionChatRepositoryToolNameSchema,
   QuestionChatPostboxToolNameSchema,
-  QuestionChatEventSchema,
   QuestionChatModelSourceSchema,
   QuestionChatSendModeSchema,
   VersionedAskMutationResponseSchema,
@@ -43,13 +47,12 @@ const androidVersionName = androidBuild.match(/versionName\s*=\s*"([^"]+)"/)?.[1
 const androidVersionCode = Number(androidBuild.match(/versionCode\s*=\s*(\d+)/)?.[1]);
 if (!androidVersionName || !Number.isInteger(androidVersionCode)) throw new Error("Unable to read Android version identity");
 
-const contractSources = ["health.ts", "session.ts", "ask.ts", "chat.ts", "push.ts", "grouping.ts", "ownerIdentity.ts", "versioning.ts"];
+const contractSources = await listProtocolSourceModules(root);
 const sourceText = await Promise.all(contractSources.map((file) => readFile(resolve(root, "packages/protocol/src", file), "utf8")));
 const fingerprint = createHash("sha256")
   .update(contractSources.map((file, index) => `${file}\n${sourceText[index]}`).join("\n---\n"))
   .digest("hex");
 
-const discriminatorValues = (schema, key) => schema.options.map((option) => option.shape[key].value);
 const wireValues = {
   semanticStates: SemanticStateSchema.options,
   presenceStates: PresenceStateSchema.options,
@@ -62,7 +65,7 @@ const wireValues = {
   questionChatAssistantStatuses: QuestionChatAssistantStatusSchema.options,
   questionChatToolStates: QuestionChatToolStateSchema.options,
   questionChatToolNames: [...QuestionChatRepositoryToolNameSchema.options, QuestionChatPostboxToolNameSchema.value],
-  questionChatEventTypes: [...discriminatorValues(QuestionChatEventSchema, "type"), "transport"],
+  questionChatEventTypes: discriminatorValues(VersionedQuestionChatStreamEventSchema, "type"),
   questionChatModelSources: QuestionChatModelSourceSchema.options,
   questionChatSendModes: QuestionChatSendModeSchema.options,
   fcmTypes: discriminatorValues(FcmPostboxDataSchema, "type")
@@ -95,8 +98,9 @@ const stateFixtures = wireValues.semanticStates.map((semanticState, index) => ({
 }));
 stateFixtures.forEach((fixture) => VersionedStateSnapshotSchema.parse(fixture));
 
+const serverVersion = await readServerPackageVersion(root);
 const health = {
-  ok: true, service: "pi-postbox", version: "0.2.10", buildId: "0.2.10+contract", protocolVersion: PROTOCOL_VERSION,
+  ok: true, service: "pi-postbox", version: serverVersion, buildId: `${serverVersion}+contract`, protocolVersion: PROTOCOL_VERSION,
   profile: { kind: "production", id: "production" }, uptimeMs: 123, timestamp: "2026-08-25T12:00:00.000Z"
 };
 HealthResponseSchema.parse(health);

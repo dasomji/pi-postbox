@@ -132,9 +132,11 @@ class OkHttpPostboxStateStream(
         return try {
             call.execute().use { response ->
                 try {
-                    compatibilityGate.requireCompatible(
-                        response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
-                        ProtocolMessageSource.STATE_STREAM
+                    compatibilityGate.requireCompatibleHttpResponse(
+                        statusCode = response.code,
+                        rawMessage = "",
+                        responseProtocolVersion = response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                        source = ProtocolMessageSource.STATE_STREAM
                     )
                 } catch (error: PostboxProtocolMismatchException) {
                     return StreamReadResult(reason = error.message.orEmpty(), mismatch = error.mismatch)

@@ -63,6 +63,40 @@ class ProtocolCompatibilityTest {
     }
 
     @Test
+    fun `successful HTTP response without protocol evidence is incompatible`() {
+        val error = assertThrows(PostboxProtocolMismatchException::class.java) {
+            gate.decodeHttpResponse(
+                rawMessage = """{"value":"not decoded"}""",
+                statusCode = 200,
+                responseProtocolVersion = null,
+                source = ProtocolMessageSource.STATE_HTTP
+            ) { 7 }
+        }
+
+        assertEquals(ProtocolMismatchReason.MISSING_VERSION, error.mismatch.reason)
+    }
+
+    @Test
+    fun `non successful HTTP response without protocol evidence is an HTTP error`() {
+        var decoderCalled = false
+
+        val error = assertThrows(PostboxProtocolHttpException::class.java) {
+            gate.decodeHttpResponse(
+                rawMessage = "upstream unavailable",
+                statusCode = 502,
+                responseProtocolVersion = null,
+                source = ProtocolMessageSource.STATE_HTTP
+            ) {
+                decoderCalled = true
+                7
+            }
+        }
+
+        assertEquals(502, error.statusCode)
+        assertFalse(decoderCalled)
+    }
+
+    @Test
     fun `malformed version evidence is represented safely`() {
         val longVersion = "sensitive".repeat(30)
 

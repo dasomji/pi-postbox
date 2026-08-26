@@ -58,9 +58,11 @@ class OkHttpQuestionChatEventTransport(
         val job = scope.launch {
             try {
                 call.execute().use { response ->
-                    compatibilityGate.requireCompatible(
-                        response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
-                        ProtocolMessageSource.QUESTION_CHAT_STREAM
+                    compatibilityGate.requireCompatibleHttpResponse(
+                        statusCode = response.code,
+                        rawMessage = "",
+                        responseProtocolVersion = response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
+                        source = ProtocolMessageSource.QUESTION_CHAT_STREAM
                     )
                     if (!response.isSuccessful) {
                         throw QuestionChatTransportException("Question Chat event stream failed with HTTP ${response.code}")

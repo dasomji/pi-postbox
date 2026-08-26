@@ -136,9 +136,10 @@ class OkHttpQuestionChatHttpClient(
             val rawBody = body.readUtf8Bounded(maxBytes)
             val decoded = compatibilityGate.decodeHttpResponse(
                 rawMessage = rawBody,
+                statusCode = response.code,
                 responseProtocolVersion = response.header(POSTBOX_PROTOCOL_VERSION_HEADER),
                 source = ProtocolMessageSource.QUESTION_CHAT_HTTP
-            ) { parseJsonObject(it) }
+            ) { it }
             transform(response.code, decoded)
         }
     }

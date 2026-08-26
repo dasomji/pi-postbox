@@ -4,6 +4,7 @@ import websocket from "@fastify/websocket";
 import {
   createHealthResponse,
   HealthResponseSchema,
+  IncompatibleProtocolResponseSchema,
   POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER,
   POSTBOX_PROTOCOL_VERSION_HEADER,
   PROTOCOL_VERSION,
@@ -196,29 +197,24 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     db.close();
   });
 
-  app.addHook("onSend", async (request, reply, payload) => {
-    if (request.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
-    if (!isProtocolHttpSurface(request.url)) return payload;
-
-    reply.header(POSTBOX_PROTOCOL_VERSION_HEADER, PROTOCOL_VERSION);
-    if (reply.statusCode === 204 || typeof payload !== "string") return payload;
-    const contentType = String(reply.getHeader("content-type") ?? "");
-    if (!contentType.includes("application/json")) return payload;
-
-    const parsed = safeJsonObject(payload);
-    return parsed ? JSON.stringify({ ...parsed, protocolVersion: PROTOCOL_VERSION }) : payload;
+  app.addHook("preSerialization", async (request, reply, payload) => {
+    if (!isProtocolHttpSurface(request.url) || reply.statusCode === 204) return payload;
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+    return { ...payload, protocolVersion: PROTOCOL_VERSION };
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    if (request.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
     if (isProtocolHttpSurface(request.url)) {
       reply.header(POSTBOX_PROTOCOL_VERSION_HEADER, PROTOCOL_VERSION);
       const received = request.headers[POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER.toLowerCase()];
       if (typeof received === "string" && received !== PROTOCOL_VERSION) {
-        return reply.code(426).send({
+        return reply.code(426).send(IncompatibleProtocolResponseSchema.parse({
+          protocolVersion: PROTOCOL_VERSION,
           error: "incompatible_protocol",
           supportedProtocolVersion: PROTOCOL_VERSION,
           receivedProtocolVersion: privacySafeProtocolVersion(received)
-        });
+        }));
       }
     }
 
@@ -314,17 +310,6 @@ function isAllowedBrowserOrigin(origin: string, host: string | undefined): boole
 function isProtocolHttpSurface(url: string): boolean {
   const path = url.split("?", 1)[0];
   return path === "/healthz" || path === "/api" || path.startsWith("/api/");
-}
-
-function safeJsonObject(payload: string): Record<string, unknown> | undefined {
-  try {
-    const value: unknown = JSON.parse(payload);
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function privacySafeProtocolVersion(value: string): string {

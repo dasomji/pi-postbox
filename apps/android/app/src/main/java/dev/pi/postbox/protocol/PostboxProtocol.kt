@@ -4,6 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Synthetic answer value the server accepts alongside a question's own options,
@@ -18,6 +19,8 @@ object PostboxProtocolJson {
     }
 
     fun decodeStateSnapshot(value: String): StateSnapshot = json.decodeFromString(value)
+
+    fun decodeStateSnapshot(value: JsonObject): StateSnapshot = json.decodeFromJsonElement(StateSnapshot.serializer(), value)
 
     fun encodeAnswerPayload(payload: AskAnswerPayload): String = json.encodeToString(AskAnswerPayload.serializer(), payload)
 
@@ -245,6 +248,12 @@ internal data class PostboxErrorResponse(
     companion object {
         fun parse(body: String): PostboxErrorResponse? = try {
             PostboxProtocolJson.json.decodeFromString(serializer(), body)
+        } catch (_: SerializationException) {
+            null
+        }
+
+        fun parse(body: JsonObject): PostboxErrorResponse? = try {
+            PostboxProtocolJson.json.decodeFromJsonElement(serializer(), body)
         } catch (_: SerializationException) {
             null
         }
