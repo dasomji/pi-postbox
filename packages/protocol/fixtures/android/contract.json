@@ -104,8 +104,8 @@
     "health": {
       "ok": true,
       "service": "pi-postbox",
-      "version": "0.5.5",
-      "buildId": "0.5.5+contract",
+      "version": "0.5.6",
+      "buildId": "0.5.6+contract",
       "protocolVersion": "0.1.12",
       "profile": {
         "kind": "production",
