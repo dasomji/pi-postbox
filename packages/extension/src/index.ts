@@ -223,6 +223,11 @@ export default function postboxExtension(pi: PiLikeApi): void {
         ) as unknown as Record<string, unknown>;
       } else {
         const request = toQuestionUpdateRequest(params);
+        if (params.action === "revise" && params.images !== undefined) {
+          const images = await client.prepareImages(params.images, signal);
+          if (request.update.action === "revise") request.update.images = images;
+        }
+        signal?.throwIfAborted();
         rawResult = await client.query("question.update", {
           sessionId: currentRegistration.session.sessionId,
           ...request

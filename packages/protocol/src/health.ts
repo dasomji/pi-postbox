@@ -7,7 +7,7 @@ import {
   type ServerProfileIdentity
 } from "./serverProfile.js";
 
-export const PROTOCOL_VERSION = "0.1.10";
+export const PROTOCOL_VERSION = "0.1.11";
 export const SERVICE_NAME = "pi-postbox";
 
 export const HealthResponseSchema = z.object({
@@ -17,6 +17,7 @@ export const HealthResponseSchema = z.object({
   buildId: z.string().min(1).max(128),
   protocolVersion: z.literal(PROTOCOL_VERSION),
   profile: ServerProfileIdentitySchema,
+  mediaInstanceId: z.string().uuid().optional(),
   uptimeMs: z.number().int().nonnegative(),
   timestamp: z.string().datetime(),
   instance: ServerInstanceIdentitySchema.optional()

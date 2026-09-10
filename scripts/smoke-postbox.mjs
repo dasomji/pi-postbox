@@ -2,13 +2,15 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, unlink } from "node:fs/promises";
+import sharp from "sharp";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import WebSocket from "ws";
 import Database from "better-sqlite3";
 import { executeAskPostbox } from "../packages/extension/dist/tools/askPostbox.js";
+import { toAskPostboxInput, toQuestionUpdateRequest } from "../packages/extension/dist/tools/writeQuestion.js";
 import { createWaitForPostboxTool } from "../packages/extension/dist/index.js";
 import { PostboxClient } from "../packages/extension/dist/client/PostboxClient.js";
 import { AdapterRunnableSlotLimiter, ownerFromNativeIdentity } from "../packages/extension/dist/adapterContract.js";
@@ -830,14 +832,33 @@ async function main() {
     } });
     batchClient.start();
     await batchReady;
-    const batchReceipt = await executeAskPostbox({
-      mode: "batch",
+    const imagePath = join(tmp, "private-smoke-evidence.png");
+    await writeFile(imagePath, await sharp({ create: { width: 32, height: 16, channels: 3, background: "#4477bb" } }).png().toBuffer());
+    const imageInput = { path: imagePath, alt: "Generated blue evidence", caption: "Packaged image contract" };
+    const imageQuestionId = `smoke-image-${randomUUID()}`;
+    const imageDraft = { action: "create", requestId: imageQuestionId, question: "Inspect evidence?", ambiguity: "Does packaged media work?", options: [{ value: "yes", label: "Yes" }], images: [imageInput] };
+    await executeAskPostbox(toAskPostboxInput(imageDraft), batchClient, batchSessionId);
+    const [imageQuestion] = await batchClient.query("questions.get", { questionIds: [imageQuestionId], view: "full" });
+    assert(imageQuestion.images.length === 1 && !JSON.stringify(imageQuestion).includes("private-smoke-evidence"), "Packaged image snapshot leaked local input or lost the gallery");
+    const mediaUrl = `${baseUrl}/media/images/${imageQuestion.images[0].imageId}`;
+    const media = await fetch(mediaUrl);
+    assert(media.ok && media.headers.get("content-type") === "image/png" && media.headers.get("x-content-type-options") === "nosniff", "Packaged immutable media serving failed");
+    await unlink(imagePath);
+    assert((await executeAskPostbox(toAskPostboxInput(imageDraft), batchClient, batchSessionId)).disposition === "idempotent", "Packaged image replay required removed local input");
+    await batchClient.query("question.update", { sessionId: batchSessionId, ...toQuestionUpdateRequest({ action: "revise", questionId: imageQuestionId, expectedRevision: 1, expectedOwnerRevision: 1, question: "Gallery removed", ambiguity: "History keeps evidence", images: [] }, []) });
+    const imageHistory = await batchClient.query("question.history.get", { questionId: imageQuestionId, view: "full" });
+    assert(imageHistory.revisions[0].images.length === 1 && imageHistory.revisions[1].images.length === 0 && (await fetch(mediaUrl)).ok, "Packaged image revision history was not retained");
+    await batchClient.query("question.update", { sessionId: batchSessionId, ...toQuestionUpdateRequest({ action: "cancel", questionId: imageQuestionId, expectedRevision: 2, expectedOwnerRevision: 1 }) });
+    await writeFile(imagePath, await sharp({ create: { width: 32, height: 16, channels: 3, background: "#4477bb" } }).png().toBuffer());
+    const batchReceipt = await executeAskPostbox(toAskPostboxInput({
+      action: "create_batch",
       questions: [
         {
           localRef: "parent",
           requestId: parentId,
           question: `${parentId}?`,
           ambiguity: "Which parent acceptance decision should be exercised?",
+          images: [imageInput],
           options: [{ value: "yes", label: "Yes" }]
         },
         {
@@ -846,13 +867,16 @@ async function main() {
           parentLocalRef: "parent",
           question: `${childId}?`,
           ambiguity: "Which child acceptance decision should be exercised?",
+          images: [{ ...imageInput, alt: "Child evidence" }],
           options: [{ value: "yes", label: "Yes" }]
         }
       ]
-    }, batchClient, batchSessionId);
+    }), batchClient, batchSessionId);
     assert(batchReceipt.status === "created" && batchReceipt.items.length === 2 &&
       batchReceipt.items[1].localRef === "child" && batchReceipt.items[1].questionId === childId,
       "Published ask_postbox batch receipt did not preserve localRef ordering");
+    const batchImages = await batchClient.query("questions.get", { questionIds: [parentId, childId], view: "full" });
+    assert(batchImages.every((question) => question.images.length === 1 && question.images[0].imageId === imageQuestion.images[0].imageId), "Packaged image batch lost galleries or deduplication");
     batchClient.stop();
     const simultaneous = await sse.nextStateMatching((snapshot) =>
       snapshot.requests.some((request) => request.requestId === parentId) &&
@@ -1018,7 +1042,7 @@ async function main() {
     assert(wakeCodex.status === 200 && (await codexWait).details.type === "answer" && limiter.occupiedSlots === 0,
       "Codex wait did not wake or release retained capacity");
 
-    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, restart, and History verified.");
+    console.log("Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, image galleries/replay/revision media, restart, and History verified.");
   } finally {
     chatSse?.close();
     sse?.close();

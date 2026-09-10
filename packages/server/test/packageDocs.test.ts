@@ -139,6 +139,11 @@ describe("release packaging and operator docs", () => {
       "packages/protocol/dist/serverProfile.js",
       "packages/protocol/dist/chat.js",
       "packages/protocol/dist/ws.js",
+      "packages/protocol/dist/images.js",
+      "packages/extension/src/imagePreparation.ts",
+      "packages/server/dist/services/imageStore.js",
+      "packages/server/dist/routes/imageRoutes.js",
+      "docs/question-images.md",
       "packages/server/package.json",
       "packages/server/dist/cli.js",
       "packages/server/dist/profileTarget.js",
@@ -208,7 +213,7 @@ describe("release packaging and operator docs", () => {
       const extensionDependencyResolverPath = join(packageRoot, "packages", "extension", "src", "resolve-question-chat-runtime.mjs");
       await writeFile(
         resolverPath,
-        'import { SERVICE_NAME } from "./protocol.js";\nconsole.log(SERVICE_NAME);\n'
+        'import { SERVICE_NAME } from "./protocol.js";\nimport sharp from "sharp";\nimport { ImageStore } from "./services/imageStore.js";\nconst bytes = await sharp({create:{width:2,height:2,channels:3,background:"red"}}).png().toBuffer();\nif (!bytes.length || typeof ImageStore !== "function") throw new Error("Packaged media runtime unavailable");\nconsole.log(SERVICE_NAME);\n'
       );
       await writeFile(
         extensionDependencyResolverPath,

@@ -261,3 +261,5 @@ export {
   withProtocolVersion
 } from "./versioning.js";
 export type { IncompatibleProtocolResponse, VersionedStateSnapshot } from "./versioning.js";
+
+export * from "./images.js";

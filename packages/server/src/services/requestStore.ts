@@ -79,7 +79,11 @@ export interface AnswerAvailable {
 }
 type AnswerAvailableListener = (answer: AnswerAvailable) => void;
 
+import { ImageError, type ImageStore } from "./imageStore.js";
+import { IMAGE_ERROR_CODES } from "../protocol.js";
+
 export interface RequestStoreOptions {
+  imageStore?: ImageStore;
   generateProposedOptionValue?: () => string;
   recordTelemetry?: (event: QuestionTelemetryEvent) => void;
 }
@@ -182,7 +186,7 @@ export class RequestStore {
   constructor(
     private readonly db: SqliteDatabase,
     private readonly now: () => number,
-    options: RequestStoreOptions = {}
+    private readonly options: RequestStoreOptions = {}
   ) {
     this.generateProposedOptionValue = options.generateProposedOptionValue ?? (() => `chat_${randomUUID()}`);
     this.recordTelemetry = options.recordTelemetry ?? (() => undefined);
@@ -365,6 +369,8 @@ export class RequestStore {
           requestId: parsed.requestId, questionJson: JSON.stringify(parsed.question), optionsJson: JSON.stringify(parsed.options),
           contextJson: null, harness: session.owner_harness, ownerId: session.owner_id, nowIso
         });
+      if (parsed.images?.length && !this.options.imageStore) throw new ImageError("image_unavailable", "Image staging is unavailable");
+      this.options.imageStore?.commit(parsed.requestId, 1, parsed.sessionId, parsed.images ?? []);
     });
     createDecision();
 
@@ -462,9 +468,9 @@ export class RequestStore {
             disposition: "created"
           });
         } catch (error) {
-          const code = error instanceof RequestStoreError && ["parent_not_found", "child_limit_reached", "depth_limit_reached"].includes(error.code)
+          const code = error instanceof ImageError ? IMAGE_ERROR_CODES.find(code => code === error.code) ?? "invalid_draft" : error instanceof RequestStoreError && ["parent_not_found", "child_limit_reached", "depth_limit_reached"].includes(error.code)
             ? error.code as "parent_not_found" | "child_limit_reached" | "depth_limit_reached" : "invalid_draft";
-          aborted = true;
+          aborted = !(error instanceof ImageError);
           items.push({ localRef: draft.localRef, status: "rejected", reason: { code, message: error instanceof Error ? error.message : "Question was rejected." } });
         }
       }
@@ -613,6 +619,7 @@ export class RequestStore {
         mode: row.mode,
         question: JSON.parse(row.question_json as string),
         options: JSON.parse(row.options_json as string),
+        images: this.options.imageStore?.gallery(row.question_id as string, row.revision as number) ?? [],
         createdAt: row.created_at,
         ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
         ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
@@ -763,6 +770,7 @@ export class RequestStore {
           .run(revised.question_id, revised.revision, revised.question_json, revised.options_json, revised.context_json,
             proposalActor.harness, proposalActor.ownerId, updatedAt);
         this.recordQuestionEvent(revised.question_id, "revision", revised.revision, proposalActor, { changes: ["options"] }, updatedAt);
+        this.options.imageStore?.copy(requestId, durableQuestion.revision, revised.revision);
       }
       const request = this.get(requestId);
       if (!request) throw new Error("updated request could not be loaded");
@@ -774,7 +782,7 @@ export class RequestStore {
     return appended;
   }
 
-  updateQuestion(questionId: string, actor: { harness: string; ownerId: string }, payload: UpdateQuestionPayload, sessions?: SessionStore): Record<string, unknown> {
+  updateQuestion(questionId: string, actor: { harness: string; ownerId: string }, payload: UpdateQuestionPayload, sessions?: SessionStore, stagingSessionId?: string): Record<string, unknown> {
     const parsed = UpdateQuestionPayloadSchema.parse(payload);
     if (parsed.action === "transfer") {
       if (actor.harness !== parsed.expectedOwner.harness || actor.ownerId !== parsed.expectedOwner.ownerId) throw new RequestStoreError("wrong_owner", "Only the current owner may transfer this Question");
@@ -803,6 +811,7 @@ export class RequestStore {
       if (parsed.action === "revise") {
         const changes = ["question"];
         if (parsed.options) changes.push("options");
+        if (parsed.images !== undefined) changes.push("images");
         this.db.prepare(`UPDATE questions SET revision=?, question_json=?, options_json=COALESCE(?, options_json), updated_at=? WHERE question_id=?`)
           .run(revision, JSON.stringify(parsed.question), parsed.options ? JSON.stringify(parsed.options) : null, at, questionId);
         type = "revision"; facts = { changes };
@@ -828,6 +837,11 @@ export class RequestStore {
         (question_id, revision, question_json, options_json, context_json, actor_harness, actor_owner_id, created_at)
         SELECT question_id, revision, question_json, options_json, context_json, ?, ?, ? FROM questions WHERE question_id=?`)
         .run(actor.harness, actor.ownerId, at, questionId);
+      if (parsed.action === "revise" && parsed.images !== undefined) {
+        if (parsed.images.length && !this.options.imageStore) throw new ImageError("image_unavailable", "Image staging is unavailable");
+        const sessionId = stagingSessionId ?? row.source_session_id;
+        this.options.imageStore?.commit(questionId, revision, sessionId, parsed.images);
+      } else this.options.imageStore?.copy(questionId, row.revision, revision);
       const updated = this.db.prepare("SELECT question_json, status, parent_question_id, replacement_question_id FROM questions WHERE question_id=?").get(questionId) as any;
       output = { questionId, revision, ownerRevision: row.owner_revision, status: updated.status, question: JSON.parse(updated.question_json), parentQuestionId: updated.parent_question_id ?? undefined, replacementQuestionId: updated.replacement_question_id ?? undefined };
     })();
@@ -913,7 +927,7 @@ export class RequestStore {
   ): { revisions: QuestionHistory["revisions"]; events: QuestionHistory["events"] } {
     const revisions = (this.db.prepare(`SELECT revision, question_json, options_json, actor_harness, actor_owner_id, created_at
       FROM question_revisions WHERE question_id=? AND revision <= ? ORDER BY revision`).all(questionId, maxRevision) as any[])
-      .map((row) => ({ revision: row.revision, question: JSON.parse(row.question_json), options: JSON.parse(row.options_json),
+      .map((row) => ({ images: this.options.imageStore?.gallery(questionId, row.revision) ?? [], revision: row.revision, question: JSON.parse(row.question_json), options: JSON.parse(row.options_json),
         actor: { harness: row.actor_harness, ownerId: row.actor_owner_id }, at: row.created_at })) as QuestionHistory["revisions"];
     if (revisions.length === 0) throw new RequestStoreError("request_not_found", "Question not found");
     const events = (this.db.prepare(`SELECT type, revision, actor_harness, actor_owner_id, facts_json, created_at
@@ -940,6 +954,7 @@ export class RequestStore {
       const revision: QuestionContentRevision = { revision: snapshot.revision, actor: snapshot.actor, at: snapshot.at };
       if (changes.has("question")) revision.question = snapshot.question;
       if (changes.has("options")) revision.options = snapshot.options;
+      if (changes.has("images")) revision.images = snapshot.images;
       return [revision];
     });
     const nonContentEvents = events.filter((event) => event.type !== "revision") as QuestionNonContentEvent[];
@@ -1385,6 +1400,7 @@ export class RequestStore {
       mode: row.mode,
       question: this.parseJson(row.question_json, { prompt: row.prompt }) as AskRequestSnapshot["question"],
       options: JSON.parse(row.options_json) as AskRequestSnapshot["options"],
+      images: this.options.imageStore?.gallery(row.request_id, row.revision) ?? [],
       forkReference: row.fork_reference_json
         ? (this.parseJson(row.fork_reference_json, undefined) as AskRequestSnapshot["forkReference"])
         : undefined,

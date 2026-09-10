@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { IMAGE_ERROR_CODES, QuestionImagesSchema, StagedQuestionImagesSchema } from "./images.js";
 import { FeatureIdentitySchema, RepositoryIdentitySchema, WorktreeIdentitySchema } from "./grouping.js";
 import { OwnerIdentitySchema } from "./ownerIdentity.js";
 
@@ -95,6 +96,7 @@ export const AskCreatePayloadSchema = z.object({
   mode: AskModeSchema,
   question: AskCreateQuestionSchema,
   options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
+  images: StagedQuestionImagesSchema.optional(),
   forkReference: ForkReferenceSchema.optional(),
   expiresAt: z.string().datetime().optional(),
   parentQuestionId: RequestIdSchema.optional(),
@@ -109,6 +111,7 @@ const AskQuestionDraftShape = {
   mode: AskModeSchema.default("single"),
   question: AskCreateQuestionSchema,
   options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX),
+  images: StagedQuestionImagesSchema.optional(),
   forkReference: ForkReferenceSchema.optional(),
   expiresAt: z.string().datetime().optional(),
   parentQuestionId: RequestIdSchema.optional(),
@@ -147,7 +150,7 @@ const AskBatchInputSchema = z.object({
   });
 export const AskPostboxInputSchema = z.union([AskSingleInputSchema, AskBatchInputSchema]);
 
-export const AskBatchRejectionCodeSchema = z.enum(["forward_parent_reference", "parent_not_found", "child_limit_reached", "depth_limit_reached", "batch_aborted", "invalid_draft"]);
+export const AskBatchRejectionCodeSchema = z.enum(["forward_parent_reference", "parent_not_found", "child_limit_reached", "depth_limit_reached", "batch_aborted", "invalid_draft", ...IMAGE_ERROR_CODES]);
 const AskBatchItemReceiptSchema = z.discriminatedUnion("status", [
   z.object({
     localRef: RequestIdSchema,
@@ -173,7 +176,7 @@ export const AskAnswerPayloadSchema = z.object({
 const ExpectedRevisionSchema = z.number().int().min(1);
 const ExpectedOwnerRevisionSchema = z.number().int().min(1);
 export const UpdateQuestionPayloadSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, question: AskCreateQuestionSchema, options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional() }).strict(),
+  z.object({ action: z.literal("revise"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, question: AskCreateQuestionSchema, images: StagedQuestionImagesSchema.optional(), options: z.array(AskCreateOptionSchema).min(1).max(OPTIONS_MAX).optional() }).strict(),
   z.object({ action: z.literal("cancel"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, note: LongTextSchema.optional() }).strict(),
   z.object({ action: z.literal("supersede"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, replacementQuestionId: RequestIdSchema }).strict(),
   z.object({ action: z.literal("reparent"), expectedRevision: ExpectedRevisionSchema, expectedOwnerRevision: ExpectedOwnerRevisionSchema, parentQuestionId: RequestIdSchema.nullable() }).strict(),
@@ -214,13 +217,15 @@ export const QuestionResolutionSchema = z.union([
 const HistoryBaseSchema = z.object({ revision: ExpectedRevisionSchema, actor: HistoryActorSchema, at: z.string().datetime() });
 export const QuestionRevisionSnapshotSchema = HistoryBaseSchema.extend({
   question: AskQuestionSchema,
-  options: z.array(AskOptionSchema)
+  options: z.array(AskOptionSchema),
+  images: QuestionImagesSchema.default([])
 }).strict();
 export const QuestionContentRevisionSchema = HistoryBaseSchema.extend({
   question: AskQuestionSchema.optional(),
-  options: z.array(AskOptionSchema).optional()
+  options: z.array(AskOptionSchema).optional(),
+  images: QuestionImagesSchema.optional()
 }).strict().superRefine((revision, context) => {
-  if (revision.question !== undefined || revision.options !== undefined) return;
+  if (revision.question !== undefined || revision.options !== undefined || revision.images !== undefined) return;
   context.addIssue({
     code: z.ZodIssueCode.custom,
     message: "A content revision must replace at least one Question content section"
@@ -228,7 +233,7 @@ export const QuestionContentRevisionSchema = HistoryBaseSchema.extend({
 });
 const QuestionRevisionEventSchema = HistoryBaseSchema.extend({
   type: z.literal("revision"),
-  changes: z.array(z.enum(["question", "options"])).min(1)
+  changes: z.array(z.enum(["question", "options", "images"])).min(1)
 }).strict();
 export const QuestionNonContentEventSchema = z.union([
   HistoryBaseSchema.extend({ type: z.literal("parent_changed"), parentQuestionId: RequestIdSchema.nullable() }).strict(),
@@ -338,6 +343,7 @@ export const AskRequestSnapshotSchema = z.object({
   mode: AskModeSchema,
   question: AskQuestionSchema,
   options: z.array(AskOptionSchema).min(1).max(OPTIONS_MAX),
+  images: QuestionImagesSchema.default([]),
   forkReference: ForkReferenceSchema.optional(),
   status: AskStatusSchema,
   createdAt: z.string().datetime(),

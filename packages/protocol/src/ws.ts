@@ -211,7 +211,7 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("registered"),
     requestId: z.string().min(1).optional(),
-    payload: z.object({ sessionId: z.string().min(1), presence: z.literal("live"), feature: FeatureIdentitySchema.optional() })
+    payload: z.object({ sessionId: z.string().min(1), presence: z.literal("live"), imageUploadToken: z.string().uuid().optional(), feature: FeatureIdentitySchema.optional() })
   }),
   z.object({
     type: z.literal("ack"),

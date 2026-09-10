@@ -10,7 +10,8 @@ const REQUEST: AskRequestSnapshot = {
   ownerRevision: 1,
   creator: { harness: "pi", ownerId: "test-owner" },
   owner: { harness: "pi", ownerId: "test-owner" },
-  mode: "single",
+  images: [],
+      mode: "single",
   question: { prompt: "Which storage strategy should we use?" },
   options: [
     {

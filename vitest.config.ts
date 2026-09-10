@@ -21,7 +21,8 @@ export default defineConfig({
           exclude: [
             "apps/web/src/App.test.ts",
             "apps/web/src/components/QuestionChatActivation.test.ts",
-            "apps/web/src/components/QuestionWorkspace.test.ts"
+            "apps/web/src/components/QuestionWorkspace.test.ts",
+            "apps/web/src/components/QuestionGallery.test.ts"
           ],
           environment: "node"
         }
@@ -41,7 +42,8 @@ export default defineConfig({
           include: [
             "apps/web/src/App.test.ts",
             "apps/web/src/components/QuestionChatActivation.test.ts",
-            "apps/web/src/components/QuestionWorkspace.test.ts"
+            "apps/web/src/components/QuestionWorkspace.test.ts",
+            "apps/web/src/components/QuestionGallery.test.ts"
           ],
           globals: true,
           environment: "jsdom"

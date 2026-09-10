@@ -3,6 +3,8 @@
   import { formatTimestamp, selectedOptionLabels } from "../lib/format";
   import { historyTone } from "../lib/statusStyles";
   import MetadataRow from "./MetadataRow.svelte";
+  import QuestionGallery from "./QuestionGallery.svelte";
+  import QuestionRevisionHistory from "./QuestionRevisionHistory.svelte";
   import RichContext from "./RichContext.svelte";
   import StatusBadge from "./StatusBadge.svelte";
 
@@ -36,4 +38,6 @@
   </dl>
 
   <RichContext {request} />
+  <QuestionGallery images={request.images} />
+  <QuestionRevisionHistory questionId={request.requestId} />
 </article>

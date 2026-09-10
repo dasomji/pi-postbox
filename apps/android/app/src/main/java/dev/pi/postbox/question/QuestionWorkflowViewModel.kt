@@ -1071,6 +1071,7 @@ data class QuestionDetailUiState(
     val prompt: String,
     val ambiguity: String?,
     val options: List<QuestionOptionUiState>,
+    val images: List<dev.pi.postbox.protocol.QuestionImage> = emptyList(),
     val forkReference: dev.pi.postbox.protocol.ForkReference?,
     val selectedValues: List<String> = emptyList(),
     val note: String = "",
@@ -1145,6 +1146,7 @@ private fun AskRequestSnapshot.toUiQuestion(
         mode = mode.toQuestionMode(),
         prompt = question.prompt,
         ambiguity = question.ambiguity,
+        images = images,
         options = options.map { option ->
             QuestionOptionUiState(
                 value = option.value,

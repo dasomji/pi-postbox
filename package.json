@@ -1,6 +1,6 @@
 {
   "name": "@wienerberliner/pi-postbox",
-  "version": "0.2.14",
+  "version": "0.5.2",
   "description": "Pi Postbox extension and web service for remote human decision handoffs.",
   "license": "MIT",
   "type": "module",
@@ -33,6 +33,7 @@
   },
   "files": [
     "README.md",
+    "docs/question-images.md",
     "packages/extension/package.json",
     "packages/extension/src",
     "packages/protocol/package.json",
@@ -77,6 +78,7 @@
     "@fastify/websocket": "^11.2.0",
     "better-sqlite3": "^12.10.0",
     "fastify": "^5.2.1",
+    "sharp": "0.35.4",
     "typebox": "^1.1.38",
     "web-push": "^3.6.7",
     "ws": "^8.21.0",

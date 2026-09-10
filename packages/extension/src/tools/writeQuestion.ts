@@ -1,5 +1,7 @@
 import {
   UpdateQuestionPayloadSchema,
+  type LocalQuestionImage,
+  type StagedQuestionImage,
   type AskBatchReceipt,
   type AskOption,
   type AskReceipt,
@@ -23,6 +25,7 @@ export const WRITE_QUESTION_ACTIONS = [
 export type WriteQuestionAction = typeof WRITE_QUESTION_ACTIONS[number];
 
 export interface WriteQuestionDraftInput {
+  images?: LocalQuestionImage[];
   localRef: string;
   question: string;
   ambiguity: string;
@@ -34,6 +37,7 @@ export interface WriteQuestionDraftInput {
 }
 
 export interface WriteQuestionInput {
+  images?: LocalQuestionImage[];
   action: WriteQuestionAction;
   questionId?: string;
   question?: string;
@@ -54,10 +58,10 @@ export interface WriteQuestionInput {
 const optionParameters = {
   type: "object", additionalProperties: false, required: ["value", "label"],
   properties: {
-    value: { type: "string", minLength: 1, description: "Machine value." },
-    label: { type: "string", minLength: 1, description: "Visible label." },
-    description: { type: "string", minLength: 1, description: "Optional detail." },
-    impact: { type: "string", minLength: 1, description: "Choice impact." }
+    value: { type: "string", minLength: 1 },
+    label: { type: "string", minLength: 1 },
+    description: { type: "string", minLength: 1 },
+    impact: { type: "string", minLength: 1 }
   }
 } as const;
 
@@ -69,16 +73,19 @@ const ownerParameters = {
   }
 } as const;
 
+const imageParameters = { type: "array", maxItems: 8, description: "Local gallery. Relative paths use Pi cwd. Revise: omitted preserves, [] removes.", items: { type: "object", additionalProperties: false, required: ["path", "alt"], properties: { path: { type: "string", minLength: 1, maxLength: 4000 }, alt: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S" }, caption: { type: "string", maxLength: 2000 } } } } as const;
+
 const draftProperties = {
-  question: { type: "string", minLength: 1, description: "Prompt; create/revise." },
-  ambiguity: { type: "string", minLength: 1, description: "Ambiguity; create/revise." },
+  images: imageParameters,
+  question: { type: "string", minLength: 1 },
+  ambiguity: { type: "string", minLength: 1 },
   options: {
     type: "array", minItems: 1, maxItems: 20, items: optionParameters,
     description: "Create requires; revise optionally replaces."
   },
-  mode: { type: "string", enum: ["single", "multi"], description: "Defaults to single." },
-  requestId: { type: "string", minLength: 1, description: "Idempotency ID." },
-  parentQuestionId: { type: ["string", "null"], description: "Parent for create/reparent; null moves a Question to the root." }
+  mode: { type: "string", enum: ["single", "multi"] },
+  requestId: { type: "string", minLength: 1 },
+  parentQuestionId: { type: ["string", "null"] }
 } as const;
 
 export const writeQuestionParameters = {
@@ -92,38 +99,39 @@ export const writeQuestionParameters = {
       enum: WRITE_QUESTION_ACTIONS,
       description: "Operation to perform. create_batch uses questions; every other action targets one Question."
     },
-    questionId: { type: "string", minLength: 1, description: "Target Question for revise and lifecycle/ownership actions." },
+    questionId: { type: "string", minLength: 1 },
     ...draftProperties,
     questions: {
-      type: "array", minItems: 1, description: "Ordered complete drafts; required only for create_batch.",
+      type: "array", minItems: 1,
       items: {
         type: "object", additionalProperties: false,
         required: ["localRef", "question", "ambiguity", "options"],
         properties: {
+          images: imageParameters,
           question: draftProperties.question,
           ambiguity: draftProperties.ambiguity,
           options: draftProperties.options,
           mode: draftProperties.mode,
           requestId: draftProperties.requestId,
-          parentQuestionId: { type: "string", minLength: 1, description: "Existing parent Question ID." },
-          localRef: { type: "string", minLength: 1, description: "Batch-local identifier." },
-          parentLocalRef: { type: "string", minLength: 1, description: "Earlier batch draft to use as parent." }
+          parentQuestionId: { type: "string", minLength: 1 },
+          localRef: { type: "string", minLength: 1 },
+          parentLocalRef: { type: "string", minLength: 1 }
         }
       }
     },
-    expectedRevision: { type: "integer", minimum: 1, description: "Current content revision for existing-Question actions." },
-    expectedOwnerRevision: { type: "integer", minimum: 1, description: "Current ownership revision for existing-Question actions." },
-    note: { type: "string", description: "Optional cancellation note; cancel only." },
-    replacementQuestionId: { type: "string", minLength: 1, description: "Replacement Question; supersede only." },
-    expectedOwner: { ...ownerParameters, description: "Current owner; transfer and takeover only." },
-    owner: { ...ownerParameters, description: "New owner; transfer only." }
+    expectedRevision: { type: "integer", minimum: 1 },
+    expectedOwnerRevision: { type: "integer", minimum: 1 },
+    note: { type: "string" },
+    replacementQuestionId: { type: "string", minLength: 1 },
+    expectedOwner: { ...ownerParameters },
+    owner: { ...ownerParameters }
   }
 } as const;
 
-const CREATE_FIELDS = ["action", "question", "ambiguity", "options", "mode", "requestId", "parentQuestionId"] as const;
+const CREATE_FIELDS = ["action", "images", "question", "ambiguity", "options", "mode", "requestId", "parentQuestionId"] as const;
 const BATCH_FIELDS = ["action", "questions"] as const;
 const UPDATE_BASE_FIELDS = ["action", "questionId", "expectedRevision", "expectedOwnerRevision"] as const;
-const BATCH_DRAFT_FIELDS = ["localRef", "question", "ambiguity", "options", "mode", "requestId", "parentQuestionId", "parentLocalRef"] as const;
+const BATCH_DRAFT_FIELDS = ["localRef", "images", "question", "ambiguity", "options", "mode", "requestId", "parentQuestionId", "parentLocalRef"] as const;
 
 function assertOnlyFields(value: Record<string, unknown>, allowed: readonly string[], action: string): void {
   const invalid = Object.keys(value).find((field) => !allowed.includes(field));
@@ -143,6 +151,7 @@ export function toAskPostboxInput(input: WriteQuestionInput): AskPostboxInput | 
     requireField(input.ambiguity, "ambiguity", input.action);
     requireField(input.options, "options", input.action);
     return {
+      images: input.images,
       question: input.question!,
       ambiguity: input.ambiguity!,
       options: input.options!,
@@ -161,7 +170,7 @@ export function toAskPostboxInput(input: WriteQuestionInput): AskPostboxInput | 
   return { mode: "batch", questions: input.questions! };
 }
 
-export function toQuestionUpdateRequest(input: WriteQuestionInput): { questionId: string; update: UpdateQuestionPayload } {
+export function toQuestionUpdateRequest(input: WriteQuestionInput, images?: StagedQuestionImage[]): { questionId: string; update: UpdateQuestionPayload } {
   if (input.action === "create" || input.action === "create_batch") {
     throw new Error(`write_question action ${input.action} is not an existing-Question action`);
   }
@@ -171,7 +180,7 @@ export function toQuestionUpdateRequest(input: WriteQuestionInput): { questionId
 
   let update: unknown;
   if (input.action === "revise") {
-    assertOnlyFields(input as unknown as Record<string, unknown>, [...UPDATE_BASE_FIELDS, "question", "ambiguity", "options"], input.action);
+    assertOnlyFields(input as unknown as Record<string, unknown>, [...UPDATE_BASE_FIELDS, "question", "ambiguity", "options", "images"], input.action);
     requireField(input.question, "question", input.action);
     requireField(input.ambiguity, "ambiguity", input.action);
     update = {
@@ -179,6 +188,7 @@ export function toQuestionUpdateRequest(input: WriteQuestionInput): { questionId
       expectedRevision: input.expectedRevision,
       expectedOwnerRevision: input.expectedOwnerRevision,
       question: { prompt: input.question, ambiguity: input.ambiguity },
+      ...(images !== undefined ? { images } : {}),
       ...(input.options ? { options: input.options } : {})
     };
   } else if (input.action === "cancel") {

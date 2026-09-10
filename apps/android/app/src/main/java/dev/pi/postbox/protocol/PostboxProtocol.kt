@@ -100,6 +100,7 @@ data class AskRequestSnapshot(
     val mode: AskMode,
     val question: AskQuestion,
     val options: List<AskOption>,
+    val images: List<QuestionImage> = emptyList(),
     val forkReference: ForkReference? = null,
     val status: AskStatus,
     val createdAt: String,
@@ -112,7 +113,9 @@ data class AskRequestSnapshot(
     val repository: RepositoryIdentity? = null,
     val worktree: WorktreeIdentity? = null,
     val feature: FeatureIdentity? = null
-)
+) {
+    init { require(images.size <= 8) { "Question gallery exceeds eight images" } }
+}
 
 @Serializable
 data class RepositoryIdentity(
@@ -159,6 +162,20 @@ enum class AskResultStatus {
     @SerialName("cancelled") CANCELLED,
     @SerialName("expired") EXPIRED,
     @SerialName("unavailable") UNAVAILABLE
+}
+
+@Serializable
+data class QuestionImage(
+    val imageId: String, val mediaType: String, val byteSize: Long,
+    val width: Int, val height: Int, val alt: String, val caption: String? = null
+) {
+    init {
+        require(imageId.matches(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")))
+        require(mediaType in listOf("image/png", "image/jpeg", "image/webp"))
+        require(width in 1..8192 && height in 1..8192 && width.toLong() * height <= 25_000_000)
+        require(byteSize in 1..(128L * 1024 * 1024))
+        require(alt.isNotBlank() && alt.length <= 2000 && (caption?.length ?: 0) <= 2000)
+    }
 }
 
 @Serializable

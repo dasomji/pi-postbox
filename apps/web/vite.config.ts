@@ -34,6 +34,7 @@ export default defineConfig({
     allowedHosts,
     proxy: {
       "/healthz": backend,
+      "/media": backend,
       "/api": {
         target: backend,
         changeOrigin: true,

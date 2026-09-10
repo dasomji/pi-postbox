@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   AskCreatePayloadSchema,
+  IMAGE_ERROR_CODES,
   AskBatchQuestionDraftSchema,
+  type LocalQuestionImage,
+  type StagedQuestionImage,
   type AskCreatePayload,
   type AskOption,
   type AskReceipt,
@@ -12,6 +15,7 @@ import {
 import type { PostboxClient } from "../client/PostboxClient.js";
 
 export interface AskPostboxInput {
+  images?: LocalQuestionImage[];
   question: string;
   ambiguity: string;
   mode?: "single" | "multi";
@@ -111,7 +115,7 @@ export interface AskPostboxWaitLifecycle {
 
 export async function executeAskPostbox(
   input: AskPostboxInput | AskPostboxBatchInput,
-  client: Pick<PostboxClient, "createAsk"> | Pick<PostboxClient, "ask"> | { createAskBatch(payload: unknown, signal?: AbortSignal): Promise<AskBatchReceipt> },
+  client: (Pick<PostboxClient, "createAsk"> | Pick<PostboxClient, "ask"> | { createAskBatch(payload: unknown, signal?: AbortSignal): Promise<AskBatchReceipt> }) & Partial<Pick<PostboxClient, "prepareImages">>,
   sessionId: string,
   signal?: AbortSignal,
   lifecycle?: AskPostboxWaitLifecycle
@@ -136,9 +140,35 @@ export async function executeAskPostbox(
       forkReference: item.forkReference,
       expiresAt: item.expiresAt
     }));
-    return client.createAskBatch({ sessionId, questions }, signal);
+    const failures = new Map<string, AskBatchReceipt["items"][number]>();
+    const prepared = [];
+    for (const [index, draft] of questions.entries()) {
+      try {
+        const images = input.questions[index]!.images;
+        if (images !== undefined) {
+          if (!client.prepareImages) throw new Error("Image staging is unavailable");
+          draft.images = await client.prepareImages(images, signal, draft.requestId);
+        }
+        prepared.push(draft);
+      } catch (error) {
+        signal?.throwIfAborted();
+        const code = IMAGE_ERROR_CODES.find(code => code === (error as { code?: string })?.code) ?? "invalid_draft";
+        failures.set(draft.localRef, { localRef: draft.localRef, status: "rejected", reason: { code, message: error instanceof Error ? error.message : "Image preparation failed" } });
+      }
+    }
+    signal?.throwIfAborted();
+    const receipt = prepared.length ? await client.createAskBatch({ sessionId, questions: prepared }, signal) : undefined;
+    const accepted = new Map(receipt?.items.map(item => [item.localRef, item]));
+    const items = questions.map(draft => failures.get(draft.localRef) ?? accepted.get(draft.localRef)!);
+    const count = items.filter(item => item.status === "created").length;
+    return { status: count === items.length ? "created" : count ? "partial" : "rejected", items };
   }
   const payload = createAskPayload(input, sessionId);
+  if (input.images !== undefined) {
+    if (!client.prepareImages) throw new Error("Image staging is unavailable");
+    payload.images = await client.prepareImages(input.images, signal, payload.requestId);
+  }
+  signal?.throwIfAborted();
   void lifecycle;
   if ("createAsk" in client) return client.createAsk(payload, signal);
   // Compatibility for embedders compiled against the synchronous v1 client.
