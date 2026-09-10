@@ -397,10 +397,10 @@ class QuestionWorkflowScreenTest {
                             snapshot = QuestionChatSnapshot(
                                 requestId = question.requestId,
                                 state = QuestionChatState.READY,
-                                forkKind = QuestionChatForkKind.EXACT,
+                                forkKind = QuestionChatForkKind.FRESH,
                                 model = QuestionChatModel(
                                     id = "anthropic/claude-sonnet-4",
-                                    source = QuestionChatModelSource.ORIGINATING
+                                    source = QuestionChatModelSource.POSTBOX_SETTINGS
                                 ),
                                 sequence = 0,
                                 messages = emptyList(),
@@ -468,10 +468,10 @@ class QuestionWorkflowScreenTest {
                                 snapshot = QuestionChatSnapshot(
                                     requestId = question.requestId,
                                     state = QuestionChatState.READY,
-                                    forkKind = QuestionChatForkKind.EXACT,
+                                    forkKind = QuestionChatForkKind.FRESH,
                                     model = QuestionChatModel(
                                         id = "anthropic/claude-sonnet-4",
-                                        source = QuestionChatModelSource.ORIGINATING
+                                        source = QuestionChatModelSource.POSTBOX_SETTINGS
                                     ),
                                     sequence = 0,
                                     messages = emptyList(),

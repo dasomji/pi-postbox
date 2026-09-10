@@ -11,6 +11,7 @@ const val POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER = "X-Postbox-Client-Protocol-Ve
 
 enum class ProtocolMessageSource(val displayName: String) {
     HEALTH("server health"),
+    SETTINGS_HTTP("settings response"),
     STATE_HTTP("state response"),
     STATE_STREAM("state update"),
     QUESTION_CHAT_HTTP("Question Chat response"),

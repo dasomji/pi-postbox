@@ -291,8 +291,8 @@ class QuestionWorkflowQuestionChatTest {
 private fun readyChatSnapshot(requestId: String = "ask-single"): QuestionChatSnapshot = QuestionChatSnapshot(
     requestId = requestId,
     state = QuestionChatState.READY,
-    forkKind = QuestionChatForkKind.EXACT,
-    model = QuestionChatModel(id = "anthropic/claude-sonnet-4", source = QuestionChatModelSource.ORIGINATING),
+    forkKind = QuestionChatForkKind.FRESH,
+    model = QuestionChatModel(id = "anthropic/claude-sonnet-4", source = QuestionChatModelSource.POSTBOX_SETTINGS),
     sequence = 0,
     messages = emptyList(),
     tools = emptyList()

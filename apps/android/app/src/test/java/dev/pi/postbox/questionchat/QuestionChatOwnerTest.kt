@@ -113,7 +113,7 @@ class QuestionChatOwnerTest {
         assertTrue(owner.state.value.session?.snapshot?.messages?.isEmpty() == true)
         assertEquals("", owner.state.value.draftText)
         assertNull(owner.state.value.pendingSend)
-        assertEquals("Question Chat is answering.", owner.state.value.actionMessage)
+        assertNull(owner.state.value.actionMessage)
 
         transport.emitEvent(
             QuestionChatStreamEvent.Event(
@@ -649,8 +649,8 @@ private fun readySnapshot(
 ): QuestionChatSnapshot = QuestionChatSnapshot(
     requestId = requestId,
     state = state,
-    forkKind = QuestionChatForkKind.EXACT,
-    model = QuestionChatModel(id = "anthropic/claude-sonnet-4", source = QuestionChatModelSource.ORIGINATING),
+    forkKind = QuestionChatForkKind.FRESH,
+    model = QuestionChatModel(id = "anthropic/claude-sonnet-4", source = QuestionChatModelSource.POSTBOX_SETTINGS),
     sequence = sequence,
     messages = messages,
     tools = emptyList()

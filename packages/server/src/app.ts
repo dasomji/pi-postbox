@@ -1,3 +1,5 @@
+import { SettingsStore } from "./services/settingsStore.js";
+import { registerSettingsRoutes } from "./routes/settingsRoutes.js";
 import fastifyCompress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
@@ -42,6 +44,7 @@ import { ImageStore } from "./services/imageStore.js";
 import { registerImageRoutes } from "./routes/imageRoutes.js";
 
 export interface CreatePostboxAppOptions {
+  loadChatModels?: typeof import("./services/modelCatalog.js").loadAvailableChatModels;
   logger?: FastifyServerOptions["logger"];
   startedAtMs?: number;
   now?: () => number;
@@ -134,6 +137,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   }
   const temporaryMedia = options.databasePath === ":memory:" ? mkdtempSync(join(tmpdir(), "postbox-images-")) : undefined;
   const imageStore = new ImageStore(db, temporaryMedia ?? `${options.databasePath ?? defaultDatabasePath()}.images`, now, randomUUID());
+  const settingsStore = new SettingsStore(db);
   const requestStore = new RequestStore(db, now, {
     imageStore,
     recordTelemetry: (event) => app.log.info({ questionTelemetry: event }, "question telemetry")
@@ -247,6 +251,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   });
 
   await app.register(websocket, { options: { maxPayload: options.websocketMaxPayloadBytes ?? 2 * 1024 * 1024 } });
+  await registerSettingsRoutes(app, settingsStore, options.loadChatModels);
   await registerStateRoutes(app, getSnapshot);
   await registerSseRoutes(app, broadcaster);
   await registerMetadataRoutes(app, sessionStore, broadcaster);
@@ -254,6 +259,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   await registerPushRoutes(app, pushStore);
   await registerRequestRoutes(app, requestStore, broadcaster, expireDueAndBroadcast, {
     relay: questionChatRelay,
+    settingsStore,
     sessionStore
   });
   await registerAdminRoutes(app, { onShutdownRequest: options.onShutdownRequest });

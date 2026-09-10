@@ -1,5 +1,7 @@
 # Spec: Add question-scoped Chat to Postbox Questions
 
+> Updated 2026-09-10: the exact-fork requirements below are superseded by [ADR 0004](../adr/0004-fresh-question-chat-settings.md). Current chat starts a fresh question-only session with server-backed model/effort defaults shared by web and Android. Historical design text is retained below.
+
 ## Problem Statement
 
 A Postbox Question currently gives the user structured context, fixed answer options, and an optional Note, but the user may still not understand the asking agent's terminology, the underlying technical concepts, or the trade-offs well enough to make a confident decision. Resolving that uncertainty requires leaving Postbox, finding the originating Pi Session, and manually reconstructing the context. That defeats the focused remote-decision workflow, especially from a phone.

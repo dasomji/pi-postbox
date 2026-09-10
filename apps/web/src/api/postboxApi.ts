@@ -1,3 +1,4 @@
+import { AvailableChatModelsSchema, PostboxSettingsSchema, UpdatePostboxSettingsSchema, type PostboxSettings } from "@pi-postbox/protocol";
 import {
   HealthResponseSchema,
   PROTOCOL_VERSION,
@@ -198,4 +199,26 @@ export function connectQuestionChatEvents(requestId: string, onEvent: (event: Qu
       if (!opened) rejectReady?.(new Error("Question Chat event stream closed before connecting."));
     }
   };
+}
+
+export async function fetchSettings(): Promise<PostboxSettings> {
+  const response = await fetch("/api/settings", { headers: { "X-Postbox-Client-Protocol-Version": PROTOCOL_VERSION } });
+  if (!response.ok) throw new Error(`Could not load settings (${response.status}).`);
+  return PostboxSettingsSchema.parse(await response.json());
+}
+
+export async function fetchChatModels() {
+  const response = await fetch("/api/settings/models", { cache: "no-store", headers: { "X-Postbox-Client-Protocol-Version": PROTOCOL_VERSION } });
+  if (!response.ok) throw new Error("Could not load available models from Pi. Try again.");
+  return AvailableChatModelsSchema.parse(await response.json());
+}
+
+export async function saveSettings(settings: PostboxSettings): Promise<PostboxSettings> {
+  const response = await fetch("/api/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json", "X-Postbox-Client-Protocol-Version": PROTOCOL_VERSION },
+    body: JSON.stringify(UpdatePostboxSettingsSchema.parse(settings))
+  });
+  if (response.status === 409) throw new Error("Settings changed on another device. Reload saved settings before saving again.");
+  if (!response.ok) throw new Error(`Could not save settings (${response.status}).`);
+  return PostboxSettingsSchema.parse(await response.json());
 }

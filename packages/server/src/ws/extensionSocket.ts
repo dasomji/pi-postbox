@@ -107,7 +107,7 @@ export async function registerExtensionSocket(
     let recoveryOffersComplete = false;
     const pendingRecoveries = new Map<string, {
       requestId: string;
-      forkKind: "exact";
+      forkKind: "fresh";
       disposition: "recover" | "delete";
       reason: "pending" | "missing" | "terminal" | "wrong_owner";
     }>();

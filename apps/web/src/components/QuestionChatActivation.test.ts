@@ -16,8 +16,8 @@ function snapshot(overrides: Partial<QuestionChatSnapshot> = {}): QuestionChatSn
   return {
     requestId: "ask-ui",
     state: "ready",
-    forkKind: "exact",
-    model: { id: "anthropic/claude-sonnet-4", source: "originating" },
+    forkKind: "fresh",
+    model: { id: "anthropic/claude-sonnet-4", source: "postbox-settings" },
     sequence: 0,
     messages: [],
     tools: [],
@@ -338,7 +338,7 @@ describe("Question Chat first message", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Question Chat" }));
     expect((await screen.findByRole("alert")).textContent).toContain("originating Pi extension is offline");
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText(/Pi default fallback/)).toBeTruthy();
+    expect(await screen.findByText(/· Pi default/)).toBeTruthy();
     expect(screen.getByText(/Originating model is unavailable/)).toBeTruthy();
     expect(activate).toHaveBeenCalledOnce();
     expect(probeSnapshot).toHaveBeenCalledOnce();

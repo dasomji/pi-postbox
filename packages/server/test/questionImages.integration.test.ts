@@ -136,6 +136,7 @@ describe("Question attachments through public write inputs, extension staging an
     expect((await full("missing-media")).images).toEqual(current.images);
     const answer = await fetch(`${serverUrl}/api/requests/missing-media/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: 1, selectedValues: ["yes"] }) });
     expect(answer.status).toBe(200);
+    await answer.arrayBuffer();
   });
 
   it("enforces aggregate source limits on both sides and stops cancellation or connection changes during staging", async () => {

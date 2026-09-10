@@ -264,10 +264,10 @@ private fun evidenceChatWorkflow(
                 snapshot = QuestionChatSnapshot(
                     requestId = "ask-evidence",
                     state = state,
-                    forkKind = QuestionChatForkKind.EXACT,
+                    forkKind = QuestionChatForkKind.FRESH,
                     model = QuestionChatModel(
                         id = "anthropic/claude-sonnet-4",
-                        source = QuestionChatModelSource.ORIGINATING
+                        source = QuestionChatModelSource.POSTBOX_SETTINGS
                     ),
                     sequence = messages.size + tools.size,
                     messages = messages,

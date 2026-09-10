@@ -60,6 +60,9 @@
     <!-- Airmail envelope holding notification settings and the decision history shortcut. -->
     <div class="airmail-border rounded-sm shadow-postbox-section">
       <div class="px-3 py-2">
+        <button class="flex w-full items-center rounded-md px-1 py-2 text-left text-sm text-postbox-subtle hover:bg-postbox-text/5"
+          aria-current={store.selection.kind === "settings" ? "page" : undefined}
+          onclick={() => { store.selection = { kind: "settings" }; onNavigate?.(); }}>Settings</button>
         <NotificationSubscriptionControl />
         <div class="my-2 border-t border-dashed border-postbox-border-strong" aria-hidden="true"></div>
         <button

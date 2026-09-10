@@ -35,11 +35,11 @@ export interface QuestionChatRelayOptions {
   commandDedupeCapacity?: number;
 }
 
-type PendingKind = "activate-exact" | "snapshot" | "send" | "stop";
+type PendingKind = "activate-fresh" | "snapshot" | "send" | "stop";
 export interface QuestionChatIdentity {
   requestId: string;
   ownerSessionId: string;
-  forkKind: "exact";
+  forkKind: "fresh";
 }
 interface PendingCommand {
   kind: PendingKind;
@@ -154,8 +154,8 @@ export class QuestionChatRelay {
   }
 
   async activate(requestId: string, ownerSessionId: string, source: QuestionChatSource, callerKey?: string): Promise<QuestionChatActivationResponse> {
-    const identity: QuestionChatIdentity = { requestId, ownerSessionId, forkKind: "exact" };
-    return this.activateKind(identity, "activate-exact", {
+    const identity: QuestionChatIdentity = { requestId, ownerSessionId, forkKind: "fresh" };
+    return this.activateKind(identity, "activate-fresh", {
       type: "chat.activate",
       requestId: "",
       payload: { requestId, ownerSessionId, source }
@@ -164,7 +164,7 @@ export class QuestionChatRelay {
 
   private async activateKind(
     identity: QuestionChatIdentity,
-    pendingKind: "activate-exact",
+    pendingKind: "activate-fresh",
     message: ExtensionServerMessage & { requestId: string },
     callerKey?: string
   ): Promise<QuestionChatActivationResponse> {
@@ -264,9 +264,9 @@ export class QuestionChatRelay {
 
   resolveReady(commandId: string, connectionId: string, snapshot: QuestionChatSnapshot): void {
     const pending = this.pending.get(commandId);
-    if (!pending || pending.kind !== "activate-exact") return;
+    if (!pending || pending.kind !== "activate-fresh") return;
     const normalized = QuestionChatSnapshotSchema.parse(snapshot);
-    const expectedKind = "exact";
+    const expectedKind = "fresh";
     if (normalized.forkKind !== expectedKind) {
       this.resolveError(commandId, connectionId, normalized.requestId, {
         code: "runtime_failure",

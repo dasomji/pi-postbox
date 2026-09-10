@@ -2,6 +2,7 @@
   import { layout } from "../lib/layout.svelte";
   import { mockRequest, mockSession } from "../lib/mock";
   import { store } from "../lib/store.svelte";
+  import SettingsPage from "./SettingsPage.svelte";
   import EmptyMain from "./EmptyMain.svelte";
   import HistoryView from "./HistoryView.svelte";
   import OpenQuestionsQueue from "./OpenQuestionsQueue.svelte";
@@ -30,7 +31,9 @@
   class:overflow-hidden={showMock || selection.kind === "request"}
   class:overflow-y-auto={!showMock && selection.kind !== "request"}
 >
-  {#if showMock}
+  {#if selection.kind === "settings"}
+    <SettingsPage />
+  {:else if showMock}
     <QuestionDetail request={mockRequest} session={mockSession} isMock />
   {:else if selection.kind === "request"}
     {#if store.selectedRequest}

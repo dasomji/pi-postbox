@@ -14,7 +14,8 @@ export type Selection =
   | { kind: "session"; sessionId: string }
   | { kind: "request"; requestId: string }
   | { kind: "project"; projectId: string }
-  | { kind: "history" };
+  | { kind: "history" }
+  | { kind: "settings" };
 
 export type ConnectionState =
   | { status: "checking" }

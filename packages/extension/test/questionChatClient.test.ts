@@ -61,8 +61,8 @@ describe("extension Question Chat commands", () => {
       snapshot: {
         requestId: "ask-shared-runtime",
         state: "ready" as const,
-        forkKind: "exact" as const,
-        model: { id: "test/model", source: "originating" as const },
+        forkKind: "fresh" as const,
+        model: { id: "test/model", source: "postbox-settings" as const },
         sequence: 0,
         messages: []
       },
@@ -91,7 +91,7 @@ describe("extension Question Chat commands", () => {
     const payload = {
       requestId: "ask-shared-runtime",
       ownerSessionId: "session-chat",
-      source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+      source: { cwd: "/repo", question: {revision: 1, question: "Choose", ambiguity: "Why", options: [{value: "yes", label: "Yes"}], mode: "single"}, settings: {model: null, effort: "medium"} }
     };
     socket.serverMessage({ type: "chat.activate", requestId: "browser-activation-a", payload });
     socket.serverMessage({ type: "chat.activate", requestId: "browser-activation-b", payload });
@@ -207,8 +207,8 @@ describe("extension Question Chat commands", () => {
     const snapshot = {
       requestId: "ask-terminal-client",
       state: "ready" as const,
-      forkKind: "exact" as const,
-      model: { id: "test/model", source: "originating" as const },
+      forkKind: "fresh" as const,
+      model: { id: "test/model", source: "postbox-settings" as const },
       sequence: 0,
       messages: []
     };
@@ -240,7 +240,7 @@ describe("extension Question Chat commands", () => {
       payload: {
         requestId: snapshot.requestId,
         ownerSessionId: "session-chat",
-        source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+        source: { cwd: "/repo", question: {revision: 1, question: "Choose", ambiguity: "Why", options: [{value: "yes", label: "Yes"}], mode: "single"}, settings: {model: null, effort: "medium"} }
       }
     });
     await vi.waitFor(() => expect(socket.sent).toContainEqual({
@@ -328,7 +328,7 @@ describe("extension Question Chat commands", () => {
       payload: {
         requestId: "ask-activation-race",
         ownerSessionId: "session-chat",
-        source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+        source: { cwd: "/repo", question: {revision: 1, question: "Choose", ambiguity: "Why", options: [{value: "yes", label: "Yes"}], mode: "single"}, settings: {model: null, effort: "medium"} }
       }
     });
     await vi.waitFor(() => expect(questionChats.activate).toHaveBeenCalledOnce());
@@ -339,8 +339,8 @@ describe("extension Question Chat commands", () => {
     finishActivation({
       requestId: "ask-activation-race",
       state: "ready",
-      forkKind: "exact",
-      model: { id: "test/model", source: "originating" },
+      forkKind: "fresh",
+      model: { id: "test/model", source: "postbox-settings" },
       sequence: 0,
       messages: []
     });
@@ -354,8 +354,8 @@ describe("extension Question Chat commands", () => {
     const snapshot = {
       requestId: "ask-recover",
       state: "ready" as const,
-      forkKind: "exact" as const,
-      model: { id: "test/model", source: "originating" as const },
+      forkKind: "fresh" as const,
+      model: { id: "test/model", source: "postbox-settings" as const },
       sequence: 12,
       messages: [{ id: "prior", role: "assistant" as const, text: "Before reload", status: "final" as const }]
     };
@@ -367,7 +367,7 @@ describe("extension Question Chat commands", () => {
       subscribe: vi.fn(() => vi.fn()),
       cleanup: vi.fn(),
       listRecoveryOffers: vi.fn(() => [
-        { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "exact" as const }
+        { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "fresh" as const }
       ]),
       reconcile: vi.fn(async (_owner: string, decisions: Array<{ requestId: string; action: string }>) =>
         decisions.map((decision) => decision.action === "recover"
@@ -394,23 +394,23 @@ describe("extension Question Chat commands", () => {
       {
         type: "chat.recover.offer",
         requestId: expect.any(String),
-        payload: { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "exact" }
+        payload: { requestId: "ask-recover", ownerSessionId: "session-chat", forkKind: "fresh" }
       }
     ]));
     let offers = socket.sent.filter((message: any) => message.type === "chat.recover.offer") as any[];
     socket.serverMessage({
       type: "chat.reconcile",
       requestId: offers[0]!.requestId,
-      payload: { requestId: "ask-recover", forkKind: "exact", action: "recover", reason: "pending" }
+      payload: { requestId: "ask-recover", forkKind: "fresh", action: "recover", reason: "pending" }
     });
     await vi.waitFor(() => expect(questionChats.reconcile).toHaveBeenCalledOnce());
     expect(questionChats.reconcile).toHaveBeenCalledWith("session-chat", [
-      { requestId: "ask-recover", forkKind: "exact", action: "recover" }
+      { requestId: "ask-recover", forkKind: "fresh", action: "recover" }
     ]);
     expect(socket.sent).toContainEqual({
       type: "chat.reconciled",
       requestId: offers[0]!.requestId,
-      payload: { requestId: "ask-recover", forkKind: "exact", result: { status: "recovered", snapshot } }
+      payload: { requestId: "ask-recover", forkKind: "fresh", result: { status: "recovered", snapshot } }
     });
     expect(questionChats.subscribe).toHaveBeenCalledWith("ask-recover", expect.any(Function));
     client.stop();
@@ -421,15 +421,15 @@ describe("extension Question Chat commands", () => {
       activate: vi.fn(async ({ requestId }: { requestId: string }) => ({
         requestId,
         state: "ready" as const,
-        forkKind: "exact" as const,
-        model: { id: "test/source", source: "originating" as const },
+        forkKind: "fresh" as const,
+        model: { id: "test/source", source: "postbox-settings" as const },
         messages: [] as []
       })),
       getSnapshot: vi.fn(async (requestId: string) => ({
         requestId,
         state: "ready" as const,
-        forkKind: "exact" as const,
-        model: { id: "test/source", source: "originating" as const },
+        forkKind: "fresh" as const,
+        model: { id: "test/source", source: "postbox-settings" as const },
         sequence: 7,
         messages: [{ id: "fork-user", role: "user" as const, text: "Earlier", status: "final" as const }]
       })),
@@ -476,7 +476,7 @@ describe("extension Question Chat commands", () => {
       payload: {
         requestId: "ask-chat",
         ownerSessionId: "session-chat",
-        source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+        source: { cwd: "/repo", question: {revision: 1, question: "Choose", ambiguity: "Why", options: [{value: "yes", label: "Yes"}], mode: "single"}, settings: {model: null, effort: "medium"} }
       }
     });
 
@@ -487,8 +487,8 @@ describe("extension Question Chat commands", () => {
       payload: {
         requestId: "ask-chat",
         state: "ready",
-        forkKind: "exact",
-        model: { id: "test/source", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "test/source", source: "postbox-settings" },
         messages: []
       }
     });
@@ -569,7 +569,7 @@ describe("extension Question Chat commands", () => {
       payload: {
         requestId: "ask-chat",
         ownerSessionId: "another-session",
-        source: { agentSessionPath: "/source.jsonl", leafId: "leaf", cwd: "/repo" }
+        source: { cwd: "/repo", question: {revision: 1, question: "Choose", ambiguity: "Why", options: [{value: "yes", label: "Yes"}], mode: "single"}, settings: {model: null, effort: "medium"} }
       }
     });
 

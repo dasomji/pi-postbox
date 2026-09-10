@@ -5,8 +5,8 @@ import { connectQuestionChatEvents, probeQuestionChatSnapshot } from "./postboxA
 const SNAPSHOT: QuestionChatSnapshot = {
   requestId: "question/probe",
   state: "ready",
-  forkKind: "exact",
-  model: { id: "test/model", source: "originating" },
+  forkKind: "fresh",
+  model: { id: "test/model", source: "postbox-settings" },
   sequence: 0,
   messages: [],
   tools: []

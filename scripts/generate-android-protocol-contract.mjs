@@ -107,7 +107,7 @@ const health = {
 HealthResponseSchema.parse(health);
 
 const chatSnapshot = {
-  requestId: "ask-contract-1", state: "ready", forkKind: "exact", model: { id: "test/model", source: "originating" }, sequence: 0,
+  requestId: "ask-contract-1", state: "ready", forkKind: "fresh", model: { id: "test/model", source: "postbox-settings" }, sequence: 0,
   messages: [
     { id: "user-1", role: "user", text: "Explain this", status: "final" },
     ...wireValues.questionChatAssistantStatuses.map((status) => ({ id: `assistant-${status}`, role: "assistant", text: "Explanation", status }))

@@ -87,7 +87,6 @@ import dev.pi.postbox.questionchat.QuestionChatActivationUiState
 import dev.pi.postbox.questionchat.QuestionChatAvailabilityError
 import dev.pi.postbox.questionchat.QuestionChatConnectionState
 import dev.pi.postbox.questionchat.QuestionChatMessage
-import dev.pi.postbox.questionchat.QuestionChatModelSource
 import dev.pi.postbox.questionchat.QuestionChatRenderedAssistantMessage
 import dev.pi.postbox.questionchat.QuestionChatSnapshot
 import dev.pi.postbox.questionchat.QuestionChatStarter
@@ -428,7 +427,6 @@ private fun QuestionChatSessionWorkspace(
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                 )
             }
-            QuestionChatModelDisclosure(snapshot)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -624,22 +622,6 @@ private fun questionChatContentItemCount(
     return snapshot.messages.size +
         (if (snapshot.tools.isNotEmpty()) 1 else 0) +
         (if (showStarters) 1 else 0)
-}
-
-@Composable
-private fun QuestionChatModelDisclosure(snapshot: QuestionChatSnapshot) {
-    Text(
-        text = buildString {
-            append("Model: ")
-            append(snapshot.model.id)
-            if (snapshot.model.source == QuestionChatModelSource.PI_DEFAULT) append(" · Pi default fallback")
-        },
-        fontSize = 12.sp,
-        color = PostalColors.muted
-    )
-    snapshot.model.fallbackReason?.let {
-        Text(it, fontSize = 12.sp, color = PostalColors.warningForeground)
-    }
 }
 
 @Composable

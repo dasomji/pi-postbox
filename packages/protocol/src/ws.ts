@@ -49,7 +49,7 @@ const OwnerPageSizeSchema = z.number().int().positive().max(POSTBOX_OWNER_PAGE_M
 const QuestionChatRecoveryOfferSchema = z.object({
   requestId: WsCorrelationIdSchema,
   ownerSessionId: z.string().min(1).max(200),
-  forkKind: z.literal("exact")
+  forkKind: z.literal("fresh")
 });
 
 const QuestionDiscoveryScopeSchema = z.enum(["owner", "feature", "worktree", "repository", "global"]);
@@ -197,7 +197,7 @@ export const ExtensionClientMessageSchema = z.discriminatedUnion("type", [
     requestId: WsCorrelationIdSchema,
     payload: z.object({
       requestId: WsCorrelationIdSchema,
-      forkKind: z.literal("exact"),
+      forkKind: z.literal("fresh"),
       result: z.discriminatedUnion("status", [
         z.object({ status: z.literal("recovered"), snapshot: QuestionChatSnapshotSchema }),
         z.object({ status: z.literal("deleted") }),
@@ -317,13 +317,13 @@ export const ExtensionServerMessageSchema = z.discriminatedUnion("type", [
     payload: z.discriminatedUnion("action", [
       z.object({
         requestId: WsCorrelationIdSchema,
-        forkKind: z.literal("exact"),
+        forkKind: z.literal("fresh"),
         action: z.literal("recover"),
         reason: z.literal("pending")
       }),
       z.object({
         requestId: WsCorrelationIdSchema,
-        forkKind: z.literal("exact"),
+        forkKind: z.literal("fresh"),
         action: z.literal("delete"),
         reason: z.enum(["missing", "terminal", "wrong_owner"])
       })

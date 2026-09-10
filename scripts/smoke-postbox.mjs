@@ -445,11 +445,12 @@ async function main() {
 
     const activationResponse = fetch(`${baseUrl}/api/requests/${encodeURIComponent(requestId)}/chat`, { method: "POST" });
     const activationCommand = await nextMessage(socket);
-    assert(activationCommand.type === "chat.activate", "Fake extension did not receive exact Chat activation");
+    assert(activationCommand.type === "chat.activate", "Fake extension did not receive fresh Chat activation");
     assert(
-      activationCommand.payload.source.agentSessionPath === join(tmp, "fake-source.jsonl") &&
-        activationCommand.payload.source.leafId === "smoke-source-leaf",
-      "Exact Chat activation did not preserve source transcript coordinates"
+      activationCommand.payload.source.question.question === "Is the release smoke path healthy?" &&
+        activationCommand.payload.source.settings.effort === "medium" &&
+        !("agentSessionPath" in activationCommand.payload.source),
+      "Fresh Chat activation did not supply the question and server settings"
     );
     const exactReadyMessage = {
       type: "chat.ready",
@@ -457,8 +458,8 @@ async function main() {
       payload: {
         requestId,
         state: "ready",
-        forkKind: "exact",
-        model: { id: "smoke/fake-model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "smoke/fake-model", source: "postbox-settings" },
         sequence: 0,
         messages: []
       }
@@ -488,8 +489,8 @@ async function main() {
       payload: {
         requestId,
         state: "ready",
-        forkKind: "exact",
-        model: { id: "smoke/fake-model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "smoke/fake-model", source: "postbox-settings" },
         sequence: 0,
         messages: []
       }
@@ -643,15 +644,15 @@ async function main() {
     socket.send(JSON.stringify({
       type: "chat.recover.offer",
       requestId: "smoke-recovery-offer",
-      payload: { requestId, ownerSessionId: sessionId, forkKind: "exact" }
+      payload: { requestId, ownerSessionId: sessionId, forkKind: "fresh" }
     }));
     const decision = await recoveryDecision;
     assert(decision.type === "chat.reconcile" && decision.payload.action === "recover", "Server did not authorize pending Chat recovery");
     const recoveredSnapshot = {
       requestId,
       state: "ready",
-      forkKind: "exact",
-      model: { id: "smoke/fake-model", source: "originating" },
+      forkKind: "fresh",
+      model: { id: "smoke/fake-model", source: "postbox-settings" },
       sequence: 9,
       messages: [{ id: privateAssistantMessageId, role: "assistant", text: privateAssistantText, status: "stopped" }],
       tools: [{ id: privateToolCallId, tool: "repository_read", target: privateRepositoryTarget, state: "success", details: privateRepositoryDetails }]
@@ -660,7 +661,7 @@ async function main() {
     socket.send(JSON.stringify({
       type: "chat.reconciled",
       requestId: "smoke-recovery-offer",
-      payload: { requestId, forkKind: "exact", result: { status: "recovered", snapshot: recoveredSnapshot } }
+      payload: { requestId, forkKind: "fresh", result: { status: "recovered", snapshot: recoveredSnapshot } }
     }));
     assert((await recoveryAccepted).type === "ack", "Server did not accept recovered Chat snapshot");
     socket.send(JSON.stringify({
