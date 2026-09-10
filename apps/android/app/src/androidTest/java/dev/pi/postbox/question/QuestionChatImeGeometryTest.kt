@@ -188,10 +188,10 @@ private fun geometryQuestionChatWorkflow(): QuestionChatWorkflowUiState {
                 snapshot = QuestionChatSnapshot(
                     requestId = "ask-ime",
                     state = QuestionChatState.READY,
-                    forkKind = QuestionChatForkKind.EXACT,
+                    forkKind = QuestionChatForkKind.FRESH,
                     model = QuestionChatModel(
                         id = "anthropic/claude-sonnet-4",
-                        source = QuestionChatModelSource.ORIGINATING
+                        source = QuestionChatModelSource.POSTBOX_SETTINGS
                     ),
                     sequence = 12,
                     messages = List(12) { index ->

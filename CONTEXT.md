@@ -13,19 +13,21 @@ The underlying Pi conversation/runtime session represented by Pi's session file 
 _Avoid_: Chat, process, agent run
 
 **Postbox Question**:
-A structured human decision request that belongs to the Pi Session that created it. If that Pi Session is shut down or replaced, the server cancels unresolved questions rather than moving them to the replacement session.
+A structured human decision request that belongs to the Pi Session that created it. Questions survive session shutdown and replacement under their durable owner identity; see ADR 0001.
 _Avoid_: Prompt, card, ticket
 
 **Question Chat**:
 A private, question-scoped interviewer runtime that helps a human understand one pending Postbox Question without selecting, submitting, cancelling, or otherwise resolving it. Question Chat is distinct from the originating Pi Session and its transcript is never persisted by the Postbox server.
 _Avoid_: Chat (when used alone), Pi Chat, conversation
 
-**Exact fork**:
-The only Question Chat form: a private branch of the originating Pi Session at the recorded Postbox Question leaf, with the recorded authenticated model preferred before Pi's configured default. If the source path or leaf is unavailable, Question Chat cannot start; Postbox does not reconstruct a conversation from Question fields.
-_Avoid_: Copy, clone, source conversation, reconstructed fork, synthetic conversation
+**Fresh Question Chat session**:
+A private interviewer session seeded only with the selected Question, ambiguity and options. It does not inherit the originating transcript. The server supplies the shared model and effort defaults at activation; existing chats retain their settings. Runtime execution still belongs to the originating extension host.
+
+**Postbox Settings**:
+Server-persisted defaults shared by web and Android clients on one Postbox installation. Revisions prevent one device from silently overwriting another device's edits. Model credentials remain local to the runtime host.
 
 **Recovery manifest**:
-A private, versioned metadata file beside a Question Chat fork that lets the extension reconcile and reopen that fork after reload or restart. It contains no Question Chat transcript and is deleted with terminal or invalid runtimes.
+A private, versioned metadata file beside a Question Chat session that lets the extension reconcile and reopen that session after reload or restart. It contains no Question Chat transcript and is deleted with terminal or invalid runtimes.
 _Avoid_: Chat record, transcript cache, server manifest
 
 **Question Chat turn**:

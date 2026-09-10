@@ -107,8 +107,8 @@ describe("Question Chat activation protocol", () => {
         snapshot: {
           requestId: "ask-25",
           state: "ready",
-          forkKind: "exact",
-          model: { id: "anthropic/claude-sonnet-4", source: "originating" },
+          forkKind: "fresh",
+          model: { id: "anthropic/claude-sonnet-4", source: "postbox-settings" },
           messages: []
         }
       })
@@ -120,7 +120,7 @@ describe("Question Chat activation protocol", () => {
       QuestionChatSnapshotSchema.parse({
         requestId: "ask-25",
         state: "ready",
-        forkKind: "exact",
+        forkKind: "fresh",
         model: { id: "pi-default", source: "pi-default", fallbackReason: "Origin model unavailable" },
         messages: [{ role: "assistant", text: "not in activation scope" }]
       })
@@ -170,7 +170,7 @@ describe("Question Chat activation protocol", () => {
       requestId: "ask-29",
       state: "ready",
       forkKind: "context-only",
-      model: { id: "anthropic/claude-sonnet-4", source: "originating" },
+      model: { id: "anthropic/claude-sonnet-4", source: "postbox-settings" },
       messages: []
     })).toThrow();
   });
@@ -283,8 +283,8 @@ describe("Question Chat first-message protocol", () => {
       QuestionChatSnapshotSchema.parse({
         requestId: "ask-26",
         state: "generating",
-        forkKind: "exact",
-        model: { id: "test/model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "test/model", source: "postbox-settings" },
         sequence: 3,
         messages: [
           { id: "browser-1", role: "user", text: "Explain it", status: "final" },
@@ -298,8 +298,8 @@ describe("Question Chat first-message protocol", () => {
     const snapshot = QuestionChatSnapshotSchema.parse({
       requestId: "ask-31",
       state: "generating",
-      forkKind: "exact",
-      model: { id: "test/model", source: "originating" },
+      forkKind: "fresh",
+      model: { id: "test/model", source: "postbox-settings" },
       sequence: 4,
       messages: [],
       tools: [{
@@ -374,8 +374,8 @@ describe("Question Chat first-message protocol", () => {
         payload: {
           requestId: "ask-26",
           state: "ready",
-          forkKind: "exact",
-          model: { id: "test/model", source: "originating" },
+          forkKind: "fresh",
+          model: { id: "test/model", source: "postbox-settings" },
           sequence: 0,
           messages: []
         }
@@ -387,26 +387,26 @@ describe("Question Chat first-message protocol", () => {
     expect(ExtensionClientMessageSchema.parse({
       type: "chat.recover.offer",
       requestId: "recover-1",
-      payload: { requestId: "ask-30", ownerSessionId: "session-1", forkKind: "exact" }
+      payload: { requestId: "ask-30", ownerSessionId: "session-1", forkKind: "fresh" }
     })).toMatchObject({ type: "chat.recover.offer", payload: { requestId: "ask-30" } });
     expect(ExtensionServerMessageSchema.parse({
       type: "chat.reconcile",
       requestId: "recover-1",
-      payload: { requestId: "ask-30", forkKind: "exact", action: "recover", reason: "pending" }
+      payload: { requestId: "ask-30", forkKind: "fresh", action: "recover", reason: "pending" }
     })).toMatchObject({ type: "chat.reconcile", payload: { action: "recover" } });
     expect(ExtensionClientMessageSchema.parse({
       type: "chat.reconciled",
       requestId: "recover-1",
       payload: {
         requestId: "ask-30",
-        forkKind: "exact",
+        forkKind: "fresh",
         result: {
           status: "recovered",
           snapshot: {
             requestId: "ask-30",
             state: "ready",
-            forkKind: "exact",
-            model: { id: "test/model", source: "originating" },
+            forkKind: "fresh",
+            model: { id: "test/model", source: "postbox-settings" },
             sequence: 8,
             messages: []
           }
@@ -421,7 +421,7 @@ describe("Question Chat first-message protocol", () => {
     expect(() => ExtensionServerMessageSchema.parse({
       type: "chat.reconcile",
       requestId: "contradiction",
-      payload: { requestId: "ask-30", forkKind: "exact", action: "recover", reason: "terminal" }
+      payload: { requestId: "ask-30", forkKind: "fresh", action: "recover", reason: "terminal" }
     })).toThrow();
     expect(ExtensionClientMessageSchema.parse({
       type: "chat.recover.complete",
@@ -435,8 +435,8 @@ describe("Question Chat first-message protocol", () => {
       QuestionChatSnapshotHttpResponseSchema.parse({ status: "ready", snapshot: {
         requestId: "ask-26",
         state: "ready",
-        forkKind: "exact",
-        model: { id: "test/model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "test/model", source: "postbox-settings" },
         sequence: 0,
         messages: []
       } })
@@ -487,8 +487,8 @@ describe("Question Chat first-message protocol", () => {
       QuestionChatSnapshotSchema.parse({
         requestId: "ask-27",
         state,
-        forkKind: "exact",
-        model: { id: "test/model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "test/model", source: "postbox-settings" },
         sequence: 9,
         messages: [
           {

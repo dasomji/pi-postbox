@@ -174,8 +174,8 @@ describe("browser state SSE reactivity", () => {
       payload: {
         requestId: "ask-proposal-sse",
         state: "ready",
-        forkKind: "exact",
-        model: { id: "test/model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "test/model", source: "postbox-settings" },
         sequence: 0,
         messages: [],
         tools: []

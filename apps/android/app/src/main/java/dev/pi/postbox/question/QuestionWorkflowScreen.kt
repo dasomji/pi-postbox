@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -50,6 +52,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -136,7 +139,8 @@ fun QuestionWorkflowScreen(
     onReviewQuestionChatSuggestion: (String) -> Unit,
     onHandleBack: () -> Boolean,
     modifier: Modifier = Modifier,
-    serverIdentityText: String? = null
+    serverIdentityText: String? = null,
+    onOpenSettings: () -> Unit = {}
 ) {
     // Set when the answer is stamped (submitted); cleared again if the submit errors.
     var stampedRequestId by remember { mutableStateOf<String?>(null) }
@@ -198,6 +202,7 @@ fun QuestionWorkflowScreen(
                     },
                     onDismissQuestion = onDismissQuestion,
                     serverIdentityText = serverIdentityText,
+                    onOpenSettings = { coroutineScope.launch { drawerState.close() }; onOpenSettings() },
                     onEditServerUrl = {
                         coroutineScope.launch { drawerState.close() }
                         onEditServerUrl()
@@ -215,10 +220,9 @@ fun QuestionWorkflowScreen(
                 state.navigationSelection is QuestionNavigationSelection.Question &&
                     state.visibleQuestion?.requestId == it.key.requestId
             }
-            val hideBottomChatChrome =
-                activeQuestionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT &&
-                    WindowInsets.ime.getBottom(LocalDensity.current) > 0
-            Column(modifier = Modifier.fillMaxSize()) {
+            val hideBottomChatChrome = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+            val questionInsets = if (activeQuestionChat?.selectedTab == QuestionChatWorkspaceTab.CHAT) Modifier else Modifier.imePadding()
+            Column(modifier = Modifier.fillMaxSize().then(questionInsets)) {
                 WorkflowTopBar(
                     state = state,
                     onOpenNavigation = { coroutineScope.launch { drawerState.open() } }
@@ -351,8 +355,6 @@ fun QuestionWorkflowScreen(
                                             QuestionDetailCard(
                                                 baseUrl = state.baseUrl,
                                                 question = visibleQuestion,
-                                                projectLabel = session?.projectName ?: "Unknown project",
-                                                branchLabel = session?.branch ?: "Unknown branch",
                                                 askedAgo = listItem?.createdAt?.let(::formatTimeAgo),
                                                 questionChat = questionChat,
                                                 onToggleOption = onToggleOption,
@@ -420,6 +422,8 @@ private fun WorkflowTopBar(
     state: QuestionWorkflowState,
     onOpenNavigation: () -> Unit
 ) {
+    val header = questionHeader(state)
+    val connectionColor = connectionStatusColor(state.connectionState)
     Column {
         Row(
             modifier = Modifier
@@ -448,16 +452,31 @@ private fun WorkflowTopBar(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            ConnectionStatusDot(state.connectionState)
-            Text(
-                text = "Pi Postbox",
-                style = MaterialTheme.typography.headlineSmall,
-                color = PostalColors.attention,
-                modifier = Modifier.weight(1f)
-            )
-            if (state.pendingQuestions.isNotEmpty()) {
-                OpenCountPill(count = state.pendingQuestions.size)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = header.projectName,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp),
+                    color = PostalColors.attention,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                header.branch?.let { branch ->
+                    Text(text = branch, fontSize = 12.sp, color = PostalColors.muted,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
+            Text(
+                text = "${header.repositoryCount} | ${state.pendingQuestions.size}",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = connectionColor,
+                modifier = Modifier
+                    .semantics { contentDescription = "${header.repositoryCount} questions in this repository, ${state.pendingQuestions.size} total. ${state.connectionState.name.lowercase().replace('_', ' ')}" }
+                    .clip(CircleShape)
+                    .background(connectionColor.copy(alpha = 0.1f))
+                    .border(1.dp, connectionColor.copy(alpha = 0.5f), CircleShape)
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            )
         }
         HorizontalDivider(color = PostalColors.border)
     }
@@ -465,17 +484,15 @@ private fun WorkflowTopBar(
 
 @Composable
 private fun OpenCountPill(count: Int) {
-    Text(
-        text = "$count open",
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
+    Text(text = "$count", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
         color = PostalColors.attentionForeground,
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(PostalColors.attention.copy(alpha = 0.1f))
-            .border(1.dp, PostalColors.attentionBorder, CircleShape)
-            .padding(horizontal = 10.dp, vertical = 2.dp)
-    )
+        modifier = Modifier.clip(CircleShape).background(PostalColors.attention.copy(alpha = 0.1f))
+            .border(1.dp, PostalColors.attentionBorder, CircleShape).padding(horizontal = 10.dp, vertical = 2.dp))
+}
+
+@Composable
+private fun ConnectionStatusDot(connectionState: QuestionConnectionState) {
+    Box(Modifier.size(8.dp).background(connectionStatusColor(connectionState), CircleShape))
 }
 
 @Composable
@@ -499,20 +516,11 @@ private fun ConnectionNotice(state: QuestionWorkflowState) {
     )
 }
 
-@Composable
-private fun ConnectionStatusDot(connectionState: QuestionConnectionState) {
-    val color = when (connectionState) {
-        QuestionConnectionState.CONNECTED -> PostalColors.success
-        QuestionConnectionState.CONNECTING -> PostalColors.borderStrong
-        QuestionConnectionState.DISCONNECTED -> PostalColors.warning
-        QuestionConnectionState.ERROR -> PostalColors.danger
-        QuestionConnectionState.INCOMPATIBLE_PROTOCOL -> PostalColors.danger
-    }
-    Box(
-        modifier = Modifier
-            .size(8.dp)
-            .background(color, CircleShape)
-    )
+private fun connectionStatusColor(connectionState: QuestionConnectionState): Color = when (connectionState) {
+    QuestionConnectionState.CONNECTED -> PostalColors.success
+    QuestionConnectionState.CONNECTING -> PostalColors.borderStrong
+    QuestionConnectionState.DISCONNECTED -> PostalColors.warning
+    QuestionConnectionState.ERROR, QuestionConnectionState.INCOMPATIBLE_PROTOCOL -> PostalColors.danger
 }
 
 /**
@@ -529,6 +537,7 @@ private fun NavigationSidebar(
     onSelectQuestion: (String) -> Unit,
     onDismissQuestion: (String) -> Unit,
     serverIdentityText: String?,
+    onOpenSettings: () -> Unit,
     onEditServerUrl: () -> Unit
 ) {
     val groups = remember(state.sessions, state.pendingQuestions, state.snapshotTimestamp) {
@@ -619,6 +628,7 @@ private fun NavigationSidebar(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            TextButton(onClick = onOpenSettings) { Text("Settings") }
             state.notificationStatusMessage?.let { statusMessage ->
                 Text(
                     text = statusMessage,
@@ -1183,8 +1193,6 @@ private fun SessionDetailView(
 private fun QuestionDetailCard(
     baseUrl: String,
     question: QuestionDetailUiState,
-    projectLabel: String,
-    branchLabel: String,
     askedAgo: String?,
     questionChat: QuestionChatWorkflowUiState?,
     onToggleOption: (String) -> Unit,
@@ -1196,6 +1204,12 @@ private fun QuestionDetailCard(
 ) {
     var showNote by remember(question.requestId) { mutableStateOf(question.note.isNotBlank()) }
     val actionsEnabled = question.terminalState == null && !question.isSubmitting
+    val noteIntoView = remember { BringIntoViewRequester() }
+    var noteFocused by remember { mutableStateOf(false) }
+    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    LaunchedEffect(noteFocused, imeBottom, question.note) {
+        if (noteFocused) noteIntoView.bringIntoView()
+    }
 
     LaunchedEffect(question.requestId, question.note) {
         if (question.note.isNotBlank()) showNote = true
@@ -1207,29 +1221,6 @@ private fun QuestionDetailCard(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = buildAnnotatedString {
-                    withStyle(SpanStyle(color = PostalColors.subtle, fontWeight = FontWeight.Medium)) {
-                        append("Project: ")
-                    }
-                    append(projectLabel)
-                    withStyle(SpanStyle(color = PostalColors.attention)) { append("  •  ") }
-                    withStyle(SpanStyle(color = PostalColors.subtle, fontWeight = FontWeight.Medium)) {
-                        append("Branch: ")
-                    }
-                    append(branchLabel)
-                },
-                fontSize = 12.sp,
-                color = PostalColors.muted,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
         // Letter strip: the question arrives on a piece of ruled writing paper.
         Box(
             modifier = Modifier
@@ -1309,7 +1300,9 @@ private fun QuestionDetailCard(
 
         if (showNote) {
             OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().bringIntoViewRequester(noteIntoView)
+                    .onFocusChanged { noteFocused = it.isFocused }
+                    .testTag("question-note-field"),
                 value = question.note,
                 onValueChange = onNoteChanged,
                 label = { Text("Add nuance for the coding agent…") },
@@ -1326,7 +1319,8 @@ private fun QuestionDetailCard(
                     focusedTextColor = PostalColors.text,
                     unfocusedTextColor = PostalColors.text
                 ),
-                minLines = 2
+                minLines = 2,
+                maxLines = 5
             )
         }
 

@@ -57,23 +57,23 @@ data class QuestionChatAvailabilityError(
 )
 
 enum class QuestionChatForkKind {
-    EXACT;
+    FRESH;
 
     companion object {
         fun fromWire(value: String): QuestionChatForkKind = when (value) {
-            "exact" -> EXACT
+            "fresh" -> FRESH
             else -> throw QuestionChatTransportException("Unknown Question Chat fork kind: $value")
         }
     }
 }
 
 enum class QuestionChatModelSource {
-    ORIGINATING,
+    POSTBOX_SETTINGS,
     PI_DEFAULT;
 
     companion object {
         fun fromWire(value: String): QuestionChatModelSource = when (value) {
-            "originating" -> ORIGINATING
+            "postbox-settings" -> POSTBOX_SETTINGS
             "pi-default" -> PI_DEFAULT
             else -> throw QuestionChatTransportException("Unknown Question Chat model source: $value")
         }
@@ -83,6 +83,7 @@ enum class QuestionChatModelSource {
 data class QuestionChatModel(
     val id: String,
     val source: QuestionChatModelSource,
+    val effort: String? = null,
     val fallbackReason: String? = null
 )
 

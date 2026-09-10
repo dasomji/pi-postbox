@@ -1,3 +1,4 @@
+import type { SettingsStore } from "../services/settingsStore.js";
 import {
   AskAnswerPayloadSchema,
   AskCancelPayloadSchema,
@@ -25,7 +26,7 @@ export async function registerRequestRoutes(
   requestStore: RequestStore,
   broadcaster: StateBroadcaster,
   expireDue: () => unknown = () => undefined,
-  questionChat?: { relay: QuestionChatRelay; sessionStore: SessionStore }
+  questionChat?: { relay: QuestionChatRelay; sessionStore: SessionStore; settingsStore: SettingsStore }
 ): Promise<void> {
   app.get<{ Params: { requestId: string }; Querystring: { cursor?: string } }>("/api/requests/:requestId/history", async (request, reply) => {
     try { return requestStore.getQuestionHistoryPage({ questionId: request.params.requestId, view: "full", cursor: request.query.cursor, pageSize: 20 }); }
@@ -92,16 +93,14 @@ export async function registerRequestRoutes(
         error: { code: "extension_offline", message: "The originating Pi extension is unavailable." }
       });
     }
-    const source = questionChat.sessionStore.questionChatSource(snapshot.sessionId);
-    if (!source) {
-      const session = questionChat.sessionStore.getQuestionChatSourceState(snapshot.sessionId);
-      const code = session === "missing_leaf" ? "source_leaf_missing" : "source_path_missing";
-      const message = code === "source_leaf_missing" ? "The originating Pi session leaf is unavailable." : "The originating Pi session file is unavailable.";
-      return reply.code(409).send(QuestionChatActivationResponseSchema.parse({
-        status: "unavailable",
-        error: { code, message }
-      }));
-    }
+    const cwd = questionChat.sessionStore.questionChatCwd(snapshot.sessionId);
+    if (!cwd) return reply.code(503).send(chatUnavailable({ code: "extension_offline", message: "The Question's chat host is unavailable." }));
+    const source = {
+      cwd,
+      question: { revision: snapshot.revision, question: snapshot.question.prompt,
+        ambiguity: snapshot.question.ambiguity ?? "", options: snapshot.options, mode: snapshot.mode },
+      settings: questionChat.settingsStore.get().chat
+    };
     const response = await questionChat.relay.activate(requestId, snapshot.sessionId, source, chatCallerKey(request));
     return reply
       .code(response.status === "ready" ? 200 : chatErrorStatus(response.error.code))

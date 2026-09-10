@@ -263,3 +263,4 @@ export {
 export type { IncompatibleProtocolResponse, VersionedStateSnapshot } from "./versioning.js";
 
 export * from "./images.js";
+export * from "./settings.js";

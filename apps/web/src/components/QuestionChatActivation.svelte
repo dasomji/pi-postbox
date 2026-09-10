@@ -301,7 +301,7 @@
         <button type="button" class="mt-2 rounded-full border border-danger-border px-3 py-1.5 text-sm text-danger-foreground disabled:opacity-50" disabled={view.connection !== "online" || stopping} onclick={() => void stopActive()}>{stopping ? "Stopping…" : "Stop"}</button>
       {/if}
       {#if actionMessage}<p class="mt-2 text-xs text-postbox-muted" role="status">{actionMessage}</p>{/if}
-      <p class="mt-3 text-xs text-postbox-muted">Model: <span class="font-medium text-postbox-subtle">{view.snapshot.model.id}</span>{#if view.snapshot.model.source === "pi-default"} · Pi default fallback{/if}</p>
+      <p class="mt-3 text-xs text-postbox-muted">Model: <span class="font-medium text-postbox-subtle">{view.snapshot.model.id}</span>{#if view.snapshot.model.effort} · Effort: {view.snapshot.model.effort}{/if}{#if view.snapshot.model.source === "pi-default"} · Pi default{/if}</p>
       {#if view.snapshot.model.fallbackReason}<p class="mt-1 text-xs text-warning-foreground">{view.snapshot.model.fallbackReason}</p>{/if}
     {/if}
   </section>

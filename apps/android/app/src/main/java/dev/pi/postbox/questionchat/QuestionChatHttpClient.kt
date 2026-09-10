@@ -262,6 +262,7 @@ private fun parseSnapshot(body: JsonObject): QuestionChatSnapshot = QuestionChat
 private fun parseModel(body: JsonObject): QuestionChatModel = QuestionChatModel(
     id = body.requiredString("id"),
     source = QuestionChatModelSource.fromWire(body.requiredString("source")),
+    effort = body["effort"]?.jsonPrimitive?.contentOrNull,
     fallbackReason = body["fallbackReason"]?.jsonPrimitive?.contentOrNull
 )
 

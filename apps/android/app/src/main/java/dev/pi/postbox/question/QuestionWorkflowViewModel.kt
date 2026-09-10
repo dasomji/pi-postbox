@@ -1051,7 +1051,8 @@ data class QuestionSessionUiState(
     val semanticState: String,
     val presence: String,
     val branch: String?,
-    val disconnectedAt: String? = null
+    val disconnectedAt: String? = null,
+    val repositoryId: String? = null
 )
 
 data class QuestionListItemUiState(
@@ -1060,7 +1061,8 @@ data class QuestionListItemUiState(
     val prompt: String,
     val mode: QuestionMode,
     val createdAt: String,
-    val expiresAt: String?
+    val expiresAt: String?,
+    val repositoryId: String? = null
 )
 
 data class QuestionDetailUiState(
@@ -1109,7 +1111,8 @@ private fun SessionSnapshot.toUiState(): QuestionSessionUiState = QuestionSessio
     presence = presence.name.lowercase(),
     branch = branch,
     disconnectedAt = disconnectedAt,
-    projectId = projectId
+    projectId = projectId,
+    repositoryId = repository?.repositoryId
 )
 
 private fun AskRequestSnapshot.toListItem(): QuestionListItemUiState = QuestionListItemUiState(
@@ -1118,7 +1121,8 @@ private fun AskRequestSnapshot.toListItem(): QuestionListItemUiState = QuestionL
     prompt = question.prompt,
     mode = mode.toQuestionMode(),
     createdAt = createdAt,
-    expiresAt = expiresAt
+    expiresAt = expiresAt,
+    repositoryId = repository?.repositoryId
 )
 
 private fun AskRequestSnapshot.toUiQuestion(

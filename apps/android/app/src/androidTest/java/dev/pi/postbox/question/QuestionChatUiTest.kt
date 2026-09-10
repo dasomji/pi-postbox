@@ -269,10 +269,10 @@ private fun questionChatWorkflow(
                 snapshot = QuestionChatSnapshot(
                     requestId = "ask-1",
                     state = state,
-                    forkKind = QuestionChatForkKind.EXACT,
+                    forkKind = QuestionChatForkKind.FRESH,
                     model = QuestionChatModel(
                         id = "anthropic/claude-sonnet-4",
-                        source = QuestionChatModelSource.ORIGINATING
+                        source = QuestionChatModelSource.POSTBOX_SETTINGS
                     ),
                     sequence = messages.size + tools.size,
                     messages = messages,

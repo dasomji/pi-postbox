@@ -22,7 +22,8 @@ export default defineConfig({
             "apps/web/src/App.test.ts",
             "apps/web/src/components/QuestionChatActivation.test.ts",
             "apps/web/src/components/QuestionWorkspace.test.ts",
-            "apps/web/src/components/QuestionGallery.test.ts"
+            "apps/web/src/components/QuestionGallery.test.ts",
+            "apps/web/src/components/SettingsPage.test.ts"
           ],
           environment: "node"
         }
@@ -43,7 +44,8 @@ export default defineConfig({
             "apps/web/src/App.test.ts",
             "apps/web/src/components/QuestionChatActivation.test.ts",
             "apps/web/src/components/QuestionWorkspace.test.ts",
-            "apps/web/src/components/QuestionGallery.test.ts"
+            "apps/web/src/components/QuestionGallery.test.ts",
+            "apps/web/src/components/SettingsPage.test.ts"
           ],
           globals: true,
           environment: "jsdom"

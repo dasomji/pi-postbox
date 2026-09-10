@@ -332,6 +332,8 @@ private fun ConnectedQuestionWorkflow(
     onEditServerUrl: () -> Unit,
     onProtocolMismatch: (dev.pi.postbox.protocol.ProtocolMismatch) -> Unit
 ) {
+    var settingsOpen by remember(state.baseUrl) { mutableStateOf(false) }
+    LaunchedEffect(openQuestionRequestId) { if (openQuestionRequestId != null) settingsOpen = false }
     val coroutineScope = rememberCoroutineScope()
     val appContext = LocalContext.current.applicationContext
     val notificationPoster = remember(appContext) {
@@ -389,6 +391,10 @@ private fun ConnectedQuestionWorkflow(
         }
     }
 
+    if (settingsOpen) {
+        dev.pi.postbox.settings.PostboxSettingsScreen(state.baseUrl, lifecycle, { settingsOpen = false }, onProtocolMismatch)
+        return
+    }
     QuestionWorkflowScreen(
         state = workflowViewModel.state,
         onShowQueue = workflowViewModel::showQueue,
@@ -402,6 +408,7 @@ private fun ConnectedQuestionWorkflow(
         onCancelQuestion = workflowViewModel::cancelQuestion,
         onDismissQuestion = workflowViewModel::dismissQuestion,
         onEditServerUrl = onEditServerUrl,
+        onOpenSettings = { settingsOpen = true },
         onRefresh = workflowViewModel::refreshQuestions,
         onStartQuestionChat = workflowViewModel::startQuestionChat,
         onRetryQuestionChat = workflowViewModel::retryQuestionChat,

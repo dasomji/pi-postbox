@@ -1,5 +1,5 @@
 import { SessionManager, type CreateAgentSessionOptions, type CreateAgentSessionResult } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { rmSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +12,9 @@ import {
 import { REPOSITORY_EVIDENCE_TOOL_NAMES } from "../src/repositoryEvidenceTools.js";
 import { PROPOSE_ANSWER_TOOL_NAME } from "../src/proposeAnswerTool.js";
 
+function freshSource(cwd: string) {
+  return { cwd, question: { revision: 1, question: "Choose a business policy", ambiguity: "Which trade-off matters?", options: [{value: "yes", label: "Yes"}], mode: "single" as const }, settings: { model: null, effort: "high" as const } };
+}
 function createSourceFixture() {
   const root = mkdtempSync(join(tmpdir(), "postbox-chat-runtime-"));
   const cwd = join(root, "repo");
@@ -82,6 +85,7 @@ describe("Pi Question Chat runtime adapter", () => {
         error: { code: "duplicate_option", message: "An option with that label already exists." }
       });
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot: join(fixture.root, "private-chats"),
       agentDir: join(fixture.root, "agent"),
       createAgentSession: fake.create,
@@ -91,7 +95,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const runtime = await adapter.create({
       requestId: "ask-propose-tool",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const options = fake.create.mock.calls[0]![0];
     expect(REPOSITORY_EVIDENCE_TOOL_NAMES).toEqual([
@@ -121,6 +125,7 @@ describe("Pi Question Chat runtime adapter", () => {
   it("treats an absent private recovery root as no recoverable Chats during cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "postbox-empty-chat-runtime-"));
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot: join(root, "not-created"),
       agentDir: join(root, "agent"),
       createAgentSession: fakeCreateSession().create
@@ -150,6 +155,7 @@ describe("Pi Question Chat runtime adapter", () => {
       return { session, extensionsResult: { extensions: [], errors: [], runtime: undefined } } as unknown as CreateAgentSessionResult;
     });
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot,
       agentDir: join(fixture.root, "agent"),
       createAgentSession: createSession
@@ -158,7 +164,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId: "ask-recover",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
 
     const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
@@ -168,12 +174,12 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(statSync(manifestPath).mode & 0o777).toBe(0o600);
     const createdManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     expect(createdManifest).toMatchObject({
-      version: 1,
+      version: 2,
       requestId: "ask-recover",
       ownerSessionId: "session-owner",
-      forkKind: "exact",
+      forkKind: "fresh",
       cwd: fixture.cwd,
-      chatBoundaryId: fixture.selectedLeafId,
+      chatBoundaryId: expect.any(String),
       sequence: 0
     });
     expect(createdManifest.privateSessionPath).toBe(activeManager!.getSessionFile());
@@ -243,22 +249,23 @@ describe("Pi Question Chat runtime adapter", () => {
 
     const recoveredPropose = vi.fn();
     const reloaded = new QuestionChatRuntimeRegistry(new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot,
       agentDir: join(fixture.root, "agent"),
       createAgentSession: createSession,
       proposeAnswer: recoveredPropose
     }));
     expect(await reloaded.listRecoveryOffers()).toEqual([
-      { requestId: "ask-recover", ownerSessionId: "session-owner", forkKind: "exact" }
+      { requestId: "ask-recover", ownerSessionId: "session-owner", forkKind: "fresh" }
     ]);
     const [result] = await reloaded.reconcile("session-owner", [
-      { requestId: "ask-recover", forkKind: "exact", action: "recover" }
+      { requestId: "ask-recover", forkKind: "fresh", action: "recover" }
     ]);
     expect(result).toMatchObject({
       status: "recovered",
       snapshot: {
         requestId: "ask-recover",
-        forkKind: "exact",
+        forkKind: "fresh",
         sequence: expect.any(Number),
         messages: [expect.objectContaining({ role: "user", text: "Explain recovery." })],
         tools: [
@@ -291,6 +298,7 @@ describe("Pi Question Chat runtime adapter", () => {
     writeFileSync(join(corruptDir, "manifest.json"), "{not-json", { mode: 0o600 });
     const fake = fakeCreateSession();
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot,
       agentDir: join(fixture.root, "agent"),
       createAgentSession: fake.create
@@ -302,7 +310,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId: "ask-symlink",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
     const manifest = JSON.parse(readFileSync(join(runtimeDir, "manifest.json"), "utf8"));
@@ -319,7 +327,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId: "ask-internal-symlink",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const internalDir = join(privateRoot, readdirSync(privateRoot)[0]!);
     const internalManifest = JSON.parse(readFileSync(join(internalDir, "manifest.json"), "utf8"));
@@ -335,6 +343,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const fixture = createSourceFixture();
     const privateRoot = join(fixture.root, "private-chats");
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot,
       agentDir: join(fixture.root, "agent"),
       createAgentSession: fakeCreateSession().create
@@ -343,7 +352,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await live.activate({
       requestId: "ask-reload-replacement",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
     await live.suspendAll();
@@ -358,6 +367,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const fixture = createSourceFixture();
     const privateRoot = join(fixture.root, "private-chats");
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot,
       agentDir: join(fixture.root, "agent"),
       createAgentSession: fakeCreateSession().create
@@ -366,7 +376,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await live.activate({
       requestId: "ask-missing-boundary",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const runtimeDir = join(privateRoot, readdirSync(privateRoot)[0]!);
     const manifestPath = join(runtimeDir, "manifest.json");
@@ -377,13 +387,13 @@ describe("Pi Question Chat runtime adapter", () => {
     const reloaded = new QuestionChatRuntimeRegistry(adapter);
     expect(reloaded.listRecoveryOffers()).toHaveLength(1);
     await expect(reloaded.reconcile("session-owner", [
-      { requestId: "ask-missing-boundary", forkKind: "exact", action: "recover" }
+      { requestId: "ask-missing-boundary", forkKind: "fresh", action: "recover" }
     ])).resolves.toEqual([
       expect.objectContaining({ status: "failed", requestId: "ask-missing-boundary" })
     ]);
     expect(existsSync(runtimeDir)).toBe(false);
   });
-  it("creates one private root-to-leaf fork without changing the source or spending model capacity", async () => {
+  it("creates one fresh question-only session without reading the source or spending model capacity", async () => {
     const fixture = createSourceFixture();
     const before = readFileSync(fixture.sourcePath);
     const beforeMtime = statSync(fixture.sourcePath).mtimeMs;
@@ -403,7 +413,7 @@ describe("Pi Question Chat runtime adapter", () => {
     });
     const registry = new QuestionChatRuntimeRegistry(adapter);
 
-    const source = { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd };
+    const source = { ...freshSource(fixture.cwd), settings: { model: "test-provider/source-model", effort: "high" as const } };
     const [first, retry] = await Promise.all([
       registry.activate({ requestId: "ask/runtime-safe", ownerSessionId: "session-owner", source }),
       registry.activate({ requestId: "ask/runtime-safe", ownerSessionId: "session-owner", source })
@@ -412,9 +422,9 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(first).toEqual(retry);
     expect(first).toMatchObject({
       state: "ready",
-      forkKind: "exact",
+      forkKind: "fresh",
       messages: [],
-      model: { id: "test-provider/source-model", source: "originating" }
+      model: { id: "test-provider/source-model", source: "postbox-settings" }
     });
     expect(fake.create).toHaveBeenCalledTimes(1);
     const options = fake.create.mock.calls[0]![0];
@@ -429,7 +439,10 @@ describe("Pi Question Chat runtime adapter", () => {
 
     const forkManager = options.sessionManager!;
     const forkText = readFileSync(forkManager.getSessionFile()!, "utf8");
-    expect(forkText).toContain("selected branch");
+    expect(forkText).toContain("Choose a business policy");
+    expect(forkText).not.toContain("selected branch");
+    expect(forkText).not.toContain("source answer");
+    expect(options.thinkingLevel).toBe("high");
     expect(forkText).not.toContain("unrelated sibling");
     expect(Buffer.compare(readFileSync(fixture.sourcePath), before)).toBe(0);
     expect(statSync(fixture.sourcePath).mtimeMs).toBe(beforeMtime);
@@ -444,7 +457,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await expect(registry.cleanup("ask/runtime-safe")).resolves.toBeUndefined();
   });
 
-  it("uses Pi's configured default when an exact fork's recorded model is unauthenticated", async () => {
+  it("uses Pi's configured default when no Postbox model is selected", async () => {
     const fixture = createSourceFixture();
     const fake = fakeCreateSession({ provider: "fallback-provider", id: "default-model" });
     const recordedModel = { provider: "test-provider", id: "source-model" } as any;
@@ -462,15 +475,15 @@ describe("Pi Question Chat runtime adapter", () => {
     const runtime = await adapter.create({
       requestId: "ask-fallback",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     expect(runtime.snapshot.model).toMatchObject({
       id: "fallback-provider/default-model",
       source: "pi-default",
-      fallbackReason: expect.stringContaining("test-provider/source-model")
+      effort: "high"
     });
-    expect(modelRuntime.getModel).toHaveBeenCalledWith("test-provider", "source-model");
-    expect(modelRuntime.hasConfiguredAuth).toHaveBeenCalledWith("test-provider");
+    expect(modelRuntime.getModel).not.toHaveBeenCalled();
+    expect(modelRuntime.hasConfiguredAuth).not.toHaveBeenCalled();
     expect(fake.create.mock.calls[0]![0].model).toBeUndefined();
     await runtime.terminate();
   });
@@ -481,6 +494,7 @@ describe("Pi Question Chat runtime adapter", () => {
     let runtimeDir!: string;
     const lifecycle: string[] = [];
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot: join(fixture.root, "private-chats"),
       agentDir: join(fixture.root, "agent"),
       createAgentSession: vi.fn(async (options: CreateAgentSessionOptions) => {
@@ -504,7 +518,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId: "ask-deferred-abort",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const websocketCleanup = registry.cleanup("ask-deferred-abort");
     await Promise.resolve();
@@ -524,22 +538,18 @@ describe("Pi Question Chat runtime adapter", () => {
     expect(existsSync(runtimeDir)).toBe(false);
   });
 
-  it("returns typed source errors before constructing an SDK session", async () => {
+  it("rejects an unavailable explicit model without falling back", async () => {
     const fixture = createSourceFixture();
     const fake = fakeCreateSession();
     const adapter = new PiQuestionChatRuntimeAdapter({
-      privateRoot: join(fixture.root, "private-chats"),
-      agentDir: join(fixture.root, "agent"),
-      createAgentSession: fake.create
+      privateRoot: join(fixture.root, "private-chats"), agentDir: join(fixture.root, "agent"), createAgentSession: fake.create,
+      createModelRuntime: async () => ({ getModel: () => undefined, hasConfiguredAuth: () => false }) as any
     });
-
-    await expect(
-      adapter.create({ requestId: "missing-path", ownerSessionId: "session-owner", source: { agentSessionPath: join(fixture.root, "missing"), leafId: "leaf", cwd: fixture.cwd } })
-    ).rejects.toMatchObject({ code: "source_path_missing" } satisfies Partial<QuestionChatRuntimeError>);
-    await expect(
-      adapter.create({ requestId: "missing-leaf", ownerSessionId: "session-owner", source: { agentSessionPath: fixture.sourcePath, leafId: "missing", cwd: fixture.cwd } })
-    ).rejects.toMatchObject({ code: "source_leaf_missing" } satisfies Partial<QuestionChatRuntimeError>);
+    await expect(adapter.create({ requestId: "unavailable", ownerSessionId: "owner", source: {
+      ...freshSource(fixture.cwd), settings: {model: "missing/model", effort: "high"}
+    }})).rejects.toMatchObject({code: "runtime_failure"});
     expect(fake.create).not.toHaveBeenCalled();
+    rmSync(fixture.root, {recursive: true, force: true});
   });
 
   it("sends an ordinary SDK prompt and exposes only normalized visible stream events", async () => {
@@ -562,6 +572,7 @@ describe("Pi Question Chat runtime adapter", () => {
       return Promise.resolve();
     });
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot: join(fixture.root, "private-chats"),
       agentDir: join(fixture.root, "agent"),
       createAgentSession: vi.fn(async (options: CreateAgentSessionOptions) => {
@@ -589,7 +600,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId,
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const events: QuestionChatEvent[] = [];
     registry.subscribe(requestId, (event) => events.push(event));
@@ -831,7 +842,7 @@ describe("Pi Question Chat runtime adapter", () => {
   it("deduplicates an in-flight client command without prompting twice", async () => {
     let finishSend!: () => void;
     const runtime = {
-      snapshot: { requestId: "ask-dedupe", state: "ready", forkKind: "exact", model: { id: "test/model", source: "originating" }, sequence: 0, messages: [] },
+      snapshot: { requestId: "ask-dedupe", state: "ready", forkKind: "fresh", model: { id: "test/model", source: "postbox-settings" }, sequence: 0, messages: [] },
       send: vi.fn((command: { clientCommandId: string }) => new Promise<{ status: "accepted"; clientCommandId: string; mode: "turn" }>((resolve) => {
         finishSend = () => resolve({ status: "accepted", clientCommandId: command.clientCommandId, mode: "turn" });
       })),
@@ -839,7 +850,7 @@ describe("Pi Question Chat runtime adapter", () => {
       terminate: vi.fn(async () => undefined)
     };
     const registry = new QuestionChatRuntimeRegistry({ create: vi.fn(async () => runtime) } as any);
-    await registry.activate({ requestId: "ask-dedupe", ownerSessionId: "session-owner", source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" } });
+    await registry.activate({ requestId: "ask-dedupe", ownerSessionId: "session-owner", source: freshSource("/repo") });
     const first = registry.send("ask-dedupe", "session-owner", { clientCommandId: "same", message: "hello" });
     const retry = registry.send("ask-dedupe", "session-owner", { clientCommandId: "same", message: "hello" });
     await Promise.resolve();
@@ -860,7 +871,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const input = {
       requestId: "ask-concurrent-activation",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      source: freshSource("/repo")
     };
     const first = registry.activate(input);
     const second = registry.activate(input);
@@ -872,8 +883,8 @@ describe("Pi Question Chat runtime adapter", () => {
       snapshot: {
         requestId: input.requestId,
         state: "ready",
-        forkKind: "exact",
-        model: { id: "test/model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "test/model", source: "postbox-settings" },
         sequence: 0,
         messages: []
       },
@@ -898,8 +909,8 @@ describe("Pi Question Chat runtime adapter", () => {
       snapshot: {
         requestId,
         state: "ready" as const,
-        forkKind: "exact" as const,
-        model: { id: "test/model", source: "originating" as const },
+        forkKind: "fresh" as const,
+        model: { id: "test/model", source: "postbox-settings" as const },
         sequence: 0,
         messages: []
       },
@@ -914,7 +925,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId: "ask-bounded-commands",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      source: freshSource("/repo")
     });
     for (let index = 0; index < 300; index += 1) {
       await registry.send("ask-bounded-commands", "session-owner", {
@@ -939,7 +950,7 @@ describe("Pi Question Chat runtime adapter", () => {
       await registry.activate({
         requestId,
         ownerSessionId: "session-owner",
-        source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+        source: freshSource("/repo")
       });
       await registry.send(requestId, "session-owner", {
         clientCommandId: "server-restart-stable-command",
@@ -963,19 +974,19 @@ describe("Pi Question Chat runtime adapter", () => {
       await registry.activate({
         requestId,
         ownerSessionId: "session-owner",
-        source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+        source: freshSource("/repo")
       });
       await registry.cleanup(requestId);
     }
     await expect(registry.activate({
       requestId: "ask-terminal-299",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      source: freshSource("/repo")
     })).rejects.toMatchObject({ code: "request_not_pending" });
     await expect(registry.activate({
       requestId: "ask-terminal-0",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      source: freshSource("/repo")
     })).resolves.toMatchObject({ requestId: "ask-terminal-0" });
   });
 
@@ -992,8 +1003,8 @@ describe("Pi Question Chat runtime adapter", () => {
       snapshot: {
         requestId: "ask-inflight-capacity",
         state: "ready" as const,
-        forkKind: "exact" as const,
-        model: { id: "test/model", source: "originating" as const },
+        forkKind: "fresh" as const,
+        model: { id: "test/model", source: "postbox-settings" as const },
         sequence: 0,
         messages: []
       },
@@ -1006,7 +1017,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId: "ask-inflight-capacity",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      source: freshSource("/repo")
     });
 
     const pending = Array.from({ length: 256 }, (_, index) => registry.send(
@@ -1033,8 +1044,8 @@ describe("Pi Question Chat runtime adapter", () => {
       snapshot: {
         requestId: "ask-failed-dedupe",
         state: "ready" as const,
-        forkKind: "exact" as const,
-        model: { id: "test/model", source: "originating" as const },
+        forkKind: "fresh" as const,
+        model: { id: "test/model", source: "postbox-settings" as const },
         sequence: 0,
         messages: []
       },
@@ -1047,7 +1058,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId: "ask-failed-dedupe",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      source: freshSource("/repo")
     });
 
     await expect(registry.send("ask-failed-dedupe", "session-owner", {
@@ -1077,15 +1088,15 @@ describe("Pi Question Chat runtime adapter", () => {
     const activation = registry.activate({
       requestId: "ask-activation-terminal",
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: "/unused", leafId: "leaf", cwd: "/repo" }
+      source: freshSource("/repo")
     });
     const cleanup = registry.cleanup("ask-activation-terminal");
     finishCreate({
       snapshot: {
         requestId: "ask-activation-terminal",
         state: "ready",
-        forkKind: "exact",
-        model: { id: "test/model", source: "originating" },
+        forkKind: "fresh",
+        model: { id: "test/model", source: "postbox-settings" },
         sequence: 0,
         messages: []
       },
@@ -1114,6 +1125,7 @@ describe("Pi Question Chat runtime adapter", () => {
     const abort = vi.fn(async () => undefined);
     const dispose = vi.fn();
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot,
       agentDir: join(fixture.root, "agent-terminal-race"),
       createAgentSession: vi.fn(async (options: CreateAgentSessionOptions) => ({
@@ -1142,7 +1154,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId,
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     const events: QuestionChatEvent[] = [];
     registry.subscribe(requestId, (event) => events.push(event));
@@ -1191,6 +1203,7 @@ describe("Pi Question Chat runtime adapter", () => {
       .mockResolvedValue(undefined);
     const dispose = vi.fn();
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot: join(fixture.root, "private-chats"),
       agentDir: join(fixture.root, "agent"),
       createAgentSession: vi.fn(async (options: CreateAgentSessionOptions) => {
@@ -1218,7 +1231,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId,
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     forkManager!.appendMessage({ role: "user", content: "Earlier", timestamp: 17 });
     forkManager!.appendMessage({
@@ -1305,6 +1318,7 @@ describe("Pi Question Chat runtime adapter", () => {
       options.preflightResult?.(true);
     });
     const adapter = new PiQuestionChatRuntimeAdapter({
+      createModelRuntime: async () => ({ getModel: (provider: string, id: string) => ({provider, id}), hasConfiguredAuth: () => true }) as any,
       privateRoot: join(fixture.root, "private-chats"),
       agentDir: join(fixture.root, "agent"),
       createAgentSession: vi.fn(async (options: CreateAgentSessionOptions) => {
@@ -1332,7 +1346,7 @@ describe("Pi Question Chat runtime adapter", () => {
     await registry.activate({
       requestId,
       ownerSessionId: "session-owner",
-      source: { agentSessionPath: fixture.sourcePath, leafId: fixture.selectedLeafId, cwd: fixture.cwd }
+      source: freshSource(fixture.cwd)
     });
     await registry.send(requestId, "session-owner", { clientCommandId: "turn-error", message: "Try" });
     listener?.({ type: "message_start", message: { role: "assistant", content: [], timestamp: 30 } });

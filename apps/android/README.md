@@ -51,7 +51,7 @@ https://postbox.your-tailnet.ts.net/
 
 The app verifies the server with `GET /healthz` before saving the URL. Keep the existing Tailnet-private trust model: do not expose the Postbox server publicly for this prototype.
 
-Android 0.4.7 (build 11) supports Postbox protocol 0.1.10 exactly. The app displays this identity before and after connection, rechecks saved endpoints, and blocks state, Answer, cancel, refresh, Question Chat, and push registration when the active endpoint reports missing or different protocol evidence. Regenerate the shared contract with `npm run generate:android-protocol-contract`; CI uses `npm run check:android-protocol-contract` plus Android unit/lint/assembly gates to reject drift.
+Android 0.5.4 (build 16) supports Postbox protocol 0.1.12 exactly. The app displays this identity before and after connection, rechecks saved endpoints, and blocks state, Answer, cancel, refresh, Question Chat, and push registration when the active endpoint reports missing or different protocol evidence. Regenerate the shared contract with `npm run generate:android-protocol-contract`; CI uses `npm run check:android-protocol-contract` plus Android unit/lint/assembly gates to reject drift.
 
 ## Emulator localhost fallback
 
@@ -89,3 +89,7 @@ Token registration happens automatically whenever the connected question workflo
 ## Evidence limitations
 
 Current automated evidence is JVM tests, Gradle build/lint, and debug APK assembly. Emulator or real device smoke requires working `adb devices`, a reachable Tailnet HTTPS Postbox URL, and hardware/KVM availability. Until that is run, install/tap behavior should be treated as not yet installed on a physical device.
+
+## Shared chat settings
+
+Open **Settings** from navigation to choose the model ID and effort for new Question Chats. These defaults live on the selected Postbox server and are shared with the web UI. Settings refresh while foregrounded; unsaved edits are retained, and stale saves require reloading the server values. Fresh chats receive only the selected question and options, without the originating transcript.

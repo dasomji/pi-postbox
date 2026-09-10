@@ -200,8 +200,8 @@ function readySnapshot(): QuestionChatSnapshot {
   return {
     requestId: "ask-chat",
     state: "ready",
-    forkKind: "exact",
-    model: { id: "anthropic/claude-sonnet-4", source: "originating" },
+    forkKind: "fresh",
+    model: { id: "anthropic/claude-sonnet-4", source: "postbox-settings" },
     sequence: 0,
     messages: [],
     tools: []
@@ -217,6 +217,22 @@ async function activateChat(app: FastifyInstance, socket: WebSocket): Promise<vo
 }
 
 describe("Question Chat activation relay", () => {
+  it("starts without source transcript metadata and passes server defaults plus the selected question", async () => {
+    const { app, socket } = await setup({ sessionPath: null, leafId: null });
+    const saved = await app.inject({method: "PUT", url: "/api/settings", payload: {revision: 0, chat: {model: "test/chosen", effort: "high"}}});
+    expect(saved.statusCode).toBe(200);
+    const activation = app.inject({method: "POST", url: "/api/requests/ask-chat/chat"});
+    const command = await nextMessage(socket);
+    expect(command).toMatchObject({type: "chat.activate", payload: {source: {
+      cwd: "/repo", question: {revision: 1, question: expect.any(String), options: expect.any(Array)},
+      settings: {model: "test/chosen", effort: "high"}
+    }}});
+    expect(command.payload.source).not.toHaveProperty("agentSessionPath");
+    expect(command.payload.source).not.toHaveProperty("leafId");
+    socket.send(JSON.stringify({type: "chat.ready", requestId: command.requestId, payload: readySnapshot()}));
+    expect((await activation).statusCode).toBe(200);
+  });
+
   it("accepts a live owner's correlated proposal, persists it in state/history, and keeps it answerable", async () => {
     const { app, socket, databasePath } = await setup();
     await activateChat(app, socket);
@@ -447,12 +463,12 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.recover.offer",
       requestId: "recover-after-restart",
-      payload: { requestId: "ask-chat", ownerSessionId: "session-chat-owner", forkKind: "exact" }
+      payload: { requestId: "ask-chat", ownerSessionId: "session-chat-owner", forkKind: "fresh" }
     } satisfies ExtensionClientMessage));
     await expect(nextMessage(socket, "restart reconciliation")).resolves.toEqual({
       type: "chat.reconcile",
       requestId: "recover-after-restart",
-      payload: { requestId: "ask-chat", forkKind: "exact", action: "recover", reason: "pending" }
+      payload: { requestId: "ask-chat", forkKind: "fresh", action: "recover", reason: "pending" }
     });
     const recovered = { ...readySnapshot(), sequence: 12, messages: [
       { id: "prior", role: "assistant" as const, text: "Before restart", status: "final" as const }
@@ -461,7 +477,7 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.reconciled",
       requestId: "recover-after-restart",
-      payload: { requestId: "ask-chat", forkKind: "exact", result: { status: "recovered", snapshot: recovered } }
+      payload: { requestId: "ask-chat", forkKind: "fresh", result: { status: "recovered", snapshot: recovered } }
     } satisfies ExtensionClientMessage));
     await expect(recoveryAcceptance).resolves.toMatchObject({
       type: "ack",
@@ -479,7 +495,7 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.recover.offer",
       requestId: "terminal-race",
-      payload: { requestId: "ask-chat", ownerSessionId: "session-chat-owner", forkKind: "exact" }
+      payload: { requestId: "ask-chat", ownerSessionId: "session-chat-owner", forkKind: "fresh" }
     } satisfies ExtensionClientMessage));
     await expect(nextMessage(socket, "terminal race reconciliation")).resolves.toMatchObject({ type: "chat.reconcile", payload: { action: "recover" } });
     const terminalCleanup = nextMessage(socket, "terminal cleanup");
@@ -494,7 +510,7 @@ describe("Question Chat activation relay", () => {
     socket.send(JSON.stringify({
       type: "chat.reconciled",
       requestId: "terminal-race",
-      payload: { requestId: "ask-chat", forkKind: "exact", result: { status: "recovered", snapshot: recovered } }
+      payload: { requestId: "ask-chat", forkKind: "fresh", result: { status: "recovered", snapshot: recovered } }
     } satisfies ExtensionClientMessage));
     await expect(lateCleanup).resolves.toMatchObject({ type: "chat.cleanup", payload: { requestId: "ask-chat" } });
   });
@@ -710,7 +726,7 @@ describe("Question Chat activation relay", () => {
       payload: {
         requestId: "ask-chat",
         ownerSessionId: "session-chat-owner",
-        source: { agentSessionPath: "/private/question-time.jsonl", leafId: "leaf-at-question", cwd: "/repo" }
+        source: { cwd: "/repo", question: { revision: 1 }, settings: {model: null, effort: "medium"} }
       }
     });
     socket.send(JSON.stringify({ type: "chat.ready", requestId: command.requestId!, payload: readySnapshot() } satisfies ExtensionClientMessage));
@@ -1086,7 +1102,7 @@ describe("Question Chat activation relay", () => {
     expect(JSON.stringify(request)).not.toContain("secret.ts");
   });
 
-  it("returns typed errors for missing, terminal, offline, and incomplete source questions", async () => {
+  it("returns typed errors for missing, terminal, and offline questions", async () => {
     const { app, socket } = await setup();
 
     const missing = await app.inject({ method: "POST", url: "/api/requests/no-such/chat" });
@@ -1109,13 +1125,7 @@ describe("Question Chat activation relay", () => {
     expect(offline.statusCode).toBe(503);
     expect(offline.json()).toMatchObject({ status: "unavailable", error: { code: "extension_offline" } });
 
-    const missingPathSetup = await setup({ sessionPath: null });
-    const missingPath = await missingPathSetup.app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    expect(missingPath.json()).toMatchObject({ status: "unavailable", error: { code: "source_path_missing" } });
 
-    const missingLeafSetup = await setup({ leafId: null });
-    const missingLeaf = await missingLeafSetup.app.inject({ method: "POST", url: "/api/requests/ask-chat/chat" });
-    expect(missingLeaf.json()).toMatchObject({ status: "unavailable", error: { code: "source_leaf_missing" } });
   });
 
   it.each(["answer", "cancel"] as const)("sends terminal cleanup when the question transitions by %s", async (transition) => {

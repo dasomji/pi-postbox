@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { AskOptionSchema, AskQuestionSchema } from "./ask.js";
+import { ChatDefaultsSchema, ChatEffortSchema } from "./settings.js";
 import { PROTOCOL_VERSION } from "./health.js";
 
 const REQUEST_ID_MAX = 200;
@@ -57,17 +59,23 @@ export const QuestionChatAvailabilityErrorSchema = z.object({
 });
 
 export const QuestionChatSourceSchema = z.object({
-  agentSessionPath: z.string().min(1).max(PATH_MAX),
-  leafId: z.string().min(1).max(SHORT_TEXT_MAX),
   cwd: z.string().min(1).max(PATH_MAX),
-  model: z.string().min(1).max(SHORT_TEXT_MAX).optional()
+  question: z.object({
+    revision: z.number().int().positive(),
+    question: AskQuestionSchema.shape.prompt,
+    ambiguity: z.string().max(128_000),
+    options: z.array(AskOptionSchema).max(20),
+    mode: z.enum(["single", "multi"])
+  }),
+  settings: ChatDefaultsSchema
 });
 
-export const QuestionChatModelSourceSchema = z.enum(["originating", "pi-default"]);
+export const QuestionChatModelSourceSchema = z.enum(["postbox-settings", "pi-default"]);
 
 export const QuestionChatModelSchema = z.object({
   id: z.string().min(1).max(SHORT_TEXT_MAX),
   source: QuestionChatModelSourceSchema,
+  effort: ChatEffortSchema.optional(),
   fallbackReason: z.string().min(1).max(ERROR_MESSAGE_MAX).optional()
 });
 
@@ -127,7 +135,7 @@ export const QuestionChatToolActivitySchema = z.discriminatedUnion("state", [
 export const QuestionChatSnapshotSchema = z.object({
   requestId: z.string().min(1).max(REQUEST_ID_MAX),
   state: QuestionChatStateSchema,
-  forkKind: z.literal("exact"),
+  forkKind: z.literal("fresh"),
   model: QuestionChatModelSchema,
   sequence: z.number().int().nonnegative().default(0),
   messages: z.array(QuestionChatMessageSchema).max(QUESTION_CHAT_MESSAGE_MAX),

@@ -422,10 +422,7 @@ open class QuestionChatOwner(
                             draftText = "",
                             pendingSend = null,
                             actionUnavailable = null,
-                            actionMessage = when (response.response.mode) {
-                                QuestionChatSendMode.STEER -> "Steering the current answer."
-                                else -> "Question Chat is answering."
-                            },
+                            actionMessage = null,
                             composerFocusToken = mutableState.value.composerFocusToken + 1
                         )
                     }

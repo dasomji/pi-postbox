@@ -225,7 +225,7 @@ describe("release packaging and operator docs", () => {
           'const settings = SettingsManager.inMemory();',
           'const loader = new DefaultResourceLoader({ cwd: session.getCwd(), agentDir: getAgentDir(), settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });',
           'const tool = defineTool({ name: "packed_probe", label: "Packed probe", description: "Packed probe", parameters: Type.Object({}), async execute() { return { content: [{ type: "text", text: "ok" }] }; } });',
-          'const snapshot = QuestionChatSnapshotSchema.parse({ requestId: "packed-chat", state: "ready", forkKind: "exact", model: { id: "test/model", source: "originating" }, sequence: 0, messages: [], tools: [] });',
+          'const snapshot = QuestionChatSnapshotSchema.parse({ requestId: "packed-chat", state: "ready", forkKind: "fresh", model: { id: "test/model", source: "postbox-settings" }, sequence: 0, messages: [], tools: [] });',
           'console.log(JSON.stringify({ cwd: session.getCwd(), settings: settings.isProjectTrusted(), loader: loader.constructor.name, createAgentSession: typeof createAgentSession, tool: tool.name, requestId: snapshot.requestId }));',
           ""
         ].join("\n")
@@ -304,8 +304,8 @@ describe("release packaging and operator docs", () => {
       "Pro–Cons",
       "Teach me",
       "freeform",
-      "exact fork",
-      "no reconstructed",
+      "fresh session",
+      "Settings",
       "Suggested in Chat",
       "Retry",
       "Stop",
@@ -365,7 +365,7 @@ describe("release packaging and operator docs", () => {
       "command_timeout",
       "source_path_missing",
       "source_leaf_missing",
-      "forkKind: \"exact\"",
+      "forkKind: \"fresh\"",
       "non-blank ambiguity",
       "provenance: \"chat\""
     ]);
@@ -587,7 +587,7 @@ describe("release packaging and operator docs", () => {
   it("documents authoritative health profile identity and exact metadata matching", async () => {
     const protocol = await readText(join("docs", "protocol.md"));
 
-    expectConcepts(protocol, ["/healthz", "profile", "instance", "buildId", "active-local/server.json", "exact", "identity"]);
+    expectConcepts(protocol, ["/healthz", "profile", "instance", "buildId", "active-local/server.json", "fresh", "identity"]);
   });
 
   it("keeps the release smoke isolated from operator config and compatible with profile health", async () => {

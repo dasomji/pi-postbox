@@ -42,7 +42,7 @@ class QuestionChatTransportTest {
         assertEquals(GeneratedPostboxProtocolContract.SUPPORTED_PROTOCOL_VERSION, request.getHeader(POSTBOX_CLIENT_PROTOCOL_VERSION_HEADER))
         val snapshot = (response as QuestionChatActivationResult.Ready).snapshot
         assertEquals("ask/slash space", snapshot.requestId)
-        assertEquals(QuestionChatForkKind.EXACT, snapshot.forkKind)
+        assertEquals(QuestionChatForkKind.FRESH, snapshot.forkKind)
     }
 
     @Test
@@ -417,7 +417,7 @@ private fun jsonResponse(body: String): MockResponse = MockResponse()
 
 private fun chatReadyResponse(
     requestId: String = "ask-1",
-    forkKind: String = "exact"
+    forkKind: String = "fresh"
 ): String =
     """
         {
@@ -428,7 +428,7 @@ private fun chatReadyResponse(
             "forkKind": "$forkKind",
             "model": {
               "id": "anthropic/claude-sonnet-4",
-              "source": "originating"
+              "source": "postbox-settings"
             },
             "sequence": 0,
             "messages": [],

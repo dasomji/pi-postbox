@@ -1,4 +1,4 @@
-import type { QuestionChatModel } from "./protocol.js";
+import { ChatEffortSchema, type QuestionChatModel } from "./protocol.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -20,17 +20,18 @@ const RECOVERY_MANIFEST = "manifest.json";
 const RECOVERY_HASH = /^[a-f0-9]{64}$/;
 
 const QuestionChatRecoveryManifestSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   requestId: z.string().min(1).max(200),
   ownerSessionId: z.string().min(1).max(200),
-  forkKind: z.literal("exact"),
+  forkKind: z.literal("fresh"),
   cwd: z.string().min(1).max(4_000),
   privateSessionPath: z.string().min(1).max(4_000),
   chatBoundaryId: z.string().min(1).max(400).nullable(),
   sequence: z.number().int().nonnegative(),
   model: z.object({
     id: z.string().min(1).max(400),
-    source: z.enum(["originating", "pi-default"]),
+    source: z.enum(["postbox-settings", "pi-default"]),
+    effort: ChatEffortSchema.optional(),
     fallbackReason: z.string().max(2_000).optional()
   }) satisfies z.ZodType<QuestionChatModel>
 });
