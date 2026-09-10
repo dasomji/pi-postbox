@@ -472,12 +472,16 @@ async function registerResolvedTarget(
   unavailableNote = "Pi Postbox is not connected.";
   let registrationAutoWakeCoordinator: AnswerAutoWakeCoordinator | undefined;
 
+  const clientBeforePreparation = client;
   try {
     const [registration, extensionConfig] = await Promise.all([
       collectRegistrationPayload(pi, ctx, env, fallbackSessionIdentity, profile),
       readExtensionConfig(env, profile)
     ]);
     if (!uiScope.isActive()) return;
+    // Supervisor and explicit recovery can resolve the same target concurrently.
+    // Keep the client installed while this registration was collecting metadata.
+    if (client && client !== clientBeforePreparation) return;
     currentRegistration = registration;
     answerAutoWakeCoordinator?.stop();
     client?.stop();
