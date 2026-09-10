@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
@@ -535,7 +536,8 @@ class QuestionWorkflowScreenTest {
         )
 
         listOf("first question", "second question", "third question").forEach { prompt ->
-            composeRule.onNodeWithText(prompt).assertIsDisplayed()
+            // Wide screens also show the same prompt in the persistent sidebar.
+            composeRule.onAllNodesWithText(prompt).onFirst().assertIsDisplayed()
         }
     }
 

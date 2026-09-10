@@ -15,7 +15,8 @@ export const mockRequest: AskRequestSnapshot = {
   ownerRevision: 1,
   creator: { harness: "pi", ownerId: "mock-owner" },
   owner: { harness: "pi", ownerId: "mock-owner" },
-  mode: "single",
+  images: [],
+      mode: "single",
   status: "pending",
   createdAt,
   question: {

@@ -161,6 +161,7 @@
       {answerDisabled}
       {chatButtonLabel}
       onChat={openChat}
+      mobileWorkspaceTabsVisible={mobile && presentation.started}
     />
   </section>
 

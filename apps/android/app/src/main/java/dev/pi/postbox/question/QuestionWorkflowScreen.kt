@@ -349,6 +349,7 @@ fun QuestionWorkflowScreen(
                                             )
                                         } else {
                                             QuestionDetailCard(
+                                                baseUrl = state.baseUrl,
                                                 question = visibleQuestion,
                                                 projectLabel = session?.projectName ?: "Unknown project",
                                                 branchLabel = session?.branch ?: "Unknown branch",
@@ -1180,6 +1181,7 @@ private fun SessionDetailView(
 
 @Composable
 private fun QuestionDetailCard(
+    baseUrl: String,
     question: QuestionDetailUiState,
     projectLabel: String,
     branchLabel: String,
@@ -1265,6 +1267,8 @@ private fun QuestionDetailCard(
             ).joinToString(" · "),
             style = PostalCaptionStyle
         )
+
+        QuestionGallery(baseUrl, question.images)
 
         val highlightedOptionValue = questionChat?.suggestedOptionReview?.optionValue
         val reviewHighlightToken = questionChat?.suggestedOptionReview?.token ?: 0L

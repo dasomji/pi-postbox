@@ -6,6 +6,8 @@
   import { modalFocus } from "../lib/modalFocus";
   import type { QuestionForm } from "../lib/questionForm.svelte";
   import { branchLabel } from "../lib/status";
+  import QuestionGallery from "./QuestionGallery.svelte";
+  import QuestionRevisionHistory from "./QuestionRevisionHistory.svelte";
   import RichContext from "./RichContext.svelte";
 
   let {
@@ -14,7 +16,8 @@
     form,
     answerDisabled = false,
     chatButtonLabel,
-    onChat
+    onChat,
+    mobileWorkspaceTabsVisible = false
   }: {
     request: AskRequestSnapshot;
     session?: SessionSnapshot;
@@ -22,6 +25,7 @@
     answerDisabled?: boolean;
     chatButtonLabel?: "Chat";
     onChat?: () => void;
+    mobileWorkspaceTabsVisible?: boolean;
   } = $props();
 
   let showContext = $state(false);
@@ -66,8 +70,11 @@
 
 <svelte:window {onkeydown} />
 
-<div class="flex min-h-full flex-col px-4 py-4 sm:px-6">
-  <div class="flex flex-wrap items-center justify-between gap-3 text-xs text-postbox-muted">
+<div class="flex min-h-full flex-col px-4 sm:px-6">
+  <div
+    class="sticky top-0 z-20 -mx-4 flex flex-wrap items-center justify-between gap-3 border-b border-postbox-border bg-postbox-canvas/95 px-4 py-4 text-xs text-postbox-muted backdrop-blur sm:-mx-6 sm:px-6"
+    data-testid="question-context-bar"
+  >
     <span class="inline-flex flex-wrap items-center gap-x-2 gap-y-1 font-display text-lg font-bold tracking-wide">
       <span><span class="text-postbox-subtle">Project:</span> <span class="text-attention">{projectLabel}</span></span>
       <span class="text-attention">•</span>
@@ -109,6 +116,9 @@
           </div>
         </section>
       {/if}
+
+      <QuestionGallery images={request.images} />
+      {#if request.revision > 1}<QuestionRevisionHistory questionId={request.requestId} />{/if}
 
       <p class="mt-4 text-xs uppercase tracking-wide text-postbox-muted">
         {request.mode === "single" ? "Choose one" : "Choose one or more"} · asked {formatTimeAgo(request.createdAt)}
@@ -215,7 +225,12 @@
       {#if form.error}<p class="mt-4 rounded-lg bg-danger/10 p-3 text-center text-sm text-danger-foreground">{form.error}</p>{/if}
       {#if form.done && !showStamp}<p class="mt-4 rounded-lg bg-success/10 p-3 text-center text-sm text-success-foreground">{form.done}</p>{/if}
 
-      <div class="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+      <div
+        class="sticky z-20 -mx-4 mt-8 flex flex-col items-stretch justify-center gap-3 border-t border-postbox-border bg-postbox-canvas/95 px-4 py-4 shadow-postbox-panel backdrop-blur sm:flex-row sm:flex-wrap sm:items-center"
+        style:bottom={mobileWorkspaceTabsVisible ? "calc(4.25rem + env(safe-area-inset-bottom))" : "0px"}
+        style:padding-bottom="max(1rem, env(safe-area-inset-bottom))"
+        data-testid="question-action-bar"
+      >
         <button
           class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-attention-foreground bg-attention px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-attention-contrast shadow-postbox-paper ring-2 ring-inset ring-white/25 transition hover:bg-attention-foreground sm:w-auto sm:shrink-0"
           type="submit"
@@ -254,10 +269,6 @@
         </button>
       </div>
     </div>
-  </div>
-
-  <div class="-mx-4 mt-auto pt-4 sm:-mx-6" aria-hidden="true">
-    <div class="postal-stripes h-[3px] w-full opacity-70"></div>
   </div>
 </div>
 

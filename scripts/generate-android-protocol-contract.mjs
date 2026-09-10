@@ -91,6 +91,7 @@ const stateFixtures = wireValues.semanticStates.map((semanticState, index) => ({
   requests: wireValues.askStatuses.map((status, requestIndex) => ({
     ...baseRequest,
     requestId: `ask-${status}`,
+    ...(requestIndex === 0 ? { images: [{ imageId: "12345678-1234-4123-8123-123456789abc", mediaType: "image/png", byteSize: 128, width: 32, height: 16, alt: "Contract screenshot", caption: "First evidence" }, { imageId: "12345678-1234-4123-8123-123456789abd", mediaType: "image/webp", byteSize: 96, width: 16, height: 32, alt: "Second evidence" }] } : {}),
     mode: wireValues.askModes[requestIndex % wireValues.askModes.length],
     status
   })),

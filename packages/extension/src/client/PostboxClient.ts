@@ -38,6 +38,8 @@ import {
   type QuestionChatRecoveryOffer
 } from "../questionChatRuntime.js";
 import { randomUUID } from "node:crypto";
+import { HealthResponseSchema, PROTOCOL_VERSION, type LocalQuestionImage, type StagedQuestionImage } from "../protocol.js";
+import { prepareLocalImages, ImagePreparationError } from "../imagePreparation.js";
 import WebSocket from "ws";
 import type { ResolvedServerTarget, ResolveServerTargetResult } from "../serverTargetResolver.js";
 import {
@@ -200,6 +202,9 @@ export class PostboxClient {
   private answerNotificationOperation: Promise<void> = Promise.resolve();
   private readonly localResolutions = new Map<string, LocalResolution>();
   private currentSemanticState: SemanticState;
+  private imageUploadToken?: string;
+  private readonly imageTargets = new Map<string, { url: string; token: string; expires: number }>();
+  private readonly imageGalleryTargets = new WeakMap<StagedQuestionImage[], { url: string; token?: string }>();
   private currentServerUrl: string;
   private connectionState: PostboxConnectionState = "disconnected";
   private connectionDiagnostics: string[] = ["websocket:disconnected"];
@@ -402,7 +407,66 @@ export class PostboxClient {
     return receipt;
   }
 
+  async prepareImages(images: LocalQuestionImage[], signal?: AbortSignal, requestId?: string): Promise<StagedQuestionImage[]> {
+    if (!images.length) return [];
+    if (requestId) {
+      const origin = { url: this.currentServerUrl, token: this.imageUploadToken };
+      const existing = await this.query("questions.get", { questionIds: [requestId], view: "control" }) as unknown[];
+      signal?.throwIfAborted();
+      if (existing.length) {
+        const replay: StagedQuestionImage[] = [];
+        this.imageGalleryTargets.set(replay, origin);
+        return replay;
+      }
+    }
+    const url = this.currentServerUrl;
+    const token = this.imageUploadToken;
+    const identity = this.currentTargetIdentity;
+    const profile = this.currentTargetProfile;
+    const healthResponse = await fetch(new URL("/healthz", url), { signal, redirect: "error" });
+    if (!healthResponse.ok) throw new ImagePreparationError("image_target_unavailable", "Image target health check failed", true);
+    const health = HealthResponseSchema.parse(await healthResponse.json());
+    if (!health.mediaInstanceId || !token || (profile && profile.id !== health.profile.id)
+      || (identity?.instanceId && identity.instanceId !== health.instance?.instanceId)
+      || (identity?.buildId && identity.buildId !== health.buildId)) throw new ImagePreparationError("image_target_changed", "Image target changed; reconnect and retry", true);
+    const assertTarget = () => {
+      signal?.throwIfAborted();
+      if (url !== this.currentServerUrl || token !== this.imageUploadToken || !this.isConnected()) throw new ImagePreparationError("image_target_changed", "Image target changed; reconnect and retry", true);
+    };
+    for (const [id, target] of this.imageTargets) if (target.expires <= Date.now()) this.imageTargets.delete(id);
+    const prepared = await prepareLocalImages(images, this.options.registration.session.cwd, async (bytes, mediaType) => {
+      assertTarget();
+      let response: Response;
+      try {
+        response = await fetch(new URL("/api/images/stage", url), { method: "POST", redirect: "error", signal,
+          headers: { "content-type": mediaType, "x-postbox-session": this.options.registration.session.sessionId,
+            "x-postbox-upload-token": token, "x-postbox-media-instance": health.mediaInstanceId!,
+            "x-postbox-protocol-version": PROTOCOL_VERSION }, body: new Uint8Array(bytes) });
+      } catch {
+        signal?.throwIfAborted();
+        throw new ImagePreparationError("image_upload_failed", "Image upload failed; retry staging", true);
+      }
+      assertTarget();
+      const result = await response.json() as { uploadId?: string; error?: string; message?: string; retryable?: boolean };
+      if (!response.ok || !result.uploadId) throw new ImagePreparationError(result.error ?? "image_upload_failed", result.message ?? "Image upload failed", result.retryable ?? true);
+      this.imageTargets.set(result.uploadId, { url, token, expires: Date.now() + 3_600_000 });
+      return { uploadId: result.uploadId };
+    }, signal);
+    assertTarget();
+    return prepared;
+  }
+
+  private assertImageTargets(images?: StagedQuestionImage[]): void {
+    const gallery = images && this.imageGalleryTargets.get(images);
+    if (gallery && (gallery.url !== this.currentServerUrl || gallery.token !== this.imageUploadToken)) throw new ImagePreparationError("image_target_changed", "Image target changed; retry on the verified target", true);
+    for (const image of images ?? []) {
+      const target = this.imageTargets.get(image.uploadId);
+      if (target && (target.url !== this.currentServerUrl || target.token !== this.imageUploadToken)) throw new ImagePreparationError("image_target_changed", "Image target changed; restage the gallery", true);
+    }
+  }
+
   createAskBatch(payload: { sessionId: string; questions: AskBatchQuestionDraft[] }, signal?: AbortSignal): Promise<AskBatchReceipt> {
+    for (const draft of payload.questions) this.assertImageTargets(draft.images);
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected; the Question batch was not persisted."));
     if (signal?.aborted) return Promise.reject(Object.assign(new Error("write_question create_batch was aborted before persistence acknowledgement"), { name: "AbortError" }));
     const requestId = `ask_batch_${randomUUID()}`;
@@ -461,6 +525,7 @@ export class PostboxClient {
   }
 
   query(type: "question.list" | "questions.get" | "question.status.list" | "owner.status.get" | "question.update" | "question.history.get" | "question.answer.recover", payload: any): Promise<any> {
+    if (type === "question.update") this.assertImageTargets(payload.update?.images);
     if (!this.isConnected()) return Promise.reject(new Error("Pi Postbox is disconnected."));
     const requestId = `query_${randomUUID()}`;
     return new Promise((resolve, reject) => {
@@ -618,6 +683,7 @@ export class PostboxClient {
         const parsed = ExtensionServerMessageSchema.safeParse(JSON.parse(text));
         if (!parsed.success) return;
         if (parsed.data.type === "registered") {
+          this.imageUploadToken = parsed.data.payload.imageUploadToken;
           this.offerQuestionChatRecovery();
           return;
         }
@@ -693,7 +759,7 @@ export class PostboxClient {
         if (parsed.data.type === "error") {
           this.options.onStatus?.(`server-error:${parsed.data.error.code}`);
           if (parsed.data.requestId) {
-            const error = new Error(parsed.data.error.message);
+            const error = Object.assign(new Error(parsed.data.error.message), { code: parsed.data.error.code });
             const create = [...this.pendingAsks.values()].find((candidate) => candidate.createCommandId === parsed.data.requestId);
             if (create) this.rejectCreateReceipt(create.payload.requestId, error);
             if (create) create.reject(error);
@@ -1029,6 +1095,12 @@ export class PostboxClient {
   }
 
   private sendPendingAsk(pending: PendingAsk): boolean {
+    try { this.assertImageTargets(pending.payload.images); }
+    catch (error) {
+      this.rejectCreateReceipt(pending.payload.requestId, error as Error);
+      pending.reject(error as Error);
+      return false;
+    }
     if (pending.originServerUrl && pending.originServerUrl !== this.currentServerUrl) return false;
     const sent = this.send({
       type: "ask.create", requestId: pending.createCommandId, payload: pending.payload

@@ -21,7 +21,8 @@ const REQUEST: AskRequestSnapshot = {
   ownerRevision: 1,
   creator: { harness: "pi", ownerId: "test-owner" },
   owner: { harness: "pi", ownerId: "test-owner" },
-  mode: "single",
+  images: [],
+      mode: "single",
   question: { prompt: "Which path should we take?" },
   options: [{ value: "a", label: "Path A" }],
   status: "pending",
@@ -173,6 +174,10 @@ describe("responsive Question Chat workspace", () => {
     expect(screen.getByRole("tab", { name: "Question Chat" }).getAttribute("aria-selected")).toBe("true");
     await fireEvent.click(action);
     expect(screen.getByRole("tab", { name: "Question" }).getAttribute("aria-selected")).toBe("true");
+    const mobileActionBar = screen.getByTestId("question-action-bar");
+    expect(mobileActionBar.className).toContain("sticky");
+    expect(mobileActionBar.style.bottom).toContain("4.25rem");
+    expect(mobileActionBar.style.bottom).toContain("safe-area-inset-bottom");
     mobileView.unmount();
 
     const desktop = mediaController(false);
@@ -240,6 +245,13 @@ describe("responsive Question Chat workspace", () => {
     expect(metadata?.className).toContain("text-lg");
     expect(metadata?.className).toContain("font-bold");
     expect(metadata?.className).toContain("tracking-wide");
+    const contextBar = screen.getByTestId("question-context-bar");
+    expect(contextBar).toBe(metadata?.parentElement);
+    expect(contextBar.className).toContain("sticky");
+    expect(contextBar.className).toContain("top-0");
+    expect(contextBar.className).toContain("bg-postbox-canvas/95");
+    const questionRegion = screen.getByRole("region", { name: "Question" });
+    expect(questionRegion.className).toContain("overflow-y-auto");
     expect(projectLabel.className).toContain("text-postbox-subtle");
     expect(projectLabel.nextElementSibling?.className).toContain("text-attention");
     const branchLabel = screen.getByText("Branch:");
@@ -247,6 +259,13 @@ describe("responsive Question Chat workspace", () => {
     expect(branchLabel.nextElementSibling?.className).toContain("text-history-foreground");
     const submitAnswer = screen.getByRole("button", { name: "Submit" });
     expect(submitAnswer.lastElementChild?.tagName).toBe("svg");
+    const actionBar = screen.getByTestId("question-action-bar");
+    expect(actionBar).toBe(submitAnswer.parentElement);
+    expect(actionBar.className).toContain("sticky");
+    expect(actionBar.className).toContain("bg-postbox-canvas/95");
+    expect(actionBar.style.bottom).toBe("0px");
+    expect(actionBar.style.paddingBottom).toContain("safe-area-inset-bottom");
+    expect(container.querySelector(".postal-stripes")).toBeNull();
     const chatAction = screen.getByRole("button", { name: "Chat" });
     const noteAction = screen.getByRole("button", { name: "+ Add a note" });
     expect(chatAction.previousElementSibling).toBe(submitAnswer);

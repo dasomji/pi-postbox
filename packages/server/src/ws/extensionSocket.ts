@@ -26,8 +26,10 @@ function lifecycleShutdownRationale(reason: string | undefined): string {
   return "Originating Pi session was shut down.";
 }
 
+import { ImageError } from "../services/imageStore.js";
+
 function sendAskError(socket: WebSocket, requestId: string | undefined, fallbackCode: string, error: unknown): void {
-  const isRequestError = error instanceof RequestStoreError;
+  const isRequestError = error instanceof RequestStoreError || error instanceof ImageError;
   send(socket, {
     type: "error",
     requestId,
@@ -66,7 +68,8 @@ export async function registerExtensionSocket(
   broadcaster: StateBroadcaster,
   expireDue: () => unknown = () => undefined,
   pushNotifier?: PushNotifier,
-  questionChatRelay?: QuestionChatRelay
+  questionChatRelay?: QuestionChatRelay,
+  imageUploadToken?: (sessionId: string, connectionId: string) => string
 ): Promise<void> {
   const activeSessionWaits = new Map<string, { connectionId: string; requestId: string; controller: AbortController; socket: WebSocket }>();
   app.get("/api/extension/ws", { websocket: true }, (socket, request) => {
@@ -315,7 +318,7 @@ export async function registerExtensionSocket(
           send(socket, {
             type: "registered",
             requestId: message.requestId,
-            payload: { sessionId: message.payload.session.sessionId, presence: "live", feature }
+            payload: { sessionId: message.payload.session.sessionId, presence: "live", feature, imageUploadToken: imageUploadToken?.(message.payload.session.sessionId, connectionId) }
           });
           flushAnswerNotifications();
         } catch (error) {
@@ -388,7 +391,7 @@ export async function registerExtensionSocket(
         const actor = sessionStore.ownerForSession(message.payload.sessionId);
         if (!actor) { sendAskError(socket, message.requestId, "wrong_owner", new Error("Session has no owner")); return; }
         try {
-          const payload = requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update, sessionStore);
+          const payload = requestStore.updateQuestion(message.payload.questionId, actor, message.payload.update, sessionStore, message.payload.sessionId);
           if (message.payload.update.action === "transfer" || message.payload.update.action === "takeover") questionChatRelay?.disposeNonTerminal(message.payload.questionId);
           broadcaster.broadcast();
           send(socket, { type: "query.result", requestId: message.requestId, payload });
@@ -458,6 +461,7 @@ export async function registerExtensionSocket(
 
       if (message.type === "ask.create") {
         try {
+          if (message.payload.sessionId !== registeredSessionId || !sessionStore.isCurrentConnection(message.payload.sessionId, connectionId)) throw new RequestStoreError("wrong_owner", "Question creation requires this connection's registered session");
           expireDue();
           const alreadyExisted = requestStore.get(message.payload.requestId) !== undefined;
           const snapshot = requestStore.create(message.payload);

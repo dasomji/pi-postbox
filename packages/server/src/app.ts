@@ -35,6 +35,12 @@ import { RequestStore } from "./services/requestStore.js";
 import { SessionStore } from "./services/sessionStore.js";
 import { registerExtensionSocket } from "./ws/extensionSocket.js";
 
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { ImageStore } from "./services/imageStore.js";
+import { registerImageRoutes } from "./routes/imageRoutes.js";
+
 export interface CreatePostboxAppOptions {
   logger?: FastifyServerOptions["logger"];
   startedAtMs?: number;
@@ -126,7 +132,10 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     db.close();
     throw error;
   }
+  const temporaryMedia = options.databasePath === ":memory:" ? mkdtempSync(join(tmpdir(), "postbox-images-")) : undefined;
+  const imageStore = new ImageStore(db, temporaryMedia ?? `${options.databasePath ?? defaultDatabasePath()}.images`, now, randomUUID());
   const requestStore = new RequestStore(db, now, {
+    imageStore,
     recordTelemetry: (event) => app.log.info({ questionTelemetry: event }, "question telemetry")
   });
   const questionChatRelay = new QuestionChatRelay({
@@ -168,6 +177,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
   const historyService = new HistoryService(db, requestStore, now);
   let broadcaster: StateBroadcaster;
   const expireDueAndBroadcast = () => {
+    try { imageStore.prune(); } catch { app.log.warn({ code: "image_cleanup_failed" }, "Image cleanup will retry on the next sweep"); }
     const expired = requestStore.expireDue();
     if (expired.length > 0) broadcaster.broadcast();
     return expired;
@@ -195,6 +205,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     questionChatRelay.close();
     sessionStore.close();
     db.close();
+    if (temporaryMedia) rmSync(temporaryMedia, { recursive: true, force: true });
   });
 
   app.addHook("preSerialization", async (request, reply, payload) => {
@@ -253,7 +264,8 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
     broadcaster,
     expireDueAndBroadcast,
     pushNotifier,
-    questionChatRelay
+    questionChatRelay,
+    registerImageRoutes(app, imageStore, sessionStore)
   );
 
   app.get("/healthz", async () => {
@@ -266,7 +278,7 @@ export async function createPostboxApp(options: CreatePostboxAppOptions = {}): P
       instance: getServerInstance()
     });
 
-    return HealthResponseSchema.parse(response);
+    return HealthResponseSchema.parse({ ...response, mediaInstanceId: imageStore.instanceId });
   });
 
   const uiDistDir = resolve(options.uiDistDir ?? defaultUiDistDir());

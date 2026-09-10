@@ -27,6 +27,10 @@ export async function registerRequestRoutes(
   expireDue: () => unknown = () => undefined,
   questionChat?: { relay: QuestionChatRelay; sessionStore: SessionStore }
 ): Promise<void> {
+  app.get<{ Params: { requestId: string }; Querystring: { cursor?: string } }>("/api/requests/:requestId/history", async (request, reply) => {
+    try { return requestStore.getQuestionHistoryPage({ questionId: request.params.requestId, view: "full", cursor: request.query.cursor, pageSize: 20 }); }
+    catch (error) { return sendRequestError(reply, error); }
+  });
   app.get("/api/requests", async (request, reply) => {
     expireDue();
     const query = request.query as { status?: string };
