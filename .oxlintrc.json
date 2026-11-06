@@ -1,0 +1,12 @@
+{
+  "categories": { "correctness": "error" },
+  "rules": {
+    "no-unused-vars": "off",
+    "no-unused-expressions": "off",
+    "no-useless-escape": "off",
+    "no-control-regex": "off",
+    "no-unsafe-optional-chaining": "off",
+    "unicorn/no-useless-spread": "off",
+    "typescript/no-this-alias": "off"
+  }
+}
