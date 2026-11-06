@@ -26,6 +26,7 @@ test("smoke reports bounded server stderr and preserves the journey error when c
       `
       if (process.argv[1]?.endsWith('/dist/cli.js')) {
         process.stderr.write(Array.from({length:220},(_,i)=>'server diagnostic '+i).join('\\n')+'\\n');
+        if(process.env.SMOKE_TEST_HUGE_LINE) process.stderr.write('huge-line-start'+'é'.repeat(70000)+'huge-line-end\\n');
         throw Error('injected server startup failure');
       }
       if (process.argv[1]?.endsWith('/smoke-postbox.mjs') && process.env.SMOKE_TEST_CLEANUP_FAILURE) {
@@ -34,13 +35,17 @@ test("smoke reports bounded server stderr and preserves the journey error when c
       }
     `,
     );
-    for (const cleanupFailure of [false, true]) {
+    for (const [cleanupFailure, hugeLine] of [
+      [false, false],
+      [true, true],
+    ]) {
       const child = spawn(process.execPath, ["scripts/smoke-postbox.mjs"], {
         cwd: resolve(import.meta.dirname, "../.."),
         env: {
           ...process.env,
           NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
           SMOKE_TEST_CLEANUP_FAILURE: cleanupFailure ? "1" : "",
+          SMOKE_TEST_HUGE_LINE: hugeLine ? "1" : "",
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -63,7 +68,19 @@ test("smoke reports bounded server stderr and preserves the journey error when c
         child.kill("SIGKILL");
       }
       assert.equal(code, 1, output);
-      assert.match(output, /server diagnostic 219/);
+      if (hugeLine) {
+        assert.match(output, /huge-line-end/);
+        assert.doesNotMatch(output, /huge-line-start/);
+        const tail = output
+          .split(/Server stderr[^\n]*\n/)[1]
+          ?.split("\nError: Timed out")[0]
+          .trimEnd();
+        assert.ok(tail, output);
+        assert.ok(
+          Buffer.byteLength(tail) <= 65536,
+          `stderr tail: ${Buffer.byteLength(tail)} bytes`,
+        );
+      } else assert.match(output, /server diagnostic 219/);
       assert.doesNotMatch(output, /server diagnostic 0\n/);
       assert.match(
         output,

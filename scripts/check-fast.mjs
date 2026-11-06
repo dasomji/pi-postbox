@@ -106,13 +106,11 @@ try {
   const tests = present.filter((p) =>
     /^(?:packages|apps)\/.*\.test\.ts$/.test(p),
   );
-  const docsTests = paths.some((p) => /\.md$/i.test(p))
-    ? tests.filter((p) =>
-        /README\.md|docs\/|readFile/.test(
-          readFileSync(join(snapshot, p), "utf8"),
-        ),
-      )
-    : [];
+  const readerTests = tests.filter((p) =>
+    /readFile|readdir|createReadStream|statSync|existsSync|README\.md|docs\/|apps\/android/.test(
+      readFileSync(join(snapshot, p), "utf8"),
+    ),
+  );
   let built = false;
   const build = () => {
     if (!built) npm("build");
@@ -138,7 +136,7 @@ try {
     );
   if (docsOnly) {
     npm("lint:docs");
-    runExtraTests(docsTests);
+    runExtraTests(readerTests);
   } else {
     const android = paths.some((p) => p.startsWith("apps/android/"));
     const known = (p) =>
@@ -211,7 +209,7 @@ try {
     if (!broad)
       runExtraTests([
         ...new Set([
-          ...docsTests,
+          ...readerTests,
           ...(android ? tests.filter((p) => p.startsWith("apps/")) : []),
           ...(node ? tests.filter((p) => p.endsWith(".static.test.ts")) : []),
         ]),

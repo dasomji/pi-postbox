@@ -8,8 +8,13 @@ while (args.length) {
   const value = args.shift();
   if (flag === "--part" && ["all", "node", "android"].includes(value))
     part = value;
-  else if (["--base", "--push"].includes(flag) && value && !comparison)
-    comparison = flag === "--push" ? ["--push", value] : [value];
+  else if (
+    ["--base", "--push"].includes(flag) &&
+    value &&
+    !value.startsWith("-") &&
+    !comparison
+  )
+    comparison = [flag, value];
   else
     throw Error(
       "Usage: check:full -- [--part node|android|all] --base <PR-target-base> | --push <previous-push-SHA>",

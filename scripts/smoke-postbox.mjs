@@ -30,9 +30,13 @@ let stderrPrinted = false;
 function printServerStderr() {
   if (!stderr || stderrPrinted) return;
   stderrPrinted = true;
+  const tail = Buffer.from(stderr.trimEnd().split("\n").slice(-200).join("\n"));
+  let start = Math.max(0, tail.length - 64 * 1024);
+  // Do not turn a truncated UTF-8 code point into a larger replacement character.
+  while (start < tail.length && (tail[start] & 0xc0) === 0x80) start++;
   console.error(
-    "Server stderr (last 200 lines):\n" +
-      stderr.trimEnd().split("\n").slice(-200).join("\n"),
+    "Server stderr (last 200 lines, at most 64 KiB):\n" +
+      tail.toString("utf8", start),
   );
 }
 

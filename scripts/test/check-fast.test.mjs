@@ -64,12 +64,13 @@ function selectionFixture() {
     root,
     put,
     git,
-    run(file, before, after) {
+    run(file, before, after, unstaged = () => {}) {
       put(file, before);
       git("add", ".");
       git("commit", "-qm", "baseline");
       put(file, after);
       git("add", file);
+      unstaged();
       return spawnSync(process.execPath, ["scripts/check-fast.mjs"], {
         cwd: root,
         env: { ...process.env, INIT_CWD: root },
@@ -114,6 +115,32 @@ test("Android-only changes execute Vitest files under apps", () => {
   }
 });
 
+test("Android-only changes execute package filesystem readers from the index", () => {
+  const f = selectionFixture();
+  try {
+    const reader = "packages/server/test/androidReader.test.ts";
+    f.put(
+      reader,
+      `import {test} from 'vitest'; import {readdirSync} from 'node:fs'; test('reader',()=>{readdirSync('apps/android');throw Error('package reader selected');});`,
+    );
+    const p = f.run(
+      "apps/android/app/src/main/Example.kt",
+      "// before\n",
+      "// after\n",
+      () => {
+        f.put(
+          reader,
+          `import {test} from 'vitest'; test('no reader in live worktree',()=>{});`,
+        );
+      },
+    );
+    assert.notEqual(p.status, 0, p.stdout + p.stderr);
+    assert.match(p.stdout + p.stderr, /package reader selected/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test("hand-edited generated Kotlin runs the generated-contract gate", () => {
   const f = selectionFixture();
   try {
@@ -133,7 +160,7 @@ test("hand-edited generated Kotlin runs the generated-contract gate", () => {
   }
 });
 
-test("source edits execute static filesystem tests even when related tests pass", () => {
+test("source edits execute source-scanning tests even when related tests pass", () => {
   const f = selectionFixture();
   try {
     const pkg = JSON.parse(readFileSync(join(f.root, "package.json"), "utf8"));
@@ -148,7 +175,7 @@ test("source edits execute static filesystem tests even when related tests pass"
       `import {test,expect} from 'vitest'; import {value} from '../src/value'; test('related',()=>expect(value).toBe(2));`,
     );
     f.put(
-      "apps/web/src/new.static.test.ts",
+      "packages/server/test/packageDocs.test.ts",
       `import {test} from 'vitest'; import {readFileSync} from 'node:fs'; test('static',()=>{readFileSync('packages/server/src/value.ts');throw Error('static reader selected');});`,
     );
     const p = f.run(

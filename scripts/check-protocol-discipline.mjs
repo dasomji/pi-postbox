@@ -4,16 +4,17 @@ import { assertAndroidFixtureServerVersion } from "./protocol-discipline.mjs";
 const args = process.argv.slice(2);
 const staged = args[0] === "--staged";
 const push = args[0] === "--push";
-const suppliedBase = push ? args[1] : args[0];
+const explicitBase = args[0] === "--base";
+const suppliedBase = push || explicitBase ? args[1] : args[0];
 if (
   staged
     ? args.length !== 1
-    : push
-      ? args.length !== 2
-      : args.length !== 1 || suppliedBase?.startsWith("-")
+    : args.length !== (push || explicitBase ? 2 : 1) ||
+      !suppliedBase ||
+      suppliedBase.startsWith("-")
 ) {
   throw new Error(
-    "Usage: check-protocol-discipline.mjs <PR-target-base> | --push <previous-push-SHA> | --staged",
+    "Usage: check-protocol-discipline.mjs [--base] <PR-target-base> | --push <previous-push-SHA> | --staged",
   );
 }
 if (push && /^0+$/.test(suppliedBase)) {

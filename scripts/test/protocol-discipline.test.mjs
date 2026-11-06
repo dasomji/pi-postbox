@@ -98,3 +98,23 @@ test("PR target, push-before, invalid/self/initial bases fail closed at the CLI"
     rmSync(f.root, { recursive: true, force: true });
   }
 });
+
+test("explicit bases cannot become mode flags and valid explicit bases compare commits", () => {
+  const f = fixture();
+  try {
+    for (const value of ["", "--staged", "--push", "-x"]) {
+      const result = f.run("--base", value);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Usage/);
+      assert.equal(result.stdout, "");
+    }
+    f.put("notes.txt", "a real comparison\n");
+    f.git("add", ".");
+    f.git("commit", "-qm", "notes");
+    const result = f.run("--base", f.base);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /PR .*\(1 paths\)/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
