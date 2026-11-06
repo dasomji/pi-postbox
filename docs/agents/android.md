@@ -55,5 +55,9 @@ prove this checkout's full release journey. Physical-device TalkBack, maximum-im
 memory use, rotation/Back/gestures, IME, notification permission/tray/tap routing and
 FCM delivery need explicit coverage with the exact tested build. Record any missing
 hardware/configuration as a coverage limit. Do not claim native History or rename
-parity until those destinations/operations exist; see the migration follow-ups
-transferred to Plane by the integration owner.
+parity until those destinations/operations exist. Plane follow-ups track the remaining
+work: **POSTBOX-2** covers native History and session metadata parity;
+**POSTBOX-3** covers cross-client and physical-device release evidence.
+**POSTBOX-5** tracks the web UI showing Connected/"Question resolved" during a server
+outage, found by L3 and predating this PR. **POSTBOX-4** tracks GitHub backlog
+reconciliation so earlier requests retain an explicit disposition.

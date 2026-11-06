@@ -13,6 +13,70 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+test("smoke reports bounded server stderr and preserves the journey error when cleanup fails", async () => {
+  const root = mkdtempSync(join(tmpdir(), "postbox-smoke-diagnostics-"));
+  try {
+    const preload = join(root, "preload.mjs");
+    // Inject only at process boundaries: a server that fails at startup, and an
+    // OS liveness check failure after the real teardown has stopped that server.
+    writeFileSync(
+      preload,
+      `
+      if (process.argv[1]?.endsWith('/dist/cli.js')) {
+        process.stderr.write(Array.from({length:220},(_,i)=>'server diagnostic '+i).join('\\n')+'\\n');
+        throw Error('injected server startup failure');
+      }
+      if (process.argv[1]?.endsWith('/smoke-postbox.mjs') && process.env.SMOKE_TEST_CLEANUP_FAILURE) {
+        const kill = process.kill;
+        process.kill = (pid, signal) => { if(signal===0) throw Error('injected cleanup liveness failure'); return kill(pid,signal); };
+      }
+    `,
+    );
+    for (const cleanupFailure of [false, true]) {
+      const child = spawn(process.execPath, ["scripts/smoke-postbox.mjs"], {
+        cwd: resolve(import.meta.dirname, "../.."),
+        env: {
+          ...process.env,
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+          SMOKE_TEST_CLEANUP_FAILURE: cleanupFailure ? "1" : "",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = "";
+      child.stdout.on("data", (data) => {
+        output += data;
+      });
+      child.stderr.on("data", (data) => {
+        output += data;
+      });
+      const deadline = setTimeout(() => child.kill("SIGKILL"), 20000);
+      let code;
+      try {
+        code = await new Promise((res, reject) => {
+          child.once("error", reject);
+          child.once("close", res);
+        });
+      } finally {
+        clearTimeout(deadline);
+        child.kill("SIGKILL");
+      }
+      assert.equal(code, 1, output);
+      assert.match(output, /server diagnostic 219/);
+      assert.doesNotMatch(output, /server diagnostic 0\n/);
+      assert.match(
+        output,
+        /Health did not become ready|health.*timed out|Timed out.*health/i,
+      );
+      if (cleanupFailure)
+        assert.match(output, /injected cleanup liveness failure/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("interrupting the real smoke removes its server/state and leaves default home data untouched", async () => {
   const home = mkdtempSync(join(tmpdir(), "postbox-smoke-home-"));
   mkdirSync(join(home, ".pi-postbox"));

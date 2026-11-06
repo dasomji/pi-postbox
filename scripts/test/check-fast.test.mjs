@@ -10,9 +10,160 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 const source = resolve(import.meta.dirname, "../..");
+// Exercise the real CLI with real Git/index and Vitest. Other npm gates are
+// inert fixture commands so a skipped test is observable as a false success.
+function selectionFixture() {
+  const root = mkdtempSync(join(tmpdir(), "postbox-selection-test-"));
+  const put = (file, text) => {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), text);
+  };
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  for (const file of [
+    "check-fast.mjs",
+    "check-protocol-discipline.mjs",
+    "protocol-discipline.mjs",
+  ])
+    put(`scripts/${file}`, readFileSync(join(source, "scripts", file)));
+  put(
+    "package.json",
+    JSON.stringify({
+      type: "module",
+      scripts: Object.fromEntries(
+        [
+          "lint",
+          "lint:docs",
+          "typecheck",
+          "check",
+          "build",
+          "test",
+          "check:android",
+          "check:android-protocol-contract",
+        ].map((name) => [name, "node -e '' --"]),
+      ),
+    }),
+  );
+  put("packages/protocol/package.json", '{"name":"@pi-postbox/protocol"}');
+  put("packages/server/package.json", '{"version":"0.5.8"}');
+  put(
+    "packages/protocol/fixtures/android/contract.json",
+    '{"fixtures":{"health":{"version":"0.5.8"}}}',
+  );
+  put("vitest.config.mjs", 'export default {test:{include:["**/*.test.ts"]}};');
+  put("README.md", "# Fixture\n");
+  put(".gitignore", "node_modules\n");
+  symlinkSync(join(source, "node_modules"), join(root, "node_modules"), "dir");
+  git("init", "-q");
+  git("config", "user.email", "test@example.invalid");
+  git("config", "user.name", "Test");
+  return {
+    root,
+    put,
+    git,
+    run(file, before, after) {
+      put(file, before);
+      git("add", ".");
+      git("commit", "-qm", "baseline");
+      put(file, after);
+      git("add", file);
+      return spawnSync(process.execPath, ["scripts/check-fast.mjs"], {
+        cwd: root,
+        env: { ...process.env, INIT_CWD: root },
+        encoding: "utf8",
+        timeout: 30000,
+      });
+    },
+  };
+}
+
+test("docs-only changes discover and execute documentation-reading Vitest files", () => {
+  const f = selectionFixture();
+  try {
+    f.put(
+      "packages/server/test/newDocsReader.test.ts",
+      `import {test} from 'vitest'; import {readFileSync} from 'node:fs'; test('docs',()=>{readFileSync('README.md');throw Error('docs reader selected');});`,
+    );
+    const p = f.run("README.md", "# Fixture\n", "# Updated\n");
+    assert.notEqual(p.status, 0, p.stdout + p.stderr);
+    assert.match(p.stdout + p.stderr, /docs reader selected/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("Android-only changes execute Vitest files under apps", () => {
+  const f = selectionFixture();
+  try {
+    f.put(
+      "apps/newAndroidGuard.test.ts",
+      `import {test} from 'vitest'; test('Android scaffold',()=>{throw Error('apps guard selected');});`,
+    );
+    const p = f.run(
+      "apps/android/app/src/main/Example.kt",
+      "// before\n",
+      "// after\n",
+    );
+    assert.notEqual(p.status, 0, p.stdout + p.stderr);
+    assert.match(p.stdout + p.stderr, /apps guard selected/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("hand-edited generated Kotlin runs the generated-contract gate", () => {
+  const f = selectionFixture();
+  try {
+    const pkg = JSON.parse(readFileSync(join(f.root, "package.json"), "utf8"));
+    pkg.scripts["check:android-protocol-contract"] =
+      `node -e "throw Error('generated contract selected')"`;
+    f.put("package.json", JSON.stringify(pkg));
+    const p = f.run(
+      "apps/android/app/src/main/java/dev/pi/postbox/protocol/GeneratedPostboxProtocolContract.kt",
+      "// generated\n",
+      "// hand edited\n",
+    );
+    assert.notEqual(p.status, 0, p.stdout + p.stderr);
+    assert.match(p.stdout + p.stderr, /generated contract selected/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("source edits execute static filesystem tests even when related tests pass", () => {
+  const f = selectionFixture();
+  try {
+    const pkg = JSON.parse(readFileSync(join(f.root, "package.json"), "utf8"));
+    pkg.workspaces = ["packages/*"];
+    f.put("package.json", JSON.stringify(pkg));
+    f.put(
+      "packages/protocol/package.json",
+      '{"name":"@pi-postbox/protocol","scripts":{"build":"node -e 0"}}',
+    );
+    f.put(
+      "packages/server/test/related.test.ts",
+      `import {test,expect} from 'vitest'; import {value} from '../src/value'; test('related',()=>expect(value).toBe(2));`,
+    );
+    f.put(
+      "apps/web/src/new.static.test.ts",
+      `import {test} from 'vitest'; import {readFileSync} from 'node:fs'; test('static',()=>{readFileSync('packages/server/src/value.ts');throw Error('static reader selected');});`,
+    );
+    const p = f.run(
+      "packages/server/src/value.ts",
+      "export const value = 1;\n",
+      "export const value = 2;\n",
+    );
+    assert.notEqual(p.status, 0, p.stdout + p.stderr);
+    assert.match(p.stdout + p.stderr, /static reader selected/);
+    assert.match(p.stdout + p.stderr, /1 passed/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test("real hook checks indexed bytes, blocks a bad commit, and preserves partial staging", () => {
   const root = mkdtempSync(join(tmpdir(), "postbox-index-test-"));
   try {

@@ -71,6 +71,12 @@ test("PR target, push-before, invalid/self/initial bases fail closed at the CLI"
   try {
     assert.notEqual(f.run().status, 0);
     assert.notEqual(f.run("missing-ref").status, 0);
+    const unreachable = f.run("--push", "a".repeat(40));
+    assert.notEqual(unreachable.status, 0);
+    assert.match(
+      unreachable.stderr,
+      /previous push SHA.*unavailable.*workflow_dispatch/i,
+    );
     assert.notEqual(f.run("HEAD").status, 0);
     assert.match(f.run("--push", "0".repeat(40)).stderr, /initial push/i);
     f.put("notes.txt", "a real push\n");

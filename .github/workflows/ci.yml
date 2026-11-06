@@ -4,13 +4,19 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Reviewed nonzero base ref or SHA for protocol discipline recovery
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
@@ -37,8 +43,13 @@ jobs:
         if: github.event_name == 'push'
         env:
           POSTBOX_BEFORE_SHA: ${{ github.event.before }}
-        # An all-zero initial SHA fails closed; see docs/agents/verify.md.
+        # Zero or unavailable previous SHAs fail closed; use workflow_dispatch.
         run: npm run check:full -- --part node --push "$POSTBOX_BEFORE_SHA"
+      - name: Full Node contract (reviewed recovery base)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          POSTBOX_BASE_REF: ${{ inputs.base }}
+        run: npm run check:full -- --part node --base "$POSTBOX_BASE_REF"
 
   android:
     runs-on: ubuntu-latest

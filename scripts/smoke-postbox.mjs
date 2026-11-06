@@ -25,6 +25,16 @@ import {
 const root = resolve(new URL("..", import.meta.url).pathname);
 const cliPath = join(root, "packages/server/dist/cli.js");
 const serverPublicDir = join(root, "packages/server/dist/public");
+let stderr = "";
+let stderrPrinted = false;
+function printServerStderr() {
+  if (!stderr || stderrPrinted) return;
+  stderrPrinted = true;
+  console.error(
+    "Server stderr (last 200 lines):\n" +
+      stderr.trimEnd().split("\n").slice(-200).join("\n"),
+  );
+}
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -429,7 +439,6 @@ async function main() {
     stdio: ["ignore", "pipe", "pipe"],
   };
 
-  let stderr = "";
   const servers = new Set();
   const launchServer = () => {
     const child = spawn(process.execPath, serverArgs, serverOptions);
@@ -529,6 +538,7 @@ async function main() {
       () => process.exit(signal === "SIGINT" ? 130 : 143),
       (error) => {
         console.error(error);
+        printServerStderr();
         process.exit(1);
       },
     );
@@ -537,6 +547,9 @@ async function main() {
   const onTerm = () => interrupt("SIGTERM");
   process.on("SIGINT", onInt);
   process.on("SIGTERM", onTerm);
+  let journeyFailed = false;
+  let journeyError;
+  let cleanupError;
   try {
     const health = await waitForHealth(baseUrl);
     assert(
@@ -2168,17 +2181,28 @@ async function main() {
     console.log(
       "Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, image galleries/replay/revision media, restart, and History verified.",
     );
+  } catch (error) {
+    journeyFailed = true;
+    journeyError = error;
   } finally {
     try {
       await cleanup();
+    } catch (error) {
+      console.error("Smoke cleanup failure:", error);
+      printServerStderr();
+      cleanupError = error;
     } finally {
       process.off("SIGINT", onInt);
       process.off("SIGTERM", onTerm);
     }
   }
+  // Teardown must not replace the original journey failure.
+  if (journeyFailed) throw journeyError;
+  if (cleanupError) throw cleanupError;
 }
 
 main().catch((error) => {
   console.error(error);
+  printServerStderr();
   process.exitCode = 1;
 });

@@ -18,7 +18,7 @@ if (
 }
 if (push && /^0+$/.test(suppliedBase)) {
   throw new Error(
-    "Initial push has no previous SHA; refusing an empty comparison. Bootstrap requires a reviewed nonzero explicit base and rerun.",
+    "Initial push has no previous SHA; refusing an empty comparison. Use workflow_dispatch at the affected revision with a reviewed nonzero base input.",
   );
 }
 if (push && !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(suppliedBase)) {
@@ -29,14 +29,23 @@ if (push && !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(suppliedBase)) {
 const git = (...gitArgs) =>
   execFileSync("git", gitArgs, { encoding: "utf8" }).trim();
 const head = git("rev-parse", "--verify", "HEAD^{commit}");
-const baseCommit = staged
-  ? head
-  : git(
+let baseCommit = head;
+if (!staged) {
+  try {
+    baseCommit = git(
       "rev-parse",
       "--verify",
       "--end-of-options",
       `${suppliedBase}^{commit}`,
     );
+  } catch (error) {
+    if (push)
+      throw new Error(
+        "Previous push SHA is unavailable (for example after a force-push); refusing to substitute another base. Use workflow_dispatch at the affected revision with a reviewed nonzero base input.",
+      );
+    throw error;
+  }
+}
 const base = staged || push ? baseCommit : git("merge-base", baseCommit, head);
 if (!staged && base === head)
   throw new Error(

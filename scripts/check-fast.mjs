@@ -99,6 +99,36 @@ try {
     }
   }
   const npm = (...args) => run("npm", ["run", ...args]);
+  const paths = changed.length ? changed : present;
+  // File reads are invisible to Vitest's import graph. Discover from indexed
+  // tests, including future readers; conservatively include filesystem readers
+  // even when their documentation paths are computed or hidden in a helper.
+  const tests = present.filter((p) =>
+    /^(?:packages|apps)\/.*\.test\.ts$/.test(p),
+  );
+  const docsTests = paths.some((p) => /\.md$/i.test(p))
+    ? tests.filter((p) =>
+        /README\.md|docs\/|readFile/.test(
+          readFileSync(join(snapshot, p), "utf8"),
+        ),
+      )
+    : [];
+  let built = false;
+  const build = () => {
+    if (!built) npm("build");
+    built = true;
+  };
+  const runExtraTests = (files) => {
+    if (!files.length) return;
+    // Documentation/package and Android scaffold tests consume built output.
+    build();
+    run(process.execPath, [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--no-file-parallelism",
+      ...files,
+    ]);
+  };
   if (selected.length) npm("lint", "--", ...selected);
   run(process.execPath, ["scripts/check-protocol-discipline.mjs", "--staged"]);
   const docsOnly =
@@ -108,8 +138,8 @@ try {
     );
   if (docsOnly) {
     npm("lint:docs");
+    runExtraTests(docsTests);
   } else {
-    const paths = changed.length ? changed : present;
     const android = paths.some((p) => p.startsWith("apps/android/"));
     const known = (p) =>
       /^(?:packages\/(?:server|extension|protocol)\/.*\.(?:ts|json)|apps\/web\/.*\.(?:ts|js|svelte|json|css)|apps\/android\/|docs\/.*\.md$)/.test(
@@ -134,6 +164,7 @@ try {
           p.startsWith("packages/protocol/") ||
           p === "packages/server/package.json" ||
           p.startsWith("scripts/") ||
+          p.endsWith("/GeneratedPostboxProtocolContract.kt") ||
           p === "apps/android/app/build.gradle.kts",
       );
     if (node) {
@@ -146,7 +177,7 @@ try {
       if (broad) run("npm", ["test"]);
       else {
         // Related cases can launch the packaged smoke or import runtime dist.
-        npm("build");
+        build();
         const report = join(temporary, "related.json");
         const args = [
           "node_modules/vitest/vitest.mjs",
@@ -177,6 +208,14 @@ try {
           );
       }
     }
+    if (!broad)
+      runExtraTests([
+        ...new Set([
+          ...docsTests,
+          ...(android ? tests.filter((p) => p.startsWith("apps/")) : []),
+          ...(node ? tests.filter((p) => p.endsWith(".static.test.ts")) : []),
+        ]),
+      ]);
     if (android || broad) npm("check:android", "--", "--unit");
   }
   console.log(
