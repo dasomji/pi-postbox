@@ -1,5 +1,8 @@
 # Pi Postbox protocol overview
 
+For terminology see [GLOSSARY](../GLOSSARY.md). Contributors use the
+[development](agents/development.md) and [verification](agents/verify.md) guides.
+
 All process-boundary payloads are defined in `@pi-postbox/protocol` and validated with Zod. Clients should ignore unknown fields and preserve stable ids where provided. Schemas enforce finite Question, option, icon, HTTP body, and WebSocket frame limits so a single ask cannot grow without bound.
 
 ## Legacy expiry migration
@@ -246,7 +249,7 @@ The `/postbox` user command opens the active dashboard in the user's browser, us
 
 ## Structured Question and result hygiene
 
-Every new Question contains a prompt, a required non-blank ambiguity that states what uncertainty it aims to resolve, and one or more options. Options may include bounded description and impact text. At startup, persisted legacy option `meaning` fields migrate to `impact`; an already present `impact` remains authoritative, and legacy per-option context is removed. Internal provenance may also record the originating agent session path/id, leaf id, cwd, and model for exact-fork Question Chat.
+Every new Question contains a prompt, a required non-blank ambiguity that states what uncertainty it aims to resolve, and one or more options. Options may include bounded description and impact text. At startup, persisted legacy option `meaning` fields migrate to `impact`; an already present `impact` remains authoritative, and legacy per-option context is removed. Internal compatibility provenance may retain originating session coordinates. Current Question Chat does not inherit that transcript or its model; [ADR 0004](adr/0004-fresh-question-chat-settings.md) defines fresh question-only sessions and shared defaults.
 
 There is no top-level handoff context or per-option context in creation, current snapshots, or immutable history. `write_question` returns a compact current handle or update receipt. A later ordinary `get_answer` returns exactly the Question ID, Answer ID, selected machine option values, and optional user note.
 

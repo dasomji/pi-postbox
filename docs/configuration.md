@@ -1,5 +1,8 @@
 # Pi Postbox configuration
 
+For terminology see [GLOSSARY](../GLOSSARY.md). Contributors use the
+[development](agents/development.md) and [verification](agents/verify.md) guides.
+
 Pi Postbox has two independently configured processes:
 
 1. `pi-postbox-server`, the standalone local HTTP service.

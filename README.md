@@ -4,13 +4,19 @@ Pi Postbox is a Pi extension and companion web service for remote human decision
 
 Instead of streaming full Pi Session transcripts into a dashboard, Pi Postbox focuses on Postbox Questions: Pi Sessions register their presence, report project/branch/machine metadata, and send structured questions when they need input.
 
-The product requirements document is in [`docs/prd/pi-postbox.md`](docs/prd/pi-postbox.md).
+See the [glossary](https://github.com/dasomji/pi-postbox/blob/main/GLOSSARY.md), [configuration](https://github.com/dasomji/pi-postbox/blob/main/docs/configuration.md),
+[deployment](https://github.com/dasomji/pi-postbox/blob/main/docs/deployment.md) and [protocol](https://github.com/dasomji/pi-postbox/blob/main/docs/protocol.md) for maintained
+contracts. Contributors start with [development](https://github.com/dasomji/pi-postbox/blob/main/docs/agents/development.md),
+[verification](https://github.com/dasomji/pi-postbox/blob/main/docs/agents/verify.md) and [decisions](https://github.com/dasomji/pi-postbox/blob/main/docs/adr/).
 
 ## Current status
 
-Version 0.5.2 coordinates protocol 0.1.12 with Android 0.5.2 (build 14), adds ordered image galleries to Question creation, batches and revisions, durable sanitized media, immutable gallery history, and accessible Web/Android viewers, and keeps browser Question context and actions visible while long Questions scroll. Existing Pi sessions require a full restart to load the new protocol and tool schema.
-
-Issues #1-#11 provide the v1 implementation: runnable TypeScript workspace, `pi-postbox-server` CLI, Pi extension with `write_question`, WebSocket session registration, SSE browser state, SQLite persistence/history, structured Questions and options, semantic working/blocked/idle state, reconnect/idempotency/expiry, local terminal fallback commands, editable presentation metadata, and packaging/deployment docs plus a release smoke script. Version 0.2.6 updates Android 0.4.1 to include the server-required Question revision when submitting an Answer. Version 0.2.5 keeps the footer and status surfaces from undercounting a locally tracked open Question when the durable owner snapshot is briefly stale, makes published package updates robust on npm 11, and prebuilds the shared protocol before clean-checkout test runs. Version 0.2.3 adds validated npm Trusted Publishing from pushes to the main branch through GitHub Actions OIDC. Version 0.2.2 adds complete npm license and source metadata, fixes the published CLI bin path, and excludes test source from the package tarball. Version 0.2.1 bounds and paginates every model-facing bulk read, uses compact stateless cursors, hides inactive historical owners by default, trims repeated list fields, and preserves checkout development ports across restarts. Version 0.2.0 replaces the separate model-facing create/update tools with one explicit-action `write_question` surface and returns reusable current Question handles from creation. Version 0.1.9 requires a concise ambiguity for new Questions, simplifies parent and expiry inputs, renames option `meaning` to `impact`, removes top-level handoff context and per-option context, removes reconstructed Question Chat, and renders single/multi choice with accessible ballot controls. Version 0.1.8 exposed single-Question create/idempotent receipt disposition and safely required a full Pi restart when `/reload` retained an incompatible shared protocol dependency. Version 0.1.7 reduced model-facing tool schemas, strictly described exact-owner filters, and made recovery reads compact by default with an explicit full view while preserving strict server-side action validation and internal provenance/expiry compatibility.
+The npm package is version 0.5.8; protocol compatibility is 0.1.12. The separately
+built Android app is 0.5.4 (build 16). Question Chat uses fresh question-only sessions
+and shared model/effort defaults; Questions support ordered sanitized image galleries,
+immutable history and accessible Web/Android viewers. Existing Pi sessions need a
+full restart after protocol/tool-schema changes. See [ADR 0004](https://github.com/dasomji/pi-postbox/blob/main/docs/adr/0004-fresh-question-chat-settings.md)
+and [Question images](https://github.com/dasomji/pi-postbox/blob/main/docs/question-images.md) for the current contracts.
 
 ## Quick start from this checkout
 
@@ -38,7 +44,7 @@ npm run build     # build server/protocol/extension and Vite UI
 npm run smoke     # packaged-path release smoke test
 ```
 
-The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration, exact-fork Question Chat activation without an automatic turn, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, legacy context removal, and absence of the private transcript/evidence from those durable APIs.
+The credential-free smoke script starts the built CLI with a temporary SQLite database and Postbox config directory, fetches the HTML-discovered JavaScript/CSS/PWA assets, and connects a fake extension/runtime. It verifies registration, fresh question-only Chat activation without an automatic turn, streaming/tool events, Stop and resume, server-restart recovery, an answer proposal, generated-value selection, cleanup, durable state/history, legacy context removal, and absence of the private transcript/evidence from those durable APIs.
 
 ## Packages
 
@@ -82,9 +88,9 @@ pi-postbox-server
 
 ## Agent tool contracts
 
-Version 0.5.2 adds ordered local image galleries to Questions on Web and Android.
+Questions support ordered local image galleries on Web and Android.
 Create, batch drafts and revise accept `images: [{ path, alt, caption? }]` for JPEG,
-PNG and static WebP. See [Question image galleries](docs/question-images.md) for
+PNG and static WebP. See [Question image galleries](https://github.com/dasomji/pi-postbox/blob/main/docs/question-images.md) for
 limits, revision semantics, privacy, storage and recovery instructions.
 
 `write_question` is the single model-facing write surface. Use `action: "create"` or `action: "create_batch"` to persist Questions, and `revise`, `cancel`, `supersede`, `reparent`, `transfer`, or `takeover` to change an existing Question. Creation returns after durable persistence rather than waiting for a human Answer. Continue any independent work and do not poll `get_answer`, `list_question_status`, or `list_questions`: by default, Postbox coalesces Answer notifications and starts a follow-up agent turn for an owning Pi Session that is no longer running. The privacy-preserving wake contains Question identifiers, never Answer content, and tells the agent to read with `get_answer`. If that human decision becomes the only remaining blocker during the current turn, `wait_for_postbox` remains available as an explicit idle/waiting mode.
@@ -121,7 +127,7 @@ Agent query tools use small workflow-oriented results by default:
 
 Pagination cursors are opaque, compact, stateless, and bound to the original query. Copy them unchanged into the next call with the same filters; malformed or cross-query cursors are rejected.
 
-See [`docs/protocol.md`](docs/protocol.md) for exact view and authorization semantics.
+See [`docs/protocol.md`](https://github.com/dasomji/pi-postbox/blob/main/docs/protocol.md) for exact view and authorization semantics.
 
 ## Question Chat
 
@@ -211,7 +217,7 @@ export PI_POSTBOX_URL="https://your-postbox.tailnet.example:32187"
 
 Remote Pi machines remain explicit: copy the `export PI_POSTBOX_URL=` line from startup or status output. lizardtail remains useful as a generic wrapper for custom workflows, including intentional public exposure outside Postbox's automatic path.
 
-See [`docs/configuration.md`](docs/configuration.md), [`docs/deployment.md`](docs/deployment.md), and [`docs/protocol.md`](docs/protocol.md) for operator details, endpoint contracts, and manual testing.
+See [`docs/configuration.md`](https://github.com/dasomji/pi-postbox/blob/main/docs/configuration.md), [`docs/deployment.md`](https://github.com/dasomji/pi-postbox/blob/main/docs/deployment.md), and [`docs/protocol.md`](https://github.com/dasomji/pi-postbox/blob/main/docs/protocol.md) for operator details, endpoint contracts, and manual testing.
 
 ## Local fallback commands and status
 
