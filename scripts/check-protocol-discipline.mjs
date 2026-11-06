@@ -1,27 +1,73 @@
 import { execFileSync } from "node:child_process";
 import { assertAndroidFixtureServerVersion } from "./protocol-discipline.mjs";
 
-const base = process.argv[2];
-if (!base)
+const args = process.argv.slice(2);
+const staged = args[0] === "--staged";
+const push = args[0] === "--push";
+const suppliedBase = push ? args[1] : args[0];
+if (
+  staged
+    ? args.length !== 1
+    : push
+      ? args.length !== 2
+      : args.length !== 1 || suppliedBase?.startsWith("-")
+) {
   throw new Error(
-    "Usage: node scripts/check-protocol-discipline.mjs <base-ref>",
+    "Usage: check-protocol-discipline.mjs <PR-target-base> | --push <previous-push-SHA> | --staged",
   );
-
-const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+}
+if (push && /^0+$/.test(suppliedBase)) {
+  throw new Error(
+    "Initial push has no previous SHA; refusing an empty comparison. Bootstrap requires a reviewed nonzero explicit base and rerun.",
+  );
+}
+if (push && !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(suppliedBase)) {
+  throw new Error(
+    "Push mode requires the full previous-push SHA from github.event.before.",
+  );
+}
+const git = (...gitArgs) =>
+  execFileSync("git", gitArgs, { encoding: "utf8" }).trim();
+const head = git("rev-parse", "--verify", "HEAD^{commit}");
+const baseCommit = staged
+  ? head
+  : git(
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${suppliedBase}^{commit}`,
+    );
+const base = staged || push ? baseCommit : git("merge-base", baseCommit, head);
+if (!staged && base === head)
+  throw new Error(
+    "Empty comparison: base resolves to HEAD; supply the PR target or previous push SHA.",
+  );
+const target = staged ? "" : "HEAD";
 assertAndroidFixtureServerVersion(
-  git("show", "HEAD:packages/protocol/fixtures/android/contract.json"),
-  git("show", "HEAD:packages/server/package.json"),
+  git("show", `${target}:packages/protocol/fixtures/android/contract.json`),
+  git("show", `${target}:packages/server/package.json`),
 );
-const changed = git("diff", "--name-only", `${base}...HEAD`)
+const changed = (
+  staged
+    ? git("diff", "--cached", "--name-only", "--no-renames", "HEAD")
+    : git("diff", "--name-only", "--no-renames", base, head)
+)
   .split("\n")
   .filter(Boolean);
+if (!staged && !changed.length)
+  throw new Error(
+    "Empty comparison: no changed paths; refusing silent success.",
+  );
+console.log(
+  `Protocol discipline: ${staged ? "index vs HEAD" : `${push ? "push" : "PR"} ${base}..${head}`} (${changed.length} paths).`,
+);
 const publicProtocolChanged = changed.some(
   (path) =>
     path.startsWith("packages/protocol/src/") && !path.includes(".test."),
 );
 if (!publicProtocolChanged) process.exit(0);
 
-const currentHealth = git("show", "HEAD:packages/protocol/src/health.ts");
+const currentHealth = git("show", `${target}:packages/protocol/src/health.ts`);
 const baseHealth = git("show", `${base}:packages/protocol/src/health.ts`);
 const versionOf = (text) => text.match(/PROTOCOL_VERSION\s*=\s*"([^"]+)"/)?.[1];
 if (versionOf(currentHealth) === versionOf(baseHealth)) {
@@ -35,7 +81,7 @@ const androidIdentity = (text) => ({
   versionCode: Number(text.match(/versionCode\s*=\s*(\d+)/)?.[1]),
 });
 const currentAndroid = androidIdentity(
-  git("show", "HEAD:apps/android/app/build.gradle.kts"),
+  git("show", `${target}:apps/android/app/build.gradle.kts`),
 );
 const baseAndroid = androidIdentity(
   git("show", `${base}:apps/android/app/build.gradle.kts`),
@@ -69,7 +115,7 @@ for (const required of [
     );
 }
 
-const docs = git("show", "HEAD:docs/protocol.md");
+const docs = git("show", `${target}:docs/protocol.md`);
 if (
   !docs.includes(versionOf(currentHealth)) ||
   !docs.includes(currentAndroid.versionName) ||

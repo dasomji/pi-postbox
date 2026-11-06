@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -26,18 +28,17 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Check protocol version discipline
-        run: node scripts/check-protocol-discipline.mjs "origin/${{ github.base_ref }}"
-      - name: Check generated Android protocol contract
-        run: npm run check:android-protocol-contract
-      - name: Run tests
-        run: npm test
-      - name: Check web application
-        run: npm run check -w @pi-postbox/web
-      - name: Build packages
-        run: npm run build
-      - name: Run packaged smoke test
-        run: npm run smoke
+      - name: Full Node contract (PR target base)
+        if: github.event_name == 'pull_request'
+        env:
+          POSTBOX_BASE_REF: origin/${{ github.base_ref }}
+        run: npm run check:full -- --part node --base "$POSTBOX_BASE_REF"
+      - name: Full Node contract (previous push SHA)
+        if: github.event_name == 'push'
+        env:
+          POSTBOX_BEFORE_SHA: ${{ github.event.before }}
+        # An all-zero initial SHA fails closed; see docs/agents/verify.md.
+        run: npm run check:full -- --part node --push "$POSTBOX_BEFORE_SHA"
 
   android:
     runs-on: ubuntu-latest
@@ -52,8 +53,6 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Check generated Android protocol contract
-        run: npm run check:android-protocol-contract
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -62,8 +61,8 @@ jobs:
           cache: gradle
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-      - name: Test, lint, and assemble Android
-        run: ./apps/android/gradlew -p apps/android testDebugUnitTest lintDebug assembleDebug
+      - name: Full Android contract
+        run: npm run check:full -- --part android
       - name: Upload Android reports on failure
         if: failure()
         uses: actions/upload-artifact@v4

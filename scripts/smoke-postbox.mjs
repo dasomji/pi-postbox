@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile, unlink } from "node:fs/promises";
 import sharp from "sharp";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ import {
 } from "../packages/extension/dist/tools/writeQuestion.js";
 import { createWaitForPostboxTool } from "../packages/extension/dist/index.js";
 import { PostboxClient } from "../packages/extension/dist/client/PostboxClient.js";
+import { getServerRuntimeIdentity } from "../packages/server/dist/runtimeIdentity.js";
 import {
   AdapterRunnableSlotLimiter,
   ownerFromNativeIdentity,
@@ -41,6 +42,7 @@ async function freePort() {
     address && typeof address !== "string",
     "Expected TCP address for smoke port",
   );
+  if ([32187, 45795].includes(address.port)) return freePort();
   return address.port;
 }
 
@@ -413,7 +415,13 @@ async function main() {
   const serverOptions = {
     cwd: root,
     env: {
-      ...process.env,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([key]) => !key.startsWith("PI_POSTBOX_"),
+        ),
+      ),
+      HOME: tmp,
+      XDG_CONFIG_HOME: tmp,
       PI_POSTBOX_CONFIG_DIR: tmp,
       PI_POSTBOX_CONFIG_PATH: join(tmp, "config.json"),
       PI_POSTBOX_TAILSCALE: "off",
@@ -422,8 +430,14 @@ async function main() {
   };
 
   let stderr = "";
+  const servers = new Set();
   const launchServer = () => {
     const child = spawn(process.execPath, serverArgs, serverOptions);
+    servers.add(child);
+    child.launchedAt = new Date().toISOString();
+    child.once("error", (error) => {
+      stderr += String(error);
+    });
     child.stderr?.on("data", (chunk) => {
       stderr += chunk.toString();
     });
@@ -433,9 +447,20 @@ async function main() {
     return child;
   };
   const stopServer = async (child) => {
-    if (child.exitCode !== null) return;
-    child.kill("SIGTERM");
-    await new Promise((resolvePromise) => child.once("exit", resolvePromise));
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise((resolvePromise, reject) => {
+      const killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      const deadline = setTimeout(() => {
+        clearTimeout(killTimer);
+        reject(new Error(`Server ${child.pid} did not exit`));
+      }, 10_000);
+      child.once("exit", () => {
+        clearTimeout(killTimer);
+        clearTimeout(deadline);
+        resolvePromise();
+      });
+      child.kill("SIGTERM");
+    });
   };
   let server = launchServer();
 
@@ -444,6 +469,74 @@ async function main() {
   let codexSocket;
   let sse;
   let chatSse;
+  let batchClient;
+  let cleanupPromise;
+  function cleanup() {
+    return (cleanupPromise ??= (async () => {
+      const failures = [];
+      try {
+        batchClient?.stop();
+      } catch (error) {
+        failures.push(error);
+      }
+      for (const resource of [
+        chatSse,
+        sse,
+        socket,
+        claudeSocket,
+        codexSocket,
+      ]) {
+        try {
+          resource?.close();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      servers.add(server);
+      for (const child of servers) {
+        try {
+          await stopServer(child);
+          try {
+            process.kill(child.pid, 0);
+            failures.push(
+              new Error(`Server PID ${child.pid} survived cleanup`),
+            );
+          } catch (error) {
+            if (error.code !== "ESRCH") failures.push(error);
+          }
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      try {
+        await rm(tmp, { recursive: true, force: true });
+        assert(!existsSync(tmp), `State directory survived cleanup: ${tmp}`);
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length)
+        throw new AggregateError(failures, "Smoke teardown failed");
+      console.log(
+        `Smoke teardown verified: PIDs ${[...servers].map((child) => child.pid).join(",")} gone; state ${tmp} removed.`,
+      );
+    })());
+  }
+  let interrupted = false;
+  const interrupt = (signal) => {
+    if (interrupted) return;
+    interrupted = true;
+    void cleanup().then(
+      () => process.exit(signal === "SIGINT" ? 130 : 143),
+      (error) => {
+        console.error(error);
+        process.exit(1);
+      },
+    );
+  };
+  const onInt = () => interrupt("SIGINT");
+  const onTerm = () => interrupt("SIGTERM");
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
   try {
     const health = await waitForHealth(baseUrl);
     assert(
@@ -451,6 +544,29 @@ async function main() {
       "Unexpected health response",
     );
     assertCompatibleLocalTarget(health, baseUrl);
+    const expected = getServerRuntimeIdentity();
+    assert(
+      health.version === expected.version &&
+        health.buildId === expected.buildId,
+      `Running build differs from compiled runtime: ${JSON.stringify({ expected, health })}`,
+    );
+    const buildMtime = Math.max(
+      statSync(cliPath).mtimeMs,
+      statSync(join(serverPublicDir, "index.html")).mtimeMs,
+    );
+    assert(
+      Date.parse(server.launchedAt) >= buildMtime,
+      "Server process predates the compiled build",
+    );
+    const processStart = execFileSync(
+      "ps",
+      ["-p", String(server.pid), "-o", "lstart="],
+      { encoding: "utf8" },
+    ).trim();
+    assert(processStart, "Server process start time unavailable");
+    console.log(
+      `Smoke identity: ${JSON.stringify({ pid: server.pid, processStart, launchedAt: server.launchedAt, version: health.version, buildId: health.buildId, protocolVersion: health.protocolVersion, url: baseUrl, stateDir: tmp, databasePath })}`,
+    );
 
     const htmlResponse = await fetch(`${baseUrl}/`);
     assert(
@@ -1431,7 +1547,7 @@ async function main() {
     const batchReady = new Promise((resolvePromise) => {
       batchConnected = resolvePromise;
     });
-    const batchClient = new PostboxClient({
+    batchClient = new PostboxClient({
       serverUrl: baseUrl,
       reconnect: false,
       onStatus: (status) => {
@@ -2053,16 +2169,12 @@ async function main() {
       "Pi Postbox smoke passed: health, UI shell, fake extension, async owner single/ordered batch, browser races, ping/get_answer/wait, offline takeover, migration, capacity, Question Chat, image galleries/replay/revision media, restart, and History verified.",
     );
   } finally {
-    chatSse?.close();
-    sse?.close();
-    socket?.close();
-    claudeSocket?.close();
-    codexSocket?.close();
-    await stopServer(server);
-    if (server.exitCode && server.exitCode !== 0 && server.exitCode !== null) {
-      console.error(stderr);
+    try {
+      await cleanup();
+    } finally {
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
     }
-    await rm(tmp, { recursive: true, force: true });
   }
 }
 
