@@ -12,7 +12,7 @@ Version: one bump for the whole PR, `0.5.7` → `0.5.8`, owned by chunk B (root,
 |---|---|---|---|---|
 | A · Contracts and knowledge | Lean `AGENTS.md` with the verified Plane block, `CLAUDE.md` = `@AGENTS.md`, `GLOSSARY.md` from `CONTEXT.md` (fixing the session-replacement and exact-fork holds), ADRs 0001–0004 kept plus any new extracted ADRs, `docs/out-of-scope/*`, `docs/agents/development.md` and `doors.md`, README/Android README drift fixed, retained product docs re-routed. Inventory of every work-scoped record, extraction, then retirement of 217 work records, `CONTEXT.md`, `IMPLEMENTATION_REPORT.md`, `docs/question-images-verification.md`; 14 evidence files uploaded via `evidence put` before removal; memory inspection; follow-up list for Plane. | `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, `CONTEXT.md`, `IMPLEMENTATION_REPORT.md`, `README.md`, `apps/android/README.md`, `docs/**` except `docs/agents/verify.md` and the `docs/protocol.md` release line, `docs/work/POSTBOX-1/report.md` | — | done: 63d489c, af092e3, a16ce27 (232 retired, 11 kept, 0 uncertain; 14 evidence uploads ok) |
 | B · Verification contract | Real `lint`, `check:fast`, `check:full`, `verify:app` scripts; `.githooks/pre-commit` + installer that never touches shared config without consent; protocol-discipline base handling for PR/main/staged; `ci.yml` on PRs **and** main running `check:full` with stable `validate`/`android` jobs; `.gitignore` for `.kitchen/` and local evidence; npm tarball excludes agent docs/work files; `docs/agents/verify.md`; version bump. `publish.yml` untouched unless review shows a need. | `package.json`, `apps/web/package.json`, `packages/*/package.json`, `package-lock.json`, `.githooks/**`, `scripts/**`, `.github/workflows/ci.yml`, `.gitignore`, lint/format config files, `docs/agents/verify.md`, version-pinned tests, tests for the new scripts | — (disjoint from A; runs in an isolated worktree, merged back here) | done: d16713d, f3583fe on t3/postbox-1-verify-contract; merged at acbffcb |
-| C · Integration | Merge B into this branch, run docs/link lint over A's docs, fix routing, final ladder L1/L2/L3 at one SHA, L4 cross-family review, delete `docs/work/POSTBOX-1/`. | — (orchestrator coordinates; fixes go to the owning chunk's implementer) | A, B | in progress: ladder green at acbffcb (lint:docs, check:full 642 tests + Android, verify:app); L3 visuals at d850cee: browser journeys pass, outage journey FAIL (pre-existing, POSTBOX-5), Android BLOCKED (no KVM); L4 round 1: 2 process blockers, 5 should-fix, 3 nits; fix round 1 running |
+| C · Integration | Merge B into this branch, run docs/link lint over A's docs, fix routing, final ladder L1/L2/L3 at one SHA, L4 cross-family review, delete `docs/work/POSTBOX-1/`. | — (orchestrator coordinates; fixes go to the owning chunk's implementer) | A, B | in progress: ladder green at acbffcb (lint:docs, check:full 642 tests + Android, verify:app); L3 visuals at d850cee: browser journeys pass, outage journey FAIL (pre-existing, POSTBOX-5), Android BLOCKED (no KVM); L4 round 1: 2 process blockers, 5 should-fix, 3 nits; round 1 fixes 4d563ad; docs/work deleted; final ladder + L4 round 2 |
 
 ## In-scope findings
 
@@ -42,3 +42,14 @@ Resolved 2026-11-06: Daniel wrote "I approve the merge" in this work thread. Tha
   - Process blocker 2: delete `docs/work/` before merge.
   - Should-fix: doors publish rule vs opt-in; no gate-weakening door; check:fast gaps for doc-reading tests, Android Vitest files and generated Kotlin; smoke stderr lost; main-push CI cancellation; npm token rotation (Daniel).
   - Nits: zero-SHA recovery path; name POSTBOX-2..5 in android.md; VAPID key storage fact lost from configuration.md.
+
+## Post-merge step (Daniel, 2026-11-06, via orchestrator)
+
+After the merge and the npm publish check, and before settle, move the registered checkout `/home/dev/Development/pi-daniel/extensions/dashboard` onto the merged `main`:
+1. Run `git status --porcelain --ignored=no` and `git stash list`. If anything is modified, staged or untracked (non-ignored), stop and report.
+2. Check `ps` and `/proc/*/cwd`. If any process runs from that directory, stop and report.
+3. Run `git fetch origin`, `git switch main`, `git pull --ff-only`. If `main` has diverged from origin, stop and report; do not reset.
+4. Confirm HEAD is at or after the merge commit, the status is clean, and AGENTS.md has the POSTBOX Plane block.
+If Daniel merges the PR himself, this step still runs once the merge is confirmed.
+
+- Round 1 fixes: 4d563ad (all 9 in-scope findings addressed; none rejected).
