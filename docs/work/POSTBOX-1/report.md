@@ -237,6 +237,15 @@ head remains the integration owner's responsibility.
   counts, 14 successful uploads, CLAUDE/Plane/Android identity and 360 links; only
   chunk B's absent-until-integration verify guide is an explicit dependency.
 - `git diff --check` and the selectively staged extraction diff check passed.
+- The default-concurrency full suite at `af092e37000fcb7c964c43c8d050c399637a15b1`
+  returned **107 passing / 2 failing files; 640 passing / 2 failing tests**.
+  `packages/extension/test/resilience.test.ts:535` saw no replay frame at the
+  synchronous assertion; `packages/server/test/completeAsyncLoop.test.ts:8`
+  timed out in its 10-second teardown hook. Both files are byte-identical to main.
+  An immediate isolated rerun of those two files **passed all 37 tests** at the
+  same SHA, without edits. Full-suite contention is a possibility, not a proven
+  root cause. A bounded-worker full rerun is used for final proof; the original
+  failure remains recorded and integration must preserve this coverage limit.
 - Final-head results and full SHAs are supplied in the chunk handoff receipts;
   final integration rungs stay with C. No old command is relabeled a final-head run.
 
