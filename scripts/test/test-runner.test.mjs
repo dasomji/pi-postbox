@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { stripVTControlCharacters } from "node:util";
 test("npm test runs ordinary files once and serializes every packaging/smoke file", () => {
   const root = mkdtempSync(join(tmpdir(), "postbox-test-runner-"));
   try {
@@ -41,14 +42,18 @@ test("npm test runs ordinary files once and serializes every packaging/smoke fil
         `import {test} from 'vitest';import fs from 'node:fs';test('phase safety',async()=>{${serial ? "const fd=fs.openSync('serial.lock','wx'); await new Promise(r=>setTimeout(r,100));fs.closeSync(fd);fs.unlinkSync('serial.lock');" : "if(fs.existsSync('serial.lock'))throw Error('phases overlapped');"}});\n`,
       );
     }
+    const env = { ...process.env, NO_COLOR: "1" };
+    delete env.FORCE_COLOR;
     const p = spawnSync("npm", ["test"], {
       cwd: root,
+      env,
       encoding: "utf8",
       timeout: 30000,
     });
     assert.equal(p.status, 0, p.stdout + p.stderr);
-    assert.match(p.stdout, /1 passed \(1\)/);
-    assert.match(p.stdout, /3 passed \(3\)/);
+    const stdout = stripVTControlCharacters(p.stdout);
+    assert.match(stdout, /1 passed \(1\)/);
+    assert.match(stdout, /3 passed \(3\)/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

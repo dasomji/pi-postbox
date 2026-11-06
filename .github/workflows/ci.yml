@@ -77,6 +77,8 @@ jobs:
           cache: gradle
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Full Android contract
         run: npm run check:full -- --part android
       - name: Upload Android reports on failure
