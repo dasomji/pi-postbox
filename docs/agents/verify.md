@@ -1,0 +1,89 @@
+# Verification contract
+
+Run installs, builds and checks on Coolify with Node 22.19+ and npm 10 (the Node 22 CI toolchain), after `npm ci`. This host currently has npm 12: use `npm exec --yes --package=npm@10.9.4 -- npm <command>` to select npm 10 without changing global configuration. npm 12 changes the JSON shape of `npm pack`, which the existing packaging tests do not support. Its install-script policy also blocks the SQLite native addon; an explicit `npm run install --prefix node_modules/better-sqlite3` builds that addon without changing repository policy.
+
+| Rung | Exact invocation | Contract |
+| --- | --- | --- |
+| L0 | `npm run build && npm run test:scripts`; `npm run typecheck`; `npm run check -w @pi-postbox/web` | Focus tooling CLI tests, TypeScript and Svelte. `npm test` builds all runtime/UI output first. |
+| L1 | `npm run check:fast`; normal commits after hook installation | Export the Git index, check staged lint/format, applicable type gates, related tests and generated contract; Android unit tests for Android or uncertain paths. |
+| L2 | `npm run check:full -- --base origin/main` | All lint, docs links, typecheck, Svelte check, generated contract, protocol discipline, tests, build, isolated SQLite migrations/boot/journeys, and Android unit/lint/debug assembly. Fetch a meaningful target base first. |
+| L3 | `npm run verify:app` | Coolify-only fresh build and isolated functional journeys, including stale-revision refusal and verified teardown. Refuses any nonempty `CI`. Visual browser/device checks below remain separate. |
+| L5 | GitHub `validate` and `android` | Ubuntu, Node 22/npm 10; JDK 17 for Android. Both jobs together implement L2. |
+
+`npm run lint:docs` checks relative file links, image links, defined reference links and Markdown heading/HTML anchors over tracked Markdown. HTTP(S), other external schemes and code examples are ignored. Undefined CommonMark references render as text, so are not links. This check does not format Markdown. Run it again after documentation merges.
+
+`npm run lint` runs Oxlint correctness checks on tracked TS, JS/MJS and Svelte, and Prettier check-only on `scripts/**/*.mjs`, root/workspace manifests, `.oxlintrc.json` and `ci.yml`. No command silently fixes files. Generated/declaration files, build/dependency/vendor trees, Android build output and Markdown are excluded. Existing code has seven rule exceptions in `.oxlintrc.json`: unused variables/expressions, useless escapes/spreads, control regex, unsafe optional chaining and this-alias. Other correctness rules still fail. TS/Svelte formatting and general JSON/YAML formatting outside those listed paths are not gates; `tsc -b` and `svelte-check` remain the type gates. To reproduce the baseline formatting commit from its parent, run `npm exec --yes --package=prettier@3.9.10 -- prettier --write 'scripts/*.mjs'`. It changes only existing scripts; no Markdown.
+
+## Index snapshots and partial staging
+
+Fast exports indexed bytes to `/tmp/postbox-index-*`, creates independent Git metadata with read-only access to the original object store, and removes the snapshot in `finally`. It never stashes, rewrites, stages or resets the live worktree/index. Compilation and test outputs stay in the snapshot. External installed dependencies are shared; workspace symlinks point into the snapshot, so staged source/build output cannot resolve through live workspace packages. Installed dependency versions must match the staged lock; otherwise the check fails and asks for the matching install.
+
+The hook also bootstraps its npm command and standalone runner from the index. Unstaged changes to either cannot alter that commit's checks. Git's hook/index variables are removed for nested tooling and fixtures. Renames count as deletion plus addition; deletions and unknown/uncertain paths select the broader Node suite, both type gates, generated contract and Android unit tests. A run with no staged diff also selects the broader suite. Known TS/Svelte source changes use `vitest related`; a trustworthy empty related report falls back to the full suite. Related-test failures never pass. Build protocol before related tests; the complete test suite builds every runtime/UI package before execution. The test runner discovers Vitest’s actual file inventory, runs ordinary files by explicit paths, then runs the three packaging/smoke integration files serially. CLI `--exclude` does not reliably apply to this multi-project config, so it is not used for this boundary. Related cases also run serially. Packaging tests rebuild during `npm pack`, and concurrent smoke verification must never inspect a process predating that rebuild.
+
+Every non-broad selection (including docs-only, Android-only and related-source runs) also builds and serially runs every tracked Vitest test file whose indexed text matches `readFile`, `readdir`, `createReadStream`, `statSync`, `existsSync`, `README.md`, `docs/` or `apps/android`. Filesystem reads are invisible to `vitest related`; this conservative discovery covers package tests that inspect Android or scan source imports, including computed paths. Discovery and execution both use the index snapshot, so unstaged test edits cannot remove coverage. The existing `apps/` Android and `*.static.test.ts` source lists also remain as fallbacks for guards whose file reads may be hidden in helpers.
+
+Docs-only changes run lint, indexed protocol fixture/server identity validation and docs links, then the discovered reader tests. Agent instruction files select the broader gates. Android-only changes run staged lint, protocol discipline, the build/reader tests, all Vitest files under `apps/` serially and `testDebugUnitTest`; protocol/contract inputs, including hand edits to `GeneratedPostboxProtocolContract.kt`, also run generated-contract validation. Fast Android checks intentionally use all JVM unit tests, since Kotlin dependency selection is uncertain; they omit lint/assembly, which remain mandatory L2 gates.
+
+To reproduce partial staging safely in a disposable clone: stage a valid Markdown edit, then add an unstaged link to a missing file in the same document. The hook must pass and leave that unstaged link intact. Conversely, stage invalid JS, repair it without staging, and attempt a commit: the hook must reject it and leave HEAD unchanged. After `npm run build`, `npm run test:scripts` automates both cases through actual Git commits and also verifies that a direct hook run preserves the index byte-for-byte.
+
+## Hooks
+
+Run `npm run hooks:install` only in a dedicated clone. It sets clone-local `core.hooksPath=.githooks`, refuses conflicting effective settings (including empty values), preserves any non-sample hook and refuses clones with linked worktrees because their config is shared. Installation is explicit; no `prepare` side effect. Do not install from the implementation worktree or Daniel's shared clone. A repeated identical installation is allowed. Integrate conflicts explicitly with the clone owner rather than deleting existing hooks. Undo a newly created setting with `git config --local --unset core.hooksPath`; preserve a setting that predates your installation.
+
+## Full contract, bases and CI partitions
+
+Local all-platform check: `npm run check:full -- --base origin/main`. Protocol discipline compares the PR target's merge-base to HEAD. The `--base` and `--push` values must be nonempty and must not start with `-`; self comparisons, missing/invalid commit refs and comparisons with no changed paths are also errors. The wrapper forwards `--base` explicitly so a value cannot become a protocol CLI mode flag. For local indexed validation use `node scripts/check-protocol-discipline.mjs --staged`, which compares index to HEAD and reads only indexed fixture/source/docs bytes. An explicit staged comparison with no changes is reported as such, not disguised as a release comparison.
+
+On PRs `validate` runs `npm run check:full -- --part node --base "origin/$GITHUB_BASE_REF"`; checkout fetches full history. Main pushes use `npm run check:full -- --part node --push "$POSTBOX_BEFORE_SHA"`, with `github.event.before` supplied in that environment variable. Push mode compares that exact previous SHA directly with HEAD, covering every commit in a multi-commit push. An all-zero initial SHA or an unavailable previous commit (for example after a force-push) fails closed with a recovery message. Never substitute `origin/main` after checkout of the same push.
+
+For recovery, select **CI → Run workflow**, choose the affected revision/branch, and supply the required `base` input with a reviewed nonzero 40-hex SHA or a ref beginning `refs/` or `origin/` available in the checkout history. The dispatch step rejects all other forms (including empty values, mode flags, short SHAs and unqualified refs such as `HEAD`) before starting gates. The `workflow_dispatch` validate step runs `npm run check:full -- --part node --base "$POSTBOX_BASE_REF"`, using that input; it compares the supplied base's merge-base with HEAD and rejects invalid/self/empty comparisons. The Android job runs its usual full partition. Confirm the selected revision still matches the failed push before relying on the result. Rerunning the original push event alone keeps the same zero/unavailable `before` SHA and cannot recover it. PR runs share a group per PR and cancel older in-progress runs. Every non-PR run uses its unique run ID as the group, preserving both pending and running main-push/manual recovery comparisons; GitHub cannot replace an older pending push in a shared group.
+
+The Node partition runs protocol discipline, lint, docs links, `npm run typecheck`, web `check`, generated Android contract validation, `npm test`, `npm run build`, and `npm run smoke`. The Android job runs `npm run check:full -- --part android`: generated contract validation plus `npm run check:android`. The all-platform default runs both partitions. Neither job calls host-only `verify:app`; no tailnet/service mutations occur. Android failure reports are uploaded. `publish.yml` publishes on main: never run `npm publish` as verification.
+
+CI and publish explicitly request `packages: platform-tools` from `android-actions/setup-android@v3`: its default also requests the legacy `tools` package, which Google's SDK repository no longer supplies (observed 2026-11-06). The [action still installs command-line tools and accepts SDK licences](https://github.com/android-actions/setup-android/blob/v3/README.md); [Gradle downloads missing platform/build-tools packages after licence acceptance](https://developer.android.com/studio/intro/update#download-with-gradle). This prerequisite repair changes no publish triggers, credentials or verification gates; publish controls retain the [one-way-door review boundary](doors.md).
+
+Android prerequisites: JDK 17 in CI; this Coolify host has JDK 21 and `~/Android/Sdk` (compile/target SDK 36, accepted SDK licences). `npm run check:android` respects `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then that host default. It executes `./apps/android/gradlew -p apps/android --no-daemon --build-cache testDebugUnitTest lintDebug assembleDebug`. Fast uses `npm run check:android -- --unit`. These are JVM/build checks, not device/visual proof. The Gradle build cache allows fresh index snapshots to reuse matching compiled tasks; tasks still validate their inputs. The SDK is never installed into product storage or tracked source.
+
+## Android emulator on Coolify
+
+Checked 2026-11-07. The SDK and AVDs live on the mounted volume, behind symlinks from the default paths:
+- `~/Android` links to `/mnt/HC_Volume_107277412/dev-storage/android/Android`.
+- `~/.android/avd` links to `/mnt/HC_Volume_107277412/dev-storage/android/avd`.
+
+`ANDROID_HOME`, `ANDROID_SDK_ROOT` and `ANDROID_AVD_HOME` are unset; the defaults resolve through those symlinks.
+
+The VM has **no `/dev/kvm`**: the CPU exposes no `svm`/`vmx` because nested virtualization is off. Group membership or paths cannot fix that. Because of it, the x86_64 AVDs `postbox_api30`/`postbox_api36` and the default T3 `device_open` boot both exit with "x86 emulation currently requires hardware acceleration!".
+
+Use the x86 AVD **`postbox_api26_tcg`** instead. It runs API 26, the app's minSdk, in software. Start it yourself:
+
+```sh
+~/Android/Sdk/emulator/emulator -avd postbox_api26_tcg -accel off -gpu swiftshader_indirect -no-window -no-audio -no-boot-anim -no-snapshot -port 5554
+```
+
+It boots in about 90 s. Wait for `adb -s emulator-5554 shell getprop sys.boot_completed` to print `1`. Then `device_list` shows it as `emulator-5554` (host `local`); pass that id to `device_open`, not the AVD name.
+
+The app reaches the host as `http://10.0.2.2:<port>/`.
+
+Expect slow input. A "System UI isn't responding" dialog is load from software emulation, not a product failure. Choose **Wait** (`agent-device alert dismiss`) and let the guest's `/proc/loadavg` settle before you enter text.
+
+Leave the emulator running for the next verifier. Never download images or change mounts to work around this.
+
+## Isolated functional journey and freshness
+
+`npm run verify:app` builds this checkout, then runs the packaged smoke. It selects a free loopback port and explicitly refuses the production 32187/development 45795 ports. The server has an owned `/tmp/pi-postbox-smoke-*` directory, SQLite database, config and HOME/XDG paths; inherited Postbox overrides are removed and Tailscale is off. It never targets `~/.pi-postbox` or an already running server.
+
+The smoke compares health version/build hash with the compiled runtime, requires process launch after compiled CLI/UI output, and reports PID, OS process start time, launch time, exact build/protocol/version, URL and state/database paths. Journeys cover creating a Question, ordered batch/parent references, Answer, History/revision, stale revision refusal, reconnect/restart, galleries/image replay and revision media. It also applies legacy SQLite migration fixtures and checks Chat, owner takeover and capacity behavior using fake adapters without model credentials.
+
+Finally and SIGINT/SIGTERM share one teardown promise. Teardown closes clients, terminates every recorded server PID (bounded SIGKILL escalation), verifies PIDs are gone, removes state and verifies absence. Cleanup failures fail the command. OS SIGKILL cannot execute cleanup; inspect only paths/PIDs printed for that fixture. `npm run smoke` requires a completed build and is CI-safe; `verify:app` always rebuilds and refuses CI.
+
+The verifier separately runs L3 visuals at the same SHA: shared T3 browser (`preview_status`, then shared tab tools) for Question creation, ordered Answer flow, keyboard/mobile layout, immutable History, stale-answer handling, reconnect and gallery navigation/retry; T3 device tools (`device_list`, `device_open`, bound `agent-device`, `device_screenshot`) for native Android equivalents. Use T3 tools for UI interaction, never hidden adb UI automation. JVM tests and loopback HTTP do not prove device usability or tailnet reachability. No login is required by this application. Pi schema-registration changes require session reload; this tooling migration does not change the protocol/schema or Android version.
+
+## Runtime evidence and packaging
+
+Initial Coolify measurements: packaged smoke 16.74 s; cold Android unit/lint/assembly 220.27 s on JDK 21; the first all-serial Vitest trial took 255.46 s and prompted the selective integration serialization described above; interrupted real-smoke cleanup test 3.4–11.1 s under varying host load. The wrapper prints total elapsed time for each fast/full/app run. They are observations, not CI promises; cold SDK/dependency caches cost more. The initial conservative all-serial broad snapshot trial took 411.29 s (417.04 s wall time). The fast target is about 60 seconds for ordinary source changes; uncertain paths deliberately pay for the full Node suite and JVM unit tests.
+
+Round-2 filesystem-reader measurements on Coolify at `f61c3d67f97b5def4ef310e9f199e17fc1c1cd6a` (npm 10.9.4, disposable `/tmp` clone with installed dependencies shared): a staged README-only edit passed in **84.82 s** (**86.04 s** wall), running 21 Vitest files / 146 tests; a staged `MainActivity.kt`-only comment passed in **140.33 s** (**141.62 s** wall), running the reader/app tests plus Android JVM unit tests. The clone was deleted afterwards. These measurements include builds and real packaging tests; reader coverage deliberately costs more than import-only selection.
+
+Keep receipts and logs in ignored `.kitchen/`, and screenshots/media in ignored `evidence/` or external storage. Record full SHA, actual result, UTC time, command and duration. Upload sanitized visual evidence using `evidence put` in the verifier role; L4 review, L5 CI and merge approval belong to the parent workflow.
+
+Run `npm pack --dry-run --json` after the build and inspect its whitelist: root README and manifest, `docs/question-images.md`, extension source/manifest, protocol dist/manifest, server dist/manifest (and npm's automatic license). Agent instructions, glossary, `docs/agents`, `docs/work`, `.kitchen`, evidence and Android files must be absent. A dry run does not publish.

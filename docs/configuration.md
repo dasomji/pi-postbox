@@ -1,5 +1,8 @@
 # Pi Postbox configuration
 
+For terminology see [GLOSSARY](../GLOSSARY.md). Contributors use the
+[development](agents/development.md) and [verification](agents/verify.md) guides.
+
 Pi Postbox has two independently configured processes:
 
 1. `pi-postbox-server`, the standalone local HTTP service.
@@ -136,6 +139,23 @@ While a Question created through `write_question` is pending, the extension show
 `/postbox-status` reports connectivity, active/local URL, Tailnet URL/export line when available, open-question count, autostart state, and diagnostics. It is privacy-preserving: status includes counts only and never pending question contents, option labels, answers, notes, or history. The read-only `postbox_status` tool returns equivalent structured fields for agents.
 
 Use `/postbox` to open the active dashboard in the user's browser. `/postbox` may use the same recovery/autostart path as `write_question` when disconnected, but it remains a user-only manual browser-opening command; no LLM tool or agent side effect can open the browser.
+
+## Browser push keys and backups
+
+Generated VAPID keys, **including the private key**, live in SQLite in
+`push_vapid_keys`; browser subscriptions live in `push_subscriptions`. Losing the
+database or restoring a backup with different keys or missing subscriptions
+invalidates existing browser push delivery. Preserve the matching database backup;
+affected browsers must subscribe again after key loss or replacement.
+
+For stable configured keys, set both `PI_POSTBOX_VAPID_PUBLIC_KEY` and
+`PI_POSTBOX_VAPID_PRIVATE_KEY`. The [server key selection](../packages/server/src/services/pushStore.ts)
+resolves each key independently: constructor option, then the corresponding
+`PI_POSTBOX_VAPID_*` variable, then legacy `VAPID_PUBLIC_KEY` or
+`VAPID_PRIVATE_KEY`. It uses configured keys only when both resolved values are
+nonempty; otherwise it reuses or generates the SQLite pair. Empty strings prevent
+fallback to the legacy variable for that key. Configure a matching public/private
+pair and keep it stable across restores to preserve browser subscriptions.
 
 ## Android push notifications (FCM)
 

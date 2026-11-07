@@ -7,7 +7,9 @@ const webDist = resolve("apps/web/dist");
 const serverPublic = resolve("packages/server/dist/public");
 
 if (!existsSync(webDist)) {
-  console.error("apps/web/dist does not exist. Run `npm run build -w @pi-postbox/web` first.");
+  console.error(
+    "apps/web/dist does not exist. Run `npm run build -w @pi-postbox/web` first.",
+  );
   process.exit(1);
 }
 
