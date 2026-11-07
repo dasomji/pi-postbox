@@ -11,7 +11,7 @@ contracts. Contributors start with [development](https://github.com/dasomji/pi-p
 
 ## Current status
 
-The npm package is version 0.5.9; protocol compatibility is 0.1.12. The separately
+The npm package is version 0.5.10; protocol compatibility is 0.1.12. The separately
 built Android app is 0.5.4 (build 16). Question Chat uses fresh question-only sessions
 and shared model/effort defaults; Questions support ordered sanitized image galleries,
 immutable history and accessible Web/Android viewers. Existing Pi sessions need a

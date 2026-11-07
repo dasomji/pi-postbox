@@ -44,6 +44,30 @@ CI and publish explicitly request `packages: platform-tools` from `android-actio
 
 Android prerequisites: JDK 17 in CI; this Coolify host has JDK 21 and `~/Android/Sdk` (compile/target SDK 36, accepted SDK licences). `npm run check:android` respects `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then that host default. It executes `./apps/android/gradlew -p apps/android --no-daemon --build-cache testDebugUnitTest lintDebug assembleDebug`. Fast uses `npm run check:android -- --unit`. These are JVM/build checks, not device/visual proof. The Gradle build cache allows fresh index snapshots to reuse matching compiled tasks; tasks still validate their inputs. The SDK is never installed into product storage or tracked source.
 
+## Android emulator on Coolify
+
+Checked 2026-11-07. The SDK and AVDs live on the mounted volume, behind symlinks from the default paths:
+- `~/Android` links to `/mnt/HC_Volume_107277412/dev-storage/android/Android`.
+- `~/.android/avd` links to `/mnt/HC_Volume_107277412/dev-storage/android/avd`.
+
+`ANDROID_HOME`, `ANDROID_SDK_ROOT` and `ANDROID_AVD_HOME` are unset; the defaults resolve through those symlinks.
+
+The VM has **no `/dev/kvm`**: the CPU exposes no `svm`/`vmx` because nested virtualization is off. Group membership or paths cannot fix that. Because of it, the x86_64 AVDs `postbox_api30`/`postbox_api36` and the default T3 `device_open` boot both exit with "x86 emulation currently requires hardware acceleration!".
+
+Use the x86 AVD **`postbox_api26_tcg`** instead. It runs API 26, the app's minSdk, in software. Start it yourself:
+
+```sh
+~/Android/Sdk/emulator/emulator -avd postbox_api26_tcg -accel off -gpu swiftshader_indirect -no-window -no-audio -no-boot-anim -no-snapshot -port 5554
+```
+
+It boots in about 90 s. Wait for `adb -s emulator-5554 shell getprop sys.boot_completed` to print `1`. Then `device_list` shows it as `emulator-5554` (host `local`); pass that id to `device_open`, not the AVD name.
+
+The app reaches the host as `http://10.0.2.2:<port>/`.
+
+Expect slow input. A "System UI isn't responding" dialog is load from software emulation, not a product failure. Choose **Wait** (`agent-device alert dismiss`) and let the guest's `/proc/loadavg` settle before you enter text.
+
+Leave the emulator running for the next verifier. Never download images or change mounts to work around this.
+
 ## Isolated functional journey and freshness
 
 `npm run verify:app` builds this checkout, then runs the packaged smoke. It selects a free loopback port and explicitly refuses the production 32187/development 45795 ports. The server has an owned `/tmp/pi-postbox-smoke-*` directory, SQLite database, config and HOME/XDG paths; inherited Postbox overrides are removed and Tailscale is off. It never targets `~/.pi-postbox` or an already running server.

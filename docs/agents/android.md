@@ -54,7 +54,10 @@ Historical emulator/gallery tests and an ADR-recorded user confirmation do not
 prove this checkout's full release journey. Physical-device TalkBack, maximum-image
 memory use, rotation/Back/gestures, IME, notification permission/tray/tap routing and
 FCM delivery need explicit coverage with the exact tested build. Record any missing
-hardware/configuration as a coverage limit. Do not claim native History or rename
+hardware/configuration as a coverage limit. On Coolify the only bootable
+emulator is the software (TCG) API 26 AVD; see
+[verification](verify.md#android-emulator-on-coolify) for its location, launch
+command and limits. It covers native journeys, but not IME, TalkBack or performance. Do not claim native History or rename
 parity until those destinations/operations exist. Plane follow-ups track the remaining
 work: **POSTBOX-2** covers native History and session metadata parity;
 **POSTBOX-3** covers cross-client and physical-device release evidence.
