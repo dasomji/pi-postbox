@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. Profile-selection details are refined by
+[ADR 0005](0005-package-provenance-isolates-server-profiles.md).
 
 ## Context
 

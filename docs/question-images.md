@@ -92,8 +92,8 @@ Android uses Coil 3.2.0 with OkHttp because its
 [Kotlin 2.1.20 / Compose 1.8 dependency baseline](https://coil-kt.github.io/coil/changelog/#320---may-13-2025)
 matches this repository; caching follows the [upstream loader documentation](https://coil-kt.github.io/coil/image_loaders/).
 
-After updating, rebuild and restart the checkout server. Compare `/healthz`'s
-application/protocol/profile/instance/build identity with the built runtime and
-confirm its start time is newer than the build. Fully restart existing Pi sessions
-to replace retained protocol modules and register the new `write_question` schema.
-The Android build and generated contract must match the server protocol exactly.
+After a protocol/tool-schema upgrade, fully restart existing Pi sessions to replace
+retained protocol modules. The Android generated contract must match the server
+protocol exactly. See the [protocol guide](https://github.com/dasomji/pi-postbox/blob/main/docs/protocol.md)
+and [glossary](https://github.com/dasomji/pi-postbox/blob/main/GLOSSARY.md) for
+compatibility and terminology.
