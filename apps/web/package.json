@@ -1,6 +1,6 @@
 {
   "name": "@pi-postbox/web",
-  "version": "0.5.10",
+  "version": "0.5.11-spec.postbox12.1",
   "private": true,
   "type": "module",
   "scripts": {

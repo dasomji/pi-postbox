@@ -1,6 +1,6 @@
 {
   "name": "@pi-postbox/server",
-  "version": "0.5.10",
+  "version": "0.5.11-spec.postbox12.1",
   "description": "Standalone Pi Postbox Fastify server and pi-postbox-server CLI.",
   "type": "module",
   "main": "dist/app.js",
