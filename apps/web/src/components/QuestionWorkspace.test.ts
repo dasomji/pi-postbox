@@ -8,13 +8,20 @@ import type {
   QuestionChatSnapshot,
   QuestionChatStopPayload
 } from "@pi-postbox/protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserLayoutState } from "../lib/layout.svelte";
 import type { QuestionChatProbeResult } from "../api/postboxApi";
 import QuestionDetail from "./QuestionDetail.svelte";
 import MainView from "./MainView.svelte";
 import ConnectionBadge from "./ConnectionBadge.svelte";
-import { store } from "../lib/store.svelte";
+import { PostboxStore, store } from "../lib/store.svelte";
+
+const isolatedStore = vi.hoisted(() => ({ current: undefined as PostboxStore | undefined }));
+vi.mock("../lib/store.svelte", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/store.svelte")>();
+  return { ...original, get store() { return isolatedStore.current ??= new original.PostboxStore(); } };
+});
+beforeEach(() => { isolatedStore.current = new PostboxStore(); });
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); store.clearSelection(); });
 
@@ -91,6 +98,28 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false, act
 }
 
 describe("outage-safe Question workspace", () => {
+  it("describes unavailable answer controls and uses neutral wording while connected data refreshes", async () => {
+    const health = createHealthResponse({ startedAtMs: 1_000 });
+    store.applyStateSnapshot({ timestamp: REQUEST.createdAt, sessions: [], requests: [REQUEST] });
+    store.connection = { status: "unavailable", message: "Offline" };
+    render(QuestionDetail, { props: { request: REQUEST, chatApi: chatBoundary(), matchMedia: () => mediaController(false).query } });
+    render(ConnectionBadge);
+    const submit = screen.getByRole("button", { name: "Submit" });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    const descriptionId = submit.getAttribute("aria-describedby");
+    expect(descriptionId).toBeTruthy();
+    expect(cancel.getAttribute("aria-describedby")).toBe(descriptionId);
+    expect(document.getElementById(descriptionId!)?.textContent).toContain("offline or reconnecting");
+    store.connection = { status: "connected", health };
+    store.syncing = true; // A tab returning after more than 10 seconds.
+    await waitFor(() => expect(screen.getByLabelText(/^Connected/)).toBeTruthy());
+    expect(screen.queryByText(/offline or reconnecting/)).toBeNull();
+    expect(document.getElementById(descriptionId!)?.textContent).toContain("Refreshing");
+    store.syncing = false;
+    await waitFor(() => expect(submit.hasAttribute("aria-describedby")).toBe(false));
+    expect(screen.queryByText(/Refreshing/)).toBeNull();
+  });
+
   it("shows an unknown Question status without a cached snapshot until the server confirms resolution", async () => {
     store.snapshot = { status: "loading" };
     store.syncing = true;

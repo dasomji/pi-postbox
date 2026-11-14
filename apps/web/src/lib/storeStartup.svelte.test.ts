@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { createHealthResponse, type StateSnapshot } from "@pi-postbox/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { store } from "./store.svelte";
+import { PostboxStore } from "./store.svelte";
+
+let store: PostboxStore;
 
 const SNAPSHOT: StateSnapshot = {
   timestamp: "2026-07-29T12:00:00.000Z",
@@ -36,6 +38,7 @@ const SNAPSHOT: StateSnapshot = {
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
+  readyState = 0;
   onerror: ((event: Event) => unknown) | null = null;
   private readonly listeners = new Map<string, Array<(event: Event) => unknown>>();
 
@@ -50,14 +53,16 @@ class FakeEventSource {
   }
 
   emitState(snapshot: StateSnapshot): void {
+    this.readyState = 1;
     const event = new MessageEvent("state", { data: JSON.stringify(snapshot) });
     for (const listener of this.listeners.get("state") ?? []) listener(event);
   }
 
-  close(): void {}
+  close(): void { this.readyState = 2; }
 }
 
 beforeEach(() => {
+  store = new PostboxStore();
   FakeEventSource.instances = [];
   store.snapshot = { status: "loading" };
   store.history = { status: "loading" };
@@ -74,6 +79,159 @@ afterEach(() => {
 });
 
 describe("dashboard live-state bootstrap", () => {
+  it("recovers from a failed startup health check without reloading", async () => {
+    vi.useFakeTimers();
+    let offline = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (offline) throw new TypeError("Failed to fetch");
+      return Response.json(String(input) === "/healthz"
+        ? createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 }) : SNAPSHOT);
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.connection.status).toBe("unavailable");
+      offline = false;
+      // A visibility refresh alone must not strand the form without health.
+      await store.loadSnapshot();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(store.connection.status).toBe("connected");
+      expect(store.syncing).toBe(false);
+      expect(FakeEventSource.instances).toHaveLength(1);
+    } finally { stop(); }
+  });
+
+  it("retries a failed state refresh while the stream is otherwise healthy", async () => {
+    vi.useFakeTimers();
+    let offline = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (offline) throw new TypeError("Failed to fetch");
+      return Response.json(String(input) === "/healthz"
+        ? createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 }) : SNAPSHOT);
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      FakeEventSource.instances[0]!.emitState(SNAPSHOT);
+      offline = true;
+      await store.refresh();
+      expect(store.connection.status).toBe("unavailable");
+      offline = false;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(store.connection.status).toBe("connected");
+      expect(store.syncing).toBe(false);
+      expect(store.pendingRequests).toHaveLength(1);
+    } finally { stop(); }
+  });
+
+  it.each(["compatible", "incompatible"])("requires fresh %s health after SSE reconnects before a poll", async (compatibility) => {
+    vi.useFakeTimers();
+    const before = createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 });
+    const after = { ...before, version: "9.9.9", buildId: "9.9.9+restarted",
+      profile: { kind: "development" as const, id: "development:0123456789abcdef" },
+      protocolVersion: compatibility === "compatible" ? before.protocolVersion : "99.0.0" };
+    const healthResponse = before;
+    let releaseHealth!: (response: Response) => void;
+    let delayHealth = false;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) !== "/healthz") return Response.json(SNAPSHOT);
+      if (delayHealth) return new Promise<Response>((resolve) => { releaseHealth = resolve; });
+      return Response.json(healthResponse);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const events = FakeEventSource.instances[0]!;
+      events.emitState(SNAPSHOT);
+      delayHealth = true;
+      events.onerror?.(new Event("error"));
+      // Native EventSource reconnects before the outstanding health probe settles.
+      events.emitState(SNAPSHOT);
+      expect(store.connection.status).toBe("unavailable");
+      expect(store.syncing).toBe(true);
+      releaseHealth(Response.json(after));
+      await vi.advanceTimersByTimeAsync(0);
+      if (compatibility === "compatible") {
+        expect(store.connection).toEqual({ status: "connected", health: after });
+        expect(store.syncing).toBe(false);
+        const recoveredCalls = fetcher.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(fetcher).toHaveBeenCalledTimes(recoveredCalls);
+      } else {
+        expect(store.connection.status).toBe("unavailable");
+        expect(store.connection).toHaveProperty("message", expect.stringContaining("Incompatible"));
+        events.emitState(SNAPSHOT);
+        expect(store.connection.status).toBe("unavailable");
+      }
+    } finally { stop(); }
+  });
+
+  it("does not overlap slow recovery polls", async () => {
+    vi.useFakeTimers();
+    let stateReads = 0;
+    let releaseState!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/healthz") return Response.json(createHealthResponse({ startedAtMs: 1_000 }));
+      stateReads++;
+      return new Promise<Response>((resolve) => { releaseState = resolve; });
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      FakeEventSource.instances[0]!.emitState(SNAPSHOT);
+      FakeEventSource.instances[0]!.onerror?.(new Event("error"));
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(stateReads).toBe(1);
+      releaseState(Response.json(SNAPSHOT));
+      await vi.advanceTimersByTimeAsync(0);
+    } finally { stop(); }
+  });
+
+  it("drops an older recovery snapshot that arrives after a newer live resolution", async () => {
+    vi.useFakeTimers();
+    let releaseState!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/healthz") return Response.json(createHealthResponse({ startedAtMs: 1_000 }));
+      return new Promise<Response>((resolve) => { releaseState = resolve; });
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const events = FakeEventSource.instances[0]!;
+      events.emitState(SNAPSHOT);
+      events.onerror?.(new Event("error"));
+      await vi.advanceTimersByTimeAsync(0);
+      events.emitState({ ...SNAPSHOT, requests: [] });
+      expect(store.pendingRequests).toEqual([]);
+      releaseState(Response.json(SNAPSHOT));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.pendingRequests).toEqual([]);
+    } finally { stop(); }
+  });
+
+  it("reopens a CLOSED stream on recovery and stops polling after a healthy live event", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => Response.json(String(input) === "/healthz"
+      ? createHealthResponse({ startedAtMs: 1_000 }) : SNAPSHOT));
+    vi.stubGlobal("fetch", fetcher);
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const events = FakeEventSource.instances[0]!;
+      events.emitState(SNAPSHOT);
+      events.close(); // A proxy can make native EventSource give up permanently.
+      events.onerror?.(new Event("error"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(FakeEventSource.instances).toHaveLength(2);
+      FakeEventSource.instances[1]!.emitState(SNAPSHOT);
+      const recoveredCalls = fetcher.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(fetcher).toHaveBeenCalledTimes(recoveredCalls);
+      expect(store.connection.status).toBe("connected");
+    } finally { stop(); }
+  });
+
   it("marks a lost stream unavailable, retains pending Questions through failed polls, and recovers automatically", async () => {
     vi.useFakeTimers();
     let offline = false;

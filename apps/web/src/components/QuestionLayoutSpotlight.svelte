@@ -28,6 +28,7 @@
     mobileWorkspaceTabsVisible?: boolean;
   } = $props();
 
+  const deliveryNoticeId = $props.id();
   let showContext = $state(false);
   let showNote = $state(false);
   let contextPanelOpener = $state<HTMLElement | null>(null);
@@ -226,7 +227,7 @@
       {#if form.done && !showStamp}<p class="mt-4 rounded-lg bg-success/10 p-3 text-center text-sm text-success-foreground">{form.done}</p>{/if}
 
       {#if form.deliveryUnavailable}
-        <p class="mt-4 text-sm text-warning-foreground" role="status">{form.deliveryUnavailable}</p>
+        <p id={deliveryNoticeId} class="mt-4 text-sm text-warning-foreground" role="status">{form.deliveryUnavailable}</p>
       {/if}
 
       <div
@@ -238,6 +239,7 @@
         <button
           class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-attention-foreground bg-attention px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-attention-contrast shadow-postbox-paper ring-2 ring-inset ring-white/25 transition hover:bg-attention-foreground sm:w-auto sm:shrink-0"
           type="submit"
+          aria-describedby={form.deliveryUnavailable ? deliveryNoticeId : undefined}
           disabled={answerDisabled || form.busy || Boolean(form.deliveryUnavailable)}
           onclick={submitWithStamp}
         >
@@ -266,6 +268,7 @@
         <button
           class="w-full rounded-full px-4 py-3 text-center text-sm text-postbox-muted transition hover:text-danger-foreground sm:w-auto sm:shrink-0"
           type="button"
+          aria-describedby={form.deliveryUnavailable ? deliveryNoticeId : undefined}
           disabled={answerDisabled || form.busy || Boolean(form.deliveryUnavailable)}
           onclick={() => form.cancel()}
         >

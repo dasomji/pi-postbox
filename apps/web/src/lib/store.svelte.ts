@@ -38,7 +38,7 @@ export function comparePendingRequests(a: AskRequestSnapshot, b: AskRequestSnaps
   return Date.parse(a.createdAt) - Date.parse(b.createdAt);
 }
 
-class PostboxStore {
+export class PostboxStore {
   /**
    * Requests this tab is resolving itself. Their snapshot transition to a terminal
    * status must not auto-deselect, so the local answer flow keeps its delivered-stamp
@@ -54,6 +54,10 @@ class PostboxStore {
     reject: (error: Error) => void;
   }>();
   private notificationNavigationAttempt = 0;
+  // Fetches carry their dispatch order; a later SSE snapshot supersedes in-flight reads.
+  private snapshotSequence = 0;
+  private appliedSnapshotSequence = 0;
+  private startRecovery: (() => void) | undefined;
   private lastHealth: HealthResponse | undefined;
 
   snapshot = $state<Loadable<StateSnapshot>>({ status: "loading" });
@@ -212,7 +216,9 @@ class PostboxStore {
     else this.clearSelection();
   }
 
-  applyStateSnapshot(next: StateSnapshot): void {
+  applyStateSnapshot(next: StateSnapshot, sequence = ++this.snapshotSequence): void {
+    if (sequence < this.appliedSnapshotSequence) return;
+    this.appliedSnapshotSequence = sequence;
     const selection = this.selection;
     const previouslySelectedRequest = selection.kind === "request"
       ? this.requests.find((entry) => entry.requestId === selection.requestId)
@@ -257,11 +263,12 @@ class PostboxStore {
   private requestSnapshot(fetchCurrentSnapshot: () => Promise<StateSnapshot>): Promise<StateSnapshot> {
     if (this.snapshotLoadPromise) return this.snapshotLoadPromise;
 
+    const sequence = ++this.snapshotSequence;
     let tracked: Promise<StateSnapshot>;
     tracked = fetchCurrentSnapshot()
       .then((next) => {
-        this.applyStateSnapshot(next);
-        return next;
+        this.applyStateSnapshot(next, sequence);
+        return this.snapshot.status === "ready" ? this.snapshot.data : next;
       })
       .finally(() => {
         if (this.snapshotLoadPromise === tracked) this.snapshotLoadPromise = undefined;
@@ -281,10 +288,12 @@ class PostboxStore {
     // A transport failure says nothing about a Question's lifecycle. Keep the last
     // authoritative snapshot until another snapshot can actually replace it.
     if (this.snapshot.status !== "ready") this.snapshot = { status: "error", message };
+    this.lastHealth = undefined;
     this.connection = { status: "unavailable", message };
     this.syncing = true;
     for (const waiter of this.snapshotWaiters) waiter.reject(new Error(message));
     this.snapshotWaiters.clear();
+    this.startRecovery?.();
   }
 
   async loadHistory(fetchCurrentHistory: () => Promise<HistoryResponse> = fetchHistory): Promise<void> {
@@ -309,51 +318,72 @@ class PostboxStore {
     let cancelled = false;
     let fallbackTimer: ReturnType<typeof setInterval> | undefined;
     let events: EventSource | undefined;
+    let polling = false;
 
-    const applySnapshot = (next: StateSnapshot) => {
-      if (!cancelled) this.applyStateSnapshot(next);
+    const applySnapshot = (next: StateSnapshot, sequence?: number) => {
+      if (!cancelled) this.applyStateSnapshot(next, sequence);
+    };
+
+    const stopPollingIfLive = () => {
+      if (events?.readyState !== 1 || !this.lastHealth) return;
+      if (fallbackTimer) clearInterval(fallbackTimer);
+      fallbackTimer = undefined;
     };
 
     const load = () => {
+      if (cancelled || polling) return;
+      polling = true;
+      const sequence = ++this.snapshotSequence;
       // Re-negotiate compatibility after a restart before accepting state again.
       fetchHealth()
         .then((health) => {
           if (cancelled) return;
           this.lastHealth = health;
+          startStateTransport();
           return fetchSnapshot();
         })
-        .then((next) => { if (next) applySnapshot(next); })
+        .then((next) => {
+          if (!next || cancelled) return;
+          applySnapshot(next, sequence);
+          stopPollingIfLive();
+        })
         .catch((error: unknown) => {
           if (!cancelled) this.failStateSnapshot(error, "Unknown state snapshot error");
-        });
+        })
+        .finally(() => { polling = false; });
     };
 
     const startPollingFallback = () => {
       if (fallbackTimer) return;
-      load();
       fallbackTimer = setInterval(load, 5_000);
+      load();
     };
 
     const startStateTransport = () => {
       if (!("EventSource" in window)) {
         startPollingFallback();
-      } else {
+      } else if (!events || events.readyState === 2) {
         events = new EventSource("/api/state/events");
         events.addEventListener("state", (event) => {
+          if (cancelled || !this.lastHealth) return;
           try {
             applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
+            stopPollingIfLive();
           } catch (error) {
             if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
           }
         });
         events.onerror = () => {
           if (cancelled) return;
+          this.lastHealth = undefined;
           this.connection = { status: "unavailable", message: "Live updates disconnected. Reconnecting…" };
           this.syncing = true;
           startPollingFallback();
         };
       }
     };
+
+    this.startRecovery = startPollingFallback;
 
     // Compatibility is negotiated before any state payload is parsed. This turns an
     // old API/new UI mismatch into a targeted health diagnostic instead of a Zod error.
@@ -365,7 +395,10 @@ class PostboxStore {
         startStateTransport();
       })
       .catch((error: unknown) => {
-        if (!cancelled) this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
+        if (!cancelled) {
+          this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
+          startPollingFallback();
+        }
       });
 
     // Returning from the background: the SSE stream may be dead or throttled, so refetch right
@@ -379,6 +412,7 @@ class PostboxStore {
 
     return () => {
       cancelled = true;
+      this.startRecovery = undefined;
       events?.close();
       if (fallbackTimer) clearInterval(fallbackTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
