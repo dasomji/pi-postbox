@@ -221,3 +221,8 @@ All seven Questions below received created/pending receipts, revision 1 and owne
 
 **Answer:** pending.
 
+## Waiting boundary
+
+After answer-independent code inspection and saving round 1, called the production client's event-driven `waitForPostbox` once through the session-only transport. The containing command reached its one-hour execution timeout without returning an Answer event to the agent. No Answer/status polling or repeated wait was performed, and no production Answers were read. All seven scope decisions remain unresolved from this agent's perspective; a command timeout is not cancellation, rejection or approval.
+
+The helper can retain notifications, but it cannot inject native Pi auto-wake into this existing development-bound session. For a fully native continuation, the orchestrator should relaunch **this design Pi session**, not the production server, with session-only `PI_POSTBOX_URL=https://coolify.tailf5ea68.ts.net:32187` and `PI_POSTBOX_AUTOSTART=off`, or load the installed production extension outside checkout-local shadowing. Do not edit production configuration. Existing production round-1 Questions belong to the operational owner `pi-postbox-design-grill-20261114-production`; keep using that client for their notified Answer reads rather than creating duplicates or taking over other owners. Its private transport files are at `/tmp/postbox-grill-20261114/`. The client accepts only create_batch, notified own get_answer, explicit wait and its own identity; it has no mutation/repair/admin interface.
