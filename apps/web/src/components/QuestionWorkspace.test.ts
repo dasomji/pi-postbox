@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { createHealthResponse } from "@pi-postbox/protocol";
 import type {
   AskRequestSnapshot,
   QuestionChatActivationResponse,
@@ -11,8 +12,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserLayoutState } from "../lib/layout.svelte";
 import type { QuestionChatProbeResult } from "../api/postboxApi";
 import QuestionDetail from "./QuestionDetail.svelte";
+import MainView from "./MainView.svelte";
+import ConnectionBadge from "./ConnectionBadge.svelte";
+import { store } from "../lib/store.svelte";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); store.clearSelection(); });
 
 const REQUEST: AskRequestSnapshot = {
   requestId: "question-one",
@@ -85,6 +89,67 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false, act
     close
   };
 }
+
+describe("outage-safe Question workspace", () => {
+  it("shows an unknown Question status without a cached snapshot until the server confirms resolution", async () => {
+    store.snapshot = { status: "loading" };
+    store.syncing = true;
+    store.connection = { status: "unavailable", message: "Failed to fetch" };
+    store.selectRequest("uncached-question");
+    render(MainView);
+
+    expect(screen.getByText("Question status unknown")).toBeTruthy();
+    expect(screen.queryByText("Question resolved")).toBeNull();
+
+    store.applyStateSnapshot({ timestamp: REQUEST.createdAt, sessions: [], requests: [] });
+    store.connection = { status: "connected", health: createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 }) };
+    await waitFor(() => expect(screen.getByText("Question resolved")).toBeTruthy());
+  });
+
+  it("keeps the Question, gallery and answer draft visible during an outage and disables delivery until recovery", async () => {
+    const request = { ...REQUEST, images: [{
+      imageId: "12345678-1234-4123-8123-123456789abc",
+      mediaType: "image/png" as const, byteSize: 128, width: 32, height: 16, alt: "Rollout gallery"
+    }] };
+    const health = createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 });
+    store.connection = { status: "connected", health };
+    store.applyStateSnapshot({ timestamp: REQUEST.createdAt, sessions: [], requests: [request] });
+    store.selectRequest(request.requestId);
+    vi.stubGlobal("matchMedia", () => mediaController(false).query);
+    // The Chat probe is a separate HTTP boundary; no Chat is active for this Question.
+    const fetchBoundary = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetchBoundary);
+    render(MainView);
+    render(ConnectionBadge);
+    await fireEvent.click(screen.getByRole("radio", { name: "Path A" }));
+    await fireEvent.click(screen.getByRole("button", { name: "+ Add a note" }));
+    const note = screen.getByPlaceholderText("Add nuance for the coding agent…") as HTMLTextAreaElement;
+    await fireEvent.input(note, { target: { value: "Keep this unsent answer" } });
+
+    await store.loadSnapshot(async () => { throw new TypeError("Failed to fetch"); });
+
+    await waitFor(() => expect((screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement).disabled).toBe(true));
+    expect(screen.getByLabelText("Server unavailable")).toBeTruthy();
+    expect(screen.getByText(/Answers cannot be sent while offline/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: REQUEST.question.prompt })).toBeTruthy();
+    expect(screen.getByAltText("Rollout gallery")).toBeTruthy();
+    expect(screen.queryByText("Question resolved")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(screen.queryByLabelText("Answer submitted. Dismiss.")).toBeNull();
+    expect(fetchBoundary.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([]);
+
+    store.applyStateSnapshot({ timestamp: REQUEST.createdAt, sessions: [], requests: [request] });
+    store.connection = { status: "connected", health };
+    await waitFor(() => expect((screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText(/Answers cannot be sent while offline/)).toBeNull();
+    expect(note.value).toBe("Keep this unsent answer");
+    expect((screen.getByRole("radio", { name: "Path A" }) as HTMLInputElement).checked).toBe(true);
+
+    store.applyStateSnapshot({ timestamp: REQUEST.createdAt, sessions: [], requests: [] });
+    await waitFor(() => expect(screen.queryByRole("heading", { name: REQUEST.question.prompt })).toBeNull());
+  });
+
+});
 
 describe("responsive Question Chat workspace", () => {
   it("preserves a Chat draft across a same-question state snapshot update", async () => {

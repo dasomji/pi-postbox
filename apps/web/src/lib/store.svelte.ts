@@ -54,6 +54,7 @@ class PostboxStore {
     reject: (error: Error) => void;
   }>();
   private notificationNavigationAttempt = 0;
+  private lastHealth: HealthResponse | undefined;
 
   snapshot = $state<Loadable<StateSnapshot>>({ status: "loading" });
   history = $state<Loadable<HistoryResponse>>({ status: "loading" });
@@ -62,7 +63,7 @@ class PostboxStore {
 
   /**
    * True while the data on screen may be stale: before the first snapshot, and again after the
-   * tab returns from the background until a fresh snapshot lands. Empty views say "checking"
+   * tab returns from the background or loses connectivity until a fresh snapshot lands. Empty views say "checking"
    * instead of claiming there are no open questions.
    */
   syncing = $state(true);
@@ -221,6 +222,7 @@ class PostboxStore {
     if (previouslySelectedRequest && !this.displayedRequest) this.displayedRequest = previouslySelectedRequest;
     this.snapshot = { status: "ready", data: next };
     this.syncing = false;
+    if (this.lastHealth) this.connection = { status: "connected", health: this.lastHealth };
     this.lastSnapshotAtMs = Date.now();
     this.deselectRemotelyResolvedRequest(previouslySelectedRequest);
     for (const waiter of this.snapshotWaiters) waiter.resolve(next);
@@ -276,8 +278,11 @@ class PostboxStore {
 
   private failStateSnapshot(error: unknown, fallback: string): void {
     const message = messageOf(error, fallback);
-    this.snapshot = { status: "error", message };
-    this.syncing = false;
+    // A transport failure says nothing about a Question's lifecycle. Keep the last
+    // authoritative snapshot until another snapshot can actually replace it.
+    if (this.snapshot.status !== "ready") this.snapshot = { status: "error", message };
+    this.connection = { status: "unavailable", message };
+    this.syncing = true;
     for (const waiter of this.snapshotWaiters) waiter.reject(new Error(message));
     this.snapshotWaiters.clear();
   }
@@ -310,8 +315,14 @@ class PostboxStore {
     };
 
     const load = () => {
-      fetchSnapshot()
-        .then(applySnapshot)
+      // Re-negotiate compatibility after a restart before accepting state again.
+      fetchHealth()
+        .then((health) => {
+          if (cancelled) return;
+          this.lastHealth = health;
+          return fetchSnapshot();
+        })
+        .then((next) => { if (next) applySnapshot(next); })
         .catch((error: unknown) => {
           if (!cancelled) this.failStateSnapshot(error, "Unknown state snapshot error");
         });
@@ -335,7 +346,12 @@ class PostboxStore {
             if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
           }
         });
-        events.onerror = () => startPollingFallback();
+        events.onerror = () => {
+          if (cancelled) return;
+          this.connection = { status: "unavailable", message: "Live updates disconnected. Reconnecting…" };
+          this.syncing = true;
+          startPollingFallback();
+        };
       }
     };
 
@@ -344,6 +360,7 @@ class PostboxStore {
     void fetchHealth()
       .then((health) => {
         if (cancelled) return;
+        this.lastHealth = health;
         this.connection = { status: "connected", health };
         startStateTransport();
       })
