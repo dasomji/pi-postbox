@@ -42,3 +42,11 @@ Status: Chunk A implementation complete. L0 focused tests/type gates passed duri
 6. Submit and Cancel reference the live delivery explanation with aria-describedby. Connected background refreshes use neutral “Refreshing…” wording. An offline action error disappears once delivery is available again; native disabled buttons and the live status explanation are retained.
 
 Verification: new regression cases fail against the pre-round implementation or targeted guard mutants, with logs in `.kitchen/mutation-r1-*.log`. Final same-commit L0/L1/L2 and individual mutation receipts are appended to `.kitchen/receipts.jsonl`. No push, PR, Plane, production-server or Android behavior changes are part of this round.
+
+### Review round 2
+
+1. Recovery health and snapshot reads now share a four-second abort deadline, shorter than the five-second poll interval. A blackholed request releases the polling guard for a later successful attempt. Cleanup aborts startup and recovery fetches. Fake-timer DOM tests cover hung health and snapshot reads, retained pending Questions and Submit becoming available again; transport tests cover cancellation during startup health, recovery health and recovery snapshot reads.
+2. Queue Dismiss is disabled while disconnected, including nested Questions, and references a live offline explanation with `aria-describedby`. The action boundary also refuses offline dismissal. DOM tests prove the controls and explanation recover, and bypassing the disabled button sends no request or resolves any Question.
+3. Version 0.5.13 synchronizes root/workspace manifests, internal pins, lock metadata, identity assertions, README/protocol statements and the generator-produced Android health fixture. Third-party dependencies and generated Kotlin are unchanged.
+
+Regression proofs use the old behavior or targeted mutants; logs are `.kitchen/mutation-r2-*.log`. Final same-commit verification and individual mutation receipts are in `.kitchen/receipts.jsonl`. No push, PR, Plane, production-server or Android behavior changes are part of this round. Half-open stream liveness (POSTBOX-17), Android (POSTBOX-16) and accepted startup-incompatible snapshot wording remain outside scope; browser L3 remains with the parent verifier.

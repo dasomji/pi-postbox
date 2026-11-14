@@ -4,10 +4,12 @@
   import { store } from "../lib/store.svelte";
   import QuestionTreeList from "./QuestionTreeList.svelte";
 
-  let { nodes, depth = 0, dismissingRequestId, onDismiss }: {
+  let { nodes, depth = 0, dismissingRequestId, dismissUnavailable = false, dismissDescriptionId, onDismiss }: {
     nodes: QuestionTreeNode[];
     depth?: number;
     dismissingRequestId?: string;
+    dismissUnavailable?: boolean;
+    dismissDescriptionId?: string;
     onDismiss: (requestId: string) => void;
   } = $props();
 
@@ -38,12 +40,13 @@
         </button>
         <button type="button" class="mt-2 shrink-0 rounded-full p-1.5 text-postbox-muted transition hover:bg-attention/10 hover:text-attention-foreground disabled:cursor-wait disabled:opacity-50"
           title="Dismiss this question (cancels it without answering)" aria-label="Dismiss question: {node.request.question.prompt}"
-          disabled={dismissingRequestId !== undefined} onclick={() => onDismiss(node.request.requestId)}>
+          aria-describedby={dismissDescriptionId}
+          disabled={dismissingRequestId !== undefined || dismissUnavailable} onclick={() => onDismiss(node.request.requestId)}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
       </div>
       {#if node.children.length > 0}
-        <QuestionTreeList nodes={node.children} depth={depth + 1} {dismissingRequestId} {onDismiss} />
+        <QuestionTreeList nodes={node.children} depth={depth + 1} {dismissingRequestId} {dismissUnavailable} {dismissDescriptionId} {onDismiss} />
       {/if}
     </li>
   {/each}

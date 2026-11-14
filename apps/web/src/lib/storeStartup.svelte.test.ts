@@ -79,6 +79,37 @@ afterEach(() => {
 });
 
 describe("dashboard live-state bootstrap", () => {
+  it.each(["startup health", "recovery health", "recovery state"])("aborts an in-flight %s fetch on stop", async (phase) => {
+    vi.useFakeTimers();
+    let hanging = phase === "startup health";
+    let signal: AbortSignal | null | undefined;
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (hanging && String(input) === (phase === "recovery state" ? "/api/state" : "/healthz")) {
+        signal = init?.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      }
+      return Response.json(String(input) === "/healthz" ? createHealthResponse({ startedAtMs: 1_000 }) : SNAPSHOT);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      if (phase !== "startup health") {
+        FakeEventSource.instances[0]!.emitState(SNAPSHOT);
+        hanging = true;
+        FakeEventSource.instances[0]!.onerror?.(new Event("error"));
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      stop();
+      expect(signal?.aborted).toBe(true);
+      const callsAtStop = fetcher.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetcher).toHaveBeenCalledTimes(callsAtStop);
+    } finally { stop(); }
+  });
+
   it("recovers from a failed startup health check without reloading", async () => {
     vi.useFakeTimers();
     let offline = true;

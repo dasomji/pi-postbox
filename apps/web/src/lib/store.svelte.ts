@@ -319,6 +319,8 @@ export class PostboxStore {
     let fallbackTimer: ReturnType<typeof setInterval> | undefined;
     let events: EventSource | undefined;
     let polling = false;
+    const startupAbort = new AbortController();
+    let recoveryAbort: AbortController | undefined;
 
     const applySnapshot = (next: StateSnapshot, sequence?: number) => {
       if (!cancelled) this.applyStateSnapshot(next, sequence);
@@ -333,14 +335,18 @@ export class PostboxStore {
     const load = () => {
       if (cancelled || polling) return;
       polling = true;
+      const controller = new AbortController();
+      recoveryAbort = controller;
+      // Bound the entire health/state attempt below the five-second poll interval.
+      const timeout = setTimeout(() => controller.abort(new DOMException("Recovery attempt timed out", "TimeoutError")), 4_000);
       const sequence = ++this.snapshotSequence;
       // Re-negotiate compatibility after a restart before accepting state again.
-      fetchHealth()
+      fetchHealth(controller.signal)
         .then((health) => {
           if (cancelled) return;
           this.lastHealth = health;
           startStateTransport();
-          return fetchSnapshot();
+          return fetchSnapshot(controller.signal);
         })
         .then((next) => {
           if (!next || cancelled) return;
@@ -350,7 +356,11 @@ export class PostboxStore {
         .catch((error: unknown) => {
           if (!cancelled) this.failStateSnapshot(error, "Unknown state snapshot error");
         })
-        .finally(() => { polling = false; });
+        .finally(() => {
+          clearTimeout(timeout);
+          recoveryAbort = undefined;
+          polling = false;
+        });
     };
 
     const startPollingFallback = () => {
@@ -387,7 +397,7 @@ export class PostboxStore {
 
     // Compatibility is negotiated before any state payload is parsed. This turns an
     // old API/new UI mismatch into a targeted health diagnostic instead of a Zod error.
-    void fetchHealth()
+    void fetchHealth(startupAbort.signal)
       .then((health) => {
         if (cancelled) return;
         this.lastHealth = health;
@@ -413,6 +423,8 @@ export class PostboxStore {
     return () => {
       cancelled = true;
       this.startRecovery = undefined;
+      startupAbort.abort();
+      recoveryAbort?.abort();
       events?.close();
       if (fallbackTimer) clearInterval(fallbackTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);

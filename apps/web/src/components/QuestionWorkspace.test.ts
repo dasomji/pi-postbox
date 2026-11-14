@@ -9,11 +9,13 @@ import type {
   QuestionChatStopPayload
 } from "@pi-postbox/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { tick } from "svelte";
 import { BrowserLayoutState } from "../lib/layout.svelte";
 import type { QuestionChatProbeResult } from "../api/postboxApi";
 import QuestionDetail from "./QuestionDetail.svelte";
 import MainView from "./MainView.svelte";
 import ConnectionBadge from "./ConnectionBadge.svelte";
+import OpenQuestionsQueue from "./OpenQuestionsQueue.svelte";
 import { PostboxStore, store } from "../lib/store.svelte";
 
 const isolatedStore = vi.hoisted(() => ({ current: undefined as PostboxStore | undefined }));
@@ -98,6 +100,110 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false, act
 }
 
 describe("outage-safe Question workspace", () => {
+  it("refuses offline Dismiss at the action boundary when the disabled button is bypassed", async () => {
+    const current = { timestamp: REQUEST.createdAt, sessions: [], requests: [REQUEST] };
+    store.applyStateSnapshot(current);
+    store.connection = { status: "unavailable", message: "Offline" };
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json(current));
+    vi.stubGlobal("fetch", fetcher);
+    render(OpenQuestionsQueue);
+    const dismiss = screen.getByRole("button", { name: /^Dismiss question:/ }) as HTMLButtonElement;
+    dismiss.disabled = false;
+    await fireEvent.click(dismiss);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(store.pendingRequests[0]?.status).toBe("pending");
+    expect(screen.getByRole("status").textContent).toContain("offline or reconnecting");
+    store.connection = { status: "connected", health: createHealthResponse({ startedAtMs: 1_000 }) };
+    await waitFor(() => expect(dismiss.disabled).toBe(false));
+    await fireEvent.click(dismiss);
+    await waitFor(() => expect(fetcher.mock.calls.some((call) => call[1]?.method === "POST")).toBe(true));
+  });
+
+  it("disables queue Dismiss with an accessible offline explanation and re-enables it after recovery", async () => {
+    const current = { timestamp: REQUEST.createdAt, sessions: [], requests: [REQUEST, { ...REQUEST, requestId: "child-question", parentQuestionId: REQUEST.requestId }] };
+    store.applyStateSnapshot(current);
+    store.connection = { status: "unavailable", message: "Offline" };
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json(current));
+    vi.stubGlobal("fetch", fetcher);
+    render(OpenQuestionsQueue);
+    const buttons = screen.getAllByRole("button", { name: /^Dismiss question:/ }) as HTMLButtonElement[];
+    expect(buttons).toHaveLength(2); // Includes the nested Question tree.
+    for (const button of buttons) {
+      expect(button.disabled).toBe(true);
+      const descriptionId = button.getAttribute("aria-describedby");
+      expect(descriptionId).toBeTruthy();
+      expect(document.getElementById(descriptionId!)?.textContent).toContain("offline or reconnecting");
+    }
+    await fireEvent.click(buttons[0]!);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(store.pendingRequests).toHaveLength(2);
+    store.connection = { status: "connected", health: createHealthResponse({ startedAtMs: 1_000 }) };
+    await waitFor(() => expect(buttons.every((button) => !button.disabled)).toBe(true));
+    expect(buttons.every((button) => !button.hasAttribute("aria-describedby"))).toBe(true);
+    await fireEvent.click(buttons[0]!);
+    await waitFor(() => expect(fetcher.mock.calls.some((call) => call[1]?.method === "POST")).toBe(true));
+  });
+
+  it.each(["/healthz", "/api/state"])("recovers delivery on a later poll after %s hangs without a network error", async (hungPath) => {
+    vi.useFakeTimers();
+    const health = createHealthResponse({ startedAtMs: 1_000 });
+    const current = { timestamp: REQUEST.createdAt, sessions: [], requests: [REQUEST] };
+    let events!: RecoveryEventSource;
+    class RecoveryEventSource extends EventTarget {
+      readyState = 0;
+      onerror: ((event: Event) => unknown) | null = null;
+      constructor(_url: string) { super(); events = this; }
+      emitState() {
+        this.readyState = 1;
+        this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(current) }));
+      }
+      close() { this.readyState = 2; }
+    }
+    let hanging = false;
+    let hungSignal: AbortSignal | null | undefined;
+    vi.stubGlobal("EventSource", RecoveryEventSource);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (hanging && String(input) === hungPath) {
+        hungSignal = init?.signal;
+        // A blackholed TCP connection never resolves or rejects until aborted.
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      }
+      return Response.json(String(input) === "/healthz" ? health : current);
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      events.emitState();
+      render(QuestionDetail, { props: { request: REQUEST, chatApi: chatBoundary(), matchMedia: () => mediaController(false).query } });
+      await fireEvent.click(screen.getByRole("radio", { name: "Path A" }));
+      const submit = screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement;
+      expect(submit.disabled).toBe(false);
+
+      hanging = true;
+      events.onerror?.(new Event("error"));
+      await vi.advanceTimersByTimeAsync(0);
+      await tick();
+      expect(submit.disabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(4_000);
+      hanging = false;
+      // The stream can reopen before health completes, or reopen without a new state event.
+      if (hungPath === "/healthz") events.emitState();
+      else events.readyState = 1;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await tick();
+      expect(store.connection.status).toBe("connected");
+      expect(store.syncing).toBe(false);
+      expect(store.pendingRequests[0]?.status).toBe("pending");
+      expect(submit.disabled).toBe(false);
+      expect(hungSignal?.aborted).toBe(true);
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("describes unavailable answer controls and uses neutral wording while connected data refreshes", async () => {
     const health = createHealthResponse({ startedAtMs: 1_000 });
     store.applyStateSnapshot({ timestamp: REQUEST.createdAt, sessions: [], requests: [REQUEST] });
