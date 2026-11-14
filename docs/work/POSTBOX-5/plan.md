@@ -50,3 +50,11 @@ Verification: new regression cases fail against the pre-round implementation or 
 3. Version 0.5.13 synchronizes root/workspace manifests, internal pins, lock metadata, identity assertions, README/protocol statements and the generator-produced Android health fixture. Third-party dependencies and generated Kotlin are unchanged.
 
 Regression proofs use the old behavior or targeted mutants; logs are `.kitchen/mutation-r2-*.log`. Final same-commit verification and individual mutation receipts are in `.kitchen/receipts.jsonl`. No push, PR, Plane, production-server or Android behavior changes are part of this round. Half-open stream liveness (POSTBOX-17), Android (POSTBOX-16) and accepted startup-incompatible snapshot wording remain outside scope; browser L3 remains with the parent verifier.
+
+### Review round 3
+
+1. Retain the four-second whole-attempt deadline so hung health, headers or bodies release recovery. Discard a late recovery failure only when a newer snapshot has applied, health is present, the connection is Connected and EventSource is OPEN. Release the polling guard and attempt resources before failure handling so an immediate retry can start. A fake-timer DOM regression holds a recovery body for 4.5 seconds while live snapshots arrive every two seconds, checking the badge and Submit/Cancel/Dismiss every 250 ms for 20 seconds after reconnection. A transport regression proves immediate retry when the stream has meanwhile left OPEN.
+2. Offline Dismiss uses the not-allowed cursor; the wait cursor applies only during an in-flight dismissal while connected.
+3. Version 0.5.14 synchronizes manifests, internal pins, lock metadata, identity assertions, README/protocol statements and the regenerated Android health fixture. Third-party dependencies and generated Kotlin are unchanged.
+
+Regression proofs and final same-commit L0/L1/L2 receipts are recorded in ignored `.kitchen/mutation-r3-*.log` and `.kitchen/receipts.jsonl`. No push, PR, Plane or production changes; browser L3 remains with the parent verifier. POSTBOX-16/17/18 and navigation draft loss remain outside scope.

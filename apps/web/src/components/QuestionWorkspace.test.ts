@@ -100,6 +100,77 @@ function chatBoundary(requestId = REQUEST.requestId, alreadyRunning = false, act
 }
 
 describe("outage-safe Question workspace", () => {
+  it("keeps Connected and delivery enabled during a slow recovery body with newer live state", async () => {
+    vi.useFakeTimers();
+    const health = createHealthResponse({ startedAtMs: 1_000 });
+    const current = { timestamp: REQUEST.createdAt, sessions: [], requests: [REQUEST] };
+    let events!: RecoveryEventSource;
+    class RecoveryEventSource extends EventTarget {
+      readyState = 0;
+      onerror: ((event: Event) => unknown) | null = null;
+      constructor(_url: string) { super(); events = this; }
+      emitState() {
+        this.readyState = 1;
+        this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(current) }));
+      }
+      close() { this.readyState = 2; }
+    }
+    vi.stubGlobal("EventSource", RecoveryEventSource);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/healthz") return Response.json(health);
+      // Headers arrive immediately; the successful body would take 4.5 seconds.
+      return new Response(new ReadableStream({
+        start(controller) {
+          const timer = setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify(current)));
+            controller.close();
+          }, 4_500);
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            controller.error(init.signal?.reason);
+          }, { once: true });
+        }
+      }));
+    }));
+    const stop = store.start();
+    let liveTimer: ReturnType<typeof setInterval> | undefined;
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      events.emitState();
+      render(ConnectionBadge);
+      render(OpenQuestionsQueue);
+      render(QuestionDetail, { props: { request: REQUEST, chatApi: chatBoundary(), matchMedia: () => mediaController(false).query } });
+      await fireEvent.click(screen.getByRole("radio", { name: "Path A" }));
+      const controls = [
+        screen.getByRole("button", { name: "Submit" }),
+        screen.getByRole("button", { name: "Cancel" }),
+        screen.getByRole("button", { name: /^Dismiss question:/ })
+      ] as HTMLButtonElement[];
+
+      events.readyState = 0;
+      events.onerror?.(new Event("error"));
+      await vi.advanceTimersByTimeAsync(0);
+      await tick();
+      expect(screen.getByLabelText("Server unavailable")).toBeTruthy();
+      expect(controls.every((button) => button.disabled)).toBe(true);
+
+      liveTimer = setInterval(() => events.emitState(), 2_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      // Observe every quarter second for 20 seconds, including timeout and poll boundaries.
+      for (let elapsed = 0; elapsed <= 20_000; elapsed += 250) {
+        await tick();
+        expect(screen.getByLabelText(/^Connected/)).toBeTruthy();
+        expect(controls.map((button) => button.disabled)).toEqual([false, false, false]);
+        expect(store.pendingRequests[0]?.status).toBe("pending");
+        if (elapsed < 20_000) await vi.advanceTimersByTimeAsync(250);
+      }
+    } finally {
+      clearInterval(liveTimer);
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses offline Dismiss at the action boundary when the disabled button is bypassed", async () => {
     const current = { timestamp: REQUEST.createdAt, sessions: [], requests: [REQUEST] };
     store.applyStateSnapshot(current);

@@ -38,7 +38,7 @@
             </span>
           </span>
         </button>
-        <button type="button" class="mt-2 shrink-0 rounded-full p-1.5 text-postbox-muted transition hover:bg-attention/10 hover:text-attention-foreground disabled:cursor-wait disabled:opacity-50"
+        <button type="button" class="mt-2 shrink-0 rounded-full p-1.5 text-postbox-muted transition hover:bg-attention/10 hover:text-attention-foreground {dismissUnavailable ? 'disabled:cursor-not-allowed' : dismissingRequestId !== undefined ? 'disabled:cursor-wait' : ''} disabled:opacity-50"
           title="Dismiss this question (cancels it without answering)" aria-label="Dismiss question: {node.request.question.prompt}"
           aria-describedby={dismissDescriptionId}
           disabled={dismissingRequestId !== undefined || dismissUnavailable} onclick={() => onDismiss(node.request.requestId)}>

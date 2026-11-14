@@ -79,6 +79,35 @@ afterEach(() => {
 });
 
 describe("dashboard live-state bootstrap", () => {
+  it("immediately retries a failed recovery when the stream is no longer OPEN", async () => {
+    vi.useFakeTimers();
+    let rejectRecovery!: (error: Error) => void;
+    let firstStateRead = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/healthz") return Response.json(createHealthResponse({ startedAtMs: 1_000 }));
+      if (firstStateRead) {
+        firstStateRead = false;
+        return new Promise<Response>((_resolve, reject) => { rejectRecovery = reject; });
+      }
+      return Response.json({ ...SNAPSHOT, requests: [] });
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const events = FakeEventSource.instances[0]!;
+      events.emitState(SNAPSHOT);
+      events.onerror?.(new Event("error"));
+      await vi.advanceTimersByTimeAsync(0);
+      events.emitState(SNAPSHOT); // Stops fallback polling while the HTTP read is pending.
+      // EventSource can enter CONNECTING before delivering its next error callback.
+      events.readyState = 0;
+      rejectRecovery(new TypeError("Recovery connection reset"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.connection.status).toBe("connected");
+      expect(store.pendingRequests).toEqual([]); // The immediate retry sees the resolved Question.
+    } finally { stop(); }
+  });
+
   it.each(["startup health", "recovery health", "recovery state"])("aborts an in-flight %s fetch on stop", async (phase) => {
     vi.useFakeTimers();
     let hanging = phase === "startup health";

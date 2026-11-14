@@ -337,7 +337,7 @@ export class PostboxStore {
       polling = true;
       const controller = new AbortController();
       recoveryAbort = controller;
-      // Bound the entire health/state attempt below the five-second poll interval.
+      // Bound even hung bodies; a newer healthy live snapshot supersedes a late failure.
       const timeout = setTimeout(() => controller.abort(new DOMException("Recovery attempt timed out", "TimeoutError")), 4_000);
       const sequence = ++this.snapshotSequence;
       // Re-negotiate compatibility after a restart before accepting state again.
@@ -353,13 +353,16 @@ export class PostboxStore {
           applySnapshot(next, sequence);
           stopPollingIfLive();
         })
-        .catch((error: unknown) => {
-          if (!cancelled) this.failStateSnapshot(error, "Unknown state snapshot error");
-        })
         .finally(() => {
           clearTimeout(timeout);
           recoveryAbort = undefined;
           polling = false;
+        })
+        .catch((error: unknown) => {
+          const superseded = this.appliedSnapshotSequence > sequence
+            && this.connection.status === "connected" && this.lastHealth && events?.readyState === 1;
+          // Release this attempt before failStateSnapshot can start an immediate retry.
+          if (!cancelled && !superseded) this.failStateSnapshot(error, "Unknown state snapshot error");
         });
     };
 
