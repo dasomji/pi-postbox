@@ -30,7 +30,7 @@ Proposed rules never govern the PR that introduces them.
 
 single-user: rollback-ok
 
-rollback: Open a revert PR that reverts the merged change's code and docs but bumps root, workspace and lockfile versions to the next unused patch (never restoring the reverted version), pass the same gates, then merge it with Daniel's per-PR approval; that merge's push publishes the newer patch containing the revert.
+rollback: Open a revert PR that reverts the merged change's code and docs but bumps root, workspace and lockfile versions to the next patch not used by any repository state or npm release (never restoring or reusing the reverted or merged version), pass the same gates, then merge it with Daniel's per-PR approval; that merge's push publishes the newer patch containing the revert.
 
 Every push to `main` runs `.github/workflows/publish.yml`, which publishes the
 version in the root `package.json` (a new patch under the AGENTS.md version rule) to
@@ -38,7 +38,7 @@ the public npm registry after its gates; an unbumped version fails to publish.
 While that holds, every merge is a public, irreversible release and needs Daniel's
 per-PR approval (merge G2/G7), even with this marker. Only once publishing stops being automatic on every merge
 (for example, with a separate release step) may agents merge covered PRs without
-asking, subject to merge G2–G8. GitHub auto-merge is never used.
+asking, subject to merge G1–G8. GitHub auto-merge is never used.
 
 Daniel approved npm-publishing merges on 2026-11-05 and 2026-11-06; his KITCHEN-27
 sign-off on 2026-11-06 was "kitchen 27: yes, you are allowed to merge single-user
