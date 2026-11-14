@@ -25,14 +25,17 @@ Outcome:
 Owned files: `docs/agents/doors.md`, version files listed by
 `git grep 0.5.10` plus `package-lock.json`.
 
-Status: pending.
+Status: done in `13ec874f8ab97055e02da152d1ff3012e31dea04` (Codex gpt-6.1-sol). L1 199 s,
+L2 465 s (first attempt hit a 5 s Vitest timeout in image staging under load; rerun
+unchanged passed), L3 37 s reporting 0.5.11, `npm pack --dry-run` whitelist clean.
+Mutation proof skipped: docs + version metadata, no behavior seam.
 
 ## Verification
 
 - L1 `npm run check:fast` (staged), L2 `npm run check:full -- --base origin/main`.
 - L3 `npm run verify:app` (Coolify) because the version bump changes runtime identity.
-- Cross-family L4 + door confirmation (Codex reviewer; author is Codex, so
-  reviewer is Claude per roles.toml: reviewer-of-gpt-code).
+- Cross-family L4 + door confirmation: author is Codex, so the reviewer is
+  Claude (roles.toml reviewer-of-gpt-code). Status: in progress.
 
 ## Findings
 
