@@ -35,8 +35,19 @@ Mutation proof skipped: docs + version metadata, no behavior seam.
 - L1 `npm run check:fast` (staged), L2 `npm run check:full -- --base origin/main`.
 - L3 `npm run verify:app` (Coolify) because the version bump changes runtime identity.
 - Cross-family L4 + door confirmation: author is Codex, so the reviewer is
-  Claude (roles.toml reviewer-of-gpt-code). Status: in progress.
+  Claude (roles.toml reviewer-of-gpt-code). Status: round 1 fixed, round 2 pending.
 
 ## Findings
 
-(none yet)
+L4 round 1 (Claude, at 13aa45f): REQUEST CHANGES, door agreed ONE-WAY.
+1. Blocker: an exact revert restores an already-published version, so publish
+   fails. Fixed: rollback line now requires the next unused patch bump plus
+   Daniel's per-PR approval.
+2. Should-fix: the table did not say every merge is one-way while main publishes.
+   Fixed in the intro.
+3. Should-fix: "this PR" wording in a permanent doc. Reworded (merge G8).
+4. Nit: npm users and the "other people" row. Fixed.
+5. Nit: publish.yml publishes the root manifest version, not "a patch". Fixed;
+   unverifiable "no npm credentials" claim replaced by the OIDC fact plus a rule.
+6. Coordination: local branch t3/postbox-5-evidence-review also bumps to 0.5.11;
+   the PR that merges second must re-bump. Noted in the PR.
