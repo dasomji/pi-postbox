@@ -1,6 +1,6 @@
 {
   "name": "@pi-postbox/extension",
-  "version": "0.5.11-spec.postbox12.1",
+  "version": "0.5.11-spec.postbox12.2",
   "description": "Pi extension that registers sessions with Pi Postbox and exposes write_question.",
   "type": "module",
   "main": "src/index.ts",
