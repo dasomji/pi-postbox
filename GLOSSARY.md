@@ -1,0 +1,72 @@
+# Pi Postbox glossary
+
+Pi Postbox is a remote decision handoff system for Pi agents. It tracks live Pi work and structured human decisions without mirroring full Pi Session transcripts.
+
+## Language
+
+**Postbox Session**:
+A dashboard-visible record of one Pi session registration, keyed to the active Pi session identity. A new Pi `/new` command creates a distinct Postbox Session rather than reusing the prior one; the prior Postbox Session is explicitly shut down. When Pi has no durable session file, Postbox still treats the active Pi session as distinct using a per-session generated identity.
+_Avoid_: Dashboard row, connection, conversation
+
+**Pi Session**:
+The underlying Pi conversation/runtime session represented by Pi's session file and current leaf. It is the source of identity for a Postbox Session.
+_Avoid_: Chat, process, agent run
+
+**Postbox Question**:
+A structured human decision request that belongs to the Pi Session that created it. Questions survive session shutdown and replacement under their durable owner identity; see ADR 0001.
+_Avoid_: Prompt, card, ticket
+
+**Question Chat**:
+A private, question-scoped interviewer runtime that helps a human understand one pending Postbox Question without selecting, submitting, cancelling, or otherwise resolving it. Question Chat is distinct from the originating Pi Session and its transcript is never persisted by the Postbox server.
+_Avoid_: Chat (when used alone), Pi Chat, conversation
+
+**Fresh Question Chat session**:
+A private interviewer session seeded only with the selected Question, ambiguity and options. It does not inherit the originating transcript. The server supplies the shared model and effort defaults at activation; existing chats retain their settings. Runtime execution still belongs to the originating extension host.
+
+**Postbox Settings**:
+Server-persisted defaults shared by web and Android clients on one Postbox installation. Revisions prevent one device from silently overwriting another device's edits. Model credentials remain local to the runtime host.
+
+**Recovery manifest**:
+A private, versioned metadata file beside a Question Chat session that lets the extension reconcile and reopen that session after reload or restart. It contains no Question Chat transcript and is deleted with terminal or invalid runtimes.
+_Avoid_: Chat record, transcript cache, server manifest
+
+**Question Chat turn**:
+One ordinary Question Chat model invocation. The send acknowledgement uses `mode: "turn"`; a message accepted during generation instead uses `mode: "steer"`.
+_Avoid_: Prompt, request, ask
+
+**Autostarted Postbox Server**:
+A reusable background `pi-postbox-server` process started by the Pi extension for the extension's resolved Server Profile when a Postbox Question needs to be sent. It is not an operating-system service; it may outlive the Pi Session that started it so other Pi Sessions using that same profile can reuse it through profile-scoped metadata.
+_Avoid_: System daemon, service, sidecar
+
+**Server Profile**:
+The isolated runtime namespace selected from loaded package provenance: `production` for installed npm/git packages, or `development:<checkout-id>` for a trusted checkout-local package whose Pi cwd is inside that checkout. It owns config, database, metadata, process files, credentials, ports, assets, and Tailscale behavior.
+
+**Preferred Postbox Server**:
+The server URL explicitly configured through `PI_POSTBOX_URL` or the resolved Server Profile's config. The extension tries it first, but if it is unreachable it may start an Autostarted Postbox Server in the same profile. Once a Pi Session registers, it stays with that profile and instance while work is in flight rather than migrating across environments.
+_Avoid_: Authoritative server, required server
+
+**Durable owner**:
+The harness and owner ID responsible for a Question and unread Answer. Presence
+may become stale/offline without deleting the decision. Ownership transfer uses
+its own optimistic concurrency revision; it does not rewrite the creator.
+
+**Question revision / owner revision**:
+Independent concurrency tokens for content/lifecycle and ownership. Mutations
+supply both expected tokens so a stale client cannot overwrite a newer decision
+or silently operate after an ownership change. History preserves immutable content.
+
+**Question gallery**:
+An ordered set of sanitized images attached to one Question revision. Alt text is
+required; paths stay on the originating host. Retained historical revisions keep
+their galleries even when the current gallery is replaced or removed. See the
+[media contract](docs/question-images.md).
+
+**Evidence reference**:
+A link to externally retained verification proof, accompanied by a textual result
+and its coverage limits. Historical screenshots or mockups do not prove the current
+build. This is distinct from the scoped repository evidence read by Question Chat.
+
+See [ADR 0001](docs/adr/0001-pi-session-replacement-lifecycle.md) for preserved
+Questions across replacement and [ADR 0004](docs/adr/0004-fresh-question-chat-settings.md)
+for fresh Question Chat and shared defaults. Question Chat runtime cleanup does
+not cancel its durable Question.

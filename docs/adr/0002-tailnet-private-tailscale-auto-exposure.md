@@ -1,5 +1,9 @@
 # Tailnet-private Tailscale Auto-exposure
 
+## Status
+
+Accepted; retained during POSTBOX-1.
+
 Pi Postbox allows `pi-postbox-server` to best-effort expose the dashboard through Tailnet-private Tailscale Serve during startup, even though the original v1 deployment model treated Tailscale/lizardtail exposure as external. This favors the core Postbox workflow — opening attention cards from another device and copying a correct `PI_POSTBOX_URL` for remote Pi machines — while constraining the side effect: startup must still work locally if Tailscale is missing or broken, must never enable Funnel/public exposure, must never clobber an existing non-Postbox Serve mapping, and can be disabled with an explicit operator/CI opt-out.
 
 ## Consequences

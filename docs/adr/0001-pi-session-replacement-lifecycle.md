@@ -1,5 +1,9 @@
 # Pi Session Replacement Lifecycle
 
+## Status
+
+Accepted; retained during POSTBOX-1.
+
 Pi Postbox treats durable decisions independently from the lifetime of a Pi turn or process. `/new`, `/resume`, `/fork`, `/clone`, quit, disconnect, and process death preserve unresolved Questions and unread Answers under their durable owner identity. `/reload` reconnects with that same owner identity and retains queue responsibility.
 
 Before a session switch or fork, Postbox checks the current owner's active Questions and unread Answers. An interactive Pi client warns and asks for explicit confirmation; declining cancels only the navigation, so the guard is never inescapable. Ordinary shutdown marks the session offline and clears ephemeral waits and adapter resources without cancelling Questions or deleting Answers. For an ungraceful crash, the heartbeat lease first marks the owner stale and then offline; Postbox does not inspect transcripts, JSONL files, or PIDs.

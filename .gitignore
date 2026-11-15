@@ -7,3 +7,5 @@ tmp/
 data/
 .gstack/
 .pi-subagents/
+.kitchen/
+/evidence/

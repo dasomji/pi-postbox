@@ -4,7 +4,7 @@ This is a developer-installable native Android client for a Postbox server reach
 
 ## Build and test
 
-Install a JDK and Android SDK first, then run from the repository root:
+Install JDK 17 and Android SDK (compile/target 36, minimum 26) first, then run from the repository root:
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
@@ -82,14 +82,26 @@ FCM needs per-developer Firebase artifacts that are not committed:
 
 1. Create a Firebase project at <https://console.firebase.google.com> and add an Android app with package name `dev.pi.postbox`.
 2. Download `google-services.json` into `apps/android/app/` (gitignored). The Gradle build applies the `google-services` plugin only when this file exists, so builds without it still work — they just never initialize Firebase and fall back to in-app notifications only.
-3. In Firebase project settings → Service accounts, generate a service-account key JSON and start the Postbox server with `--fcm-service-account /path/to/key.json` (or `PI_POSTBOX_FCM_SERVICE_ACCOUNT`). See `docs/configuration.md`.
+3. In Firebase project settings → Service accounts, generate a service-account key JSON and start the Postbox server with `--fcm-service-account /path/to/key.json` (or `PI_POSTBOX_FCM_SERVICE_ACCOUNT`). See [configuration](../../docs/configuration.md#android-push-notifications-fcm).
 
 Token registration happens automatically whenever the connected question workflow starts against a verified server URL, and again on FCM token rotation.
 
 ## Evidence limitations
 
-Current automated evidence is JVM tests, Gradle build/lint, and debug APK assembly. Emulator or real device smoke requires working `adb devices`, a reachable Tailnet HTTPS Postbox URL, and hardware/KVM availability. Until that is run, install/tap behavior should be treated as not yet installed on a physical device.
+Automated gates include JVM tests, Gradle build/lint and debug APK assembly.
+Historical emulator tests and user confirmation of selected UI behaviors are not
+proof of the current checkout's full release journey. Emulator or real device
+smoke requires a selected device, a reachable Tailnet HTTPS Postbox URL and suitable
+hardware/KVM availability. Report the exact build, device and any skipped IME,
+TalkBack, notification or memory checks; see the [Android guide](../../docs/agents/android.md).
 
 ## Shared chat settings
 
 Open **Settings** from navigation to choose the model ID and effort for new Question Chats. These defaults live on the selected Postbox server and are shared with the web UI. Settings refresh while foregrounded; unsaved edits are retained, and stale saves require reloading the server values. Fresh chats receive only the selected question and options, without the originating transcript.
+
+## Contributor routing
+
+Use the [glossary](../../GLOSSARY.md), [development guide](../../docs/agents/development.md),
+[Android gotchas](../../docs/agents/android.md) and [verification contract](../../docs/agents/verify.md).
+Android versionName/versionCode come from `app/build.gradle.kts`; the shared
+protocol package owns compatibility. The npm package version is independent.

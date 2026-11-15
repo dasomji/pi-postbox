@@ -1,5 +1,8 @@
 # Pi Postbox deployment with Tailscale and lizardtail
 
+For terminology see [GLOSSARY](../GLOSSARY.md). Contributors use the
+[development](agents/development.md) and [verification](agents/verify.md) guides.
+
 Pi Postbox v1 is a plain local HTTP service with automatic Tailnet-private Tailscale Serve convenience for the common private-dashboard workflow. Tailscale exposure is best-effort and non-clobbering; lizardtail remains a useful external wrapper for custom workflows.
 
 ## Security boundary
@@ -149,7 +152,7 @@ npm run build
 npm run smoke
 ```
 
-The credential-free smoke starts `node packages/server/dist/cli.js` with a temporary SQLite database and temporary `PI_POSTBOX_CONFIG_DIR`. It fetches the exact hashed JavaScript/CSS referenced by the served HTML plus the manifest, service worker, and icons; connects a fake extension/runtime over WebSocket; and verifies `/healthz`, state and Chat SSE, registration, exact-fork activation without an automatic model prompt, streaming/tool output, Stop/resume, restart recovery, an authoritative proposal, generated-value selection, legacy handoff-context removal, terminal cleanup, state/history correctness, and non-persistence of private Chat text and repository evidence.
+The credential-free smoke starts `node packages/server/dist/cli.js` with a temporary SQLite database and temporary `PI_POSTBOX_CONFIG_DIR`. It fetches the exact hashed JavaScript/CSS referenced by the served HTML plus the manifest, service worker, and icons; connects a fake extension/runtime over WebSocket; and verifies `/healthz`, state and Chat SSE, registration, fresh question-only activation without an automatic model prompt, streaming/tool output, Stop/resume, restart recovery, an authoritative proposal, generated-value selection, legacy handoff-context removal, terminal cleanup, state/history correctness, and non-persistence of private Chat text and repository evidence.
 
 ## Manual test checklist
 

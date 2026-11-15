@@ -1,6 +1,13 @@
 # Fresh Question Chat and shared defaults
 
-Accepted 2026-09-10. Supersedes the exact-fork-only parts of the Question Chat PRD and earlier research recommendation.
+## Status
+
+Accepted 2026-09-10. Supersedes the exact-fork-only context construction and inherited
+model policy in the [Question Chat PRD](https://github.com/dasomji/pi-postbox/blob/1529347528fda310869ed6221af2c136e589260d/docs/prd/postbox-question-chat.md),
+[earlier fork research](https://github.com/dasomji/pi-postbox/blob/1529347528fda310869ed6221af2c136e589260d/docs/research/2026-07-17-postbox-question-fork-chat.md)
+and [checkpoint recommendation](https://github.com/dasomji/pi-postbox/blob/1529347528fda310869ed6221af2c136e589260d/docs/research/2026-09-10-question-chat-checkpoints.md).
+Those source requirements are superseded by this ADR; surviving historical
+compatibility notes describe past releases, not current activation policy.
 
 Question Chat creates a fresh private Pi session from the selected Question's current revision, prompt, ambiguity and options. The interviewer helps the human understand that decision; it does not inherit the originating agent's transcript or resolve the Question. The human still submits an Answer through Postbox. Repository tools retain their existing read-only boundaries.
 
