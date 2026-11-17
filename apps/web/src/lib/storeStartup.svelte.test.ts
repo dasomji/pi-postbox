@@ -227,6 +227,45 @@ describe("dashboard live-state bootstrap", () => {
     } finally { stop(); }
   });
 
+  it("applies a reconnected stream's first state once slow recovery health succeeds", async () => {
+    vi.useFakeTimers();
+    // Slow link: health takes 500 ms and state reads never finish before the 4 s deadline.
+    // The server sends state only on subscribe/change, so the reconnected stream stays quiet.
+    let snapshotReads = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const signal = init?.signal;
+      signal?.addEventListener("abort", () => reject(signal.reason ?? new DOMException("Aborted", "AbortError")));
+      if (String(input) === "/healthz") {
+        setTimeout(() => resolve(Response.json(createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 }))), 500);
+      } else {
+        snapshotReads += 1;
+      }
+    })));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(500);
+      const events = FakeEventSource.instances[0]!;
+      events.emitState(SNAPSHOT);
+      expect(store.connection.status).toBe("connected");
+      events.readyState = 0;
+      events.onerror?.(new Event("error"));
+      // The first recovery attempt times out before the browser reconnects the stream.
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect(store.connection.status).toBe("unavailable");
+      // The reconnected stream's subscribe-time state arrives while health is stale.
+      events.emitState(SNAPSHOT);
+      expect(store.connection.status).toBe("unavailable");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(store.connection.status).toBe("connected");
+      expect(store.syncing).toBe(false);
+      const readsWhenLive = snapshotReads;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(store.connection.status).toBe("connected");
+      expect(store.pendingRequests).toHaveLength(1);
+      expect(snapshotReads).toBe(readsWhenLive);
+    } finally { stop(); }
+  });
+
   it("does not overlap slow recovery polls", async () => {
     vi.useFakeTimers();
     let stateReads = 0;

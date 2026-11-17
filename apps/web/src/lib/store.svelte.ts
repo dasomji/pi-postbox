@@ -321,6 +321,10 @@ export class PostboxStore {
     let polling = false;
     const startupAbort = new AbortController();
     let recoveryAbort: AbortController | undefined;
+    // The server sends state only on subscribe and on change. A state event that
+    // arrives before compatibility is re-negotiated is kept (unparsed) and applied
+    // once recovery health succeeds, so a quiet reconnected stream is not ignored.
+    let deferredLiveState: string | undefined;
 
     const applySnapshot = (next: StateSnapshot, sequence?: number) => {
       if (!cancelled) this.applyStateSnapshot(next, sequence);
@@ -330,6 +334,21 @@ export class PostboxStore {
       if (events?.readyState !== 1 || !this.lastHealth) return;
       if (fallbackTimer) clearInterval(fallbackTimer);
       fallbackTimer = undefined;
+    };
+
+    const applyLiveState = (data: string) => {
+      try {
+        applySnapshot(StateSnapshotSchema.parse(JSON.parse(data)));
+        stopPollingIfLive();
+      } catch (error) {
+        if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
+      }
+    };
+
+    const applyDeferredLiveState = () => {
+      const data = deferredLiveState;
+      deferredLiveState = undefined;
+      if (data !== undefined && events?.readyState === 1) applyLiveState(data);
     };
 
     const load = () => {
@@ -346,6 +365,7 @@ export class PostboxStore {
           if (cancelled) return;
           this.lastHealth = health;
           startStateTransport();
+          applyDeferredLiveState();
           return fetchSnapshot(controller.signal);
         })
         .then((next) => {
@@ -376,18 +396,17 @@ export class PostboxStore {
       if (!("EventSource" in window)) {
         startPollingFallback();
       } else if (!events || events.readyState === 2) {
+        deferredLiveState = undefined;
         events = new EventSource("/api/state/events");
         events.addEventListener("state", (event) => {
-          if (cancelled || !this.lastHealth) return;
-          try {
-            applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
-            stopPollingIfLive();
-          } catch (error) {
-            if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
-          }
+          if (cancelled) return;
+          const data = String((event as MessageEvent).data);
+          if (!this.lastHealth) deferredLiveState = data;
+          else applyLiveState(data);
         });
         events.onerror = () => {
           if (cancelled) return;
+          deferredLiveState = undefined;
           this.lastHealth = undefined;
           this.connection = { status: "unavailable", message: "Live updates disconnected. Reconnecting…" };
           this.syncing = true;
