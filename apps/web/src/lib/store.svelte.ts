@@ -363,8 +363,12 @@ export class PostboxStore {
       if (deferred.sequence >= this.appliedSnapshotSequence) {
         applySnapshot(next, deferred.sequence);
       } else if (this.lastHealth && this.snapshot.status === "ready") {
-        // A newer snapshot already applied; keep it, but the stream is demonstrably live.
+        // A newer snapshot already applied; keep it. A deferred event survives only while
+        // the stream stays open (errors discard it), and that snapshot was requested after
+        // the event arrived, so it plus later stream events is authoritative even if a
+        // refresh failed since.
         this.connection = { status: "connected", health: this.lastHealth };
+        this.syncing = false;
       }
       stopPollingIfLive();
       return true;
