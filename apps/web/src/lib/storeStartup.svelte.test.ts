@@ -266,6 +266,41 @@ describe("dashboard live-state bootstrap", () => {
     } finally { stop(); }
   });
 
+  it("never lets a deferred stream event overwrite a newer resolution", async () => {
+    vi.useFakeTimers();
+    const resolved = { ...SNAPSHOT, requests: [] };
+    let state: StateSnapshot = SNAPSHOT;
+    let releaseHealth: ((response: Response) => void) | undefined;
+    let delayHealth = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) !== "/healthz") return Response.json(state);
+      if (delayHealth) return new Promise<Response>((resolve) => { releaseHealth = resolve; });
+      return Response.json(createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 }));
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const events = FakeEventSource.instances[0]!;
+      events.emitState(SNAPSHOT);
+      delayHealth = true;
+      events.readyState = 0;
+      events.onerror?.(new Event("error"));
+      // The reconnected stream delivers the still-pending state while health is stale…
+      events.emitState(SNAPSHOT);
+      // …then a newer refresh observes that the Question was resolved elsewhere.
+      state = resolved;
+      await store.refresh();
+      expect(store.pendingRequests).toHaveLength(0);
+      releaseHealth!(Response.json(createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 })));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.pendingRequests).toHaveLength(0);
+      expect(store.connection.status).toBe("connected");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(store.pendingRequests).toHaveLength(0);
+      expect(store.connection.status).toBe("connected");
+    } finally { stop(); }
+  });
+
   it("does not overlap slow recovery polls", async () => {
     vi.useFakeTimers();
     let stateReads = 0;

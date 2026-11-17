@@ -324,7 +324,8 @@ export class PostboxStore {
     // The server sends state only on subscribe and on change. A state event that
     // arrives before compatibility is re-negotiated is kept (unparsed) and applied
     // once recovery health succeeds, so a quiet reconnected stream is not ignored.
-    let deferredLiveState: string | undefined;
+    // Its sequence is taken on receipt, so a newer refresh is never overwritten.
+    let deferredLiveState: { data: string; sequence: number } | undefined;
 
     const applySnapshot = (next: StateSnapshot, sequence?: number) => {
       if (!cancelled) this.applyStateSnapshot(next, sequence);
@@ -336,19 +337,37 @@ export class PostboxStore {
       fallbackTimer = undefined;
     };
 
-    const applyLiveState = (data: string) => {
+    const parseLiveState = (data: string): StateSnapshot | undefined => {
       try {
-        applySnapshot(StateSnapshotSchema.parse(JSON.parse(data)));
-        stopPollingIfLive();
+        return StateSnapshotSchema.parse(JSON.parse(data));
       } catch (error) {
         if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
+        return undefined;
       }
     };
 
-    const applyDeferredLiveState = () => {
-      const data = deferredLiveState;
+    const applyLiveState = (data: string) => {
+      const next = parseLiveState(data);
+      if (!next) return;
+      applySnapshot(next);
+      stopPollingIfLive();
+    };
+
+    /** Returns true when a deferred event proved the open stream live under fresh health. */
+    const applyDeferredLiveState = (): boolean => {
+      const deferred = deferredLiveState;
       deferredLiveState = undefined;
-      if (data !== undefined && events?.readyState === 1) applyLiveState(data);
+      if (!deferred || events?.readyState !== 1 || cancelled) return false;
+      const next = parseLiveState(deferred.data);
+      if (!next) return false;
+      if (deferred.sequence >= this.appliedSnapshotSequence) {
+        applySnapshot(next, deferred.sequence);
+      } else if (this.lastHealth && this.snapshot.status === "ready") {
+        // A newer snapshot already applied; keep it, but the stream is demonstrably live.
+        this.connection = { status: "connected", health: this.lastHealth };
+      }
+      stopPollingIfLive();
+      return true;
     };
 
     const load = () => {
@@ -359,13 +378,14 @@ export class PostboxStore {
       // Bound even hung bodies; a newer healthy live snapshot supersedes a late failure.
       const timeout = setTimeout(() => controller.abort(new DOMException("Recovery attempt timed out", "TimeoutError")), 4_000);
       const sequence = ++this.snapshotSequence;
+      let liveConfirmed = false;
       // Re-negotiate compatibility after a restart before accepting state again.
       fetchHealth(controller.signal)
         .then((health) => {
           if (cancelled) return;
           this.lastHealth = health;
           startStateTransport();
-          applyDeferredLiveState();
+          liveConfirmed = applyDeferredLiveState();
           return fetchSnapshot(controller.signal);
         })
         .then((next) => {
@@ -379,7 +399,7 @@ export class PostboxStore {
           polling = false;
         })
         .catch((error: unknown) => {
-          const superseded = this.appliedSnapshotSequence > sequence
+          const superseded = (this.appliedSnapshotSequence > sequence || liveConfirmed)
             && this.connection.status === "connected" && this.lastHealth && events?.readyState === 1;
           // Release this attempt before failStateSnapshot can start an immediate retry.
           if (!cancelled && !superseded) this.failStateSnapshot(error, "Unknown state snapshot error");
@@ -401,7 +421,7 @@ export class PostboxStore {
         events.addEventListener("state", (event) => {
           if (cancelled) return;
           const data = String((event as MessageEvent).data);
-          if (!this.lastHealth) deferredLiveState = data;
+          if (!this.lastHealth) deferredLiveState = { data, sequence: ++this.snapshotSequence };
           else applyLiveState(data);
         });
         events.onerror = () => {
