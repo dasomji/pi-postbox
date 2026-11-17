@@ -338,6 +338,54 @@ describe("dashboard live-state bootstrap", () => {
     } finally { stop(); }
   });
 
+  it.each(["live event", "deferred replay"])("does not strand a stale resume on a refresh superseded by a %s", async (supersededBy) => {
+    vi.useFakeTimers();
+    const resolved = { ...SNAPSHOT, requests: [] };
+    let delayHealth = false;
+    let releaseHealth: ((response: Response) => void) | undefined;
+    let releaseSlowRefresh!: (response: Response) => void;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/healthz") {
+        if (delayHealth) return new Promise<Response>((resolve) => { releaseHealth = resolve; });
+        return Response.json(createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 }));
+      }
+      if (++reads === 1) return new Promise<Response>((resolve) => { releaseSlowRefresh = resolve; });
+      return Response.json(resolved);
+    }));
+    const stop = store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const events = FakeEventSource.instances[0]!;
+      events.emitState(SNAPSHOT);
+      const slowRefresh = store.refresh(); // Still reads the pending Question.
+      if (supersededBy === "live event") {
+        events.emitState(resolved);
+      } else {
+        delayHealth = true;
+        events.readyState = 0;
+        events.onerror?.(new Event("error"));
+        events.emitState(resolved); // Deferred while health is stale.
+        releaseHealth!(Response.json(createHealthResponse({ startedAtMs: 1_000, nowMs: 2_000 })));
+      }
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(store.connection.status).toBe("connected");
+      expect(store.syncing).toBe(false);
+      expect(store.pendingRequests).toHaveLength(0);
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(0);
+      // The resume issues its own read instead of joining the superseded one.
+      expect(store.syncing).toBe(false);
+      releaseSlowRefresh(Response.json(SNAPSHOT));
+      await slowRefresh;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(store.connection.status).toBe("connected");
+      expect(store.syncing).toBe(false);
+      expect(store.pendingRequests).toHaveLength(0);
+    } finally { stop(); }
+  });
+
   it("does not overlap slow recovery polls", async () => {
     vi.useFakeTimers();
     let stateReads = 0;

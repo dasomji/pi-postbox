@@ -49,6 +49,7 @@ export class PostboxStore {
   private displayedRequest: AskRequestSnapshot | undefined;
   private historyLoadPromise: Promise<HistoryResponse> | undefined;
   private snapshotLoadPromise: Promise<StateSnapshot> | undefined;
+  private snapshotLoadSequence = 0;
   private readonly snapshotWaiters = new Set<{
     resolve: (snapshot: StateSnapshot) => void;
     reject: (error: Error) => void;
@@ -261,9 +262,15 @@ export class PostboxStore {
   }
 
   private requestSnapshot(fetchCurrentSnapshot: () => Promise<StateSnapshot>): Promise<StateSnapshot> {
-    if (this.snapshotLoadPromise) return this.snapshotLoadPromise;
+    // Join an in-flight read only while it can still apply. One superseded by a newer
+    // snapshot will be discarded, so a caller waiting on it (e.g. a stale resume that
+    // marked the view syncing) would never see fresh state.
+    if (this.snapshotLoadPromise && this.snapshotLoadSequence >= this.appliedSnapshotSequence) {
+      return this.snapshotLoadPromise;
+    }
 
     const sequence = ++this.snapshotSequence;
+    this.snapshotLoadSequence = sequence;
     let tracked: Promise<StateSnapshot>;
     tracked = fetchCurrentSnapshot()
       .then((next) => {
