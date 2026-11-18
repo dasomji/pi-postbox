@@ -17,6 +17,7 @@ export interface QuestionForm {
   readonly done: string | undefined;
   readonly busy: boolean;
   readonly canSubmit: boolean;
+  readonly deliveryUnavailable: string | undefined;
   updateRequest(request: AskRequestSnapshot): void;
   isSelected(value: string): boolean;
   toggle(value: string): void;
@@ -29,8 +30,17 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
   let selected = $state<string[]>([]);
   let note = $state("");
   let error = $state<string | undefined>(undefined);
+  let deliveryError = $state(false);
   let done = $state<string | undefined>(undefined);
   let busy = $state(false);
+
+  function deliveryUnavailable(): string | undefined {
+    if (isMock) return undefined;
+    if (store.connection.status !== "connected") {
+      return "Answers cannot be sent while offline or reconnecting. Your Question and draft are kept here until the server returns.";
+    }
+    return store.syncing ? "Refreshing… Answers will be available when the latest Question state arrives. Your draft is kept here." : undefined;
+  }
 
   function toggle(value: string): void {
     done = undefined;
@@ -42,6 +52,12 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
   }
 
   async function resolveVia(action: () => Promise<void>, fallback: string): Promise<void> {
+    const unavailable = deliveryUnavailable();
+    if (unavailable) {
+      deliveryError = true;
+      return;
+    }
+    deliveryError = false;
     busy = true;
     error = undefined;
     store.beginLocalResolve(currentRequest.requestId);
@@ -105,7 +121,7 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
       note = value;
     },
     get error() {
-      return error;
+      return deliveryError ? deliveryUnavailable() : error;
     },
     get done() {
       return done;
@@ -114,7 +130,10 @@ export function createQuestionForm(request: AskRequestSnapshot, isMock = false):
       return busy;
     },
     get canSubmit() {
-      return selected.length > 0 && !busy;
+      return selected.length > 0 && !busy && !deliveryUnavailable();
+    },
+    get deliveryUnavailable() {
+      return deliveryUnavailable();
     },
     updateRequest(nextRequest) {
       if (nextRequest.requestId === currentRequest.requestId) currentRequest = nextRequest;

@@ -23,9 +23,13 @@
   // ask without telling the server. Cancels the request server-side.
   let dismissingRequestId = $state<string | undefined>(undefined);
   let dismissError = $state<string | undefined>(undefined);
+  const deliveryNoticeId = $props.id();
+  const deliveryUnavailable = $derived(store.connection.status !== "connected"
+    ? "Questions cannot be dismissed while offline or reconnecting. They are kept here until the server returns."
+    : undefined);
 
   async function dismissRequest(requestId: string): Promise<void> {
-    if (dismissingRequestId) return;
+    if (deliveryUnavailable || dismissingRequestId) return;
     dismissingRequestId = requestId;
     dismissError = undefined;
     try {
@@ -61,6 +65,10 @@
     </div>
   </header>
 
+  {#if deliveryUnavailable}
+    <p id={deliveryNoticeId} class="mt-4 text-sm text-warning-foreground" role="status">{deliveryUnavailable}</p>
+  {/if}
+
   {#if dismissError}
     <p class="mt-4 rounded-lg bg-danger/10 p-3 text-sm text-danger-foreground" role="alert">{dismissError}</p>
   {/if}
@@ -94,7 +102,9 @@
           {/if}
 
           <div class={projectFilter ? "" : "mt-3"}>
-            <QuestionTreeList nodes={group.questionTree ?? []} {dismissingRequestId} onDismiss={dismissRequest} />
+            <QuestionTreeList nodes={group.questionTree ?? []} {dismissingRequestId}
+              dismissUnavailable={Boolean(deliveryUnavailable)} dismissDescriptionId={deliveryUnavailable ? deliveryNoticeId : undefined}
+              onDismiss={dismissRequest} />
           </div>
         </section>
       {/each}

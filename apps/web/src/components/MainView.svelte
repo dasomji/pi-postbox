@@ -42,6 +42,8 @@
           revisionChanges={store.displayedSelectedRequest && store.selectedRequest.revision > store.displayedSelectedRequest.revision ? ["Question content or options changed"] : []}
           session={store.selectedSession} {unansweredAncestors} />
       {/key}
+    {:else if store.syncing || store.connection.status !== "connected"}
+      <EmptyMain title="Question status unknown" message="Waiting for the server to confirm this Question's status." />
     {:else}
       <EmptyMain title="Question resolved" message="This request was answered, cancelled, or expired." />
     {/if}

@@ -28,6 +28,7 @@
     mobileWorkspaceTabsVisible?: boolean;
   } = $props();
 
+  const deliveryNoticeId = $props.id();
   let showContext = $state(false);
   let showNote = $state(false);
   let contextPanelOpener = $state<HTMLElement | null>(null);
@@ -225,6 +226,10 @@
       {#if form.error}<p class="mt-4 rounded-lg bg-danger/10 p-3 text-center text-sm text-danger-foreground">{form.error}</p>{/if}
       {#if form.done && !showStamp}<p class="mt-4 rounded-lg bg-success/10 p-3 text-center text-sm text-success-foreground">{form.done}</p>{/if}
 
+      {#if form.deliveryUnavailable}
+        <p id={deliveryNoticeId} class="mt-4 text-sm text-warning-foreground" role="status">{form.deliveryUnavailable}</p>
+      {/if}
+
       <div
         class="sticky z-20 -mx-4 mt-8 flex flex-col items-stretch justify-center gap-3 border-t border-postbox-border bg-postbox-canvas/95 px-4 py-4 shadow-postbox-panel backdrop-blur sm:flex-row sm:flex-wrap sm:items-center"
         style:bottom={mobileWorkspaceTabsVisible ? "calc(4.25rem + env(safe-area-inset-bottom))" : "0px"}
@@ -234,7 +239,8 @@
         <button
           class="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-attention-foreground bg-attention px-8 py-3 font-display text-sm font-bold uppercase tracking-[0.12em] text-attention-contrast shadow-postbox-paper ring-2 ring-inset ring-white/25 transition hover:bg-attention-foreground sm:w-auto sm:shrink-0"
           type="submit"
-          disabled={answerDisabled || form.busy}
+          aria-describedby={form.deliveryUnavailable ? deliveryNoticeId : undefined}
+          disabled={answerDisabled || form.busy || Boolean(form.deliveryUnavailable)}
           onclick={submitWithStamp}
         >
           <span>Submit</span>
@@ -262,7 +268,8 @@
         <button
           class="w-full rounded-full px-4 py-3 text-center text-sm text-postbox-muted transition hover:text-danger-foreground sm:w-auto sm:shrink-0"
           type="button"
-          disabled={answerDisabled || form.busy}
+          aria-describedby={form.deliveryUnavailable ? deliveryNoticeId : undefined}
+          disabled={answerDisabled || form.busy || Boolean(form.deliveryUnavailable)}
           onclick={() => form.cancel()}
         >
           Cancel
