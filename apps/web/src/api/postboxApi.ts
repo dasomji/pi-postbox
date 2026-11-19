@@ -26,8 +26,8 @@ import {
   type QuestionChatStopResponse
 } from "@pi-postbox/protocol";
 
-export async function fetchHealth(): Promise<HealthResponse> {
-  const response = await fetch("/healthz");
+export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {
+  const response = await fetch("/healthz", { signal });
   if (!response.ok) throw new Error(`Health check failed with ${response.status}`);
   const body: unknown = await response.json();
   if (
@@ -41,8 +41,8 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return HealthResponseSchema.parse(body);
 }
 
-export async function fetchSnapshot(): Promise<StateSnapshot> {
-  const response = await fetch("/api/state");
+export async function fetchSnapshot(signal?: AbortSignal): Promise<StateSnapshot> {
+  const response = await fetch("/api/state", { signal });
   if (!response.ok) throw new Error(`State snapshot failed with ${response.status}`);
   return StateSnapshotSchema.parse(await response.json());
 }

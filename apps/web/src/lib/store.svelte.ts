@@ -38,7 +38,7 @@ export function comparePendingRequests(a: AskRequestSnapshot, b: AskRequestSnaps
   return Date.parse(a.createdAt) - Date.parse(b.createdAt);
 }
 
-class PostboxStore {
+export class PostboxStore {
   /**
    * Requests this tab is resolving itself. Their snapshot transition to a terminal
    * status must not auto-deselect, so the local answer flow keeps its delivered-stamp
@@ -49,11 +49,17 @@ class PostboxStore {
   private displayedRequest: AskRequestSnapshot | undefined;
   private historyLoadPromise: Promise<HistoryResponse> | undefined;
   private snapshotLoadPromise: Promise<StateSnapshot> | undefined;
+  private snapshotLoadSequence = 0;
   private readonly snapshotWaiters = new Set<{
     resolve: (snapshot: StateSnapshot) => void;
     reject: (error: Error) => void;
   }>();
   private notificationNavigationAttempt = 0;
+  // Fetches carry their dispatch order; a later SSE snapshot supersedes in-flight reads.
+  private snapshotSequence = 0;
+  private appliedSnapshotSequence = 0;
+  private startRecovery: (() => void) | undefined;
+  private lastHealth: HealthResponse | undefined;
 
   snapshot = $state<Loadable<StateSnapshot>>({ status: "loading" });
   history = $state<Loadable<HistoryResponse>>({ status: "loading" });
@@ -62,7 +68,7 @@ class PostboxStore {
 
   /**
    * True while the data on screen may be stale: before the first snapshot, and again after the
-   * tab returns from the background until a fresh snapshot lands. Empty views say "checking"
+   * tab returns from the background or loses connectivity until a fresh snapshot lands. Empty views say "checking"
    * instead of claiming there are no open questions.
    */
   syncing = $state(true);
@@ -211,7 +217,9 @@ class PostboxStore {
     else this.clearSelection();
   }
 
-  applyStateSnapshot(next: StateSnapshot): void {
+  applyStateSnapshot(next: StateSnapshot, sequence = ++this.snapshotSequence): void {
+    if (sequence < this.appliedSnapshotSequence) return;
+    this.appliedSnapshotSequence = sequence;
     const selection = this.selection;
     const previouslySelectedRequest = selection.kind === "request"
       ? this.requests.find((entry) => entry.requestId === selection.requestId)
@@ -221,6 +229,7 @@ class PostboxStore {
     if (previouslySelectedRequest && !this.displayedRequest) this.displayedRequest = previouslySelectedRequest;
     this.snapshot = { status: "ready", data: next };
     this.syncing = false;
+    if (this.lastHealth) this.connection = { status: "connected", health: this.lastHealth };
     this.lastSnapshotAtMs = Date.now();
     this.deselectRemotelyResolvedRequest(previouslySelectedRequest);
     for (const waiter of this.snapshotWaiters) waiter.resolve(next);
@@ -253,13 +262,20 @@ class PostboxStore {
   }
 
   private requestSnapshot(fetchCurrentSnapshot: () => Promise<StateSnapshot>): Promise<StateSnapshot> {
-    if (this.snapshotLoadPromise) return this.snapshotLoadPromise;
+    // Join an in-flight read only while it can still apply. One superseded by a newer
+    // snapshot will be discarded, so a caller waiting on it (e.g. a stale resume that
+    // marked the view syncing) would never see fresh state.
+    if (this.snapshotLoadPromise && this.snapshotLoadSequence >= this.appliedSnapshotSequence) {
+      return this.snapshotLoadPromise;
+    }
 
+    const sequence = ++this.snapshotSequence;
+    this.snapshotLoadSequence = sequence;
     let tracked: Promise<StateSnapshot>;
     tracked = fetchCurrentSnapshot()
       .then((next) => {
-        this.applyStateSnapshot(next);
-        return next;
+        this.applyStateSnapshot(next, sequence);
+        return this.snapshot.status === "ready" ? this.snapshot.data : next;
       })
       .finally(() => {
         if (this.snapshotLoadPromise === tracked) this.snapshotLoadPromise = undefined;
@@ -276,10 +292,15 @@ class PostboxStore {
 
   private failStateSnapshot(error: unknown, fallback: string): void {
     const message = messageOf(error, fallback);
-    this.snapshot = { status: "error", message };
-    this.syncing = false;
+    // A transport failure says nothing about a Question's lifecycle. Keep the last
+    // authoritative snapshot until another snapshot can actually replace it.
+    if (this.snapshot.status !== "ready") this.snapshot = { status: "error", message };
+    this.lastHealth = undefined;
+    this.connection = { status: "unavailable", message };
+    this.syncing = true;
     for (const waiter of this.snapshotWaiters) waiter.reject(new Error(message));
     this.snapshotWaiters.clear();
+    this.startRecovery?.();
   }
 
   async loadHistory(fetchCurrentHistory: () => Promise<HistoryResponse> = fetchHistory): Promise<void> {
@@ -304,51 +325,143 @@ class PostboxStore {
     let cancelled = false;
     let fallbackTimer: ReturnType<typeof setInterval> | undefined;
     let events: EventSource | undefined;
+    let polling = false;
+    const startupAbort = new AbortController();
+    let recoveryAbort: AbortController | undefined;
+    // The server sends state only on subscribe and on change. A state event that
+    // arrives before compatibility is re-negotiated is kept (unparsed) and applied
+    // once recovery health succeeds, so a quiet reconnected stream is not ignored.
+    // Its sequence is taken on receipt, so a newer refresh is never overwritten.
+    let deferredLiveState: { data: string; sequence: number } | undefined;
 
-    const applySnapshot = (next: StateSnapshot) => {
-      if (!cancelled) this.applyStateSnapshot(next);
+    const applySnapshot = (next: StateSnapshot, sequence?: number) => {
+      if (!cancelled) this.applyStateSnapshot(next, sequence);
+    };
+
+    const stopPollingIfLive = () => {
+      if (events?.readyState !== 1 || !this.lastHealth) return;
+      if (fallbackTimer) clearInterval(fallbackTimer);
+      fallbackTimer = undefined;
+    };
+
+    const parseLiveState = (data: string): StateSnapshot | undefined => {
+      try {
+        return StateSnapshotSchema.parse(JSON.parse(data));
+      } catch (error) {
+        if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
+        return undefined;
+      }
+    };
+
+    const applyLiveState = (data: string) => {
+      const next = parseLiveState(data);
+      if (!next) return;
+      applySnapshot(next);
+      stopPollingIfLive();
+    };
+
+    /** Returns true when a deferred event proved the open stream live under fresh health. */
+    const applyDeferredLiveState = (): boolean => {
+      const deferred = deferredLiveState;
+      deferredLiveState = undefined;
+      if (!deferred || events?.readyState !== 1 || cancelled) return false;
+      const next = parseLiveState(deferred.data);
+      if (!next) return false;
+      if (deferred.sequence >= this.appliedSnapshotSequence) {
+        applySnapshot(next, deferred.sequence);
+      } else if (this.lastHealth && this.snapshot.status === "ready") {
+        // A newer snapshot already applied; keep it. A deferred event survives only while
+        // the stream stays open (errors discard it), and that snapshot was requested after
+        // the event arrived, so it plus later stream events is authoritative even if a
+        // refresh failed since.
+        this.connection = { status: "connected", health: this.lastHealth };
+        this.syncing = false;
+      }
+      stopPollingIfLive();
+      return true;
     };
 
     const load = () => {
-      fetchSnapshot()
-        .then(applySnapshot)
+      if (cancelled || polling) return;
+      polling = true;
+      const controller = new AbortController();
+      recoveryAbort = controller;
+      // Bound even hung bodies; a newer healthy live snapshot supersedes a late failure.
+      const timeout = setTimeout(() => controller.abort(new DOMException("Recovery attempt timed out", "TimeoutError")), 4_000);
+      const sequence = ++this.snapshotSequence;
+      let liveConfirmed = false;
+      // Re-negotiate compatibility after a restart before accepting state again.
+      fetchHealth(controller.signal)
+        .then((health) => {
+          if (cancelled) return;
+          this.lastHealth = health;
+          startStateTransport();
+          liveConfirmed = applyDeferredLiveState();
+          return fetchSnapshot(controller.signal);
+        })
+        .then((next) => {
+          if (!next || cancelled) return;
+          applySnapshot(next, sequence);
+          stopPollingIfLive();
+        })
+        .finally(() => {
+          clearTimeout(timeout);
+          recoveryAbort = undefined;
+          polling = false;
+        })
         .catch((error: unknown) => {
-          if (!cancelled) this.failStateSnapshot(error, "Unknown state snapshot error");
+          const superseded = (this.appliedSnapshotSequence > sequence || liveConfirmed)
+            && this.connection.status === "connected" && this.lastHealth && events?.readyState === 1;
+          // Release this attempt before failStateSnapshot can start an immediate retry.
+          if (!cancelled && !superseded) this.failStateSnapshot(error, "Unknown state snapshot error");
         });
     };
 
     const startPollingFallback = () => {
       if (fallbackTimer) return;
-      load();
       fallbackTimer = setInterval(load, 5_000);
+      load();
     };
 
     const startStateTransport = () => {
       if (!("EventSource" in window)) {
         startPollingFallback();
-      } else {
+      } else if (!events || events.readyState === 2) {
+        deferredLiveState = undefined;
         events = new EventSource("/api/state/events");
         events.addEventListener("state", (event) => {
-          try {
-            applySnapshot(StateSnapshotSchema.parse(JSON.parse((event as MessageEvent).data)));
-          } catch (error) {
-            if (!cancelled) this.failStateSnapshot(error, "Invalid live state event");
-          }
+          if (cancelled) return;
+          const data = String((event as MessageEvent).data);
+          if (!this.lastHealth) deferredLiveState = { data, sequence: ++this.snapshotSequence };
+          else applyLiveState(data);
         });
-        events.onerror = () => startPollingFallback();
+        events.onerror = () => {
+          if (cancelled) return;
+          deferredLiveState = undefined;
+          this.lastHealth = undefined;
+          this.connection = { status: "unavailable", message: "Live updates disconnected. Reconnecting…" };
+          this.syncing = true;
+          startPollingFallback();
+        };
       }
     };
 
+    this.startRecovery = startPollingFallback;
+
     // Compatibility is negotiated before any state payload is parsed. This turns an
     // old API/new UI mismatch into a targeted health diagnostic instead of a Zod error.
-    void fetchHealth()
+    void fetchHealth(startupAbort.signal)
       .then((health) => {
         if (cancelled) return;
+        this.lastHealth = health;
         this.connection = { status: "connected", health };
         startStateTransport();
       })
       .catch((error: unknown) => {
-        if (!cancelled) this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
+        if (!cancelled) {
+          this.connection = { status: "unavailable", message: messageOf(error, "Unknown health check error") };
+          startPollingFallback();
+        }
       });
 
     // Returning from the background: the SSE stream may be dead or throttled, so refetch right
@@ -362,6 +475,9 @@ class PostboxStore {
 
     return () => {
       cancelled = true;
+      this.startRecovery = undefined;
+      startupAbort.abort();
+      recoveryAbort?.abort();
       events?.close();
       if (fallbackTimer) clearInterval(fallbackTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
